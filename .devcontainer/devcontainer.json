@@ -31,14 +31,20 @@
         "python.testing.unittestEnabled": false,
         "python.testing.nosetestsEnabled": false,
         "python.testing.pytestEnabled": true,
-        "autoDocstring.docstringFormat": "numpy-notypes"
+        "autoDocstring.docstringFormat": "numpy-notypes",
+        "[python]": {
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
+        }
       },
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance",
         "ms-python.pylint",
         "sourcery.sourcery",
-        "njpwerner.autodocstring"
+        "njpwerner.autodocstring",
+        "charliermarsh.ruff"
       ]
     }
   },

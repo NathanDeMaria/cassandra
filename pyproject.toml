@@ -6,13 +6,25 @@ authors = []
 
 [tool.poetry.dependencies]
 python = "^3.14"
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "e3415cb46e9e4eaa82bf28720c8e8192d720552e", subdirectory = "py-endgame-aws"}
+
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.12.0"
 pytest = "^9.0.2"
 pylint = "^4.0.4"
 mypy = "^1.19.1"
+ruff = "^0.14.10"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["prediction_evaluation"]
