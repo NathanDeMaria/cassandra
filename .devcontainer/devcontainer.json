@@ -1,0 +1,52 @@
+{
+  "name": "prediction-evaluation",
+  "build": {
+    "context": "..",
+    "dockerfile": "./Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "editor.rulers": [
+          88
+        ],
+        "python.pythonPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.mypyEnabled": true,
+        "python.linting.mypyPath": "/usr/local/bin/mypy",
+        "python.linting.pylintEnabled": true,
+        "python.linting.pylintPath": "/usr/local/bin/pylint",
+        "python.linting.pylintArgs": [
+          "--enable=unused-import,unused-variable",
+          "--disable=missing-module-docstring",
+          "--max-line-length=88"
+        ],
+        "python.formatting.provider": "black",
+        "python.formatting.blackPath": "/usr/local/bin/black",
+        "editor.formatOnSave": true,
+        "python.testing.pytestArgs": [
+          "."
+        ],
+        "python.testing.unittestEnabled": false,
+        "python.testing.nosetestsEnabled": false,
+        "python.testing.pytestEnabled": true,
+        "autoDocstring.docstringFormat": "numpy-notypes"
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.pylint",
+        "sourcery.sourcery",
+        "njpwerner.autodocstring"
+      ]
+    }
+  },
+  "mounts": [
+    "source=bashhistory-volume,target=/commandhistory,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/credentials,target=/root/.aws/credentials,type=bind,consistency=cached,ro=1",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/config,target=/root/.aws/config,type=bind,consistency=cached,ro=1",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/root/.ssh,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/root/.gitconfig,type=bind,readonly,consistency=cached"
+  ]
+}
