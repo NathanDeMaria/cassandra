@@ -6,7 +6,12 @@ authors = []
 
 [tool.poetry.dependencies]
 python = "^3.14"
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "e3415cb46e9e4eaa82bf28720c8e8192d720552e", subdirectory = "py-endgame-aws"}
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "1babc5662d900a6d2478fdb2686996df1def38ba", subdirectory = "py-endgame-aws"}
+aiofiles = "^25.1.0"
+pandas = "^2.3.3"
+pydantic = "^2.12.5"
+statsmodels = "^0.14.6"
+scikit-learn = "^1.8.0"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -15,6 +20,9 @@ pytest = "^9.0.2"
 pylint = "^4.0.4"
 mypy = "^1.19.1"
 ruff = "^0.14.10"
+types-aiofiles = "^25.1.0.20251011"
+ipykernel = "^7.1.0"
+matplotlib = "^3.10.8"
 
 [build-system]
 requires = ["poetry-core"]

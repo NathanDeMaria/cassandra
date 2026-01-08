@@ -53,6 +53,7 @@
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/credentials,target=/root/.aws/credentials,type=bind,consistency=cached,ro=1",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/config,target=/root/.aws/config,type=bind,consistency=cached,ro=1",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/root/.ssh,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/root/.gitconfig,type=bind,readonly,consistency=cached"
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/root/.gitconfig,type=bind,readonly,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws-batch/config.json,target=/root/.aws-batch/config.json,type=bind,consistency=cached"
   ]
 }
