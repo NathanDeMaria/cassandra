@@ -12,6 +12,8 @@ pandas = "^2.3.3"
 pydantic = "^2.12.5"
 statsmodels = "^0.14.6"
 scikit-learn = "^1.8.0"
+tqdm = "^4.67.1"
+bayesian-optimization = "^3.2.0"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -23,6 +25,7 @@ ruff = "^0.14.10"
 types-aiofiles = "^25.1.0.20251011"
 ipykernel = "^7.1.0"
 matplotlib = "^3.10.8"
+pandas-stubs = "^2.3.3.251219"
 
 [build-system]
 requires = ["poetry-core"]
