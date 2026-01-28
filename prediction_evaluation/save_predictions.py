@@ -1,30 +1,28 @@
 import asyncio
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import AsyncIterator, AsyncIterable, Iterable, Iterator
+from typing import AsyncIterable, AsyncIterator, Iterable, Iterator
 
 import aiofiles
 import pandas as pd
-from dataclasses import dataclass, asdict
 from endgame.ncaabb import NcaabbGender
 from endgame.types import Game, Season
-from endgame_aws import read_seasons, Config
+from endgame_aws import Config, read_seasons
 
-from .odds import OddsDatabase, Odds
+from .odds import Odds, OddsDatabase
 from .predictor import GameResult, Predictor
 
 
 async def read_all_seasons(gender: NcaabbGender, bucket: str) -> AsyncIterator[Season]:
     # TODO: check S3 instead of this hard-coded start/end
     for year in range(2010, 2026):
-        seasons = await read_seasons(
-            bucket, f"seasons/{year}/{gender.name}.pkl"
-        )
+        seasons = await read_seasons(bucket, f"seasons/{year}/{gender.name}.pkl")
         for season in seasons:
             yield season
 
 
 def generate_predictions(
-    predictor: Predictor, seasons: Iterable[Season]
+    predictor: Predictor, seasons: Iterable[Season], optimization: bool = True
 ) -> Iterator[GameResult]:
     for season in seasons:
         for week in season.weeks:
@@ -35,6 +33,8 @@ def generate_predictions(
                 )
             predictor.pass_week()
         predictor.pass_season()
+    if not optimization:
+        predictor.postrun_callback()
 
 
 @dataclass
@@ -46,6 +46,8 @@ class _Prediction:
     team1_win: bool
     team1_win_prob: float
     spread: float | None
+    home_team: str
+    away_team: str
 
 
 def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
@@ -59,6 +61,8 @@ def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
         team1_win=team1_win,
         team1_win_prob=result.prediction.team1_win_prob,
         spread=spread,
+        home_team=result.game.home,
+        away_team=result.game.away,
     )
 
 
@@ -75,29 +79,40 @@ async def _serialize_predictions(
 
 
 async def save_predictions(
-    predictor: Predictor, gender: NcaabbGender, file_path: Path
+    predictor: Predictor, gender: NcaabbGender, file_path: Path, optimization: bool
 ) -> None:
-    prediction_results = _get_results(predictor, gender)
+    prediction_results = _get_results(predictor, gender, optimization=optimization)
     await _serialize_predictions(prediction_results, file_path)
 
 
-async def build_predictions_df(predictor: Predictor, gender: NcaabbGender) -> pd.DataFrame:
-    prediction_results = _get_results(predictor, gender)
+async def build_predictions_df(
+    predictor: Predictor, gender: NcaabbGender, optimization: bool
+) -> pd.DataFrame:
+    prediction_results = _get_results(predictor, gender, optimization=optimization)
     return pd.DataFrame([asdict(result) async for result in prediction_results])
 
 
-async def _get_results(predictor: Predictor, gender: NcaabbGender) -> AsyncIterator[_Prediction]:
+async def _get_results(
+    predictor: Predictor, gender: NcaabbGender, optimization: bool
+) -> AsyncIterator[_Prediction]:
     config = Config.init_from_file()
     seasons = read_all_seasons(gender, config.bucket)
     odds_db = await OddsDatabase.from_s3(config.bucket)
     seasons_now = [s async for s in seasons]
-    predictions = join_with_odds(predictor, seasons_now, odds_db)
+    predictions = join_with_odds(
+        predictor, seasons_now, odds_db, optimization=optimization
+    )
     for prediction in predictions:
         yield prediction
 
 
-def join_with_odds(predictor: Predictor, seasons: Iterable[Season], odds_db: OddsDatabase) -> Iterator[_Prediction]:
+def join_with_odds(
+    predictor: Predictor,
+    seasons: Iterable[Season],
+    odds_db: OddsDatabase,
+    optimization: bool,
+) -> Iterator[_Prediction]:
     # like build_predictions_df, but meant for optimization that already has read seasons/odds into memory
-    for result in generate_predictions(predictor, seasons):
+    for result in generate_predictions(predictor, seasons, optimization=optimization):
         odds = odds_db.get_odds(result.game.game_id)
         yield _build_prediction(result, odds)

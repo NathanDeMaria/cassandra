@@ -20,9 +20,10 @@ class OddsDatabase:
 
     @classmethod
     async def from_s3(cls, bucket: str) -> "OddsDatabase":
-        games = (
-            _parse_odds(g) async for g in read_all_odds(bucket, "odds/")
-        )
+        # TODO: handle a game that's come through multiple times
+        # right now, this'll just be the latest in the list,
+        # which might not be the most recent
+        games = (_parse_odds(g) async for g in read_all_odds(bucket, "odds/"))
         return cls({o.game_id: o async for o in games})
 
     def get_odds(self, game_id: str) -> Odds | None:

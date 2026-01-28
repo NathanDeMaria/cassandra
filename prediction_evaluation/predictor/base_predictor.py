@@ -19,3 +19,9 @@ class Predictor(ABC):
 
     def pass_season(self) -> None:
         pass
+
+    def postrun_callback(self) -> None:
+        """Called after all seasons have been processed.
+
+        This is the place for things like saving off final ratings."""
+        pass
