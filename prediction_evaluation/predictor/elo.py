@@ -5,9 +5,11 @@ from .types import Prediction
 
 
 class EloPredictor(Predictor):
-    def __init__(self, home_advantage: float = 105) -> None:
+    def __init__(self, league: str, home_advantage: float = 105, k: float = 20) -> None:
+        super().__init__(league)
         self._ratings: dict[str, float] = {}
         self._home_advantage = home_advantage
+        self._k = k
 
     def predict_game(self, game: Game) -> Prediction:
         home_rating = self.get_rating(game.home)
@@ -22,8 +24,8 @@ class EloPredictor(Predictor):
             if game.home_score > game.away_score
             else (0.5 if game.home_score == game.away_score else 0.0)
         )
-        self._ratings[game.home] = home_rating + 20 * (actual - win_prob)
-        self._ratings[game.away] = away_rating + 20 * (win_prob - actual)
+        self._ratings[game.home] = home_rating + self._k * (actual - win_prob)
+        self._ratings[game.away] = away_rating + self._k * (win_prob - actual)
         return Prediction(team1_win_prob=win_prob)
 
     def get_rating(self, team: str) -> float:

@@ -16,8 +16,8 @@ async def _main() -> None:
 
     gender = NcaabbGender.mens
     predictors: list[Predictor] = [
-        FlatPredictor(),
-        EloPredictor(),
+        FlatPredictor(gender.name),
+        EloPredictor(gender.name),
     ]
     for predictor in predictors:
         file_path = (

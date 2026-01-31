@@ -14,6 +14,7 @@ statsmodels = "^0.14.6"
 scikit-learn = "^1.8.0"
 tqdm = "^4.67.1"
 bayesian-optimization = "^3.2.0"
+fire = "^0.7.1"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -39,3 +40,11 @@ select = ["I"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["prediction_evaluation"]
+
+[tool.mypy]
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+# no stubs for fire :(
+module = ["fire"]
+ignore_missing_imports = true

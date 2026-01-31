@@ -1,11 +1,19 @@
 import asyncio
+import importlib
 from dataclasses import asdict
 from functools import partial
+from pathlib import Path
 
+import fire
 import pandas as pd
 from bayes_opt import BayesianOptimization
+from pydantic import BaseModel
 
-from prediction_evaluation.predictor import Elo538Predictor, Predictor
+from prediction_evaluation.predictor import (
+    Predictor,
+    PredictorConfig,
+    load_predictor_class,
+)
 from prediction_evaluation.save_predictions import (
     Config,
     NcaabbGender,
@@ -14,6 +22,20 @@ from prediction_evaluation.save_predictions import (
     join_with_odds,
     read_all_seasons,
 )
+
+
+class _OptimizationConfig(BaseModel):
+    predictor_class: str
+    league: str
+    parameters: dict[str, tuple[float, float]]
+    n_iter: int = 100
+
+
+class _OptimizationResult(BaseModel):
+    predictor_class: str
+    league: str
+    target: float
+    params: dict[str, float]
 
 
 def _negative_brier_score(
@@ -29,15 +51,18 @@ def _negative_brier_score(
     return -((df["team1_win_prob"] - df["team1_win"]) ** 2).mean()
 
 
-async def _main() -> None:
-    # TODO: make this configurable
-    pbounds = {"home_advantage": (0, 300), "k": (1, 40)}
-    predictor_class = Elo538Predictor
-    gender = NcaabbGender.mens
+async def _run_optimization(config_file: str) -> None:
+    config_path = Path(config_file)
+    with open(config_path, "r") as f:
+        config_model = _OptimizationConfig.model_validate_json(f.read())
 
-    config = Config.init_from_file()
-    seasons = [s async for s in read_all_seasons(gender, config.bucket)]
-    odds_db = await OddsDatabase.from_s3(config.bucket)
+    predictor_class = load_predictor_class(config_model.predictor_class)
+
+    gender = NcaabbGender[config_model.league]
+
+    aws_config = Config.init_from_file()
+    seasons = [s async for s in read_all_seasons(gender, aws_config.bucket)]
+    odds_db = await OddsDatabase.from_s3(aws_config.bucket)
 
     optimizer = BayesianOptimization(
         f=partial(
@@ -47,14 +72,29 @@ async def _main() -> None:
             odds_db=odds_db,
             predictor_class=predictor_class,
         ),
-        pbounds=pbounds,
+        pbounds=config_model.parameters,
         random_state=1,
     )
 
-    optimizer.maximize(n_iter=100)
+    optimizer.maximize(n_iter=config_model.n_iter)
 
-    print(optimizer.max)
+    if optimizer.max is None:
+        raise ValueError("Optimizer did not find a maximum")
+
+    result_model = PredictorConfig(
+        predictor_class=config_model.predictor_class,
+        league=config_model.league,
+        target=optimizer.max["target"],
+        params=optimizer.max["params"],
+    )
+
+    output_path = config_path.parent / f"{config_path.stem}_result.json"
+    output_path.write_text(result_model.model_dump_json(indent=4, by_alias=True))
+
+
+def _main(config_file: str) -> None:
+    asyncio.run(_run_optimization(config_file))
 
 
 if __name__ == "__main__":
-    asyncio.run(_main())
+    fire.Fire(_main)

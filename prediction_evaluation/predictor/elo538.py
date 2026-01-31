@@ -19,6 +19,7 @@ class Elo538Predictor(Predictor):
         k: float = 20,
         opponent_prior_manager: OpponentPriorManager | None = None,
     ) -> None:
+        super().__init__(league)
         self._home_advantage = home_advantage
         self._k = k
 

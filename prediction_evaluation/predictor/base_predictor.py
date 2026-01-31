@@ -6,6 +6,9 @@ from .types import Prediction
 
 
 class Predictor(ABC):
+    def __init__(self, league: str) -> None:
+        self._league = league
+
     @abstractmethod
     def predict_game(self, game: Game) -> Prediction:
         # I thought about just giving it team names
