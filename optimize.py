@@ -9,6 +9,7 @@ import pandas as pd
 from bayes_opt import BayesianOptimization
 from pydantic import BaseModel
 
+from prediction_evaluation.brier import brier_score_df
 from prediction_evaluation.predictor import (
     Predictor,
     PredictorConfig,
@@ -46,9 +47,11 @@ def _negative_brier_score(
     **kwargs,
 ) -> float:
     predictor = predictor_class(league, **kwargs)  # type: ignore[call-arg]
-    prediction_results = join_with_odds(predictor, seasons, odds_db, optimization=True)
+    prediction_results = join_with_odds(
+        predictor, seasons, odds_db, post_callbacks=False
+    )
     df = pd.DataFrame([asdict(result) for result in prediction_results])
-    return -((df["team1_win_prob"] - df["team1_win"]) ** 2).mean()
+    return -brier_score_df(df)
 
 
 async def _run_optimization(config_file: str) -> None:

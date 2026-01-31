@@ -2932,6 +2932,18 @@ maintenance = ["conda-lock (==3.0.1)"]
 tests = ["matplotlib (>=3.6.1)", "mypy (>=1.15)", "numpydoc (>=1.2.0)", "pandas (>=1.5.0)", "polars (>=0.20.30)", "pooch (>=1.8.0)", "pyamg (>=5.0.0)", "pyarrow (>=12.0.0)", "pytest (>=7.1.2)", "pytest-cov (>=2.9.0)", "ruff (>=0.11.7)"]
 
 [[package]]
+name = "scikit-learn-stubs"
+version = "0.0.3"
+description = "scikit-learn stubs from the Microsoft python-type-stubs repository"
+optional = false
+python-versions = ">=3.9"
+groups = ["dev"]
+files = [
+    {file = "scikit_learn_stubs-0.0.3-py3-none-any.whl", hash = "sha256:5d51257ab62c79d265fa7b05e69ad64b038ac7803bfb1d6490562d4da3109aae"},
+    {file = "scikit_learn_stubs-0.0.3.tar.gz", hash = "sha256:6a41fd3e26aedb923298c3f68a0746d2eed757f24615173f900ce2b942d70814"},
+]
+
+[[package]]
 name = "scipy"
 version = "1.16.3"
 description = "Fundamental algorithms for scientific computing in Python"
@@ -3559,4 +3571,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "cb8b462feb4ea775ded42b43d18b2c10f551ad4545c6e15b16a278258f89537b"
+content-hash = "744985778659f1310538b70c10212add6a1ebe79be76e37c6baf15db1c8f99e0"

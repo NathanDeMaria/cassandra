@@ -27,6 +27,7 @@ types-aiofiles = "^25.1.0.20251011"
 ipykernel = "^7.1.0"
 matplotlib = "^3.10.8"
 pandas-stubs = "^2.3.3.251219"
+scikit-learn-stubs = "^0.0.3"
 
 [build-system]
 requires = ["poetry-core"]

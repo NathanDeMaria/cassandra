@@ -24,7 +24,7 @@ async def _main() -> None:
             prediction_path
             / f"{gender.name}-{predictor.__class__.__name__}-results.csv"
         )
-        await save_predictions(predictor, gender, file_path, optimization=False)
+        await save_predictions(predictor, gender, file_path, post_callbacks=True)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ async def read_all_seasons(gender: NcaabbGender, bucket: str) -> AsyncIterator[S
 
 
 def generate_predictions(
-    predictor: Predictor, seasons: Iterable[Season], optimization: bool = True
+    predictor: Predictor, seasons: Iterable[Season], post_callbacks: bool = False
 ) -> Iterator[GameResult]:
     for season in seasons:
         for week in season.weeks:
@@ -33,7 +33,7 @@ def generate_predictions(
                 )
             predictor.pass_week()
         predictor.pass_season()
-    if not optimization:
+    if post_callbacks:
         predictor.postrun_callback()
 
 
@@ -79,28 +79,28 @@ async def _serialize_predictions(
 
 
 async def save_predictions(
-    predictor: Predictor, gender: NcaabbGender, file_path: Path, optimization: bool
+    predictor: Predictor, gender: NcaabbGender, file_path: Path, post_callbacks: bool
 ) -> None:
-    prediction_results = _get_results(predictor, gender, optimization=optimization)
+    prediction_results = _get_results(predictor, gender, post_callbacks=post_callbacks)
     await _serialize_predictions(prediction_results, file_path)
 
 
 async def build_predictions_df(
-    predictor: Predictor, gender: NcaabbGender, optimization: bool
+    predictor: Predictor, gender: NcaabbGender, post_callbacks: bool
 ) -> pd.DataFrame:
-    prediction_results = _get_results(predictor, gender, optimization=optimization)
+    prediction_results = _get_results(predictor, gender, post_callbacks=post_callbacks)
     return pd.DataFrame([asdict(result) async for result in prediction_results])
 
 
 async def _get_results(
-    predictor: Predictor, gender: NcaabbGender, optimization: bool
+    predictor: Predictor, gender: NcaabbGender, post_callbacks: bool
 ) -> AsyncIterator[_Prediction]:
     config = Config.init_from_file()
     seasons = read_all_seasons(gender, config.bucket)
     odds_db = await OddsDatabase.from_s3(config.bucket)
     seasons_now = [s async for s in seasons]
     predictions = join_with_odds(
-        predictor, seasons_now, odds_db, optimization=optimization
+        predictor, seasons_now, odds_db, post_callbacks=post_callbacks
     )
     for prediction in predictions:
         yield prediction
@@ -110,9 +110,11 @@ def join_with_odds(
     predictor: Predictor,
     seasons: Iterable[Season],
     odds_db: OddsDatabase,
-    optimization: bool,
+    post_callbacks: bool,
 ) -> Iterator[_Prediction]:
     # like build_predictions_df, but meant for optimization that already has read seasons/odds into memory
-    for result in generate_predictions(predictor, seasons, optimization=optimization):
+    for result in generate_predictions(
+        predictor, seasons, post_callbacks=post_callbacks
+    ):
         odds = odds_db.get_odds(result.game.game_id)
         yield _build_prediction(result, odds)
