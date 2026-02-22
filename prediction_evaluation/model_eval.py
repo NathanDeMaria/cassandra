@@ -41,4 +41,6 @@ async def evaluate_model(
     return {
         "brier_score": brier_score,
         "against_spread_accuracy": against_spread_accuracy,
+        "n_games": len(df),
+        "n_spread_games": len(with_spread) // 2,
     }

@@ -67,6 +67,11 @@ async def _run_optimization(config_file: str) -> None:
     seasons = [s async for s in read_all_seasons(gender, aws_config.bucket)]
     odds_db = await OddsDatabase.from_s3(aws_config.bucket)
 
+    # Run once to make things like team priors
+    predictor = predictor_class(gender.name)
+    for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
+        pass
+
     optimizer = BayesianOptimization(
         f=partial(
             _negative_brier_score,
