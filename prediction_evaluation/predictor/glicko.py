@@ -3,6 +3,7 @@ from typing import NamedTuple
 
 from endgame.types import Game
 
+from ..scoring import get_scoring_function
 from .base_predictor import Predictor
 from .opponent_prior import OpponentPriorManager
 from .types import Prediction
@@ -31,6 +32,7 @@ class GlickoPredictor(Predictor):
         weekly_rd_increase: float = 1,
         season_rd_increase: float = 120,
         initial_rd: float = 216,
+        scoring_method: str = "binary",
         opponent_prior_manager: OpponentPriorManager | None = None,
     ) -> None:
         super().__init__(league)
@@ -39,6 +41,7 @@ class GlickoPredictor(Predictor):
         self._weekly_rd_increase = weekly_rd_increase
         self._season_rd_increase = season_rd_increase
         self._initial_rd = initial_rd
+        self._score = get_scoring_function(scoring_method)
 
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(
             league, model=self.__class__.__name__
@@ -58,12 +61,7 @@ class GlickoPredictor(Predictor):
 
         win_prob = 1 / (1 + 10 ** ((away_rating.rating - adjusted_home_rating) / 400))
 
-        actual = (
-            1.0
-            if game.home_score > game.away_score
-            else (0.5 if game.home_score == game.away_score else 0.0)
-        )
-        # TODO: try different scoring functions instead of just binary score
+        actual = self._score(game)
 
         self._update_rating(
             game.home,

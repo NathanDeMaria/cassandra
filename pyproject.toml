@@ -13,7 +13,8 @@ pydantic = "^2.12.5"
 statsmodels = "^0.14.6"
 scikit-learn = "^1.8.0"
 tqdm = "^4.67.1"
-bayesian-optimization = "^3.2.0"
+# TODO: get https://github.com/bayesian-optimization/BayesianOptimization/pull/601 merged
+bayesian-optimization = {git = "https://github.com/NathanDeMaria/BayesianOptimization.git", rev = "FixCategoricalMax"}
 fire = "^0.7.1"
 
 
@@ -49,3 +50,6 @@ ignore_missing_imports = false
 # no stubs for fire :(
 module = ["fire"]
 ignore_missing_imports = true
+
+[tool.pylint.messages_control]
+disable = ["missing-module-docstring", "missing-function-docstring"]

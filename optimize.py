@@ -1,15 +1,14 @@
 import asyncio
-import importlib
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
 import fire
 import pandas as pd
-from bayes_opt import BayesianOptimization
 from pydantic import BaseModel
 
 from prediction_evaluation.brier import brier_score_df
+from prediction_evaluation.optimize import optimize
 from prediction_evaluation.predictor import (
     Predictor,
     PredictorConfig,
@@ -28,15 +27,8 @@ from prediction_evaluation.save_predictions import (
 class _OptimizationConfig(BaseModel):
     predictor_class: str
     league: str
-    parameters: dict[str, tuple[float, float]]
+    parameters: dict[str, tuple[float, float] | list[str]]
     n_iter: int = 100
-
-
-class _OptimizationResult(BaseModel):
-    predictor_class: str
-    league: str
-    target: float
-    params: dict[str, float]
 
 
 def _negative_brier_score(
@@ -72,28 +64,22 @@ async def _run_optimization(config_file: str) -> None:
     for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
         pass
 
-    optimizer = BayesianOptimization(
-        f=partial(
-            _negative_brier_score,
-            league=gender.name,
-            seasons=seasons,
-            odds_db=odds_db,
-            predictor_class=predictor_class,
-        ),
-        pbounds=config_model.parameters,
-        random_state=1,
+    target_function = partial(
+        _negative_brier_score,
+        league=gender.name,
+        seasons=seasons,
+        odds_db=odds_db,
+        predictor_class=predictor_class,
     )
-
-    optimizer.maximize(n_iter=config_model.n_iter)
-
-    if optimizer.max is None:
-        raise ValueError("Optimizer did not find a maximum")
+    target, params = optimize(
+        target_function, config_model.parameters, config_model.n_iter
+    )
 
     result_model = PredictorConfig(
         predictor_class=config_model.predictor_class,
         league=config_model.league,
-        target=optimizer.max["target"],
-        params=optimizer.max["params"],
+        target=target,
+        params=params,
     )
 
     output_path = config_path.parent / f"{config_path.stem}_result.json"

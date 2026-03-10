@@ -10,7 +10,7 @@ _PREDICTOR_DATA_DIR = Path(__file__).parent / "data"
 class OpponentPriorManager:
     def __init__(self, league: str, model: str | None = None) -> None:
         self._prior_path = (
-            _PREDICTOR_DATA_DIR / f"{league}_{model + '_' or ''}priors.json"
+            _PREDICTOR_DATA_DIR / f"{league}_{model + '_' if model else ''}priors.json"
         )
         self._opponent_counter: defaultdict[str, Counter[str]] = defaultdict(Counter)
         if self._prior_path.exists():

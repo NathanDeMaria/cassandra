@@ -15,7 +15,7 @@ class PredictorConfig(BaseModel):
     predictor_class: str
     league: str
     target: float
-    params: dict[str, float]
+    params: dict[str, float | str]
 
 
 def load_predictor(config_path: Path | str) -> Predictor:
