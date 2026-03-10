@@ -14,8 +14,7 @@ def optimize(
         f=function,
         # The docs confirm list-of-str is how you do categorical
         # https://bayesian-optimization.github.io/BayesianOptimization/3.2.0/parameter_types.html#3.-Categorical-variables
-        # REDO??? type: ignore[arg-type]
-        pbounds=param_bounds,
+        pbounds=param_bounds,  # type: ignore[arg-type]
         random_state=1,
     )
 

@@ -15,15 +15,6 @@
         "python.linting.enabled": true,
         "python.linting.mypyEnabled": true,
         "python.linting.mypyPath": "/usr/local/bin/mypy",
-        "python.linting.pylintEnabled": true,
-        "python.linting.pylintPath": "/usr/local/bin/pylint",
-        "python.linting.pylintArgs": [
-          "--enable=unused-import,unused-variable",
-          "--disable=missing-module-docstring",
-          "--max-line-length=88"
-        ],
-        "python.formatting.provider": "black",
-        "python.formatting.blackPath": "/usr/local/bin/black",
         "editor.formatOnSave": true,
         "python.testing.pytestArgs": [
           "."
@@ -34,9 +25,12 @@
         "autoDocstring.docstringFormat": "numpy-notypes",
         "[python]": {
           "editor.codeActionsOnSave": {
-            "source.organizeImports": "explicit"
-          }
-        }
+            "source.organizeImports": "explicit",
+            "source.fixAll": "explicit"
+          },
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "search.useIgnoreFiles": true
       },
       "extensions": [
         "ms-python.python",
