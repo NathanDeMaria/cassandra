@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 import pandas as pd
 
-from prediction_evaluation.columns import GameDfColumns
+from cassandra.columns import GameDfColumns
 
 
 class BaseProbToSpreadPredictor(ABC):

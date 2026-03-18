@@ -7,7 +7,7 @@ from .base_predictor import Predictor
 
 
 def load_predictor_class(name: str) -> type[Predictor]:
-    module = importlib.import_module("prediction_evaluation.predictor")
+    module = importlib.import_module("cassandra.predictor")
     return getattr(module, name)
 
 

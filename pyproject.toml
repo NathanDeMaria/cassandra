@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "prediction-evaluation"
+name = "cassandra"
 version = "0.1.0"
 description = ""
 authors = []
@@ -13,9 +13,8 @@ pydantic = "^2.12.5"
 statsmodels = "^0.14.6"
 scikit-learn = "^1.8.0"
 tqdm = "^4.67.1"
-# TODO: get https://github.com/bayesian-optimization/BayesianOptimization/pull/601 merged
-bayesian-optimization = {git = "https://github.com/NathanDeMaria/BayesianOptimization.git", rev = "FixCategoricalMax"}
 fire = "^0.7.1"
+bayesian-optimization = "^3.2.1"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -41,7 +40,7 @@ line-length = 88
 select = ["I"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["prediction_evaluation"]
+known-first-party = ["cassandra"]
 
 [tool.mypy]
 ignore_missing_imports = false

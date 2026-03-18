@@ -7,14 +7,14 @@ import fire
 import pandas as pd
 from pydantic import BaseModel
 
-from prediction_evaluation.brier import brier_score_df
-from prediction_evaluation.optimize import optimize
-from prediction_evaluation.predictor import (
+from cassandra.brier import brier_score_df
+from cassandra.optimize import optimize
+from cassandra.predictor import (
     Predictor,
     PredictorConfig,
     load_predictor_class,
 )
-from prediction_evaluation.save_predictions import (
+from cassandra.save_predictions import (
     Config,
     NcaabbGender,
     OddsDatabase,

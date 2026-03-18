@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 from endgame.ncaabb import NcaabbGender
 
-from prediction_evaluation import evaluate_model
+from cassandra import evaluate_model
 
 _REPO_ROOT = Path(__file__).parent
 _MODELS_DIR = _REPO_ROOT / "models"

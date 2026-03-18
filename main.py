@@ -4,8 +4,8 @@ from pathlib import Path
 
 from endgame.ncaabb import NcaabbGender
 
-from prediction_evaluation.predictor import EloPredictor, FlatPredictor, Predictor
-from prediction_evaluation.save_predictions import save_predictions
+from cassandra.predictor import EloPredictor, FlatPredictor, Predictor
+from cassandra.save_predictions import save_predictions
 
 _PREDICTION_LOG_PATH = Path(__file__).parent / "predictions"
 
