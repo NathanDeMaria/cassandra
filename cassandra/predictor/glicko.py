@@ -1,5 +1,7 @@
+import json
 import math
-from typing import NamedTuple
+from pathlib import Path
+from typing import NamedTuple, Self
 
 from endgame.types import Game
 
@@ -34,6 +36,7 @@ class GlickoPredictor(Predictor):
         initial_rd: float = 216,
         scoring_method: str = "binary",
         opponent_prior_manager: OpponentPriorManager | None = None,
+        ratings: dict[str, _Rating] | None = None,
     ) -> None:
         super().__init__(league)
         self._home_advantage = home_advantage
@@ -41,16 +44,20 @@ class GlickoPredictor(Predictor):
         self._weekly_rd_increase = weekly_rd_increase
         self._season_rd_increase = season_rd_increase
         self._initial_rd = initial_rd
+        self._scoring_method = scoring_method
         self._score = get_scoring_function(scoring_method)
 
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(
             league, model=self.__class__.__name__
         )
-        prior_ratings = self._prior_manager.get_ratings()
-        self._ratings: dict[str, _Rating] = {
-            team: _Rating(rating, self._initial_rd)
-            for team, rating in prior_ratings.items()
-        }
+        if ratings is not None:
+            self._ratings: dict[str, _Rating] = ratings
+        else:
+            prior_ratings = self._prior_manager.get_ratings()
+            self._ratings = {
+                team: _Rating(rating, self._initial_rd)
+                for team, rating in prior_ratings.items()
+            }
 
     def predict_game(self, game: Game) -> Prediction:
         home_rating = self.get_rating(game.home)
@@ -138,6 +145,31 @@ class GlickoPredictor(Predictor):
     def postrun_callback(self) -> None:
         self._prior_manager.save(
             {team: rating.rating for team, rating in self._ratings.items()}
+        )
+
+    def save_state(self, path: Path) -> None:
+        data = {
+            "league": self._league,
+            "home_advantage": self._home_advantage,
+            "k": self._k,
+            "weekly_rd_increase": self._weekly_rd_increase,
+            "season_rd_increase": self._season_rd_increase,
+            "initial_rd": self._initial_rd,
+            "scoring_method": self._scoring_method,
+            "ratings": {
+                team: [r.rating, r.rating_deviation]
+                for team, r in self._ratings.items()
+            },
+        }
+        path.write_text(json.dumps(data))
+
+    @classmethod
+    def load_state(cls, path: Path) -> Self:
+        data = json.loads(path.read_text())
+        ratings = data.pop("ratings")
+        return cls(
+            **data,
+            ratings={team: _Rating(r[0], r[1]) for team, r in ratings.items()},
         )
 
 

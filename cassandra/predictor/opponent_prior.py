@@ -1,10 +1,11 @@
 import json
 from collections import Counter, defaultdict
-from pathlib import Path
 
 from endgame.types import Game
 
-_PREDICTOR_DATA_DIR = Path(__file__).parent / "data"
+from cassandra.constants import CASSANDRA_HOME
+
+_PREDICTOR_DATA_DIR = CASSANDRA_HOME / "predictor" / "data"
 
 
 class OpponentPriorManager:

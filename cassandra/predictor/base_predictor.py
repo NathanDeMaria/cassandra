@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Self
 
 from endgame.types import Game
 
@@ -17,6 +19,15 @@ class Predictor(ABC):
         # I'm trusting implementations to not peek at the results :)
         ...
 
+    @abstractmethod
+    def save_state(self, path: Path) -> None:
+        pass
+
+    @classmethod
+    @abstractmethod
+    def load_state(cls, path: Path) -> Self:
+        pass
+
     def pass_week(self) -> None:
         pass
 
@@ -27,4 +38,3 @@ class Predictor(ABC):
         """Called after all seasons have been processed.
 
         This is the place for things like saving off final ratings."""
-        pass

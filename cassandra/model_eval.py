@@ -19,6 +19,9 @@ async def evaluate_model(
 ) -> dict[str, float]:
     predictor = load_predictor(predictor_config_path)
     df = await build_predictions_df(predictor, gender, post_callbacks=False)
+    predictor.save_state(
+        predictor_config_path.parent / f"{predictor_config_path.stem}_state.json"
+    )
 
     brier_score = brier_score_df(df)
 

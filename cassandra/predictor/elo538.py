@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+from typing import Self
+
 import numpy as np
 from endgame.types import Game
 
@@ -18,13 +22,14 @@ class Elo538Predictor(Predictor):
         home_advantage: float = 105,
         k: float = 20,
         opponent_prior_manager: OpponentPriorManager | None = None,
+        ratings: dict[str, float] | None = None,
     ) -> None:
         super().__init__(league)
         self._home_advantage = home_advantage
         self._k = k
 
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(league)
-        self._ratings = self._prior_manager.get_ratings()
+        self._ratings = ratings or self._prior_manager.get_ratings()
 
     def predict_game(self, game: Game) -> Prediction:
         home_rating = self.get_rating(game.home)
@@ -61,3 +66,17 @@ class Elo538Predictor(Predictor):
 
     def postrun_callback(self) -> None:
         self._prior_manager.save(self._ratings)
+
+    def save_state(self, path: Path) -> None:
+        data = {
+            "league": self._league,
+            "home_advantage": self._home_advantage,
+            "k": self._k,
+            "ratings": self._ratings,
+        }
+        path.write_text(json.dumps(data))
+
+    @classmethod
+    def load_state(cls, path: Path) -> Self:
+        data = json.loads(path.read_text())
+        return cls(**data)

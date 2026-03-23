@@ -1,15 +1,14 @@
 import asyncio
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 from endgame.ncaabb import NcaabbGender
 
 from cassandra import evaluate_model
+from cassandra.constants import CASSANDRA_HOME
 
-_REPO_ROOT = Path(__file__).parent
-_MODELS_DIR = _REPO_ROOT / "models"
-_METRICS_DIR = _REPO_ROOT / "evaluations"
+_MODELS_DIR = CASSANDRA_HOME / "models"
+_METRICS_DIR = CASSANDRA_HOME / "evaluations"
 
 
 async def _main():
@@ -31,6 +30,7 @@ async def _main():
     df = pd.DataFrame(all_evaluations)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    _METRICS_DIR.mkdir(exist_ok=True, parents=True)
     df.to_csv(_METRICS_DIR / f"{timestamp}.csv", index=False)
 
 

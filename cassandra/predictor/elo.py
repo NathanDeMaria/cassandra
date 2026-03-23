@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+from typing import Self
+
 from endgame.types import Game
 
 from .base_predictor import Predictor
@@ -5,9 +9,15 @@ from .types import Prediction
 
 
 class EloPredictor(Predictor):
-    def __init__(self, league: str, home_advantage: float = 105, k: float = 20) -> None:
+    def __init__(
+        self,
+        league: str,
+        home_advantage: float = 105,
+        k: float = 20,
+        ratings: dict[str, float] | None = None,
+    ) -> None:
         super().__init__(league)
-        self._ratings: dict[str, float] = {}
+        self._ratings: dict[str, float] = ratings or {}
         self._home_advantage = home_advantage
         self._k = k
 
@@ -30,3 +40,17 @@ class EloPredictor(Predictor):
 
     def get_rating(self, team: str) -> float:
         return self._ratings.get(team, 1500)
+
+    def save_state(self, path: Path) -> None:
+        data = {
+            "league": self._league,
+            "home_advantage": self._home_advantage,
+            "k": self._k,
+            "ratings": self._ratings,
+        }
+        path.write_text(json.dumps(data))
+
+    @classmethod
+    def load_state(cls, path: Path) -> Self:
+        data = json.loads(path.read_text())
+        return cls(**data)

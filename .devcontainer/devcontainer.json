@@ -1,5 +1,5 @@
 {
-  "name": "prediction-evaluation",
+  "name": "cassandra",
   "build": {
     "context": "..",
     "dockerfile": "./Dockerfile"
@@ -44,6 +44,7 @@
   },
   "mounts": [
     "source=bashhistory-volume,target=/commandhistory,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.cassandra,target=/root/.cassandra,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/credentials,target=/root/.aws/credentials,type=bind,consistency=cached,ro=1",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/config,target=/root/.aws/config,type=bind,consistency=cached,ro=1",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/root/.ssh,type=bind,consistency=cached",
