@@ -27,16 +27,21 @@ class EloPredictor(Predictor):
         if not game.neutral_site:
             adjusted_home_rating = home_rating + self._home_advantage
         away_rating = self.get_rating(game.away)
-
         win_prob = 1 / (1 + 10 ** ((away_rating - adjusted_home_rating) / 400))
+        return Prediction(team1_win_prob=win_prob)
+
+    def update_game(self, game: Game) -> Prediction:
+        prediction = self.predict_game(game)
+        home_rating = self.get_rating(game.home)
+        away_rating = self.get_rating(game.away)
         actual = (
             1.0
             if game.home_score > game.away_score
             else (0.5 if game.home_score == game.away_score else 0.0)
         )
-        self._ratings[game.home] = home_rating + self._k * (actual - win_prob)
-        self._ratings[game.away] = away_rating + self._k * (win_prob - actual)
-        return Prediction(team1_win_prob=win_prob)
+        self._ratings[game.home] = home_rating + self._k * (actual - prediction.team1_win_prob)
+        self._ratings[game.away] = away_rating + self._k * (prediction.team1_win_prob - actual)
+        return prediction
 
     def get_rating(self, team: str) -> float:
         return self._ratings.get(team, 1500)

@@ -22,8 +22,8 @@ def _game(home: str, away: str, home_score: int, away_score: int) -> Game:
 
 def test_elo538_save_load(tmp_path: Path) -> None:
     predictor = Elo538Predictor("test_league", home_advantage=90, k=25)
-    predictor.predict_game(_game("Team A", "Team B", 3, 1))
-    predictor.predict_game(_game("Team B", "Team C", 0, 2))
+    predictor.update_game(_game("Team A", "Team B", 3, 1))
+    predictor.update_game(_game("Team B", "Team C", 0, 2))
 
     save_path = tmp_path / "elo538.json"
     predictor.save_state(save_path)

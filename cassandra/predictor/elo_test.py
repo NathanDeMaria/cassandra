@@ -26,7 +26,7 @@ def test_elo():
     team_b = "Team B"
     original_rating_a = predictor.get_rating(team_a)
     original_rating_b = predictor.get_rating(team_b)
-    predictor.predict_game(_game(team_a, team_b, 1, 0))
+    predictor.update_game(_game(team_a, team_b, 1, 0))
     assert (
         predictor.get_rating(team_a)
         > original_rating_a
@@ -37,8 +37,8 @@ def test_elo():
 
 def test_elo_save_load(tmp_path: Path) -> None:
     predictor = EloPredictor("test_league", home_advantage=80, k=15)
-    predictor.predict_game(_game("Team A", "Team B", 2, 1))
-    predictor.predict_game(_game("Team C", "Team A", 0, 3))
+    predictor.update_game(_game("Team A", "Team B", 2, 1))
+    predictor.update_game(_game("Team C", "Team A", 0, 3))
 
     save_path = tmp_path / "elo.json"
     predictor.save_state(save_path)
@@ -53,7 +53,7 @@ def test_elo_save_load(tmp_path: Path) -> None:
 def test_save_load_predictions_match(tmp_path: Path) -> None:
     """After loading, predictions for new games match the original predictor."""
     predictor = EloPredictor("test_league")
-    predictor.predict_game(_game("Team A", "Team B", 1, 0))
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
 
     save_path = tmp_path / "elo.json"
     predictor.save_state(save_path)

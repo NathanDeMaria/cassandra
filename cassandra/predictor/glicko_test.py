@@ -30,8 +30,8 @@ def test_glicko_save_load(tmp_path: Path) -> None:
         initial_rd=200,
         scoring_method="binary",
     )
-    predictor.predict_game(_game("Team A", "Team B", 1, 0))
-    predictor.predict_game(_game("Team C", "Team A", 2, 1))
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    predictor.update_game(_game("Team C", "Team A", 2, 1))
     predictor.pass_week()
 
     save_path = tmp_path / "glicko.json"

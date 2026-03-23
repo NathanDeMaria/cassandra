@@ -19,6 +19,10 @@ class Predictor(ABC):
         # I'm trusting implementations to not peek at the results :)
         ...
 
+    def update_game(self, game: Game) -> Prediction:
+        """Predict and update internal state. Override in stateful subclasses."""
+        return self.predict_game(game)
+
     @abstractmethod
     def save_state(self, path: Path) -> None:
         pass

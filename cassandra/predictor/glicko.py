@@ -65,30 +65,25 @@ class GlickoPredictor(Predictor):
         if not game.neutral_site:
             adjusted_home_rating += self._home_advantage
         away_rating = self.get_rating(game.away)
-
         win_prob = 1 / (1 + 10 ** ((away_rating.rating - adjusted_home_rating) / 400))
+        return Prediction(team1_win_prob=win_prob)
 
+    def update_game(self, game: Game) -> Prediction:
+        prediction = self.predict_game(game)
+        home_rating = self.get_rating(game.home)
+        away_rating = self.get_rating(game.away)
         actual = self._score(game)
+        home_adj = 0 if game.neutral_site else self._home_advantage
 
         self._update_rating(
-            game.home,
-            home_rating,
-            away_rating,
-            actual,
-            home_adjustment=self._home_advantage if not game.neutral_site else 0,
+            game.home, home_rating, away_rating, actual, home_adjustment=home_adj
         )
-
         self._update_rating(
-            game.away,
-            away_rating,
-            home_rating,
-            1 - actual,
-            home_adjustment=-(self._home_advantage if not game.neutral_site else 0),
+            game.away, away_rating, home_rating, 1 - actual, home_adjustment=-home_adj
         )
 
         self._prior_manager.add_game(game)
-
-        return Prediction(team1_win_prob=win_prob)
+        return prediction
 
     def _update_rating(
         self,
