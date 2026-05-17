@@ -38,17 +38,21 @@
         "ms-python.pylint",
         "sourcery.sourcery",
         "njpwerner.autodocstring",
-        "charliermarsh.ruff"
+        "charliermarsh.ruff",
+        "anthropic.claude-code"
       ]
     }
   },
   "mounts": [
     "source=bashhistory-volume,target=/commandhistory,type=volume",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.cassandra,target=/root/.cassandra,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/login,target=/root/.aws/login,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/sso,target=/root/.aws/sso,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/credentials,target=/root/.aws/credentials,type=bind,consistency=cached,ro=1",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/config,target=/root/.aws/config,type=bind,consistency=cached,ro=1",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/root/.ssh,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/root/.gitconfig,type=bind,readonly,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws-batch/config.json,target=/root/.aws-batch/config.json,type=bind,consistency=cached"
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws-batch/config.json,target=/root/.aws-batch/config.json,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/root/.claude,type=bind,consistency=cached"
   ]
 }
