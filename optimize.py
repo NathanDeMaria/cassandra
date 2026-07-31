@@ -16,7 +16,6 @@ from cassandra.predictor import (
 )
 from cassandra.save_predictions import (
     Config,
-    NcaabbGender,
     OddsDatabase,
     Season,
     join_with_odds,
@@ -53,20 +52,20 @@ async def _run_optimization(config_file: str) -> None:
 
     predictor_class = load_predictor_class(config_model.predictor_class)
 
-    gender = NcaabbGender[config_model.league]
+    league = config_model.league
 
     aws_config = Config.init_from_file()
-    seasons = [s async for s in read_all_seasons(gender, aws_config.bucket)]
+    seasons = [s async for s in read_all_seasons(league, aws_config.bucket)]
     odds_db = await OddsDatabase.from_s3(aws_config.bucket)
 
     # Run once to make things like team priors
-    predictor = predictor_class(gender.name)
+    predictor = predictor_class(league)
     for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
         pass
 
     target_function = partial(
         _negative_brier_score,
-        league=gender.name,
+        league=league,
         seasons=seasons,
         odds_db=odds_db,
         predictor_class=predictor_class,
