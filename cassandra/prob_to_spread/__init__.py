@@ -1,2 +1,3 @@
 from .base_fit import BaseProbToSpreadFitter, BaseProbToSpreadPredictor
 from .isotonic import IsotonicProbToSpreadFitter, IsotonicProbToSpreadPredictor
+from .logistic import LogisticProbToSpreadFitter, LogisticProbToSpreadPredictor

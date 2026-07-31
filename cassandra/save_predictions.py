@@ -1,22 +1,31 @@
 import asyncio
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterable, AsyncIterator, Iterable, Iterator
 
 import aiofiles
 import pandas as pd
-from endgame.ncaabb import NcaabbGender
 from endgame.types import Game, Season
 from endgame_aws import Config, read_seasons
+from endgame_aws.io import S3NotFoundException
 
 from .odds import Odds, OddsDatabase
 from .predictor import GameResult, Predictor
 
+_EARLIEST_SEASON_YEAR = 1999
 
-async def read_all_seasons(gender: NcaabbGender, bucket: str) -> AsyncIterator[Season]:
-    # TODO: check S3 instead of this hard-coded start/end
-    for year in range(2010, 2026):
-        seasons = await read_seasons(bucket, f"seasons/{year}/{gender.name}.pkl")
+
+async def read_all_seasons(league: str, bucket: str) -> AsyncIterator[Season]:
+    # Leagues don't all have data going back to the same year (e.g. ncaabb
+    # seasons in S3 start around 2010, nfl/ncaafb around 1999), so just skip
+    # missing years instead of hard-coding a start/end per league.
+    latest_year = datetime.now(timezone.utc).year + 1
+    for year in range(_EARLIEST_SEASON_YEAR, latest_year + 1):
+        try:
+            seasons = await read_seasons(bucket, f"seasons/{year}/{league}.pkl")
+        except S3NotFoundException:
+            continue
         for season in seasons:
             yield season
 
@@ -79,24 +88,24 @@ async def _serialize_predictions(
 
 
 async def save_predictions(
-    predictor: Predictor, gender: NcaabbGender, file_path: Path, post_callbacks: bool
+    predictor: Predictor, league: str, file_path: Path, post_callbacks: bool
 ) -> None:
-    prediction_results = _get_results(predictor, gender, post_callbacks=post_callbacks)
+    prediction_results = _get_results(predictor, league, post_callbacks=post_callbacks)
     await _serialize_predictions(prediction_results, file_path)
 
 
 async def build_predictions_df(
-    predictor: Predictor, gender: NcaabbGender, post_callbacks: bool
+    predictor: Predictor, league: str, post_callbacks: bool
 ) -> pd.DataFrame:
-    prediction_results = _get_results(predictor, gender, post_callbacks=post_callbacks)
+    prediction_results = _get_results(predictor, league, post_callbacks=post_callbacks)
     return pd.DataFrame([asdict(result) async for result in prediction_results])
 
 
 async def _get_results(
-    predictor: Predictor, gender: NcaabbGender, post_callbacks: bool
+    predictor: Predictor, league: str, post_callbacks: bool
 ) -> AsyncIterator[_Prediction]:
     config = Config.init_from_file()
-    seasons = read_all_seasons(gender, config.bucket)
+    seasons = read_all_seasons(league, config.bucket)
     odds_db = await OddsDatabase.from_s3(config.bucket)
     seasons_now = [s async for s in seasons]
     predictions = join_with_odds(

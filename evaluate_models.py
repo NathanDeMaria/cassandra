@@ -2,7 +2,6 @@ import asyncio
 from datetime import datetime
 
 import pandas as pd
-from endgame.ncaabb import NcaabbGender
 
 from cassandra import evaluate_model
 from cassandra.constants import CASSANDRA_HOME
@@ -14,14 +13,14 @@ _METRICS_DIR = CASSANDRA_HOME / "evaluations"
 async def _main():
     all_evaluations = []
     for league_path in _MODELS_DIR.iterdir():
-        league = NcaabbGender[league_path.name]
+        league = league_path.name
         for model_path in league_path.glob("*_result.json"):
             model_name = model_path.stem.replace("_result", "")
-            print(f"Evaluating {league.name}: {model_name}")
+            print(f"Evaluating {league}: {model_name}")
             evaluation_metrics = await evaluate_model(model_path, league)
             all_evaluations.append(
                 {
-                    "league": league.name,
+                    "league": league,
                     "model": model_name,
                     **evaluation_metrics,
                 }

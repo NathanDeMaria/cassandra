@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from endgame.ncaabb import NcaabbGender
+import fire
 
 from cassandra.predictor import EloPredictor, FlatPredictor, Predictor
 from cassandra.save_predictions import save_predictions
@@ -10,22 +10,24 @@ from cassandra.save_predictions import save_predictions
 _PREDICTION_LOG_PATH = Path(__file__).parent / "predictions"
 
 
-async def _main() -> None:
+async def _main(league: str) -> None:
     prediction_path = _PREDICTION_LOG_PATH / datetime.now(timezone.utc).isoformat()
     prediction_path.mkdir(exist_ok=True, parents=True)
 
-    gender = NcaabbGender.mens
     predictors: list[Predictor] = [
-        FlatPredictor(gender.name),
-        EloPredictor(gender.name),
+        FlatPredictor(league),
+        EloPredictor(league),
     ]
     for predictor in predictors:
         file_path = (
-            prediction_path
-            / f"{gender.name}-{predictor.__class__.__name__}-results.csv"
+            prediction_path / f"{league}-{predictor.__class__.__name__}-results.csv"
         )
-        await save_predictions(predictor, gender, file_path, post_callbacks=True)
+        await save_predictions(predictor, league, file_path, post_callbacks=True)
+
+
+def main(league: str = "mens") -> None:
+    asyncio.run(_main(league))
 
 
 if __name__ == "__main__":
-    asyncio.run(_main())
+    fire.Fire(main)

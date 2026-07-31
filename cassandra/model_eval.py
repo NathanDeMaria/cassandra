@@ -3,22 +3,21 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-from endgame.ncaabb import NcaabbGender
 
 from .brier import brier_score_df
 from .columns import GameDfColumns
 from .predictor import load_predictor
-from .prob_to_spread import BaseProbToSpreadFitter, IsotonicProbToSpreadFitter
+from .prob_to_spread import BaseProbToSpreadFitter, LogisticProbToSpreadFitter
 from .save_predictions import build_predictions_df
 
 
 async def evaluate_model(
     predictor_config_path: Path,
-    gender: NcaabbGender,
-    fitter: BaseProbToSpreadFitter = IsotonicProbToSpreadFitter(),
+    league: str,
+    fitter: BaseProbToSpreadFitter = LogisticProbToSpreadFitter(),
 ) -> dict[str, float]:
     predictor = load_predictor(predictor_config_path)
-    df = await build_predictions_df(predictor, gender, post_callbacks=False)
+    df = await build_predictions_df(predictor, league, post_callbacks=False)
     predictor.save_state(
         predictor_config_path.parent / f"{predictor_config_path.stem}_state.json"
     )
