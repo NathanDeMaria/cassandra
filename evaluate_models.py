@@ -3,8 +3,8 @@ from datetime import datetime
 
 import pandas as pd
 
-from cassandra import evaluate_model
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.model_eval import DEFAULT_FITTERS, get_predictions, score_predictions
 
 _MODELS_DIR = CASSANDRA_HOME / "models"
 _METRICS_DIR = CASSANDRA_HOME / "evaluations"
@@ -17,8 +17,9 @@ async def _main():
         for model_path in league_path.glob("*_result.json"):
             model_name = model_path.stem.replace("_result", "")
             print(f"Evaluating {league}: {model_name}")
-            metrics_by_fitter = await evaluate_model(model_path, league)
-            for fitter_name, evaluation_metrics in metrics_by_fitter.items():
+            predictions_df = await get_predictions(model_path, league)
+            for fitter_name, fitter in DEFAULT_FITTERS.items():
+                evaluation_metrics = score_predictions(predictions_df, fitter)
                 all_evaluations.append(
                     {
                         "league": league,
