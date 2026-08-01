@@ -17,14 +17,16 @@ async def _main():
         for model_path in league_path.glob("*_result.json"):
             model_name = model_path.stem.replace("_result", "")
             print(f"Evaluating {league}: {model_name}")
-            evaluation_metrics = await evaluate_model(model_path, league)
-            all_evaluations.append(
-                {
-                    "league": league,
-                    "model": model_name,
-                    **evaluation_metrics,
-                }
-            )
+            metrics_by_fitter = await evaluate_model(model_path, league)
+            for fitter_name, evaluation_metrics in metrics_by_fitter.items():
+                all_evaluations.append(
+                    {
+                        "league": league,
+                        "model": model_name,
+                        "fitter": fitter_name,
+                        **evaluation_metrics,
+                    }
+                )
 
     df = pd.DataFrame(all_evaluations)
 
