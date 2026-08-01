@@ -1,31 +1,26 @@
 import asyncio
+import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterable, AsyncIterator, Iterable, Iterator
 
 import aiofiles
 import pandas as pd
 from endgame.types import Game, Season
-from endgame_aws import Config, read_seasons
-from endgame_aws.io import S3NotFoundException
+from endgame_aws import Config, list_all_keys, read_seasons
 
 from .odds import Odds, OddsDatabase
 from .predictor import GameResult, Predictor
 
-_EARLIEST_SEASON_YEAR = 1999
+_SEASON_KEY_RE = re.compile(r"^seasons/(\d+)/([^/]+)\.pkl$")
 
 
 async def read_all_seasons(league: str, bucket: str) -> AsyncIterator[Season]:
-    # Leagues don't all have data going back to the same year (e.g. ncaabb
-    # seasons in S3 start around 2010, nfl/ncaafb around 1999), so just skip
-    # missing years instead of hard-coding a start/end per league.
-    latest_year = datetime.now(timezone.utc).year + 1
-    for year in range(_EARLIEST_SEASON_YEAR, latest_year + 1):
-        try:
-            seasons = await read_seasons(bucket, f"seasons/{year}/{league}.pkl")
-        except S3NotFoundException:
+    async for key in list_all_keys(bucket, "seasons/"):
+        match = _SEASON_KEY_RE.match(key)
+        if match is None or match.group(2) != league:
             continue
+        seasons = await read_seasons(bucket, key)
         for season in seasons:
             yield season
 
