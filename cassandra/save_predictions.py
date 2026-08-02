@@ -1,12 +1,13 @@
-import asyncio
+import csv
+import io
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import AsyncIterable, AsyncIterator, Iterable, Iterator
+from typing import Any, AsyncIterable, AsyncIterator, Iterable, Iterator
 
 import aiofiles
 import pandas as pd
-from endgame.types import Game, Season
+from endgame.types import Season
 from endgame_aws import Config, list_all_keys, read_seasons
 
 from .odds import Odds, OddsDatabase
@@ -70,16 +71,20 @@ def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
     )
 
 
+def _to_csv_row(values: Iterable[Any]) -> str:
+    # team names can contain commas, so let the csv module handle quoting
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\n").writerow(values)
+    return buffer.getvalue()
+
+
 async def _serialize_predictions(
     results: AsyncIterable[_Prediction], file_path: Path
 ) -> None:
     async with aiofiles.open(file_path, mode="w", encoding="utf-8", newline="") as f:
-        await f.write(
-            "year,week_number,home_score,away_score,team1_win,team1_win_prob,spread\n"
-        )
+        await f.write(_to_csv_row(field.name for field in fields(_Prediction)))
         async for result in results:
-            await f.write(",".join(asdict(result).values()))
-            await f.write("\n")
+            await f.write(_to_csv_row(asdict(result).values()))
 
 
 async def save_predictions(
