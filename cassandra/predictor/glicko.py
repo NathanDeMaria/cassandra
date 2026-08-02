@@ -8,7 +8,7 @@ from endgame.types import Game
 from ..scoring import get_scoring_function
 from .base_predictor import Predictor
 from .opponent_prior import OpponentPriorManager
-from .types import Prediction
+from .types import Matchup, Prediction
 
 
 class _Rating(NamedTuple):
@@ -59,12 +59,12 @@ class GlickoPredictor(Predictor):
                 for team, rating in prior_ratings.items()
             }
 
-    def predict_game(self, game: Game) -> Prediction:
-        home_rating = self.get_rating(game.home)
+    def predict_game(self, matchup: Matchup) -> Prediction:
+        home_rating = self.get_rating(matchup.home)
         adjusted_home_rating = home_rating.rating
-        if not game.neutral_site:
+        if not matchup.neutral_site:
             adjusted_home_rating += self._home_advantage
-        away_rating = self.get_rating(game.away)
+        away_rating = self.get_rating(matchup.away)
         win_prob = 1 / (1 + 10 ** ((away_rating.rating - adjusted_home_rating) / 400))
         return Prediction(team1_win_prob=win_prob)
 

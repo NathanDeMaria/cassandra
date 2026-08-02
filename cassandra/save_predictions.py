@@ -32,7 +32,7 @@ def generate_predictions(
     for season in seasons:
         for week in season.weeks:
             for game in week.games:
-                prediction = predictor.predict_game(game)
+                prediction = predictor.update_game(game)
                 yield GameResult(
                     prediction, game, year=season.year, week_number=week.number
                 )

@@ -2,14 +2,12 @@ import json
 from pathlib import Path
 from typing import Self
 
-from endgame.types import Game
-
 from .base_predictor import Predictor
-from .types import Prediction
+from .types import Matchup, Prediction
 
 
 class FlatPredictor(Predictor):
-    def predict_game(self, game: Game) -> Prediction:
+    def predict_game(self, matchup: Matchup) -> Prediction:
         return Prediction(team1_win_prob=0.5)
 
     def save_state(self, path: Path) -> None:

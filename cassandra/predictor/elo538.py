@@ -7,7 +7,7 @@ from endgame.types import Game
 
 from .base_predictor import Predictor
 from .opponent_prior import OpponentPriorManager
-from .types import Prediction
+from .types import Matchup, Prediction
 
 
 class Elo538Predictor(Predictor):
@@ -31,12 +31,12 @@ class Elo538Predictor(Predictor):
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(league)
         self._ratings = ratings or self._prior_manager.get_ratings()
 
-    def predict_game(self, game: Game) -> Prediction:
-        home_rating = self.get_rating(game.home)
+    def predict_game(self, matchup: Matchup) -> Prediction:
+        home_rating = self.get_rating(matchup.home)
         adjusted_home_rating = home_rating
-        if not game.neutral_site:
+        if not matchup.neutral_site:
             adjusted_home_rating = home_rating + self._home_advantage
-        away_rating = self.get_rating(game.away)
+        away_rating = self.get_rating(matchup.away)
         win_prob = 1 / (1 + 10 ** ((away_rating - adjusted_home_rating) / 400))
         return Prediction(team1_win_prob=win_prob)
 
