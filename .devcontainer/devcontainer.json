@@ -46,6 +46,7 @@
   "mounts": [
     "source=bashhistory-volume,target=/commandhistory,type=volume",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.cassandra,target=/root/.cassandra,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/cache,target=/root/.endgame/cache,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/login,target=/root/.aws/login,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/sso,target=/root/.aws/sso,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/credentials,target=/root/.aws/credentials,type=bind,consistency=cached,ro=1",
