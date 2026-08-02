@@ -4,7 +4,7 @@ from typing import Self
 
 from endgame.types import Game
 
-from .types import Prediction
+from .types import Matchup, Prediction
 
 
 class Predictor(ABC):
@@ -12,11 +12,9 @@ class Predictor(ABC):
         self._league = league
 
     @abstractmethod
-    def predict_game(self, game: Game) -> Prediction:
-        # I thought about just giving it team names
-        # but then it makes things like a fake spread-based predictor
-        # more difficult.
-        # I'm trusting implementations to not peek at the results :)
+    def predict_game(self, matchup: Matchup) -> Prediction:
+        # A Matchup is only the pre-game half of a Game, so implementations
+        # can't peek at the results.
         ...
 
     def update_game(self, game: Game) -> Prediction:
