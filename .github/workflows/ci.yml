@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Superseded PR runs are pointless, but let pushes to main finish
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    env:
+      # Inline annotations on the PR diff instead of plain console output
+      RUFF_OUTPUT_FORMAT: github
+      TY_OUTPUT_FORMAT: github
+      # poetry.toml turns venvs off, which suits the devcontainer (poetry and
+      # the project share one interpreter). Here poetry runs from pipx on the
+      # runner's Debian python, so with venvs off it installs there instead of
+      # into the python below, and dies trying to update distro-owned packages.
+      POETRY_VIRTUALENVS_CREATE: "true"
+      POETRY_VIRTUALENVS_IN_PROJECT: "true"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        id: setup-python
+        with:
+          python-version: "3.14"
+
+      - name: Install poetry
+        run: pipx install poetry==2.2.1
+
+      # Keyed on the exact patch version: a venv is not portable across
+      # interpreter upgrades, and the hosted 3.14.x moves without warning
+      - name: Cache the virtualenv
+        uses: actions/cache@v6
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: |
+          poetry env use "$(which python)"
+          poetry install --no-root
+
+      - name: Lint
+        run: make check
+
+      - name: Test
+        run: make test
