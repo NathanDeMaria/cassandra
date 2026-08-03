@@ -6,7 +6,7 @@ authors = []
 
 [tool.poetry.dependencies]
 python = "^3.14"
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "b5aa089a74fa4d7355bedb4222fe69b8601308bb", subdirectory = "py-endgame-aws"}
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "207405f40acb2de8f832e2957936aae0f3ea274e", subdirectory = "py-endgame-aws"}
 aiofiles = "^25.1.0"
 pandas = "^2.3.3"
 pydantic = "^2.12.5"
