@@ -7,7 +7,7 @@ from typing import Any, AsyncIterable, AsyncIterator, Iterable, Iterator
 
 import aiofiles
 import pandas as pd
-from endgame.types import Season
+from endgame.types import Season, iter_weeks
 from endgame_aws import Config, list_all_keys, read_seasons
 
 from .odds import Odds, OddsDatabase
@@ -29,9 +29,14 @@ async def read_all_seasons(league: str, bucket: str) -> AsyncIterator[Season]:
 def generate_predictions(
     predictor: Predictor, seasons: Iterable[Season], post_callbacks: bool = False
 ) -> Iterator[GameResult]:
-    for season in seasons:
-        for week in season.weeks:
-            for game in week.games:
+    # Chronological order matters here: update_game feeds each result back
+    # into the predictor, so replaying games out of order trains it on
+    # results from the future. iter_weeks raises if a season's weeks overlap
+    # in time, which means its games are grouped into the wrong weeks and
+    # sorting can't save us.
+    for season in sorted(seasons, key=lambda s: s.year):
+        for week in iter_weeks(season):
+            for game in week.games_in_order:
                 prediction = predictor.update_game(game)
                 yield GameResult(
                     prediction, game, year=season.year, week_number=week.number
