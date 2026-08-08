@@ -51,8 +51,7 @@ class _BoundHit:
             )
         new_low, new_high = self.suggestion
         return (
-            f"{head}: try "
-            f'"{self.parameter}": [{_number(new_low)}, {_number(new_high)}]'
+            f'{head}: try "{self.parameter}": [{_number(new_low)}, {_number(new_high)}]'
         )
 
 

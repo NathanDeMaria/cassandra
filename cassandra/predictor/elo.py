@@ -39,8 +39,12 @@ class EloPredictor(Predictor):
             if game.home_score > game.away_score
             else (0.5 if game.home_score == game.away_score else 0.0)
         )
-        self._ratings[game.home] = home_rating + self._k * (actual - prediction.team1_win_prob)
-        self._ratings[game.away] = away_rating + self._k * (prediction.team1_win_prob - actual)
+        self._ratings[game.home] = home_rating + self._k * (
+            actual - prediction.team1_win_prob
+        )
+        self._ratings[game.away] = away_rating + self._k * (
+            prediction.team1_win_prob - actual
+        )
         return prediction
 
     def get_rating(self, team: str) -> float:
