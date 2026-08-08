@@ -35,6 +35,7 @@ class OpponentPriorManager:
             # and only against top teams. Don't treat them as equal
             if sum(self._opponent_counter[team].values()) >= 50
         }
+        self._prior_path.parent.mkdir(parents=True, exist_ok=True)
         with self._prior_path.open("w") as f:
             json.dump(priors, f)
 

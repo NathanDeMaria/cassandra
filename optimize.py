@@ -57,6 +57,13 @@ async def _run_optimization(config_file: str) -> None:
 
     aws_config = Config.init_from_file()
     seasons = [s async for s in read_all_seasons(league, aws_config.bucket)]
+    if not seasons:
+        # Otherwise every probe scores an empty set of games and the search
+        # dies inside brier_score_df, well away from the actual problem.
+        raise ValueError(
+            f"No seasons for league {league!r} in s3://{aws_config.bucket}/seasons/; "
+            "the league's data has to be uploaded before it can be optimized"
+        )
     odds_db = await OddsDatabase.from_s3(aws_config.bucket)
 
     # Run once to make things like team priors

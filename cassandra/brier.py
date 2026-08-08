@@ -6,6 +6,10 @@ from .columns import GameDfColumns
 
 
 def brier_score_df(df: pd.DataFrame) -> float:
+    # An empty frame has no columns at all, so the lookups below would raise a
+    # KeyError that reads like a schema bug rather than "there were no games".
+    if df.empty:
+        raise ValueError("No games to score")
     return brier_score(
         df[GameDfColumns.TEAM1_WIN_PROB].to_numpy(),
         df[GameDfColumns.TEAM1_WIN].to_numpy(),
