@@ -5,16 +5,16 @@ import pandas as pd
 from .brier import brier_score_df
 from .columns import GameDfColumns
 from .predictor import load_predictor
-from .prob_to_spread import (
-    BaseProbToSpreadFitter,
-    IsotonicProbToSpreadFitter,
-    LogisticProbToSpreadFitter,
+from .prob_to_margin import (
+    BaseProbToMarginFitter,
+    IsotonicProbToMarginFitter,
+    LogisticProbToMarginFitter,
 )
 from .save_predictions import build_predictions_df
 
-DEFAULT_FITTERS: dict[str, BaseProbToSpreadFitter] = {
-    "isotonic": IsotonicProbToSpreadFitter(),
-    "logistic": LogisticProbToSpreadFitter(),
+DEFAULT_FITTERS: dict[str, BaseProbToMarginFitter] = {
+    "isotonic": IsotonicProbToMarginFitter(),
+    "logistic": LogisticProbToMarginFitter(),
 }
 
 
@@ -34,58 +34,67 @@ async def get_predictions(
 
 
 def score_predictions(
-    df: pd.DataFrame, fitter: BaseProbToSpreadFitter
+    df: pd.DataFrame, fitter: BaseProbToMarginFitter
 ) -> dict[str, float]:
-    """Score a predictor's predictions against a single prob-to-spread fitter.
+    """Score a predictor's predictions against a single prob-to-margin fitter.
 
     Cheap relative to get_predictions, so callers comparing multiple fitters
     should call this once per fitter on the same df rather than re-fetching
     predictions each time.
     """
-    with_spread = df[df[GameDfColumns.SPREAD].notna()]
-    if with_spread.empty:
-        # A league the odds database doesn't cover at all. There's nothing to
-        # fit a prob-to-spread model on, but the brier score never needed a
-        # line, so report that rather than failing the whole evaluation.
-        return {
-            "brier_score": brier_score_df(df),
-            "against_spread_accuracy": float("nan"),
-            "margin_mae": float("nan"),
-            "market_margin_mae": float("nan"),
-            "n_games": len(df),
-            "n_spread_games": 0,
-        }
-
-    spread_predictor = fitter.fit_df(with_spread)
-
-    scored = with_spread.assign(
-        predicted_spread=lambda x: spread_predictor.predict_spreads(
+    games = df.assign(team1_mov=lambda x: x.home_score - x.away_score)
+    # Fit against the margin every game actually finished at, so the fitter
+    # trains on the whole schedule instead of only the games a book put a
+    # line on. The betting metrics below still need the line, and still only
+    # cover that subset.
+    margin_predictor = fitter.fit_df(games)
+    scored = games.assign(
+        predicted_margin=lambda x: margin_predictor.predict_margins(
             x[GameDfColumns.TEAM1_WIN_PROB].to_numpy()
         )
     )
-    scored = scored.assign(
-        team1_mov=lambda df: df.home_score - df.away_score,
+    metrics = {
+        "brier_score": brier_score_df(df),
+        "margin_mae": (scored["predicted_margin"] - scored["team1_mov"]).abs().mean(),
+        "n_games": len(scored),
+    }
+
+    with_spread = scored[scored[GameDfColumns.SPREAD].notna()]
+    if with_spread.empty:
+        # A league the odds database doesn't cover at all. Everything above
+        # still holds -- the margin fit never needed a line -- but there's
+        # nothing to bet into or compare against.
+        return {
+            **metrics,
+            "against_spread_accuracy": float("nan"),
+            "spread_game_margin_mae": float("nan"),
+            "market_margin_mae": float("nan"),
+            "n_spread_games": 0,
+        }
+
+    with_spread = with_spread.assign(
         # A spread is quoted from team1's side and team1 covers when
         # spread + mov > 0, so the margin a line implies is its negation.
         # Getting this backwards still produces a plausible-looking MAE.
-        predicted_margin=lambda df: -df.predicted_spread,
-        market_margin=lambda df: -df.spread,
-        bet_team1=lambda df: df.predicted_spread < df.spread,
-        team1_covered=lambda df: df.spread + df.team1_mov > 0,
-        correct_bet=lambda df: df.bet_team1 == df.team1_covered,
+        market_margin=lambda x: -x.spread,
+        bet_team1=lambda x: x.predicted_margin > x.market_margin,
+        team1_covered=lambda x: x.spread + x.team1_mov > 0,
+        correct_bet=lambda x: x.bet_team1 == x.team1_covered,
     )
     return {
-        # Scored over every game, unlike the metrics below it, which only have
-        # the ones a book put a line on.
-        "brier_score": brier_score_df(df),
-        "against_spread_accuracy": scored["correct_bet"].mean(),
-        "margin_mae": (scored["predicted_margin"] - scored["team1_mov"]).abs().mean(),
-        # The same error for the closing line. Margin MAE means little on its
-        # own, since game-to-game noise sets a floor no model gets under; the
-        # number that carries information is the gap between these two.
-        "market_margin_mae": (scored["market_margin"] - scored["team1_mov"])
+        **metrics,
+        "against_spread_accuracy": with_spread["correct_bet"].mean(),
+        # margin_mae over the lined games only, which is the slice
+        # market_margin_mae covers. Margin MAE means little on its own, since
+        # game-to-game noise sets a floor no model gets under; the number that
+        # carries information is the gap between these two.
+        "spread_game_margin_mae": (
+            with_spread["predicted_margin"] - with_spread["team1_mov"]
+        )
         .abs()
         .mean(),
-        "n_games": len(df),
-        "n_spread_games": len(scored),
+        "market_margin_mae": (with_spread["market_margin"] - with_spread["team1_mov"])
+        .abs()
+        .mean(),
+        "n_spread_games": len(with_spread),
     }
