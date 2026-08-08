@@ -43,6 +43,19 @@ def score_predictions(
     predictions each time.
     """
     with_spread = df[df[GameDfColumns.SPREAD].notna()]
+    if with_spread.empty:
+        # A league the odds database doesn't cover at all. There's nothing to
+        # fit a prob-to-spread model on, but the brier score never needed a
+        # line, so report that rather than failing the whole evaluation.
+        return {
+            "brier_score": brier_score_df(df),
+            "against_spread_accuracy": float("nan"),
+            "margin_mae": float("nan"),
+            "market_margin_mae": float("nan"),
+            "n_games": len(df),
+            "n_spread_games": 0,
+        }
+
     spread_predictor = fitter.fit_df(with_spread)
 
     scored = with_spread.assign(
@@ -52,13 +65,27 @@ def score_predictions(
     )
     scored = scored.assign(
         team1_mov=lambda df: df.home_score - df.away_score,
+        # A spread is quoted from team1's side and team1 covers when
+        # spread + mov > 0, so the margin a line implies is its negation.
+        # Getting this backwards still produces a plausible-looking MAE.
+        predicted_margin=lambda df: -df.predicted_spread,
+        market_margin=lambda df: -df.spread,
         bet_team1=lambda df: df.predicted_spread < df.spread,
         team1_covered=lambda df: df.spread + df.team1_mov > 0,
         correct_bet=lambda df: df.bet_team1 == df.team1_covered,
     )
     return {
+        # Scored over every game, unlike the metrics below it, which only have
+        # the ones a book put a line on.
         "brier_score": brier_score_df(df),
         "against_spread_accuracy": scored["correct_bet"].mean(),
+        "margin_mae": (scored["predicted_margin"] - scored["team1_mov"]).abs().mean(),
+        # The same error for the closing line. Margin MAE means little on its
+        # own, since game-to-game noise sets a floor no model gets under; the
+        # number that carries information is the gap between these two.
+        "market_margin_mae": (scored["market_margin"] - scored["team1_mov"])
+        .abs()
+        .mean(),
         "n_games": len(df),
-        "n_spread_games": len(scored) // 2,
+        "n_spread_games": len(scored),
     }

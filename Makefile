@@ -13,4 +13,12 @@ test:
 	poetry run pytest .
 
 
-.PHONY: lint check test
+# Kick off a full optimize+eval run in the background. $$ escapes the dollar so
+# make passes it through to the shell instead of expanding it itself.
+run-all:
+	@log="logs/$$(date +%Y-%m-%d_%H-%M-%S).log"; \
+		nohup ./run_models.sh > "$$log" 2>&1 & \
+		printf 'running in background\ntail -f %s\nto follow\n' "$$log"
+
+
+.PHONY: lint check test run-all
