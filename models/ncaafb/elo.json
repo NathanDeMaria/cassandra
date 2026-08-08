@@ -1,0 +1,9 @@
+{
+    "predictor_class": "EloPredictor",
+    "league": "ncaafb",
+    "parameters": {
+        "home_advantage": [0, 200],
+        "k": [1, 60]
+    },
+    "n_iter": 60
+}

@@ -8,6 +8,7 @@ import pandas as pd
 from pydantic import BaseModel
 
 from cassandra.brier import brier_score_df
+from cassandra.constants import CASSANDRA_HOME
 from cassandra.optimize import optimize
 from cassandra.predictor import (
     Predictor,
@@ -81,7 +82,10 @@ async def _run_optimization(config_file: str) -> None:
         params=params,
     )
 
-    output_path = config_path.parent / f"{config_path.stem}_result.json"
+    # The config is a checked-in input; its result is generated, so it lands
+    # under CASSANDRA_HOME with the rest of the run's output.
+    output_path = CASSANDRA_HOME / "models" / league / f"{config_path.stem}_result.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(result_model.model_dump_json(indent=4, by_alias=True))
 
 

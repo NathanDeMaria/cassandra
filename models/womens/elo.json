@@ -1,0 +1,9 @@
+{
+    "predictor_class": "EloPredictor",
+    "league": "womens",
+    "parameters": {
+        "home_advantage": [0, 200],
+        "k": [1, 40]
+    },
+    "n_iter": 60
+}

@@ -2,4 +2,6 @@ __pycache__
 .venv
 *.csv
 *.json
+# The model definitions are hand-written inputs, not scratch output
+!models/**/*.json
 .env
