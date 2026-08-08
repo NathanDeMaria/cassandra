@@ -1,0 +1,3 @@
+from .base_fit import BaseProbToMarginFitter, BaseProbToMarginPredictor
+from .isotonic import IsotonicProbToMarginFitter, IsotonicProbToMarginPredictor
+from .logistic import LogisticProbToMarginFitter, LogisticProbToMarginPredictor

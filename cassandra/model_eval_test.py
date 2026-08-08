@@ -3,31 +3,34 @@ import pandas as pd
 import pytest
 
 from .model_eval import score_predictions
-from .prob_to_spread import BaseProbToSpreadFitter, BaseProbToSpreadPredictor
+from .prob_to_margin import BaseProbToMarginFitter, BaseProbToMarginPredictor
 
 
-class _FixedSpreadFitter(BaseProbToSpreadFitter):
-    """Predicts one spread for every game, so the metrics are hand-checkable."""
+class _FixedMarginFitter(BaseProbToMarginFitter):
+    """Predicts one margin for every game, so the metrics are hand-checkable."""
 
-    def __init__(self, spread: float) -> None:
-        self._spread = spread
+    def __init__(self, margin: float) -> None:
+        self._margin = margin
+        self.fit_win_probs: np.ndarray | None = None
 
     def fit(
-        self, win_probs: np.ndarray, spreads: np.ndarray
-    ) -> BaseProbToSpreadPredictor:
-        return _FixedSpreadPredictor(self._spread)
+        self, win_probs: np.ndarray, margins: np.ndarray
+    ) -> BaseProbToMarginPredictor:
+        self.fit_win_probs = win_probs
+        return _FixedMarginPredictor(self._margin)
 
 
-class _FixedSpreadPredictor(BaseProbToSpreadPredictor):
-    def __init__(self, spread: float) -> None:
-        self._spread = spread
+class _FixedMarginPredictor(BaseProbToMarginPredictor):
+    def __init__(self, margin: float) -> None:
+        self._margin = margin
 
-    def predict_spreads(self, win_probs: np.ndarray) -> np.ndarray:
-        return np.full(len(win_probs), self._spread)
+    def predict_margins(self, win_probs: np.ndarray) -> np.ndarray:
+        return np.full(len(win_probs), self._margin)
 
 
 def _games() -> pd.DataFrame:
-    # Game 3 has no line, so it counts toward brier_score and nothing else.
+    # Game 3 has no line, so it's still training data and still counts toward
+    # brier_score and margin_mae, but not toward any of the betting metrics.
     return pd.DataFrame(
         [
             {
@@ -46,7 +49,7 @@ def _games() -> pd.DataFrame:
             },
             {
                 "home_score": 14,
-                "away_score": 7,
+                "away_score": 7,  # team1_mov = +7
                 "team1_win": True,
                 "team1_win_prob": 0.6,
                 "spread": None,
@@ -55,33 +58,48 @@ def _games() -> pd.DataFrame:
     )
 
 
-def test_margin_mae_reads_the_spread_from_team1s_side() -> None:
-    """A model that nails the actual margin has to score zero error.
+def test_fits_on_every_game_not_just_the_lined_ones() -> None:
+    """The whole point of predicting margin instead of the spread.
 
-    The sign is the trap: a spread is quoted from team1's side, so the margin
-    it implies is its negation. Flipping it leaves an MAE that still looks
-    like a plausible number of points.
+    Three games, one of which no book put a line on, all reach the fitter --
+    six rows once fit_df mirrors them onto the away side.
     """
+    fitter = _FixedMarginFitter(0.0)
+
+    score_predictions(_games(), fitter)
+
+    assert fitter.fit_win_probs is not None
+    assert sorted(fitter.fit_win_probs) == pytest.approx([0.3, 0.4, 0.4, 0.6, 0.6, 0.7])
+
+
+def test_margin_mae_is_zero_for_a_perfect_prediction() -> None:
     game = _games().iloc[[0]]  # team1 wins by 4
 
-    metrics = score_predictions(game, _FixedSpreadFitter(-4.0))
+    metrics = score_predictions(game, _FixedMarginFitter(4.0))
 
     assert metrics["margin_mae"] == pytest.approx(0.0)
 
 
 def test_scores_margin_against_the_market() -> None:
-    # Predicted margin +5 against actual +4 and -20: errors of 1 and 25.
-    # The market's -3 and +6 imply +3 and -6: errors of 1 and 14.
-    metrics = score_predictions(_games(), _FixedSpreadFitter(-5.0))
+    """The market's side of the comparison is where the sign is a trap.
 
-    assert metrics["margin_mae"] == pytest.approx(13.0)
+    A spread is quoted from team1's side, so the margin it implies is its
+    negation. Flipping it leaves an MAE that still looks like a plausible
+    number of points.
+    """
+    # Predicted margin +5 against actual +4, -20 and +7: errors of 1, 25, 2.
+    # The market's -3 and +6 imply +3 and -6: errors of 1 and 14.
+    metrics = score_predictions(_games(), _FixedMarginFitter(5.0))
+
+    assert metrics["margin_mae"] == pytest.approx(28 / 3)
+    assert metrics["spread_game_margin_mae"] == pytest.approx(13.0)
     assert metrics["market_margin_mae"] == pytest.approx(7.5)
 
 
 def test_against_spread_accuracy_and_counts() -> None:
-    # Predicting -5 beats the -3 line on game 1 (bet team1, and team1 covers)
+    # Predicting +5 beats the -3 line on game 1 (bet team1, and team1 covers)
     # and also beats the +6 line on game 2 (bet team1, but team1 doesn't).
-    metrics = score_predictions(_games(), _FixedSpreadFitter(-5.0))
+    metrics = score_predictions(_games(), _FixedMarginFitter(5.0))
 
     assert metrics["against_spread_accuracy"] == pytest.approx(0.5)
     assert metrics["n_games"] == 3
@@ -89,25 +107,27 @@ def test_against_spread_accuracy_and_counts() -> None:
 
 
 def test_scores_a_league_with_no_lines_at_all() -> None:
-    """A league the odds database doesn't cover still gets a brier score.
+    """A league the odds database doesn't cover still gets margin metrics.
 
-    The fitters can't be handed an empty frame -- sklearn's isotonic
-    regression raises on zero samples -- so the spread metrics drop out.
+    Fitting on final scores rather than on closing lines means these leagues
+    are no longer a special case -- only the metrics that need a line to
+    compare against drop out.
     """
     no_lines = _games().assign(spread=None)
 
-    metrics = score_predictions(no_lines, _FixedSpreadFitter(-5.0))
+    metrics = score_predictions(no_lines, _FixedMarginFitter(5.0))
 
     assert metrics["brier_score"] == pytest.approx((0.3**2 + 0.4**2 + 0.4**2) / 3)
+    assert metrics["margin_mae"] == pytest.approx(28 / 3)
     assert metrics["n_games"] == 3
     assert metrics["n_spread_games"] == 0
-    assert np.isnan(metrics["margin_mae"])
+    assert np.isnan(metrics["spread_game_margin_mae"])
     assert np.isnan(metrics["against_spread_accuracy"])
     assert np.isnan(metrics["market_margin_mae"])
 
 
 def test_brier_score_covers_games_without_a_line() -> None:
-    metrics = score_predictions(_games(), _FixedSpreadFitter(-5.0))
+    metrics = score_predictions(_games(), _FixedMarginFitter(5.0))
 
     expected = (0.3**2 + 0.4**2 + 0.4**2) / 3
     assert metrics["brier_score"] == pytest.approx(expected)
