@@ -1,0 +1,6 @@
+{
+    "predictor_class": "FlatPredictor",
+    "league": "nfl",
+    "target": 0.0,
+    "params": {}
+}

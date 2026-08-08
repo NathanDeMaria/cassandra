@@ -1,4 +1,6 @@
+import argparse
 import asyncio
+from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -15,14 +17,19 @@ _GENERATED_DIR = CASSANDRA_HOME / "models"
 _METRICS_DIR = CASSANDRA_HOME / "evaluations"
 
 
-def _models() -> Iterator[tuple[str, str, Path]]:
-    """Every scoreable model, as (league, model name, config path)."""
+def _models(leagues: Collection[str] | None = None) -> Iterator[tuple[str, str, Path]]:
+    """Every scoreable model, as (league, model name, config path).
+
+    Restricted to `leagues` when it's non-empty; otherwise everything.
+    """
     found: dict[tuple[str, str], Path] = {}
     for models_dir in (_AUTHORED_DIR, _GENERATED_DIR):
         if not models_dir.is_dir():
             continue
         for league_path in sorted(models_dir.iterdir()):
             if not league_path.is_dir():
+                continue
+            if leagues and league_path.name not in leagues:
                 continue
             for path in sorted(league_path.glob("*_result.json")):
                 # Generated results are read second on purpose: a freshly
@@ -33,15 +40,21 @@ def _models() -> Iterator[tuple[str, str, Path]]:
     )
 
 
-async def _main():
+async def _main(leagues: Collection[str] | None = None):
     all_evaluations = []
-    for league, model_name, model_path in _models():
+    for league, model_name, model_path in _models(leagues):
         print(f"Evaluating {league}: {model_name}")
-        predictions_df = await get_predictions(
-            model_path,
-            league,
-            _GENERATED_DIR / league / f"{model_name}_state.json",
-        )
+        try:
+            predictions_df = await get_predictions(
+                model_path,
+                league,
+                _GENERATED_DIR / league / f"{model_name}_state.json",
+            )
+        except Exception as e:
+            # One unscoreable model shouldn't cost the whole run its table,
+            # since the csv is only written once everything has finished.
+            print(f"  FAILED {league}/{model_name}: {e!r}")
+            continue
         for fitter_name, fitter in DEFAULT_FITTERS.items():
             evaluation_metrics = score_predictions(predictions_df, fitter)
             all_evaluations.append(
@@ -61,4 +74,13 @@ async def _main():
 
 
 if __name__ == "__main__":
-    asyncio.run(_main())
+    parser = argparse.ArgumentParser(description="Score every model in models/.")
+    parser.add_argument(
+        "--league",
+        action="append",
+        dest="leagues",
+        metavar="LEAGUE",
+        help="only evaluate this league; repeatable (default: all leagues)",
+    )
+    args = parser.parse_args()
+    asyncio.run(_main(args.leagues))
