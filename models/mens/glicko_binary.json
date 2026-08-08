@@ -1,0 +1,11 @@
+{
+    "predictor_class": "GlickoPredictor",
+    "league": "mens",
+    "parameters": {
+        "home_advantage": [0, 200],
+        "initial_rd": [80, 350],
+        "weekly_rd_increase": [0, 30],
+        "season_rd_increase": [0, 250]
+    },
+    "n_iter": 100
+}
