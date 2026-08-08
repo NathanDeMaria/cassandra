@@ -18,13 +18,18 @@ DEFAULT_FITTERS: dict[str, BaseProbToSpreadFitter] = {
 }
 
 
-async def get_predictions(predictor_config_path: Path, league: str) -> pd.DataFrame:
-    """Run a predictor over a league's games. The expensive, once-per-predictor step."""
+async def get_predictions(
+    predictor_config_path: Path, league: str, state_path: Path
+) -> pd.DataFrame:
+    """Run a predictor over a league's games. The expensive, once-per-predictor step.
+
+    `state_path` is explicit because the config can be a checked-in baseline,
+    and the state it produces is generated output that doesn't belong there.
+    """
     predictor = load_predictor(predictor_config_path)
     df = await build_predictions_df(predictor, league, post_callbacks=False)
-    predictor.save_state(
-        predictor_config_path.parent / f"{predictor_config_path.stem}_state.json"
-    )
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    predictor.save_state(state_path)
     return df
 
 
