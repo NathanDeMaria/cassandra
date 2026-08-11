@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
@@ -56,15 +57,23 @@ async def _main(leagues: Collection[str] | None = None):
             print(f"  FAILED {league}/{model_name}: {e!r}")
             continue
         for fitter_name, fitter in DEFAULT_FITTERS.items():
-            evaluation_metrics = score_predictions(predictions_df, fitter)
+            scored = score_predictions(predictions_df, fitter)
             all_evaluations.append(
                 {
                     "league": league,
                     "model": model_name,
                     "fitter": fitter_name,
-                    **evaluation_metrics,
+                    **scored.metrics,
                 }
             )
+            # Saved next to the model's ratings, and in the same run that
+            # scored it, so the mapping a consumer reads is the one the
+            # numbers in the csv were computed from.
+            calibration_path = (
+                _GENERATED_DIR / league / f"{model_name}_{fitter_name}_calibration.json"
+            )
+            calibration_path.parent.mkdir(parents=True, exist_ok=True)
+            calibration_path.write_text(json.dumps(scored.margin_predictor.to_dict()))
 
     df = pd.DataFrame(all_evaluations)
 

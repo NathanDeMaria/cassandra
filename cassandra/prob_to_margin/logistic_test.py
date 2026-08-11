@@ -1,6 +1,9 @@
+import json
+
 import numpy as np
 import pytest
 
+from .base_fit import BaseProbToMarginPredictor
 from .isotonic import IsotonicProbToMarginFitter
 from .logistic import LogisticProbToMarginFitter, _logit
 
@@ -50,6 +53,26 @@ def test_averages_out_the_noise_in_a_single_game() -> None:
     assert 0.0 < predicted < 14.0
 
 
+def test_round_trips_through_json() -> None:
+    """The other fitter has to be serializable too, or it can't be deployed.
+
+    A least-squares scale is an np.float64, which json.dumps only tolerates
+    because it subclasses float -- cast on the way out rather than rely on it.
+    """
+    predictor = LogisticProbToMarginFitter().fit(
+        win_probs=np.array([0.5, 0.7, 0.9]), margins=np.array([0.0, 4.0, 10.0])
+    )
+
+    rehydrated = BaseProbToMarginPredictor.from_dict(
+        json.loads(json.dumps(predictor.to_dict()))
+    )
+
+    win_probs = np.linspace(0.05, 0.95, 20)
+    assert rehydrated.predict_margins(win_probs) == pytest.approx(
+        predictor.predict_margins(win_probs)
+    )
+
+
 def test_extrapolates_past_observed_range_unlike_isotonic() -> None:
     # Isotonic regression can't say anything past the most extreme win_prob
     # it saw during fitting -- it just flattens out at the boundary value.
@@ -65,8 +88,8 @@ def test_extrapolates_past_observed_range_unlike_isotonic() -> None:
     isotonic_margin = isotonic_predictor.predict_margins(extreme_win_prob)[0]
     logistic_margin = logistic_predictor.predict_margins(extreme_win_prob)[0]
 
-    # Isotonic regression has nothing useful to say past the data it saw
-    # (sklearn returns nan by default for out-of-range x), while the
-    # logistic fit keeps extrapolating a bigger margin.
-    assert np.isnan(isotonic_margin) or isotonic_margin == pytest.approx(2.0)
+    # Isotonic regression has nothing useful to say past the data it saw, so
+    # it clamps at the most extreme margin it observed, while the logistic
+    # fit keeps extrapolating a bigger margin.
+    assert isotonic_margin == pytest.approx(2.0)
     assert logistic_margin > 10.0

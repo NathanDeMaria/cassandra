@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -21,11 +23,16 @@ class _FixedMarginFitter(BaseProbToMarginFitter):
 
 
 class _FixedMarginPredictor(BaseProbToMarginPredictor):
+    # No `kind`, so this stays out of the from_dict registry -- a test double
+    # has no business being rehydratable by name.
     def __init__(self, margin: float) -> None:
         self._margin = margin
 
     def predict_margins(self, win_probs: np.ndarray) -> np.ndarray:
         return np.full(len(win_probs), self._margin)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "fixed", "margin": self._margin}
 
 
 def _games() -> pd.DataFrame:
@@ -75,7 +82,7 @@ def test_fits_on_every_game_not_just_the_lined_ones() -> None:
 def test_margin_mae_is_zero_for_a_perfect_prediction() -> None:
     game = _games().iloc[[0]]  # team1 wins by 4
 
-    metrics = score_predictions(game, _FixedMarginFitter(4.0))
+    metrics = score_predictions(game, _FixedMarginFitter(4.0)).metrics
 
     assert metrics["margin_mae"] == pytest.approx(0.0)
 
@@ -89,7 +96,7 @@ def test_scores_margin_against_the_market() -> None:
     """
     # Predicted margin +5 against actual +4, -20 and +7: errors of 1, 25, 2.
     # The market's -3 and +6 imply +3 and -6: errors of 1 and 14.
-    metrics = score_predictions(_games(), _FixedMarginFitter(5.0))
+    metrics = score_predictions(_games(), _FixedMarginFitter(5.0)).metrics
 
     assert metrics["margin_mae"] == pytest.approx(28 / 3)
     assert metrics["spread_game_margin_mae"] == pytest.approx(13.0)
@@ -99,7 +106,7 @@ def test_scores_margin_against_the_market() -> None:
 def test_against_spread_accuracy_and_counts() -> None:
     # Predicting +5 beats the -3 line on game 1 (bet team1, and team1 covers)
     # and also beats the +6 line on game 2 (bet team1, but team1 doesn't).
-    metrics = score_predictions(_games(), _FixedMarginFitter(5.0))
+    metrics = score_predictions(_games(), _FixedMarginFitter(5.0)).metrics
 
     assert metrics["against_spread_accuracy"] == pytest.approx(0.5)
     assert metrics["n_games"] == 3
@@ -115,7 +122,7 @@ def test_scores_a_league_with_no_lines_at_all() -> None:
     """
     no_lines = _games().assign(spread=None)
 
-    metrics = score_predictions(no_lines, _FixedMarginFitter(5.0))
+    metrics = score_predictions(no_lines, _FixedMarginFitter(5.0)).metrics
 
     assert metrics["brier_score"] == pytest.approx((0.3**2 + 0.4**2 + 0.4**2) / 3)
     assert metrics["margin_mae"] == pytest.approx(28 / 3)
@@ -127,7 +134,7 @@ def test_scores_a_league_with_no_lines_at_all() -> None:
 
 
 def test_brier_score_covers_games_without_a_line() -> None:
-    metrics = score_predictions(_games(), _FixedMarginFitter(5.0))
+    metrics = score_predictions(_games(), _FixedMarginFitter(5.0)).metrics
 
     expected = (0.3**2 + 0.4**2 + 0.4**2) / 3
     assert metrics["brier_score"] == pytest.approx(expected)

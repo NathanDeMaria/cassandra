@@ -1,1 +1,6 @@
-from .model_eval import DEFAULT_FITTERS, get_predictions, score_predictions
+from .model_eval import (
+    DEFAULT_FITTERS,
+    ScoredPredictions,
+    get_predictions,
+    score_predictions,
+)

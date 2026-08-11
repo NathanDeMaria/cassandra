@@ -8,11 +8,23 @@ authors = []
 python = "^3.14"
 endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "0c21854d76a0b5ddb8f71842cb4ddb1ecc2f0408", subdirectory = "py-endgame-aws"}
 aiofiles = "^25.1.0"
+numpy = "^2.4.0"
 pandas = "^2.3.3"
 pydantic = "^2.12.5"
-statsmodels = "^0.14.6"
+
+
+# Fitting and CLI, not serving. A consumer that installs cassandra as a
+# dependency -- the webapp -- gets `main` and nothing else, because poetry
+# groups never make it into package metadata. That's what keeps scikit-learn
+# out of a web image whose only job is to read a saved calibration and call
+# np.interp on it. `poetry install` here still picks this up with no flags, so
+# local dev and CI are unaffected.
+#
+# The cost: `pip install cassandra` gives you a package that can rehydrate a
+# fit but not produce one. IsotonicProbToMarginFitter.fit imports sklearn
+# lazily so the ImportError lands there rather than at import time.
+[tool.poetry.group.fit.dependencies]
 scikit-learn = "^1.8.0"
-tqdm = "^4.67.1"
 fire = "^0.7.1"
 bayesian-optimization = "^3.2.1"
 

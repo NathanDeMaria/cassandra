@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -7,6 +8,7 @@ from .columns import GameDfColumns
 from .predictor import load_predictor
 from .prob_to_margin import (
     BaseProbToMarginFitter,
+    BaseProbToMarginPredictor,
     IsotonicProbToMarginFitter,
     LogisticProbToMarginFitter,
 )
@@ -33,9 +35,21 @@ async def get_predictions(
     return df
 
 
+class ScoredPredictions(NamedTuple):
+    """Metrics, plus the fit they were computed with.
+
+    The fit used to be discarded once against_spread_accuracy was out of it,
+    which left no way to ask what margin a given win probability implies. It
+    comes back out so callers can serialize it next to the model's ratings.
+    """
+
+    metrics: dict[str, float]
+    margin_predictor: BaseProbToMarginPredictor
+
+
 def score_predictions(
     df: pd.DataFrame, fitter: BaseProbToMarginFitter
-) -> dict[str, float]:
+) -> ScoredPredictions:
     """Score a predictor's predictions against a single prob-to-margin fitter.
 
     Cheap relative to get_predictions, so callers comparing multiple fitters
@@ -64,13 +78,16 @@ def score_predictions(
         # A league the odds database doesn't cover at all. Everything above
         # still holds -- the margin fit never needed a line -- but there's
         # nothing to bet into or compare against.
-        return {
-            **metrics,
-            "against_spread_accuracy": float("nan"),
-            "spread_game_margin_mae": float("nan"),
-            "market_margin_mae": float("nan"),
-            "n_spread_games": 0,
-        }
+        return ScoredPredictions(
+            metrics={
+                **metrics,
+                "against_spread_accuracy": float("nan"),
+                "spread_game_margin_mae": float("nan"),
+                "market_margin_mae": float("nan"),
+                "n_spread_games": 0,
+            },
+            margin_predictor=margin_predictor,
+        )
 
     with_spread = with_spread.assign(
         # A spread is quoted from team1's side and team1 covers when
@@ -81,20 +98,25 @@ def score_predictions(
         team1_covered=lambda x: x.spread + x.team1_mov > 0,
         correct_bet=lambda x: x.bet_team1 == x.team1_covered,
     )
-    return {
-        **metrics,
-        "against_spread_accuracy": with_spread["correct_bet"].mean(),
-        # margin_mae over the lined games only, which is the slice
-        # market_margin_mae covers. Margin MAE means little on its own, since
-        # game-to-game noise sets a floor no model gets under; the number that
-        # carries information is the gap between these two.
-        "spread_game_margin_mae": (
-            with_spread["predicted_margin"] - with_spread["team1_mov"]
-        )
-        .abs()
-        .mean(),
-        "market_margin_mae": (with_spread["market_margin"] - with_spread["team1_mov"])
-        .abs()
-        .mean(),
-        "n_spread_games": len(with_spread),
-    }
+    return ScoredPredictions(
+        metrics={
+            **metrics,
+            "against_spread_accuracy": with_spread["correct_bet"].mean(),
+            # margin_mae over the lined games only, which is the slice
+            # market_margin_mae covers. Margin MAE means little on its own,
+            # since game-to-game noise sets a floor no model gets under; the
+            # number that carries information is the gap between these two.
+            "spread_game_margin_mae": (
+                with_spread["predicted_margin"] - with_spread["team1_mov"]
+            )
+            .abs()
+            .mean(),
+            "market_margin_mae": (
+                with_spread["market_margin"] - with_spread["team1_mov"]
+            )
+            .abs()
+            .mean(),
+            "n_spread_games": len(with_spread),
+        },
+        margin_predictor=margin_predictor,
+    )

@@ -1,3 +1,5 @@
+from typing import Any, Self
+
 import numpy as np
 
 from .base_fit import BaseProbToMarginFitter, BaseProbToMarginPredictor
@@ -11,11 +13,21 @@ def _logit(win_probs: np.ndarray) -> np.ndarray:
 
 
 class LogisticProbToMarginPredictor(BaseProbToMarginPredictor):
+    kind = "logistic"
+
     def __init__(self, scale: float) -> None:
         self._scale = scale
 
     def predict_margins(self, win_probs: np.ndarray) -> np.ndarray:
         return self._scale * _logit(win_probs)
+
+    def to_dict(self) -> dict[str, Any]:
+        # float() because the fitted scale arrives as an np.float64.
+        return {"kind": self.kind, "scale": float(self._scale)}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        return cls(scale=float(data["scale"]))
 
 
 class LogisticProbToMarginFitter(BaseProbToMarginFitter):
