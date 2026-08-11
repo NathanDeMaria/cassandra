@@ -94,6 +94,10 @@ the margin metrics says more about the fitter than the model.
 
 Read the tail of a per-model log for a specific failure. Don't re-read the combined log.
 
+Open these with the **Read tool**, one call per file (several in one message if you need more than
+one) — not `cat`, and never a `for` loop over `cat`. Reads through the Read tool don't prompt, and
+a shell loop can't match any permission rule, so it prompts every time.
+
 ## 4. Report
 
 Lead with the state of the run in one line, then what ran, then recommendations. Rank

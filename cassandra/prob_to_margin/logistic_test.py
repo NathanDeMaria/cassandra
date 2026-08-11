@@ -53,6 +53,23 @@ def test_averages_out_the_noise_in_a_single_game() -> None:
     assert 0.0 < predicted < 14.0
 
 
+def test_all_pick_em_fits_a_flat_zero_instead_of_nan() -> None:
+    """The flat baseline calls every game 50/50, so there's no slope to fit.
+
+    Every logit is 0, which zeroes both sides of the least-squares ratio.
+    Left alone that's 0/0 -- a nan scale that poisons every prediction and
+    drops margin_mae out of the evaluation entirely.
+    """
+    win_probs = np.full(6, 0.5)
+    margins = np.array([21.0, -21.0, 14.0, -8.0, 3.0, -9.0])
+
+    predictor = LogisticProbToMarginFitter().fit(win_probs, margins)
+
+    predicted = predictor.predict_margins(np.linspace(0.05, 0.95, 20))
+    assert not np.isnan(predicted).any()
+    assert predicted == pytest.approx(0.0)
+
+
 def test_round_trips_through_json() -> None:
     """The other fitter has to be serializable too, or it can't be deployed.
 
