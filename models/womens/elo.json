@@ -3,7 +3,7 @@
     "league": "womens",
     "parameters": {
         "home_advantage": [0, 200],
-        "k": [1, 79]
+        "k": [1, 157]
     },
     "n_iter": 60
 }

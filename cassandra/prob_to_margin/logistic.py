@@ -47,5 +47,11 @@ class LogisticProbToMarginFitter(BaseProbToMarginFitter):
         logits = _logit(win_probs)
         # Least squares through the origin: logit(0.5) = 0 <-> margin = 0,
         # so a pick'em game should be predicted to finish level.
-        scale = np.dot(logits, margins) / np.dot(logits, logits)
+        denominator = np.dot(logits, logits)
+        if denominator == 0:
+            # A predictor that calls every game a coin flip (flat) has every
+            # logit at 0, so there's no slope to fit. Predict level games
+            # rather than propagating a nan scale into every margin.
+            return LogisticProbToMarginPredictor(0.0)
+        scale = np.dot(logits, margins) / denominator
         return LogisticProbToMarginPredictor(scale)
