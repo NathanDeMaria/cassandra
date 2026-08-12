@@ -8,4 +8,5 @@ from .release import (
     TrainedThrough,
     calibration_from_predictor,
     metrics_from_scored,
+    ratings_from_predictor,
 )

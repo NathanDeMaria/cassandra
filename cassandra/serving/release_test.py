@@ -2,13 +2,25 @@ import json
 import subprocess
 import sys
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
+from endgame.types import Game
 from pydantic import ValidationError
 
 from cassandra.model_eval import score_predictions
+from cassandra.predictor import (
+    Elo538Predictor,
+    EloPredictor,
+    FlatPredictor,
+    GlickoPredictor,
+    Predictor,
+    RatingsUnsupported,
+    UnknownPredictorClass,
+    predict_matchup,
+)
 from cassandra.prob_to_margin import (
     IsotonicProbToMarginFitter,
     LogisticProbToMarginFitter,
@@ -20,9 +32,11 @@ from .release import (
     MarginCalibration,
     Metrics,
     ModelRelease,
+    TeamRating,
     TrainedThrough,
     calibration_from_predictor,
     metrics_from_scored,
+    ratings_from_predictor,
 )
 
 
@@ -37,12 +51,20 @@ def _games() -> pd.DataFrame:
     )
 
 
-def _release(margin_calibration: MarginCalibration | None = None) -> ModelRelease:
+def _release(
+    margin_calibration: MarginCalibration | None = None,
+    predictor_class: str = "GlickoPredictor",
+    params: dict[str, float | str] | None = None,
+    ratings: dict[str, TeamRating] | None = None,
+    league: str = "mens",
+) -> ModelRelease:
     return ModelRelease(
         run_id="2026-08-10T09:00:12Z",
-        league="mens",
+        league=league,
         model="glicko_tuned",
-        predictor_class="GlickoPredictor",
+        predictor_class=predictor_class,
+        params=params or {},
+        ratings=ratings or {},
         margin_calibration=margin_calibration,
         metrics=Metrics(brier_score=0.19, margin_mae=9.1, n_games=100),
         trained_through=TrainedThrough(season_year=2026),
@@ -189,3 +211,190 @@ def test_a_release_is_plain_json_all_the_way_down() -> None:
     # Ascending margins: a higher win probability means home wins by more.
     assert knots["y_thresholds"] == sorted(knots["y_thresholds"])
     assert "NaN" not in release.model_dump_json()
+
+
+def _game(home: str, away: str, home_score: int, away_score: int) -> Game:
+    return Game(
+        home=home,
+        away=away,
+        home_score=home_score,
+        away_score=away_score,
+        neutral_site=False,
+        completed=True,
+        date=datetime(2026, 1, 1),
+        game_id=f"{away}@{home}",
+    )
+
+
+_SEASON = [
+    _game("Team A", "Team B", 80, 61),
+    _game("Team C", "Team A", 55, 70),
+    _game("Team B", "Team C", 66, 65),
+    _game("Team A", "Team C", 90, 51),
+    _game("Team C", "Team B", 72, 70),
+]
+
+
+def _trained(predictor: Predictor) -> Predictor:
+    for game in _SEASON:
+        predictor.update_game(game)
+    return predictor
+
+
+def _snapshot(
+    predictor: Predictor, predictor_class: str, params: dict[str, Any]
+) -> ModelRelease:
+    """Everything that happens to a predictor on its way to a consumer.
+
+    Through the JSON, not just through the schema: the consumer holds parsed
+    bytes off a bucket, never the object the release was built from.
+    """
+    release = _release(
+        predictor_class=predictor_class,
+        params=params,
+        ratings=ratings_from_predictor(predictor),
+        league="test_league",
+    )
+    return ModelRelease.model_validate_json(release.model_dump_json())
+
+
+def test_rebuilds_a_glicko_predictor_that_predicts_the_same() -> None:
+    """The property that matters: same matchup, same number.
+
+    Field-by-field equality can pass while the probability is wrong -- a
+    dropped home advantage doesn't show up in the ratings at all -- so this
+    asserts on what a consumer actually asks for.
+    """
+    params: dict[str, Any] = {
+        "home_advantage": 88.0,
+        "k": 61.0,
+        "initial_rd": 205.0,
+        "scoring_method": "binary",
+    }
+    original = _trained(GlickoPredictor("test_league", **params))
+
+    rebuilt = _snapshot(original, "GlickoPredictor", params).rating_predictor()
+
+    for home, away in (("Team A", "Team B"), ("Team C", "Team A")):
+        for neutral_site in (False, True):
+            assert predict_matchup(
+                rebuilt, home, away, neutral_site=neutral_site
+            ).team1_win_prob == pytest.approx(
+                predict_matchup(
+                    original, home, away, neutral_site=neutral_site
+                ).team1_win_prob
+            )
+
+
+def test_a_rebuilt_glicko_keeps_going_the_same_way() -> None:
+    """rd survives the round trip.
+
+    predict_game never reads a rating deviation, so a dropped or defaulted rd
+    is invisible until the rebuilt predictor updates on a game and moves by a
+    different amount than the original would have.
+    """
+    original = _trained(GlickoPredictor("test_league", initial_rd=205))
+    rebuilt = _snapshot(original, "GlickoPredictor", {"initial_rd": 205.0})
+    predictor = rebuilt.rating_predictor()
+
+    later = _game("Team B", "Team A", 71, 70)
+    original.update_game(later)
+    predictor.update_game(later)
+
+    assert predict_matchup(
+        predictor, "Team A", "Team B"
+    ).team1_win_prob == pytest.approx(
+        predict_matchup(original, "Team A", "Team B").team1_win_prob
+    )
+
+
+@pytest.mark.parametrize(
+    ("predictor_class", "name"),
+    [(EloPredictor, "EloPredictor"), (Elo538Predictor, "Elo538Predictor")],
+)
+def test_rebuilds_the_elo_family_too(
+    predictor_class: type[Predictor], name: str
+) -> None:
+    """The classes with no rd, which is where defaulting one goes wrong."""
+    params: dict[str, Any] = {"home_advantage": 82.0, "k": 17.0}
+    original = _trained(predictor_class("test_league", **params))
+
+    release = _snapshot(original, name, params)
+    assert all(rating.rd is None for rating in release.ratings.values())
+
+    rebuilt = release.rating_predictor()
+    assert isinstance(rebuilt, predictor_class)
+    assert predict_matchup(rebuilt, "Team A", "Team C").team1_win_prob == pytest.approx(
+        predict_matchup(original, "Team A", "Team C").team1_win_prob
+    )
+
+
+def test_an_unrated_team_is_the_same_stranger_on_both_sides() -> None:
+    """A team the release doesn't carry falls back, rather than erroring."""
+    original = _trained(GlickoPredictor("test_league"))
+    rebuilt = _snapshot(original, "GlickoPredictor", {}).rating_predictor()
+
+    assert predict_matchup(rebuilt, "Team A", "Nobody").team1_win_prob == pytest.approx(
+        predict_matchup(original, "Team A", "Nobody").team1_win_prob
+    )
+
+
+def test_a_predictor_class_this_build_doesnt_have_raises_for_that_reason() -> None:
+    """A release from a newer cassandra. Downstream turns this into a 502."""
+    release = _release(predictor_class="MarkovChainPredictor")
+
+    with pytest.raises(UnknownPredictorClass, match="MarkovChainPredictor"):
+        release.rating_predictor()
+
+
+def test_a_name_that_isnt_a_predictor_at_all_raises_the_same_thing() -> None:
+    """`predictor_class` is untrusted input, and the module has other names."""
+    with pytest.raises(UnknownPredictorClass):
+        _release(predictor_class="load_predictor").rating_predictor()
+
+
+def test_a_flat_model_says_it_has_no_ratings() -> None:
+    """Better than a predictor that answers 0.5 to everything in silence."""
+    with pytest.raises(RatingsUnsupported):
+        _release(predictor_class="FlatPredictor").rating_predictor()
+
+    with pytest.raises(RatingsUnsupported):
+        ratings_from_predictor(FlatPredictor("test_league"))
+
+
+def test_rebuilding_a_predictor_never_imports_sklearn() -> None:
+    """The same property margin_predictor has, for the other half.
+
+    A subprocess because sklearn is in sys.modules by the time this file has
+    finished importing. If this fails, a convenience import somewhere under
+    `serving` or `predictor` just put scikit-learn in the web image of a
+    consumer that installed cassandra without the fit group.
+    """
+    source = """
+import json, sys
+from cassandra.serving import ModelRelease
+
+release = ModelRelease.model_validate(json.load(sys.stdin))
+predictor = release.rating_predictor()
+from cassandra.predictor import predict_matchup
+assert 0.5 < predict_matchup(predictor, "Team A", "Team B").team1_win_prob < 1
+print("sklearn" in sys.modules)
+"""
+    payload = _release(
+        predictor_class="GlickoPredictor",
+        params={"home_advantage": 95.0},
+        ratings={
+            "Team A": TeamRating(rating=1600, rd=180),
+            "Team B": TeamRating(rating=1500, rd=200),
+        },
+    ).model_dump_json()
+
+    result = subprocess.run(
+        [sys.executable, "-c", source],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "False"
