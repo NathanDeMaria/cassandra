@@ -1,13 +1,12 @@
-import json
-from pathlib import Path
-from typing import Self
+from collections.abc import Mapping
+from typing import Any, Self
 
 import numpy as np
 from endgame.types import Game
 
 from .base_predictor import Predictor
 from .opponent_prior import OpponentPriorManager
-from .types import Matchup, Prediction
+from .types import Matchup, Prediction, Rating
 
 
 class Elo538Predictor(Predictor):
@@ -72,16 +71,29 @@ class Elo538Predictor(Predictor):
     def postrun_callback(self) -> None:
         self._prior_manager.save(self._ratings)
 
-    def save_state(self, path: Path) -> None:
-        data = {
+    def state_dict(self) -> dict[str, Any]:
+        return {
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
             "ratings": self._ratings,
         }
-        path.write_text(json.dumps(data))
 
     @classmethod
-    def load_state(cls, path: Path) -> Self:
-        data = json.loads(path.read_text())
+    def from_state_dict(cls, data: dict[str, Any]) -> Self:
         return cls(**data)
+
+    @property
+    def ratings(self) -> dict[str, Rating]:
+        return {team: Rating(rating) for team, rating in self._ratings.items()}
+
+    @classmethod
+    def from_ratings(
+        cls, league: str, ratings: Mapping[str, Rating], **params: Any
+    ) -> Self:
+        predictor = cls(league, **params)
+        # Assigned rather than passed to __init__, which falls back to the
+        # locally saved priors for an empty dict. A release's ratings are the
+        # ratings, even when it has none.
+        predictor._ratings = {team: r.rating for team, r in ratings.items()}
+        return predictor

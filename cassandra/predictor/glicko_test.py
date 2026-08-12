@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -48,3 +49,21 @@ def test_glicko_save_load(tmp_path: Path) -> None:
     unknown = loaded.get_rating("Unknown")
     assert unknown.rating == 1500
     assert unknown.rating_deviation == 200
+
+
+def test_state_round_trips_without_a_file() -> None:
+    """save_state/load_state are one serialization of this, not a second format.
+
+    A caller that already holds the data -- a web service reading a release --
+    goes through here instead of writing a temp file to read it back.
+    """
+    predictor = GlickoPredictor("test_league", k=60, initial_rd=200)
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+
+    state = predictor.state_dict()
+    assert json.loads(json.dumps(state)) == state
+
+    restored = GlickoPredictor.from_state_dict(state)
+    assert restored.get_rating("Team A") == pytest.approx(
+        predictor.get_rating("Team A")
+    )

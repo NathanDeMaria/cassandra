@@ -28,6 +28,20 @@ class Matchup(Protocol):
     def game_id(self) -> str: ...
 
 
+class Rating(NamedTuple):
+    """One team's standing, in the shape every predictor can express.
+
+    The rating systems don't agree on what a rating *is* -- Elo keeps a single
+    number, Glicko keeps a number and its deviation -- so this is the common
+    denominator they normalize to on the way out to a release and denormalize
+    from on the way back. `rd` is None for the Elo family rather than faked as
+    0, because 0 is a meaningful (and very wrong) rating deviation.
+    """
+
+    rating: float
+    rd: float | None = None
+
+
 class Prediction(NamedTuple):
     team1_win_prob: float
 

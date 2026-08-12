@@ -1,14 +1,13 @@
-import json
 import math
-from pathlib import Path
-from typing import NamedTuple, Self
+from collections.abc import Mapping
+from typing import Any, NamedTuple, Self
 
 from endgame.types import Game
 
 from ..scoring import get_scoring_function
 from .base_predictor import Predictor
 from .opponent_prior import OpponentPriorManager
-from .types import Matchup, Prediction
+from .types import Matchup, Prediction, Rating
 
 
 class _Rating(NamedTuple):
@@ -142,8 +141,8 @@ class GlickoPredictor(Predictor):
             {team: rating.rating for team, rating in self._ratings.items()}
         )
 
-    def save_state(self, path: Path) -> None:
-        data = {
+    def state_dict(self) -> dict[str, Any]:
+        return {
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
@@ -156,16 +155,40 @@ class GlickoPredictor(Predictor):
                 for team, r in self._ratings.items()
             },
         }
-        path.write_text(json.dumps(data))
 
     @classmethod
-    def load_state(cls, path: Path) -> Self:
-        data = json.loads(path.read_text())
-        ratings = data.pop("ratings")
+    def from_state_dict(cls, data: dict[str, Any]) -> Self:
+        params = dict(data)
+        ratings = params.pop("ratings")
         return cls(
-            **data,
+            **params,
             ratings={team: _Rating(r[0], r[1]) for team, r in ratings.items()},
         )
+
+    @property
+    def ratings(self) -> dict[str, Rating]:
+        return {
+            team: Rating(r.rating, r.rating_deviation)
+            for team, r in self._ratings.items()
+        }
+
+    @classmethod
+    def from_ratings(
+        cls, league: str, ratings: Mapping[str, Rating], **params: Any
+    ) -> Self:
+        # Built empty first so `initial_rd` comes from params (or the
+        # constructor default) rather than being repeated here.
+        predictor = cls(league, ratings={}, **params)
+        predictor._ratings = {
+            team: _Rating(
+                r.rating,
+                # A rating with no rd is one we've never seen play, which is
+                # exactly what get_rating hands back for an unknown team.
+                r.rd if r.rd is not None else predictor._initial_rd,
+            )
+            for team, r in ratings.items()
+        }
+        return predictor
 
 
 def _g(rating_deviation: float) -> float:

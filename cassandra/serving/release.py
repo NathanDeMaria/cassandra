@@ -7,8 +7,10 @@ web service answer "what margin does a 62% win probability imply?" without
 sklearn, without the season pickles, and without cassandra's fitting stack.
 
 This module owns the schema so there is one definition rather than two that
-drift. It deliberately depends on nothing heavier than pydantic and
-`cassandra.prob_to_margin`.
+drift. It deliberately depends on nothing heavier than pydantic,
+`cassandra.prob_to_margin` and `cassandra.predictor` -- none of which import
+scikit-learn at module scope, which is the property that lets a consumer
+install cassandra without the `fit` group and still read a release.
 """
 
 import math
@@ -17,6 +19,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from cassandra.predictor import Predictor, Rating, load_predictor_class
 from cassandra.prob_to_margin import BaseProbToMarginPredictor
 
 
@@ -31,6 +34,20 @@ class TeamRating(BaseModel):
     rd: float | None = None
     wins: int = 0
     losses: int = 0
+
+
+def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
+    """Snapshot a predictor's ratings into their release form.
+
+    Win/loss records aren't the predictor's to know -- they come from the
+    games -- so they stay at 0 here and a caller that has them fills them in.
+
+    Raises RatingsUnsupported for a predictor with no ratings (FlatPredictor).
+    """
+    return {
+        team: TeamRating(rating=rating.rating, rd=rating.rd)
+        for team, rating in predictor.ratings.items()
+    }
 
 
 class _MarginCalibrationBase(BaseModel):
@@ -177,6 +194,31 @@ class ModelRelease(BaseModel):
         if self.margin_calibration is None:
             return None
         return self.margin_calibration.to_predictor()
+
+    def rating_predictor(self) -> Predictor:
+        """The rating model, rebuilt from `predictor_class`, params and ratings.
+
+        Named for what it returns rather than `to_predictor`, because a
+        release rehydrates two different predictors and a consumer holding
+        both wants to see which is which at the call site.
+
+        No state file and no temp file: the release already carries everything
+        the constructor needs, so the denormalizing happens in the predictor
+        class that knows its own rating shape.
+
+        Raises UnknownPredictorClass if this build has no such class -- the
+        expected outcome for a release written by a newer cassandra -- and
+        RatingsUnsupported for a class that doesn't rate teams at all.
+        """
+        predictor_class = load_predictor_class(self.predictor_class)
+        return predictor_class.from_ratings(
+            self.league,
+            {
+                team: Rating(rating=rating.rating, rd=rating.rd)
+                for team, rating in self.ratings.items()
+            },
+            **self.params,
+        )
 
 
 def release_json_schema() -> dict[str, Any]:

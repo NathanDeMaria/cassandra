@@ -1,11 +1,10 @@
-import json
-from pathlib import Path
-from typing import Self
+from collections.abc import Mapping
+from typing import Any, Self
 
 from endgame.types import Game
 
 from .base_predictor import Predictor
-from .types import Matchup, Prediction
+from .types import Matchup, Prediction, Rating
 
 
 class EloPredictor(Predictor):
@@ -50,16 +49,30 @@ class EloPredictor(Predictor):
     def get_rating(self, team: str) -> float:
         return self._ratings.get(team, 1500)
 
-    def save_state(self, path: Path) -> None:
-        data = {
+    def state_dict(self) -> dict[str, Any]:
+        return {
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
             "ratings": self._ratings,
         }
-        path.write_text(json.dumps(data))
 
     @classmethod
-    def load_state(cls, path: Path) -> Self:
-        data = json.loads(path.read_text())
+    def from_state_dict(cls, data: dict[str, Any]) -> Self:
         return cls(**data)
+
+    @property
+    def ratings(self) -> dict[str, Rating]:
+        return {team: Rating(rating) for team, rating in self._ratings.items()}
+
+    @classmethod
+    def from_ratings(
+        cls, league: str, ratings: Mapping[str, Rating], **params: Any
+    ) -> Self:
+        # No rd here: Elo has nowhere to put one, so a release carrying one
+        # loses it rather than having it folded into the rating.
+        return cls(
+            league,
+            ratings={team: r.rating for team, r in ratings.items()},
+            **params,
+        )

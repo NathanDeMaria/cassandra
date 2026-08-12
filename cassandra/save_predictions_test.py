@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 import pytest
 from endgame.types import Game, OverlappingWeeksError, Season, Week
@@ -83,11 +82,11 @@ class _RecordingPredictor(Predictor):
         self.seen.append(matchup.game_id)
         return Prediction(team1_win_prob=0.5)
 
-    def save_state(self, path: Path) -> None:
+    def state_dict(self) -> dict[str, Any]:
         raise NotImplementedError
 
     @classmethod
-    def load_state(cls, path: Path) -> Self:
+    def from_state_dict(cls, data: dict[str, Any]) -> Self:
         raise NotImplementedError
 
 
