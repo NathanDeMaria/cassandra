@@ -21,4 +21,11 @@ run-all:
 		printf 'running in background\ntail -f %s\nto follow\n' "$$log"
 
 
-.PHONY: lint check test run-all
+# Build a release for every model in every league, locally. Reads the seasons
+# and odds once for the whole run, so it's minutes rather than the half hour a
+# process per model would spend re-reading s3.
+publish:
+	poetry run python publish.py --upload
+
+
+.PHONY: lint check test run-all publish

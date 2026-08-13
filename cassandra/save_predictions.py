@@ -2,6 +2,7 @@ import csv
 import io
 import re
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Iterable, Iterator
 
@@ -58,6 +59,15 @@ class _Prediction:
     spread: float | None
     home_team: str
     away_team: str
+    # Which game this was. Carried so a consumer of the predictions can say
+    # *which* games it has already seen: publish.py writes these into a
+    # release's `trained_through`, and the incremental refresh uses them as
+    # its idempotency watermark, since games get re-fetched and scores
+    # corrected and ids are the only thing that makes a re-run exact.
+    # Appended rather than placed up front so the csv's existing columns keep
+    # their positions.
+    game_id: str
+    date: datetime
 
 
 def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
@@ -73,6 +83,8 @@ def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
         spread=spread,
         home_team=result.game.home,
         away_team=result.game.away,
+        game_id=result.game.game_id,
+        date=result.game.date,
     )
 
 
