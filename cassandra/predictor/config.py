@@ -30,6 +30,22 @@ def load_predictor_class(name: str) -> type[Predictor]:
     return predictor_class
 
 
+class OptimizationConfig(BaseModel):
+    """A checked-in `models/<league>/<name>.json`: what to search, and how hard.
+
+    The input side of the pair `PredictorConfig` completes. It lives here
+    rather than in `optimize.py` because three callers need to read one
+    without running a search -- the batch manifest, `run_models.sh`, and
+    `publish.py`'s "that's not a result config" error -- and importing a
+    root-level script to get at a schema is backwards.
+    """
+
+    predictor_class: str
+    league: str
+    parameters: dict[str, tuple[float, float] | list[str]]
+    n_iter: int = 100
+
+
 class PredictorConfig(BaseModel):
     predictor_class: str
     league: str

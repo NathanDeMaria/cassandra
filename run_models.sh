@@ -61,34 +61,22 @@ fi
 
 # Ask the predictor classes themselves what needs doing, rather than duplicating
 # the naming rules here. Emits: league, config, class, n_iter, prior file (or "-").
-work_list=$(cd "$REPO_ROOT" && poetry run python - "$MODELS_DIR" <<'PY'
-import sys
-from pathlib import Path
+#
+# The list comes from cassandra.batch.manifest, which is also what sizes the
+# Batch array job and what each array child indexes into. One definition:
+# "optimize everything" has to mean the same set of models locally and in the
+# cloud, or a run that passes here fails there for reasons nothing reports.
+work_list=$(cd "$REPO_ROOT" && poetry run python - <<'PY'
+from cassandra.batch.manifest import load_manifest
 
-from cassandra.predictor import load_predictor_class
-from optimize import _OptimizationConfig
-
-rows = []
-for league_dir in sorted(Path(sys.argv[1]).iterdir()):
-    if not league_dir.is_dir():
-        continue
-    for path in sorted(league_dir.glob("*.json")):
-        if path.stem.endswith(("_result", "_state")):
-            continue
-        config = _OptimizationConfig.model_validate_json(path.read_text())
-        if config.league != league_dir.name:
-            raise SystemExit(
-                f"{path}: league {config.league!r} does not match directory "
-                f"{league_dir.name!r}; evaluate_models.py labels by directory."
-            )
-        predictor = load_predictor_class(config.predictor_class)(config.league)
-        # Predictors that build opponent priors stash a manager; the rest don't.
-        manager = getattr(predictor, "_prior_manager", None)
-        prior = str(manager._prior_path) if manager is not None else "-"
-        rows.append((config.league, str(path), config.predictor_class, config.n_iter, prior))
-
-for row in sorted(rows, key=lambda r: (r[3], r[0], r[1])):
-    print("\t".join(str(field) for field in row))
+for work in load_manifest():
+    print("\t".join([
+        work.league,
+        str(work.config_path),
+        work.predictor_class,
+        str(work.n_iter),
+        "-" if work.prior_path is None else str(work.prior_path),
+    ]))
 PY
 )
 

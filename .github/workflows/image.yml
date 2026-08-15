@@ -1,0 +1,42 @@
+name: Image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A superseded PR build is wasted ECR traffic, but let pushes to main finish so
+# `latest` always corresponds to a commit that's actually on the branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      IMAGE_URL: ${{ secrets.IMAGE_URL }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Push the image
+        # Layer cache lives in ECR alongside the image rather than in the
+        # Actions cache: `type=gha` needs ACTIONS_RUNTIME_TOKEN, which the
+        # runner hands to JS actions and withholds from `run:` steps, so a
+        # buildx build in the Makefile can't reach it without re-exporting the
+        # runner's internals. Registry cache authenticates with the ECR login
+        # the push already does, keeping CI and local on one build definition.
+        # image-manifest/oci-mediatypes are required -- ECR rejects buildx's
+        # default cache manifest format.
+        run: |
+          echo '${{ secrets.BATCH_CONFIG }}' > config.json
+          make push TAG=${GITHUB_SHA::7} \
+            CACHE_FLAGS="--cache-from type=registry,ref=${IMAGE_URL}:buildcache \
+              --cache-to type=registry,ref=${IMAGE_URL}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true"

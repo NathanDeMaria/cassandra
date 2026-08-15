@@ -5,12 +5,12 @@ from pathlib import Path
 
 import fire
 import pandas as pd
-from pydantic import BaseModel
 
 from cassandra.brier import brier_score_df
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.optimize import optimize
 from cassandra.predictor import (
+    OptimizationConfig,
     Predictor,
     PredictorConfig,
     load_predictor_class,
@@ -22,13 +22,6 @@ from cassandra.save_predictions import (
     join_with_odds,
     read_all_seasons,
 )
-
-
-class _OptimizationConfig(BaseModel):
-    predictor_class: str
-    league: str
-    parameters: dict[str, tuple[float, float] | list[str]]
-    n_iter: int = 100
 
 
 def _negative_brier_score(
@@ -49,7 +42,7 @@ def _negative_brier_score(
 async def _run_optimization(config_file: str) -> None:
     config_path = Path(config_file)
     with open(config_path, "r") as f:
-        config_model = _OptimizationConfig.model_validate_json(f.read())
+        config_model = OptimizationConfig.model_validate_json(f.read())
 
     predictor_class = load_predictor_class(config_model.predictor_class)
 

@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in.
+
+# CI tags each build with the short commit SHA. `latest` follows main; pin a
+# SHA to make a run reproducible.
+image_tag = "latest"
+
+# Omit to disable failure emails entirely.
+# notification_email = "you@example.com"
+
+# Defaults are weekly optimize (Mon 03:00) and daily publish (09:00), America/Chicago.
+# optimize_schedule = "cron(0 3 ? * MON *)"
+# publish_schedule  = "cron(0 9 * * ? *)"
