@@ -2,8 +2,18 @@
     "predictor_class": "EloPredictor",
     "league": "nfl",
     "parameters": {
-        "home_advantage": [0, 200],
-        "k": [1, 60]
+        "home_advantage": [
+            0,
+            200
+        ],
+        "k": [
+            1,
+            60
+        ],
+        "season_regression": [
+            0,
+            0.75
+        ]
     },
     "n_iter": 60
 }

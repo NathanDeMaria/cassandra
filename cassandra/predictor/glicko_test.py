@@ -21,6 +21,33 @@ def _game(home: str, away: str, home_score: int, away_score: int) -> Game:
     )
 
 
+def test_pass_season_regresses_the_rating_and_widens_the_rd() -> None:
+    """Both halves of an offseason, which Glicko only ever did one of."""
+    predictor = GlickoPredictor(
+        "test_league", initial_rd=350, season_rd_increase=100, season_regression=0.5
+    )
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    before = predictor.get_rating("Team A")
+
+    predictor.pass_season()
+    after = predictor.get_rating("Team A")
+
+    assert after.rating == pytest.approx(1500 + (before.rating - 1500) / 2)
+    assert after.rating_deviation > before.rating_deviation
+
+
+def test_pass_season_leaves_the_rating_alone_by_default() -> None:
+    predictor = GlickoPredictor("test_league", initial_rd=350, season_rd_increase=100)
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    before = predictor.get_rating("Team A")
+
+    predictor.pass_season()
+    after = predictor.get_rating("Team A")
+
+    assert after.rating == before.rating
+    assert after.rating_deviation > before.rating_deviation
+
+
 def test_glicko_save_load(tmp_path: Path) -> None:
     predictor = GlickoPredictor(
         "test_league",

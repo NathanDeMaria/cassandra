@@ -4,7 +4,7 @@ from typing import Any, Self
 import numpy as np
 from endgame.types import Game
 
-from .base_predictor import Predictor
+from .base_predictor import MEAN_RATING, Predictor, validated_regression
 from .opponent_prior import OpponentPriorManager
 from .types import Matchup, Prediction, Rating
 
@@ -20,10 +20,12 @@ class Elo538Predictor(Predictor):
         league: str,
         home_advantage: float = 105,
         k: float = 20,
+        season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, float] | None = None,
     ) -> None:
         super().__init__(league)
+        self._season_regression = validated_regression(season_regression)
         self._home_advantage = home_advantage
         self._k = k
 
@@ -66,7 +68,12 @@ class Elo538Predictor(Predictor):
         return prediction
 
     def get_rating(self, team: str) -> float:
-        return self._ratings.get(team, 1500)
+        return self._ratings.get(team, MEAN_RATING)
+
+    def pass_season(self) -> None:
+        self._ratings = {
+            team: self.regress(team, rating) for team, rating in self._ratings.items()
+        }
 
     def postrun_callback(self) -> None:
         self._prior_manager.save(self._ratings)
@@ -76,6 +83,7 @@ class Elo538Predictor(Predictor):
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
+            "season_regression": self._season_regression,
             "ratings": self._ratings,
         }
 

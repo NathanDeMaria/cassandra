@@ -19,9 +19,54 @@ class RatingsUnsupported(NotImplementedError):
     """
 
 
+MEAN_RATING = 1500.0
+
+
+def validated_regression(season_regression: float) -> float:
+    """Check a `season_regression` on its way into a predictor.
+
+    A free function rather than a `Predictor.__init__` parameter: every
+    dynamic construction site does `predictor_class(league, **config.params)`
+    against a `type[Predictor]`, so anything in the base signature is checked
+    against a config's `float | str` values and a `str` there -- Glicko's
+    `scoring_method` -- becomes a type error at every one of those sites.
+    The subclasses that have the parameter declare it themselves and run it
+    through here.
+    """
+    if not 0 <= season_regression <= 1:
+        # Above 1 reflects a team through its anchor -- last year's best team
+        # becomes this year's worst -- which is nonsense that a search over a
+        # mis-typed parameter range would otherwise explore for an hour
+        # before reporting a plausible-looking brier score.
+        raise ValueError(
+            f"season_regression must be in [0, 1], got {season_regression}"
+        )
+    return season_regression
+
+
 class Predictor(ABC):
     def __init__(self, league: str) -> None:
         self._league = league
+        # Overwritten by the subclasses that expose the parameter; 0.0 here
+        # means `regress` is a no-op for the ones that don't.
+        self._season_regression = 0.0
+        # Per-team regression targets. Empty means every team regresses
+        # toward MEAN_RATING, which is right for a league whose teams all
+        # play each other. It is *not* right for one like ncaafb, where D-III
+        # teams are effectively a separate closed pool: pulling them toward
+        # the same 1500 as an SEC team is what the anchor exists to fix, once
+        # there's a per-division prior to fill it with.
+        self._anchors: dict[str, float] = {}
+
+    @property
+    def league(self) -> str:
+        """Which league this predictor was built for.
+
+        Exposed because the replay needs it to pick up the league's team
+        alias map, and the predictor is the only thing it's handed that
+        knows.
+        """
+        return self._league
 
     @abstractmethod
     def predict_game(self, matchup: Matchup) -> Prediction:
@@ -77,6 +122,26 @@ class Predictor(ABC):
         (home_advantage, k, ...).
         """
         raise RatingsUnsupported(f"{cls.__name__} cannot be built from ratings")
+
+    def anchor(self, team: str) -> float:
+        """The rating this team regresses toward between seasons."""
+        return self._anchors.get(team, MEAN_RATING)
+
+    def regress(self, team: str, rating: float) -> float:
+        """One season's worth of reversion toward the team's anchor.
+
+        Without this a rating only ever moves by beating people, so a program
+        that dominates its own schedule accumulates forever: nothing in a
+        replay of twenty seasons ever pulls it back. 538 reverts a third of
+        the way each offseason for the same reason.
+
+        Shared rather than written three times because the Elo family and
+        Glicko want the identical formula, and a version of it that differs
+        between models by a sign or a factor is the kind of bug that shows up
+        as a slightly worse brier score and nothing else.
+        """
+        anchor = self.anchor(team)
+        return anchor + (1 - self._season_regression) * (rating - anchor)
 
     def pass_week(self) -> None:
         pass

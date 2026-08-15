@@ -13,6 +13,10 @@
         "season_rd_increase": [
             0,
             250
+        ],
+        "season_regression": [
+            0,
+            0.75
         ]
     },
     "n_iter": 100

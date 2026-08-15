@@ -2,8 +2,18 @@
     "predictor_class": "Elo538Predictor",
     "league": "womens",
     "parameters": {
-        "home_advantage": [0, 200],
-        "k": [1, 59]
+        "home_advantage": [
+            0,
+            200
+        ],
+        "k": [
+            1,
+            59
+        ],
+        "season_regression": [
+            0,
+            0.75
+        ]
     },
     "n_iter": 60
 }

@@ -20,6 +20,24 @@ def _game(home: str, away: str, home_score: int, away_score: int) -> Game:
     )
 
 
+def test_season_regression() -> None:
+    predictor = Elo538Predictor("test_league", season_regression=0.5)
+    predictor.update_game(_game("Team A", "Team B", 21, 0))
+    winner = predictor.get_rating("Team A")
+    assert winner > 1500
+
+    predictor.pass_season()
+    assert predictor.get_rating("Team A") == pytest.approx(1500 + (winner - 1500) / 2)
+
+
+def test_no_regression_by_default() -> None:
+    predictor = Elo538Predictor("test_league")
+    predictor.update_game(_game("Team A", "Team B", 21, 0))
+    before = predictor.get_rating("Team A")
+    predictor.pass_season()
+    assert predictor.get_rating("Team A") == before
+
+
 def test_elo538_save_load(tmp_path: Path) -> None:
     predictor = Elo538Predictor("test_league", home_advantage=90, k=25)
     predictor.update_game(_game("Team A", "Team B", 3, 1))

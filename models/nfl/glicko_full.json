@@ -2,11 +2,31 @@
     "predictor_class": "GlickoPredictor",
     "league": "nfl",
     "parameters": {
-        "home_advantage": [0, 200],
-        "initial_rd": [80, 350],
-        "weekly_rd_increase": [0, 60],
-        "season_rd_increase": [0, 250],
-        "scoring_method": ["binary", "pythagorean", "sigmoid"]
+        "home_advantage": [
+            0,
+            200
+        ],
+        "initial_rd": [
+            80,
+            350
+        ],
+        "weekly_rd_increase": [
+            0,
+            60
+        ],
+        "season_rd_increase": [
+            0,
+            250
+        ],
+        "scoring_method": [
+            "binary",
+            "pythagorean",
+            "sigmoid"
+        ],
+        "season_regression": [
+            0,
+            0.75
+        ]
     },
     "n_iter": 150
 }

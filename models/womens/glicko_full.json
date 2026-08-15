@@ -22,6 +22,10 @@
             "binary",
             "pythagorean",
             "sigmoid"
+        ],
+        "season_regression": [
+            0,
+            0.75
         ]
     },
     "n_iter": 100

@@ -5,7 +5,7 @@ from typing import Any, NamedTuple, Self
 from endgame.types import Game
 
 from ..scoring import get_scoring_function
-from .base_predictor import Predictor
+from .base_predictor import MEAN_RATING, Predictor, validated_regression
 from .opponent_prior import OpponentPriorManager
 from .types import Matchup, Prediction, Rating
 
@@ -34,10 +34,12 @@ class GlickoPredictor(Predictor):
         season_rd_increase: float = 120,
         initial_rd: float = 216,
         scoring_method: str = "binary",
+        season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, _Rating] | None = None,
     ) -> None:
         super().__init__(league)
+        self._season_regression = validated_regression(season_regression)
         self._home_advantage = home_advantage
         self._k = k
         self._weekly_rd_increase = weekly_rd_increase
@@ -110,7 +112,7 @@ class GlickoPredictor(Predictor):
         self._ratings[team] = _Rating(rating_new, rd_new)
 
     def get_rating(self, team: str) -> _Rating:
-        return self._ratings.get(team, _Rating(1500, self._initial_rd))
+        return self._ratings.get(team, _Rating(MEAN_RATING, self._initial_rd))
 
     def pass_week(self) -> None:
         self._ratings = {
@@ -127,7 +129,7 @@ class GlickoPredictor(Predictor):
     def pass_season(self):
         self._ratings = {
             team: _Rating(
-                rating.rating,
+                self.regress(team, rating.rating),
                 min(
                     self._initial_rd,
                     math.sqrt(rating.rating_deviation**2 + self._season_rd_increase**2),
@@ -150,6 +152,7 @@ class GlickoPredictor(Predictor):
             "season_rd_increase": self._season_rd_increase,
             "initial_rd": self._initial_rd,
             "scoring_method": self._scoring_method,
+            "season_regression": self._season_regression,
             "ratings": {
                 team: [r.rating, r.rating_deviation]
                 for team, r in self._ratings.items()

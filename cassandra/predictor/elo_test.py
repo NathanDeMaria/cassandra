@@ -35,6 +35,81 @@ def test_elo():
     )
 
 
+def test_no_regression_by_default() -> None:
+    """The default has to be a no-op: every release published so far omits it."""
+    predictor = EloPredictor("test_league")
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    before = predictor.get_rating("Team A")
+    predictor.pass_season()
+    assert predictor.get_rating("Team A") == before
+
+
+def test_season_regression_pulls_both_directions_toward_the_mean() -> None:
+    predictor = EloPredictor("test_league", season_regression=0.5)
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    winner = predictor.get_rating("Team A")
+    loser = predictor.get_rating("Team B")
+
+    predictor.pass_season()
+
+    assert predictor.get_rating("Team A") == pytest.approx(1500 + (winner - 1500) / 2)
+    assert predictor.get_rating("Team B") == pytest.approx(1500 + (loser - 1500) / 2)
+
+
+def test_full_regression_forgets_the_season() -> None:
+    predictor = EloPredictor("test_league", season_regression=1.0)
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    predictor.pass_season()
+    assert predictor.get_rating("Team A") == pytest.approx(1500)
+
+
+def test_regression_targets_the_anchor_when_there_is_one() -> None:
+    """The seam per-division priors come in through.
+
+    A team whose anchor is 1200 regresses toward 1200, not toward the 1500
+    that only makes sense for a league whose teams all play each other.
+    """
+    predictor = EloPredictor("test_league", season_regression=1.0)
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    predictor._anchors["Team A"] = 1200
+    predictor.pass_season()
+    assert predictor.get_rating("Team A") == pytest.approx(1200)
+    assert predictor.get_rating("Team B") == pytest.approx(1500)
+
+
+def test_out_of_range_regression_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        EloPredictor("test_league", season_regression=1.5)
+    with pytest.raises(ValueError):
+        EloPredictor("test_league", season_regression=-0.1)
+
+
+def test_season_regression_round_trips(tmp_path: Path) -> None:
+    predictor = EloPredictor("test_league", season_regression=0.25)
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    save_path = tmp_path / "elo.json"
+    predictor.save_state(save_path)
+
+    loaded = EloPredictor.load_state(save_path)
+    loaded.pass_season()
+    predictor.pass_season()
+    assert loaded.get_rating("Team A") == pytest.approx(predictor.get_rating("Team A"))
+
+
+def test_old_state_without_regression_still_loads() -> None:
+    """A state file written before the parameter existed."""
+    loaded = EloPredictor.from_state_dict(
+        {
+            "league": "test_league",
+            "home_advantage": 80,
+            "k": 15,
+            "ratings": {"Team A": 1600},
+        }
+    )
+    loaded.pass_season()
+    assert loaded.get_rating("Team A") == 1600
+
+
 def test_elo_save_load(tmp_path: Path) -> None:
     predictor = EloPredictor("test_league", home_advantage=80, k=15)
     predictor.update_game(_game("Team A", "Team B", 2, 1))
