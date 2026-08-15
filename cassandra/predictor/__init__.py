@@ -1,5 +1,6 @@
 from .base_predictor import Predictor, RatingsUnsupported
 from .config import (
+    OptimizationConfig,
     PredictorConfig,
     UnknownPredictorClass,
     load_predictor,
