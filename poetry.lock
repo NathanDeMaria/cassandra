@@ -399,6 +399,28 @@ urllib3 = ">=1.25.4,<2.2.0 || >2.2.0,<3"
 crt = ["awscrt (==0.32.2)"]
 
 [[package]]
+name = "call-it-what-you-want"
+version = "0.1.0"
+description = "Translate between names and ID schemes for sports teams/athletes/etc."
+optional = false
+python-versions = ">=3.12"
+groups = ["main"]
+files = []
+develop = false
+
+[package.dependencies]
+fire = {version = ">=0.7.0", optional = true}
+
+[package.extras]
+cli = ["fire (>=0.7.0)"]
+
+[package.source]
+type = "git"
+url = "https://github.com/NathanDeMaria/call-it-what-you-want.git"
+reference = "ac63099a8a9ab47b2c284322a502c9962bf9d023"
+resolved_reference = "ac63099a8a9ab47b2c284322a502c9962bf9d023"
+
+[[package]]
 name = "cffi"
 version = "2.0.0"
 description = "Foreign Function Interface for Python calling C code."
@@ -3402,4 +3424,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "1bb3ae3e50a6298aacafbef15e5a3f631f84dc19f4418a9dc3a5bdc6bf421d4f"
+content-hash = "b5189a086076a7e903e155a95ebc5d9acb22e263f3211083bf40f4d3a66fd04d"

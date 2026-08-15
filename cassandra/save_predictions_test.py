@@ -2,8 +2,10 @@ from datetime import datetime, timezone
 from typing import Any, Self
 
 import pytest
+from call_it_what_you_want import teams_from_csv
 from endgame.types import Game, OverlappingWeeksError, Season, Week
 
+from .aliases import TeamNamer
 from .predictor import Elo538Predictor, EloPredictor, GlickoPredictor, Predictor
 from .predictor.opponent_prior import OpponentPriorManager
 from .predictor.types import Matchup, Prediction
@@ -124,6 +126,59 @@ def test_generate_predictions_walks_seasons_chronologically() -> None:
     list(generate_predictions(predictor, [newer, older]))
 
     assert predictor.seen == ["older", "newer"]
+
+
+def _renamed_game(home: str, away: str, year: int) -> Game:
+    return Game(
+        home=home,
+        away=away,
+        home_score=1,
+        away_score=0,
+        neutral_site=False,
+        completed=True,
+        date=datetime(year, 11, 6, tzinfo=timezone.utc),
+        game_id=f"{year}",
+    )
+
+
+def test_generate_predictions_canonicalizes_team_names() -> None:
+    """A school renamed mid-history is one team, with one rating.
+
+    Without this the old name keeps its rating forever -- nothing ever plays
+    it again -- and the new one starts over at 1500.
+    """
+    seasons = [
+        Season([Week([_renamed_game("Old Name", "Rival", 2022)], 1)], 2022),
+        Season([Week([_renamed_game("New Name", "Rival", 2023)], 1)], 2023),
+    ]
+    namer = TeamNamer(
+        teams_from_csv(
+            [
+                "espn_id,name,year,source",
+                "1,Old Name,2022,espn",
+                "1,New Name,2023,espn",
+                "2,Rival,2023,espn",
+            ]
+        )
+    )
+
+    predictor = EloPredictor("test_league")
+    results = list(generate_predictions(predictor, seasons, namer=namer))
+
+    assert [r.game.home for r in results] == ["New Name", "New Name"]
+    # Both wins landed on one team rather than being split across two names.
+    assert "Old Name" not in predictor.ratings
+    assert predictor.get_rating("New Name") > 1500
+
+
+def test_generate_predictions_leaves_names_alone_without_a_registry() -> None:
+    """The default path for a league the registry doesn't cover."""
+    season = Season([Week([_renamed_game("Old Name", "Rival", 2022)], 1)], 2022)
+    predictor = EloPredictor("no-such-league")
+
+    (result,) = list(generate_predictions(predictor, [season]))
+
+    assert result.game.home == "Old Name"
 
 
 def test_generate_predictions_rejects_misgrouped_weeks() -> None:

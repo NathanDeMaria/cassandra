@@ -11,6 +11,7 @@ import pandas as pd
 from endgame.types import Season, iter_weeks
 from endgame_aws import Config, list_all_keys, read_seasons
 
+from .aliases import TeamNamer
 from .odds import Odds, OddsDatabase
 from .predictor import GameResult, Predictor
 
@@ -28,8 +29,17 @@ async def read_all_seasons(league: str, bucket: str) -> AsyncIterator[Season]:
 
 
 def generate_predictions(
-    predictor: Predictor, seasons: Iterable[Season], post_callbacks: bool = False
+    predictor: Predictor,
+    seasons: Iterable[Season],
+    post_callbacks: bool = False,
+    namer: TeamNamer | None = None,
 ) -> Iterator[GameResult]:
+    # Team names are canonicalized here, before anything sees a game, so the
+    # predictor, the predictions and the release all agree on who a team is.
+    # Defaulted rather than required: every caller wants the league's
+    # registry, and a test that wants no renaming passes TeamNamer.empty().
+    if namer is None:
+        namer = TeamNamer.for_league(predictor.league)
     # Chronological order matters here: update_game feeds each result back
     # into the predictor, so replaying games out of order trains it on
     # results from the future. iter_weeks raises if a season's weeks overlap
@@ -38,6 +48,7 @@ def generate_predictions(
     for season in sorted(seasons, key=lambda s: s.year):
         for week in iter_weeks(season):
             for game in week.games_in_order:
+                game = namer.apply(game)
                 prediction = predictor.update_game(game)
                 yield GameResult(
                     prediction, game, year=season.year, week_number=week.number
