@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.venv/
+.git/
+.github/
+reasoning/
+logs/
+releases/
+*.env
+
+# NOTE: config.json is deliberately NOT ignored. The runtime stage copies it to
+# /root/.aws-batch/config.json, which is where endgame_aws's Config finds the
+# bucket name. Without it every job dies at startup on FileNotFoundError.
+
+# NOTE: models/ is deliberately NOT ignored either, despite being *.json. The
+# batch manifest is derived from those configs at runtime, so they are what
+# tells the array job how many children to run and which model each one is.
