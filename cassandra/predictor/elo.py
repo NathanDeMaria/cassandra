@@ -3,7 +3,12 @@ from typing import Any, Self
 
 from endgame.types import Game
 
-from .base_predictor import MEAN_RATING, Predictor, validated_regression
+from .base_predictor import (
+    MEAN_RATING,
+    Predictor,
+    resolved_anchors,
+    validated_regression,
+)
 from .types import Matchup, Prediction, Rating
 
 
@@ -15,8 +20,10 @@ class EloPredictor(Predictor):
         k: float = 20,
         season_regression: float = 0.0,
         ratings: dict[str, float] | None = None,
+        anchors: Mapping[str, float] | None = None,
     ) -> None:
         super().__init__(league)
+        self._anchors = resolved_anchors(league, anchors)
         self._season_regression = validated_regression(season_regression)
         self._ratings: dict[str, float] = ratings or {}
         self._home_advantage = home_advantage
@@ -63,6 +70,7 @@ class EloPredictor(Predictor):
             "k": self._k,
             "season_regression": self._season_regression,
             "ratings": self._ratings,
+            "anchors": self._anchors,
         }
 
     @classmethod

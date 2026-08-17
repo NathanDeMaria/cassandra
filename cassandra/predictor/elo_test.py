@@ -69,12 +69,39 @@ def test_regression_targets_the_anchor_when_there_is_one() -> None:
     A team whose anchor is 1200 regresses toward 1200, not toward the 1500
     that only makes sense for a league whose teams all play each other.
     """
-    predictor = EloPredictor("test_league", season_regression=1.0)
+    predictor = EloPredictor(
+        "test_league", season_regression=1.0, anchors={"Team A": 1200}
+    )
     predictor.update_game(_game("Team A", "Team B", 1, 0))
-    predictor._anchors["Team A"] = 1200
     predictor.pass_season()
     assert predictor.get_rating("Team A") == pytest.approx(1200)
     assert predictor.get_rating("Team B") == pytest.approx(1500)
+
+
+def test_anchors_round_trip_through_the_state_dict() -> None:
+    """A release replays against the anchors it was fit with.
+
+    Recomputing them on load instead would silently re-rate a published
+    model whenever the anchor file changed underneath it.
+    """
+    predictor = EloPredictor("test_league", anchors={"Team A": 1200})
+
+    restored = EloPredictor.from_state_dict(predictor.state_dict())
+
+    assert restored._anchors == {"Team A": 1200}
+
+
+def test_explicit_empty_anchors_are_not_replaced_by_the_saved_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`{}` means no anchors, not "go find some"."""
+    monkeypatch.setattr(
+        "cassandra.predictor.base_predictor.load_anchors",
+        lambda league: {"Team A": 1200},
+    )
+
+    assert EloPredictor("test_league", anchors={})._anchors == {}
+    assert EloPredictor("test_league")._anchors == {"Team A": 1200}
 
 
 def test_out_of_range_regression_is_rejected() -> None:

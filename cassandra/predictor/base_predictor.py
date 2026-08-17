@@ -1,12 +1,17 @@
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from functools import cache
 from pathlib import Path
 from typing import Any, Self
 
 from endgame.types import Game
 
+from cassandra.constants import CASSANDRA_HOME
+
 from .types import Matchup, Prediction, Rating
+
+_ANCHOR_DIR = CASSANDRA_HOME / "predictor" / "data"
 
 
 class RatingsUnsupported(NotImplementedError):
@@ -44,18 +49,55 @@ def validated_regression(season_regression: float) -> float:
     return season_regression
 
 
+@cache
+def load_anchors(league: str) -> Mapping[str, float]:
+    """A league's saved per-team regression targets, empty if it has none.
+
+    Empty is the normal case: only ncaafb spans divisions, and even there
+    the file has to be built by `division_anchors.py` first. A league
+    without one regresses everybody toward MEAN_RATING, which is what a
+    league whose teams all play each other wants anyway.
+
+    Cached because an optimization run builds a predictor per probe --
+    hundreds of them -- and they'd all read the same file. Callers copy it
+    rather than holding the shared mapping.
+    """
+    path = _ANCHOR_DIR / f"{league}_division_anchors.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def resolved_anchors(
+    league: str, anchors: Mapping[str, float] | None
+) -> dict[str, float]:
+    """The anchors a predictor should use, given what it was handed.
+
+    A free function for the same reason `validated_regression` is: this
+    can't go in `Predictor.__init__`'s signature without every
+    `predictor_class(league, **config.params)` site type-checking a config's
+    `float | str` values against it.
+
+    `None` means "use the league's saved anchors", which is what a fresh
+    replay wants. An explicit `{}` means "no anchors" and is left alone: a
+    release that shipped without them has to replay without them, or its
+    ratings stop matching what it was fit against.
+    """
+    return dict(load_anchors(league) if anchors is None else anchors)
+
+
 class Predictor(ABC):
     def __init__(self, league: str) -> None:
         self._league = league
         # Overwritten by the subclasses that expose the parameter; 0.0 here
         # means `regress` is a no-op for the ones that don't.
         self._season_regression = 0.0
-        # Per-team regression targets. Empty means every team regresses
+        # Per-team regression targets, set by the subclasses that take them
+        # (through `resolved_anchors`). Empty means every team regresses
         # toward MEAN_RATING, which is right for a league whose teams all
         # play each other. It is *not* right for one like ncaafb, where D-III
         # teams are effectively a separate closed pool: pulling them toward
-        # the same 1500 as an SEC team is what the anchor exists to fix, once
-        # there's a per-division prior to fill it with.
+        # the same 1500 as an SEC team is what the anchor exists to fix.
         self._anchors: dict[str, float] = {}
 
     @property

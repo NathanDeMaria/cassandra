@@ -5,7 +5,12 @@ from typing import Any, NamedTuple, Self
 from endgame.types import Game
 
 from ..scoring import get_scoring_function
-from .base_predictor import MEAN_RATING, Predictor, validated_regression
+from .base_predictor import (
+    MEAN_RATING,
+    Predictor,
+    resolved_anchors,
+    validated_regression,
+)
 from .opponent_prior import OpponentPriorManager
 from .types import Matchup, Prediction, Rating
 
@@ -37,8 +42,10 @@ class GlickoPredictor(Predictor):
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, _Rating] | None = None,
+        anchors: Mapping[str, float] | None = None,
     ) -> None:
         super().__init__(league)
+        self._anchors = resolved_anchors(league, anchors)
         self._season_regression = validated_regression(season_regression)
         self._home_advantage = home_advantage
         self._k = k
@@ -157,6 +164,7 @@ class GlickoPredictor(Predictor):
                 team: [r.rating, r.rating_deviation]
                 for team, r in self._ratings.items()
             },
+            "anchors": self._anchors,
         }
 
     @classmethod

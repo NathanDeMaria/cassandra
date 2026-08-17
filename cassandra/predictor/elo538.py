@@ -4,7 +4,12 @@ from typing import Any, Self
 import numpy as np
 from endgame.types import Game
 
-from .base_predictor import MEAN_RATING, Predictor, validated_regression
+from .base_predictor import (
+    MEAN_RATING,
+    Predictor,
+    resolved_anchors,
+    validated_regression,
+)
 from .opponent_prior import OpponentPriorManager
 from .types import Matchup, Prediction, Rating
 
@@ -23,8 +28,10 @@ class Elo538Predictor(Predictor):
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, float] | None = None,
+        anchors: Mapping[str, float] | None = None,
     ) -> None:
         super().__init__(league)
+        self._anchors = resolved_anchors(league, anchors)
         self._season_regression = validated_regression(season_regression)
         self._home_advantage = home_advantage
         self._k = k
@@ -85,6 +92,7 @@ class Elo538Predictor(Predictor):
             "k": self._k,
             "season_regression": self._season_regression,
             "ratings": self._ratings,
+            "anchors": self._anchors,
         }
 
     @classmethod
