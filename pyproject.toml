@@ -7,18 +7,15 @@ authors = []
 [tool.poetry.dependencies]
 python = "^3.14"
 endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "0c21854d76a0b5ddb8f71842cb4ddb1ecc2f0408", subdirectory = "py-endgame-aws"}
-# Team identity: which names are the same team. Pure python apart from the
-# `cli` extra, so it costs a serving install one dependency it already has.
+# Team knowledge: which names are the same team, and what division and
+# conference each played in. Pure python apart from its extras, so it costs a
+# serving install one dependency it already has.
 #
 # Pinned to a rev like endgame_aws is: unpinned, `poetry install` moves the
 # team data under a replay without anything in the diff saying so, and a
 # team's rating history depends on its identity being the same from one run
 # to the next. Bump it deliberately with `poetry update`.
-#
-# The `cli` extra is the `ciwyw` command, which is how rows sync_teams.py
-# recorded locally get back into the package. Included because that handoff
-# is the point of recording them.
-call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "ac63099a8a9ab47b2c284322a502c9962bf9d023", extras = ["cli"]}
+call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "15f23685a42466d3273a18430c19d2b5daee2586"}
 aiofiles = "^25.1.0"
 numpy = "^2.4.0"
 pandas = "^2.3.3"

@@ -38,7 +38,12 @@
     }
   },
   "remoteUser": "dev",
+  "shutdownAction": "none",
+  "remoteEnv": {
+    "GH_TOKEN": "${localEnv:GH_TOKEN}"
+  },
   "postCreateCommand": "sudo chown -R $(id -u):$(id -g) /commandhistory",
+  "postStartCommand": "nohup flock -n /home/dev/.claude-rc.lock claude rc --name cassandra >>/tmp/claude-rc.log 2>&1 &",
   "mounts": [
     "source=bashhistory-volume,target=/commandhistory,type=volume",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.cassandra,target=/home/dev/.cassandra,type=bind,consistency=cached",

@@ -2,10 +2,9 @@ from datetime import datetime, timezone
 from typing import Any, Self
 
 import pytest
-from call_it_what_you_want import teams_from_csv
+from call_it_what_you_want import TeamNamer, teams_from_csv
 from endgame.types import Game, OverlappingWeeksError, Season, Week
 
-from .aliases import TeamNamer
 from .predictor import Elo538Predictor, EloPredictor, GlickoPredictor, Predictor
 from .predictor.opponent_prior import OpponentPriorManager
 from .predictor.types import Matchup, Prediction

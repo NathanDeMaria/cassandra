@@ -8,10 +8,10 @@ from typing import Any, AsyncIterable, AsyncIterator, Iterable, Iterator
 
 import aiofiles
 import pandas as pd
+from call_it_what_you_want import TeamNamer
 from endgame.types import Season, iter_weeks
 from endgame_aws import Config, list_all_keys, read_seasons
 
-from .aliases import TeamNamer
 from .odds import Odds, OddsDatabase
 from .predictor import GameResult, Predictor
 
