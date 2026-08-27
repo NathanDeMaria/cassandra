@@ -1,2 +1,7 @@
 [virtualenvs]
 create = true
+# The venv lands at ${workspaceFolder}/.venv rather than in poetry's cache, so
+# devcontainer.json can point VS Code's interpreter at a fixed path instead of
+# a hashed one under ~/.cache/pypoetry. The Batch image opts out of venvs
+# entirely -- see POETRY_VIRTUALENVS_CREATE in .devcontainer/Dockerfile.
+in-project = true

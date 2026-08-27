@@ -11,7 +11,7 @@
         "editor.rulers": [
           88
         ],
-        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
         "editor.formatOnSave": true,
         "python.testing.pytestArgs": [
           "."
@@ -42,7 +42,7 @@
   "remoteEnv": {
     "GH_TOKEN": "${localEnv:GH_TOKEN}"
   },
-  "postCreateCommand": "sudo chown -R $(id -u):$(id -g) /commandhistory",
+  "postCreateCommand": "sudo chown -R $(id -u):$(id -g) /commandhistory && poetry install",
   "postStartCommand": "nohup flock -n /home/dev/.claude-rc.lock claude rc --name cassandra >>/tmp/claude-rc.log 2>&1 &",
   "mounts": [
     "source=bashhistory-volume,target=/commandhistory,type=volume",
