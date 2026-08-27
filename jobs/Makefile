@@ -14,4 +14,12 @@ apply: _init
 update:
 	terraform init -upgrade
 
-.PHONY: _init plan apply update
+# What CI runs on every branch. Needs no credentials and no backend, so it
+# works anywhere -- including before the OIDC roles are wired up, where it is
+# the only signal the terraform workflow gives.
+lint:
+	terraform fmt -check -recursive
+	terraform init -backend=false -input=false
+	terraform validate
+
+.PHONY: _init plan apply update lint
