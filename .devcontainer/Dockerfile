@@ -68,7 +68,14 @@ ENV POETRY_VIRTUALENVS_CREATE=false
 # `fit` carries scikit-learn, bayes_opt and fire -- optimize and publish are
 # both fitting paths, so the deployed image needs the group the webapp
 # deliberately doesn't. See the comment on the group in pyproject.toml.
-RUN poetry install --no-root --only main --with fit
+#
+# `--only main,fit`, NOT `--only main --with fit`: poetry ignores `--with`
+# whenever `--only` is given, and says so in a line that scrolls past in a
+# green build. That spelling installed neither scikit-learn nor
+# bayesian-optimization, and the image looked fine -- `fire` comes in
+# transitively through endgame, so the one name you'd think to check was
+# there. Every optimize job would have died importing bayes_opt.
+RUN poetry install --no-root --only main,fit
 
 # `Config.init_from_file` looks here second, and it's the only one of its two
 # candidates worth using: the first is the *package* root, which for an
