@@ -5,7 +5,6 @@ import numpy as np
 from endgame.types import Game
 
 from .base_predictor import (
-    MEAN_RATING,
     Predictor,
     resolved_anchors,
     validated_regression,
@@ -75,7 +74,11 @@ class Elo538Predictor(Predictor):
         return prediction
 
     def get_rating(self, team: str) -> float:
-        return self._ratings.get(team, MEAN_RATING)
+        # See EloPredictor.get_rating. The opponent priors already cover most
+        # teams by the time the search runs, but they're built by a warm-up
+        # replay that comes through here first, so the anchor is what that
+        # replay -- and so the priors it saves -- start from.
+        return self._ratings.get(team, self.anchor(team))
 
     def pass_season(self) -> None:
         self._ratings = {

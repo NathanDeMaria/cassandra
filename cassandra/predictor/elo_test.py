@@ -78,6 +78,43 @@ def test_regression_targets_the_anchor_when_there_is_one() -> None:
     assert predictor.get_rating("Team B") == pytest.approx(1500)
 
 
+def test_an_unplayed_team_starts_at_its_anchor() -> None:
+    predictor = EloPredictor("test_league", anchors={"Team A": 1200})
+
+    assert predictor.get_rating("Team A") == 1200
+    assert predictor.get_rating("Team B") == 1500
+
+
+def test_the_anchor_still_bites_with_regression_switched_off() -> None:
+    """The case that matters: `season_regression` tunes to 0 in every ncaafb model.
+
+    `regress` is the only other thing that reads an anchor, and at 0 it's a
+    no-op -- so if the starting rating didn't come from the anchor, the whole
+    division fit would be inert exactly where it was built to be used.
+    """
+    predictor = EloPredictor(
+        "test_league", season_regression=0.0, anchors={"Team A": 1200}
+    )
+
+    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    predictor.pass_season()
+
+    assert predictor.get_rating("Team A") < 1500
+
+
+def test_a_cross_tier_matchup_is_predicted_from_the_gap() -> None:
+    """The 300-point gap the tier fit found is what the first meeting predicts."""
+    predictor = EloPredictor(
+        "test_league", home_advantage=0, anchors={"Small": 1200, "Big": 1500}
+    )
+
+    prediction = predictor.predict_game(_game("Small", "Big", 0, 0))
+
+    assert prediction.team1_win_prob == pytest.approx(
+        1 / (1 + 10 ** (300 / 400)), abs=1e-9
+    )
+
+
 def test_anchors_round_trip_through_the_state_dict() -> None:
     """A release replays against the anchors it was fit with.
 

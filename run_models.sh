@@ -6,8 +6,11 @@
 # is an optimization config. Cheap configs (low n_iter) run first so mistakes
 # surface before the expensive ones burn an hour.
 #
-# Configs are checked in; results, state, priors and logs are generated and
-# land under ~/.cassandra.
+# Leagues in ANCHOR_LEAGUES get their division anchors built first, if they
+# don't have them yet -- see that variable for why those leagues and not others.
+#
+# Configs are checked in; results, state, priors, anchors and logs are generated
+# and land under ~/.cassandra.
 #
 #   ./run_models.sh                     # everything
 #   ./run_models.sh --dry-run           # print the plan, touch nothing
@@ -24,6 +27,16 @@ MODELS_DIR="$REPO_ROOT/models"
 RESULTS_DIR="$CASSANDRA_HOME/models"
 LOG_ROOT="$CASSANDRA_HOME/logs/$(date +%Y-%m-%d_%H-%M-%S)"
 
+# Leagues whose teams don't all play each other, and so need a per-team anchor
+# rather than one league-wide 1500 to start from and regress toward.
+#
+# ncaafb is the obvious one -- it spans FBS through D-III, and a D-III team's
+# schedule never touches FBS. mens and womens are all D-I, but division_anchors
+# tiers by conference within a division, which is what separates the ACC from
+# the MEAC. nfl is deliberately absent: 32 teams who all play each other have
+# nothing for a tier fit to find.
+ANCHOR_LEAGUES=(ncaafb mens womens)
+
 dry_run=false
 skip_eval=false
 leagues=()
@@ -33,7 +46,10 @@ while [[ $# -gt 0 ]]; do
         --dry-run) dry_run=true; shift ;;
         --skip-eval) skip_eval=true; shift ;;
         --league) leagues+=("$2"); shift 2 ;;
-        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | cut -c3-; exit 0 ;;
+        # Everything from below the shebang down to the first line of code, so
+        # editing the comment block above can't leave --help printing half of it.
+        -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1' "${BASH_SOURCE[0]}" \
+            | cut -c3-; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -85,6 +101,45 @@ mkdir -p "$LOG_ROOT"
 failures=()
 ran=0
 
+# Build any missing division anchors before the first model is optimized. The
+# anchor is where a team starts and what it regresses toward, so a model tuned
+# without one is fit against a different rating scale than the same model with
+# one -- the anchors have to be in place before anything is scored, not after.
+#
+# `--if-missing` makes this a no-op once a league has its file, so the cost on a
+# normal rerun is one interpreter start per league. Refitting every run is
+# deliberately not what happens: the anchors move every rating the run produces,
+# so replacing them is something you ask for by deleting the file.
+for league in "${ANCHOR_LEAGUES[@]}"; do
+    if [[ ${#leagues[@]} -gt 0 ]] && ! printf '%s\n' "${leagues[@]}" | grep -qxF "$league"; then
+        continue
+    fi
+    # Skip a league with no configs in scope -- there's nothing it would feed.
+    if ! cut -f1 <<< "$work_list" | grep -qxF "$league"; then
+        continue
+    fi
+
+    echo
+    echo "=== $league / division anchors ==="
+    if $dry_run; then
+        echo "  would run: poetry run python division_anchors.py" \
+            "--league $league --write --if-missing"
+        continue
+    fi
+
+    if ! (cd "$REPO_ROOT" && poetry run python division_anchors.py \
+            --league "$league" --write --if-missing) \
+            2>&1 | tee "$LOG_ROOT/$league-division_anchors.log"; then
+        # Not fatal: a league with no anchor file rates every team from the
+        # same 1500, which is what it did before anchors existed, so the run
+        # still produces a table. Recorded as a failure anyway, so the exit
+        # code says the models underneath it were fit on the unanchored scale.
+        echo "  FAILED to build anchors for $league" \
+            "(log: $LOG_ROOT/$league-division_anchors.log)" >&2
+        failures+=("$league/division_anchors")
+    fi
+done
+
 while IFS=$'\t' read -r league config predictor_class n_iter prior_file; do
     if [[ ${#leagues[@]} -gt 0 ]] && ! printf '%s\n' "${leagues[@]}" | grep -qxF "$league"; then
         continue
@@ -126,7 +181,9 @@ fi
 
 if [[ ${#failures[@]} -gt 0 ]]; then
     echo
-    echo "${#failures[@]} of $ran optimizations failed:" >&2
+    # "steps", not "optimizations": an anchor build can land in here too, and
+    # it isn't one of the $ran optimizations.
+    echo "${#failures[@]} step(s) failed ($ran optimization(s) ran):" >&2
     printf '  %s\n' "${failures[@]}" >&2
 fi
 

@@ -4,7 +4,6 @@ from typing import Any, Self
 from endgame.types import Game
 
 from .base_predictor import (
-    MEAN_RATING,
     Predictor,
     resolved_anchors,
     validated_regression,
@@ -56,7 +55,12 @@ class EloPredictor(Predictor):
         return prediction
 
     def get_rating(self, team: str) -> float:
-        return self._ratings.get(team, MEAN_RATING)
+        # A team we haven't seen play starts at its anchor, not at the league
+        # mean: for ncaafb that's its division's fitted level, which is the
+        # only moment the tier gap can enter a rating. Once a D-III team has
+        # played, every result it has is against other D-III teams, so nothing
+        # downstream can put it on the same scale as an FBS team.
+        return self._ratings.get(team, self.anchor(team))
 
     def pass_season(self) -> None:
         self._ratings = {

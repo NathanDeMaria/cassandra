@@ -38,6 +38,18 @@ def test_no_regression_by_default() -> None:
     assert predictor.get_rating("Team A") == before
 
 
+def test_an_unplayed_team_starts_at_its_anchor() -> None:
+    """Same seam as EloPredictor's, and it has to survive the priors.
+
+    An empty priors file leaves every team unrated, which is when the anchor
+    gets to decide where they start.
+    """
+    predictor = Elo538Predictor("test_league", anchors={"Team A": 1200})
+
+    assert predictor.get_rating("Team A") == 1200
+    assert predictor.get_rating("Team B") == 1500
+
+
 def test_elo538_save_load(tmp_path: Path) -> None:
     predictor = Elo538Predictor("test_league", home_advantage=90, k=25)
     predictor.update_game(_game("Team A", "Team B", 3, 1))

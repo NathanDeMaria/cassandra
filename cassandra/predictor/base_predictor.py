@@ -166,7 +166,19 @@ class Predictor(ABC):
         raise RatingsUnsupported(f"{cls.__name__} cannot be built from ratings")
 
     def anchor(self, team: str) -> float:
-        """The rating this team regresses toward between seasons."""
+        """Where this team's rating sits before any of its games are seen.
+
+        Both the rating a team enters the replay at and the one `regress`
+        pulls it back toward. Those have to be the same number: a team that
+        starts at its division's level and reverts to the league mean would
+        have the anchor slowly undone every offseason, and one that starts at
+        the mean never gets to the anchor at all -- with `season_regression`
+        tuned to 0, as it is in every ncaafb model, `regress` is a no-op and
+        the starting value is the *only* thing the anchor gets to say.
+
+        Falls back to MEAN_RATING for a team with no anchor, which is every
+        team in a league whose divisions all play each other.
+        """
         return self._anchors.get(team, MEAN_RATING)
 
     def regress(self, team: str, rating: float) -> float:

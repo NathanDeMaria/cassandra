@@ -6,7 +6,6 @@ from endgame.types import Game
 
 from ..scoring import get_scoring_function
 from .base_predictor import (
-    MEAN_RATING,
     Predictor,
     resolved_anchors,
     validated_regression,
@@ -119,7 +118,11 @@ class GlickoPredictor(Predictor):
         self._ratings[team] = _Rating(rating_new, rd_new)
 
     def get_rating(self, team: str) -> _Rating:
-        return self._ratings.get(team, _Rating(MEAN_RATING, self._initial_rd))
+        # See EloPredictor.get_rating. The rd stays `initial_rd`: knowing which
+        # division a team plays in says where its rating starts, not how sure
+        # we are of it, and folding the anchor into the deviation would make
+        # D-III teams look better-measured than anyone has evidence for.
+        return self._ratings.get(team, _Rating(self.anchor(team), self._initial_rd))
 
     def pass_week(self) -> None:
         self._ratings = {

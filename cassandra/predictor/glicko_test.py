@@ -78,6 +78,21 @@ def test_glicko_save_load(tmp_path: Path) -> None:
     assert unknown.rating_deviation == 200
 
 
+def test_an_unplayed_team_starts_at_its_anchor() -> None:
+    """The anchor sets the rating and leaves the deviation alone.
+
+    Knowing a team's division says where its rating starts, not how sure we
+    are of it -- an anchored team is no better measured than any other team
+    that hasn't played.
+    """
+    predictor = GlickoPredictor("test_league", initial_rd=200, anchors={"Team A": 1200})
+
+    anchored = predictor.get_rating("Team A")
+    assert anchored.rating == 1200
+    assert anchored.rating_deviation == 200
+    assert predictor.get_rating("Team B").rating == 1500
+
+
 def test_state_round_trips_without_a_file() -> None:
     """save_state/load_state are one serialization of this, not a second format.
 
