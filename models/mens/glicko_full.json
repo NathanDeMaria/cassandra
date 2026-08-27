@@ -16,7 +16,7 @@
         ],
         "season_rd_increase": [
             0,
-            250
+            500
         ],
         "scoring_method": [
             "binary",
@@ -28,5 +28,5 @@
             0.75
         ]
     },
-    "n_iter": 200
+    "n_iter": 400
 }
