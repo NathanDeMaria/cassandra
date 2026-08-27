@@ -1,111 +1,55 @@
-import json
-from datetime import datetime
-from pathlib import Path
-
 import pytest
-from endgame.types import Game
 
+from .conftest import GameFactory
 from .glicko import GlickoPredictor
 
-
-def _game(home: str, away: str, home_score: int, away_score: int) -> Game:
-    return Game(
-        home=home,
-        away=away,
-        home_score=home_score,
-        away_score=away_score,
-        neutral_site=False,
-        completed=True,
-        date=datetime(2023, 1, 1),
-        game_id="1",
-    )
+# The rating half of Glicko's behavior is checked against every model in
+# contract_test.py. What's here is the deviation, which only Glicko keeps.
 
 
-def test_pass_season_regresses_the_rating_and_widens_the_rd() -> None:
-    """Both halves of an offseason, which Glicko only ever did one of."""
+def test_pass_season_widens_the_rating_deviation(game: GameFactory) -> None:
+    """An offseason makes us less sure of a rating, whether or not it regresses."""
     predictor = GlickoPredictor(
         "test_league", initial_rd=350, season_rd_increase=100, season_regression=0.5
     )
-    predictor.update_game(_game("Team A", "Team B", 1, 0))
+    predictor.update_game(game("Team A", "Team B", 1, 0))
     before = predictor.get_rating("Team A")
 
     predictor.pass_season()
-    after = predictor.get_rating("Team A")
 
-    assert after.rating == pytest.approx(1500 + (before.rating - 1500) / 2)
-    assert after.rating_deviation > before.rating_deviation
+    assert predictor.get_rating("Team A").rating_deviation > before.rating_deviation
 
 
-def test_pass_season_leaves_the_rating_alone_by_default() -> None:
-    predictor = GlickoPredictor("test_league", initial_rd=350, season_rd_increase=100)
-    predictor.update_game(_game("Team A", "Team B", 1, 0))
-    before = predictor.get_rating("Team A")
+def test_an_anchored_team_is_no_better_measured_than_any_other(
+    game: GameFactory,
+) -> None:
+    """The anchor sets the rating and leaves the deviation alone.
 
-    predictor.pass_season()
-    after = predictor.get_rating("Team A")
+    Knowing a team's division says where its rating starts, not how sure we
+    are of it -- an anchored team that hasn't played is as unmeasured as one
+    with no anchor at all.
+    """
+    predictor = GlickoPredictor("test_league", initial_rd=200, anchors={"Team A": 1200})
 
-    assert after.rating == before.rating
-    assert after.rating_deviation > before.rating_deviation
+    assert predictor.get_rating("Team A").rating_deviation == 200
+    assert predictor.get_rating("Team B").rating_deviation == 200
 
 
-def test_glicko_save_load(tmp_path: Path) -> None:
+def test_save_load_keeps_the_deviations(tmp_path, game: GameFactory) -> None:
+    """The contract's round trip only pins the ratings; the rd has to survive too."""
     predictor = GlickoPredictor(
-        "test_league",
-        home_advantage=100,
-        k=60,
-        weekly_rd_increase=2,
-        season_rd_increase=100,
-        initial_rd=200,
-        scoring_method="binary",
+        "test_league", weekly_rd_increase=2, season_rd_increase=100, initial_rd=200
     )
-    predictor.update_game(_game("Team A", "Team B", 1, 0))
-    predictor.update_game(_game("Team C", "Team A", 2, 1))
+    predictor.update_game(game("Team A", "Team B", 1, 0))
+    predictor.update_game(game("Team C", "Team A", 2, 1))
     predictor.pass_week()
 
     save_path = tmp_path / "glicko.json"
     predictor.save_state(save_path)
-
     loaded = GlickoPredictor.load_state(save_path)
 
     for team in ("Team A", "Team B", "Team C"):
-        orig = predictor.get_rating(team)
-        restored = loaded.get_rating(team)
-        assert restored.rating == pytest.approx(orig.rating)
-        assert restored.rating_deviation == pytest.approx(orig.rating_deviation)
-
-    unknown = loaded.get_rating("Unknown")
-    assert unknown.rating == 1500
-    assert unknown.rating_deviation == 200
-
-
-def test_an_unplayed_team_starts_at_its_anchor() -> None:
-    """The anchor sets the rating and leaves the deviation alone.
-
-    Knowing a team's division says where its rating starts, not how sure we
-    are of it -- an anchored team is no better measured than any other team
-    that hasn't played.
-    """
-    predictor = GlickoPredictor("test_league", initial_rd=200, anchors={"Team A": 1200})
-
-    anchored = predictor.get_rating("Team A")
-    assert anchored.rating == 1200
-    assert anchored.rating_deviation == 200
-    assert predictor.get_rating("Team B").rating == 1500
-
-
-def test_state_round_trips_without_a_file() -> None:
-    """save_state/load_state are one serialization of this, not a second format.
-
-    A caller that already holds the data -- a web service reading a release --
-    goes through here instead of writing a temp file to read it back.
-    """
-    predictor = GlickoPredictor("test_league", k=60, initial_rd=200)
-    predictor.update_game(_game("Team A", "Team B", 1, 0))
-
-    state = predictor.state_dict()
-    assert json.loads(json.dumps(state)) == state
-
-    restored = GlickoPredictor.from_state_dict(state)
-    assert restored.get_rating("Team A") == pytest.approx(
-        predictor.get_rating("Team A")
-    )
+        assert loaded.get_rating(team).rating_deviation == pytest.approx(
+            predictor.get_rating(team).rating_deviation
+        )
+    assert loaded.get_rating("Unknown").rating_deviation == 200
