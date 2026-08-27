@@ -8,8 +8,9 @@ FROM python@sha256:b58de395e525ffb2dbc6804ed76d46f053885aa8ed0f3ba5df3da5be12e7b
 # root, and one user across every stage means ~/.cassandra and
 # ~/.aws-batch/config.json resolve to the same paths in a job as on a laptop.
 #
-# POETRY_VIRTUALENVS_CREATE below keeps poetry pointed at /usr/local, so it
-# needs three paths under it writable by dev:
+# The chown is for the runtime stage, which installs with no virtualenv and so
+# treats /usr/local as the environment. Three paths under it have to be
+# writable by dev:
 #   site-packages  installed packages
 #   bin            console scripts
 #   src            git checkouts. Poetry clones VCS deps (endgame_aws) into
@@ -17,9 +18,9 @@ FROM python@sha256:b58de395e525ffb2dbc6804ed76d46f053885aa8ed0f3ba5df3da5be12e7b
 #                  virtualenv that resolves to /usr/local/src, and a root-owned
 #                  one fails the install with EPERM.
 # The rest of the stdlib stays root-owned; chowning it would copy 53M into
-# this layer for nothing. This runs before the install below so the chown walks
-# an empty site-packages rather than copying every installed package into the
-# layer.
+# this layer for nothing. Here rather than in `runtime` so the chown walks an
+# empty site-packages: after the install it would copy every installed package
+# into the layer.
 RUN apt-get update && apt-get install -y --no-install-recommends sudo \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 dev \
@@ -42,25 +43,32 @@ RUN mkdir -p /home/dev/.aws /home/dev/.aws-batch /home/dev/.endgame
 
 # Poetry
 RUN curl -sSL https://install.python-poetry.org | python3 - --version 2.2.1
-ENV PATH /home/dev/.local/bin:${PATH}
-
-# Set here rather than read from poetry.toml: a venv would put the packages
-# somewhere `ENTRYPOINT ["python", ...]` doesn't look, so every Batch job
-# would start by failing to import cassandra. An env var beats the config
-# file, which leaves poetry.toml free to say whatever a laptop wants.
-ENV POETRY_VIRTUALENVS_CREATE=false
+ENV PATH=/home/dev/.local/bin:${PATH}
 
 COPY --chown=dev:dev poetry.* ./
 COPY --chown=dev:dev pyproject.toml ./
-# `fit` carries scikit-learn, bayes_opt and fire -- optimize and publish are
-# both fitting paths, so the deployed image needs the group the webapp
-# deliberately doesn't. See the comment on the group in pyproject.toml.
-RUN poetry install --no-root --only main --with fit
+
+# Deliberately no `poetry install` here. The two stages below want opposite
+# things from poetry -- runtime needs the packages where a bare `python` finds
+# them, the devcontainer wants the in-project venv poetry.toml asks for -- and
+# a shared install layer can only be one of those. Each stage installs for
+# itself; nobody builds both in one go, so the "shared" layer was never shared.
 
 
 # What actually gets deployed to Batch. Kept free of the dev tooling below so
 # the pushed image stays small and CI never builds the interactive extras.
 FROM base AS runtime
+
+# No venv, unlike the devcontainer: the entrypoint is `python`, not
+# `poetry run`, so the packages have to be somewhere the interpreter looks
+# without being activated. An env var rather than editing poetry.toml, which
+# is free to keep asking for the venv a laptop wants.
+ENV POETRY_VIRTUALENVS_CREATE=false
+
+# `fit` carries scikit-learn, bayes_opt and fire -- optimize and publish are
+# both fitting paths, so the deployed image needs the group the webapp
+# deliberately doesn't. See the comment on the group in pyproject.toml.
+RUN poetry install --no-root --only main --with fit
 
 # `Config.init_from_file` looks here second, and it's the only one of its two
 # candidates worth using: the first is the *package* root, which for an
@@ -105,9 +113,13 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
     rm awscliv2.zip &&\
     rm -r ./aws
 
-# The dev groups on top of what `base` installed: pytest, ruff, ty, the
-# notebook stack.
-RUN poetry install --no-root --with fit
+# No `poetry install` here either, and this one is worth spelling out:
+# poetry.toml asks for an in-project venv, and "in project" at build time
+# means /home/dev/.venv -- but VS Code opens the bind-mounted workspace at
+# /workspaces/cassandra, so that venv would be built into the image and then
+# never used. devcontainer.json's postCreateCommand runs the install in the
+# workspace instead, where the .venv it makes is the one the editor and
+# `poetry run` both pick up.
 
 # Claude Code, pinned like poetry above. Installs the native build to
 # ~/.local/share/claude/versions/<v> and symlinks a launcher into
