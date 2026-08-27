@@ -5,20 +5,15 @@ on:
     branches: [main]
   pull_request:
 
-# A superseded PR build is wasted ECR traffic, but let pushes to main finish so
+# A superseded PR build is wasted CI time, but let pushes to main finish so
 # `latest` always corresponds to a commit that's actually on the branch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  push:
+  image:
     runs-on: ubuntu-latest
-
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      IMAGE_URL: ${{ secrets.IMAGE_URL }}
 
     steps:
       - uses: actions/checkout@v7
@@ -26,7 +21,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # A PR builds but does not push. Nothing wants a PR's image in ECR --
+      # the documented way to get one is `make push TAG=<sha>` from a laptop
+      # -- and asking for credentials to prove the Dockerfile still compiles
+      # means the check can't run on a fork, or before the repo's secrets are
+      # set up. `--output` is empty rather than `--load`: nothing here reads
+      # the image back, and the tag is a placeholder because buildx wants
+      # something parseable in `-t`.
+      - name: Build the image
+        if: github.event_name == 'pull_request'
+        run: |
+          echo '{}' > config.json
+          make build IMAGE_URL=cassandra TAG=pr BUILD_OUTPUT=
+
       - name: Push the image
+        if: github.event_name == 'push'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          IMAGE_URL: ${{ secrets.IMAGE_URL }}
         # Layer cache lives in ECR alongside the image rather than in the
         # Actions cache: `type=gha` needs ACTIONS_RUNTIME_TOKEN, which the
         # runner hands to JS actions and withholds from `run:` steps, so a

@@ -35,7 +35,10 @@ publish:
 # local copy wins so CI can drop one in from a secret without a home directory.
 CONFIG := $(firstword $(wildcard config.json $(HOME)/.aws-batch/config.json))
 IMAGE_URL ?= $(shell jq -r .repo_urls.value.cassandra $(CONFIG))
-ACCOUNT := $(shell aws sts get-caller-identity --query "Account" --output text)
+# Lazy, not `:=`. An immediate assignment shells out to STS on every make
+# invocation, including `make build`, which needs no credentials at all --
+# and in CI that means an error on stderr before a build that then succeeds.
+ACCOUNT = $(shell aws sts get-caller-identity --query "Account" --output text)
 REGION ?= us-east-2
 TAG ?= local
 
@@ -52,8 +55,13 @@ ifeq ($(IS_MAIN),true)
 BUILD_FLAGS += -t ${IMAGE_URL}:latest
 endif
 
+# What `build` does with the result. `--load` locally, where the point is to
+# have the image; empty in CI, where the point is only that it compiles and
+# loading it would spend a minute unpacking layers nothing reads.
+BUILD_OUTPUT ?= --load
+
 build:
-	docker buildx build ${CACHE_FLAGS} ${BUILD_FLAGS} --load .
+	docker buildx build ${CACHE_FLAGS} ${BUILD_FLAGS} ${BUILD_OUTPUT} .
 
 _ecr_login:
 	aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com
