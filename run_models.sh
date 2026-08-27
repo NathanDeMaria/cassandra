@@ -6,8 +6,8 @@
 # is an optimization config. Cheap configs (low n_iter) run first so mistakes
 # surface before the expensive ones burn an hour.
 #
-# Leagues in ANCHOR_LEAGUES get their division anchors built first, if they
-# don't have them yet -- see that variable for why those leagues and not others.
+# Leagues that need division anchors get them built first, if they don't have
+# them yet. Which leagues those are is cassandra.predictor.ANCHOR_LEAGUES.
 #
 # Configs are checked in; results, state, priors, anchors and logs are generated
 # and land under ~/.cassandra.
@@ -26,16 +26,6 @@ CASSANDRA_HOME="$HOME/.cassandra"
 MODELS_DIR="$REPO_ROOT/models"
 RESULTS_DIR="$CASSANDRA_HOME/models"
 LOG_ROOT="$CASSANDRA_HOME/logs/$(date +%Y-%m-%d_%H-%M-%S)"
-
-# Leagues whose teams don't all play each other, and so need a per-team anchor
-# rather than one league-wide 1500 to start from and regress toward.
-#
-# ncaafb is the obvious one -- it spans FBS through D-III, and a D-III team's
-# schedule never touches FBS. mens and womens are all D-I, but division_anchors
-# tiers by conference within a division, which is what separates the ACC from
-# the MEAC. nfl is deliberately absent: 32 teams who all play each other have
-# nothing for a tier fit to find.
-ANCHOR_LEAGUES=(ncaafb mens womens)
 
 dry_run=false
 skip_eval=false
@@ -88,6 +78,20 @@ fi
 mkdir -p "$LOG_ROOT"
 failures=()
 ran=0
+
+# Which leagues have anchors to build, and why those and not others, is
+# `cassandra.predictor.ANCHOR_LEAGUES` -- read rather than repeated here,
+# because the Batch launcher sizes its anchor array job off the same list and
+# a league in one copy and not the other is a league whose cloud runs and
+# local runs are fit on different rating scales.
+mapfile -t ANCHOR_LEAGUES < <(cd "$REPO_ROOT" && poetry run python -c \
+    'from cassandra.predictor import ANCHOR_LEAGUES; print("\n".join(ANCHOR_LEAGUES))')
+# mapfile can't fail, so an import error upstream would read as "no league
+# needs anchors" and quietly optimize everything on the unanchored scale.
+if [[ ${#ANCHOR_LEAGUES[@]} -eq 0 ]]; then
+    echo "Could not read ANCHOR_LEAGUES from cassandra.predictor" >&2
+    exit 1
+fi
 
 # Build any missing division anchors before the first model is optimized. The
 # anchor is where a team starts and what it regresses toward, so a model tuned

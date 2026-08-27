@@ -36,7 +36,6 @@ import json
 import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from pathlib import Path
 from typing import NamedTuple
 
 import fire
@@ -44,8 +43,7 @@ from call_it_what_you_want import TeamNamer, default_classifications, registry_l
 from endgame.types import Season, iter_weeks
 from endgame_aws import Config
 
-from cassandra.constants import CASSANDRA_HOME
-from cassandra.predictor.base_predictor import MEAN_RATING
+from cassandra.predictor.base_predictor import MEAN_RATING, anchor_path
 from cassandra.save_predictions import read_all_seasons
 
 # The Elo scale: a 400-point gap is 10:1 odds. Shared with the predictors by
@@ -233,10 +231,6 @@ def _merge_thin_tiers(tiers: _Tiers, games: Iterable[TierGame]) -> dict[str, str
     }
 
 
-def _anchor_path(league: str) -> Path:
-    return CASSANDRA_HOME / "predictor" / "data" / f"{league}_division_anchors.json"
-
-
 async def _build(league: str, write: bool) -> None:
     bucket = Config.init_from_file().bucket
     print(f"Loading {league} seasons from s3://{bucket}")
@@ -271,7 +265,7 @@ async def _build(league: str, write: bool) -> None:
         for team, tier in resolved.items()
         if tier in fit.ratings
     }
-    path = _anchor_path(league)
+    path = anchor_path(league)
     if not write:
         print(f"\n--write not passed; {len(anchors)} anchor(s) not saved to {path}")
         return
@@ -294,7 +288,7 @@ def main(league: str = "ncaafb", write: bool = False, if_missing: bool = False) 
     Rebuilding on purpose means deleting the file, which is the same shape as
     every other decision here that moves published ratings.
     """
-    path = _anchor_path(league)
+    path = anchor_path(league)
     if if_missing and path.exists():
         # Checked before `_build`, which reads every season out of s3 --
         # minutes of work to reach a file we already know is there.

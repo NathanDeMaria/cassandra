@@ -177,3 +177,23 @@ def test_encode_round_trips_through_resolve_index(
     assert [manifest.resolve_index(i).name for i in range(len(work))] == [
         item.name for item in work
     ]
+
+
+def test_array_index_falls_back_to_what_batch_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The job definitions carry a bare command, so the index is in the env."""
+    monkeypatch.setenv(manifest.ARRAY_INDEX_ENV_VAR, "4")
+
+    assert manifest.array_index() == 4
+    # An explicit --index wins, which is how a single model gets run by hand.
+    assert manifest.array_index(1) == 1
+
+
+def test_array_index_is_none_outside_an_array_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not an error: it's how a stage knows to do its whole-run default."""
+    monkeypatch.delenv(manifest.ARRAY_INDEX_ENV_VAR, raising=False)
+
+    assert manifest.array_index() is None

@@ -1,6 +1,7 @@
 """The container entrypoint: one subcommand per node in the Batch DAG.
 
     python jobs.py manifest                       # what would run, in order
+    python jobs.py anchors --league ncaafb        # fit division anchors
     python jobs.py optimize --index 3             # one array child
     python jobs.py optimize --league mens --model elo
     python jobs.py evaluate --league mens
@@ -28,6 +29,7 @@ from endgame_aws import Config
 
 from cassandra.batch import artifacts, dag, manifest
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.predictor import ANCHOR_LEAGUES, anchor_path
 
 
 def _bucket() -> str:
@@ -51,8 +53,53 @@ def manifest_command() -> None:
     print(f"\n{len(work)} configs")
 
 
+async def _anchors(
+    leagues: list[str] | None, index: int | None, if_missing: bool, upload: bool
+) -> None:
+    # Same late import as the optimize path below: the fit pulls in
+    # call_it_what_you_want and every stored season, and `jobs.py submit` has
+    # no reason to pay for either.
+    from division_anchors import _build
+
+    # An array child gets its league from the list the launcher pinned, by the
+    # index Batch set on it. A hand-run job gets it from --league, and one
+    # given neither does every anchored league -- which is what run_models.sh
+    # does locally.
+    if leagues is None:
+        child = manifest.array_index(index)
+        leagues = (
+            [dag.anchor_league(child)] if child is not None else list(ANCHOR_LEAGUES)
+        )
+
+    bucket = _bucket()
+    # `--if-missing` has to mean "missing in the bucket", not "missing on this
+    # disk": a fresh container never has an anchor file, so the local check
+    # `division_anchors.main` does would refit every league on every run --
+    # and refitting moves every rating the downstream models produce.
+    if if_missing:
+        await artifacts.download_anchors(bucket)
+
+    for league in leagues:
+        path = anchor_path(league)
+        if if_missing and path.exists():
+            print(f"{league}: anchors already in s3://{bucket}, leaving them alone")
+            continue
+
+        print(f"=== {league} / division anchors ===")
+        await _build(league, write=True)
+
+        if upload:
+            keys = await artifacts.upload(bucket, artifacts.anchors_for(league))
+            for key in keys:
+                print(f"  uploaded s3://{bucket}/{key}")
+
+
 async def _optimize(
-    index: int | None, league: str | None, model: str | None, upload: bool
+    index: int | None,
+    league: str | None,
+    model: str | None,
+    download: bool,
+    upload: bool,
 ) -> None:
     # Import here rather than at module scope: `optimize.py` pulls in
     # bayes_opt and sklearn, and `jobs.py submit` runs in the same image but
@@ -67,6 +114,15 @@ async def _optimize(
         work = manifest.resolve_index(index)
 
     print(f"=== {work.name} ({work.predictor_class}, n_iter={work.n_iter}) ===")
+
+    # The anchors decide what a rating means, so they have to be on disk
+    # before the search starts: without them every team regresses toward
+    # MEAN_RATING, and the parameters that come out are fit to a different
+    # scale than the ones the last run produced. `download_anchors` also drops
+    # the cached read that resolving the manifest just populated.
+    if download:
+        pulled = await artifacts.download_anchors(_bucket())
+        print(f"  {len(pulled)} anchor file(s) from s3://{_bucket()}")
 
     # `optimize.py` does a warm-up pass with post_callbacks=True to build the
     # opponent priors the search starts from, and OpponentPriorManager refuses
@@ -99,6 +155,12 @@ async def _evaluate(leagues: list[str] | None, download: bool, upload: bool) -> 
                 f"Nothing under s3://{bucket}/{artifacts.ARTIFACT_PREFIX}/models/; "
                 "optimize has to run before evaluate has anything to score."
             )
+        # A result file carries the fitted parameters but not the anchors --
+        # `PredictorConfig.params` is float|str, and a per-team mapping isn't
+        # one. So replaying a model here rebuilds its anchors from the file,
+        # and a container without the file scores every model against a scale
+        # the model was never fit on.
+        await artifacts.download_anchors(bucket)
 
     await evaluate_main(leagues)
 
@@ -121,10 +183,15 @@ async def _publish(
 ) -> None:
     from publish import _publish as publish_main
 
-    # An array child gets its league from the list the launcher pinned; a
-    # hand-run job gets it from --league.
-    if leagues is None and index is not None:
-        leagues = [dag.publish_league(index)]
+    # An array child gets its league from the list the launcher pinned, by the
+    # index Batch set on it -- read from the environment, because the command
+    # the job definition carries is just `publish` with no index in it. A
+    # hand-run job gets it from --league, and one given neither publishes
+    # every league.
+    if leagues is None:
+        child = manifest.array_index(index)
+        if child is not None:
+            leagues = [dag.publish_league(child)]
 
     bucket = _bucket()
     if download:
@@ -135,6 +202,10 @@ async def _publish(
                 f"Nothing under s3://{bucket}/{artifacts.ARTIFACT_PREFIX}/models/; "
                 "optimize has to run before there is anything to publish."
             )
+        # Same reason as evaluate: the replay behind a release reads the
+        # anchors off disk, and publishing without them ships ratings on a
+        # different scale than the ones the models were fit on.
+        await artifacts.download_anchors(bucket)
 
     failures = await publish_main(None, leagues or [], Path("releases"), upload=upload)
     if failures:
@@ -152,20 +223,39 @@ class Jobs:
         """Print the work list, in array-index order."""
         manifest_command()
 
+    def anchors(
+        self,
+        league: list[str] | str | None = None,
+        index: int | None = None,
+        if_missing: bool = True,
+        upload: bool = True,
+    ) -> None:
+        """Fit a league's division anchors. Defaults to this child's index.
+
+        `--if-missing` is on by default, and checks the bucket rather than
+        this container's disk. Refitting changes the rating every downstream
+        model produces, so it is something you ask for -- with
+        `--no-if-missing`, or by deleting the file from s3 -- not something a
+        scheduled run does to itself weekly.
+        """
+        asyncio.run(_anchors(_as_list(league), index, if_missing, upload))
+
     def optimize(
         self,
         index: int | None = None,
         league: str | None = None,
         model: str | None = None,
+        download: bool = True,
         upload: bool = True,
     ) -> None:
         """Optimize one config. Defaults to this array child's index.
 
         `--upload` is on by default because the only reason to run this in a
         container is to get the result somewhere the next stage can read it;
-        pass `--no-upload` for a local dry run.
+        pass `--no-upload` for a local dry run. `--no-download` likewise
+        leaves the anchors already on this disk alone.
         """
-        asyncio.run(_optimize(index, league, model, upload))
+        asyncio.run(_optimize(index, league, model, download, upload))
 
     def evaluate(
         self,
@@ -190,12 +280,14 @@ class Jobs:
         self,
         league: list[str] | str | None = None,
         model: list[str] | str | None = None,
+        skip_anchors: bool = False,
         skip_optimize: bool = False,
         skip_evaluate: bool = False,
         skip_publish: bool = False,
         dry_run: bool = False,
         wait: bool = False,
         job_queue: str | None = None,
+        anchors_job_definition: str | None = None,
         optimize_job_definition: str | None = None,
         evaluate_job_definition: str | None = None,
         publish_job_definition: str | None = None,
@@ -204,6 +296,9 @@ class Jobs:
         queue = job_queue or _default_queue()
         submitted = asyncio.run(
             dag.submit(
+                anchors_job_definition=_job_definition(
+                    "ANCHORS", anchors_job_definition
+                ),
                 optimize_job_definition=_job_definition(
                     "OPTIMIZE", optimize_job_definition
                 ),
@@ -216,6 +311,7 @@ class Jobs:
                 job_queue=queue,
                 leagues=_as_list(league),
                 models=_as_list(model),
+                skip_anchors=skip_anchors,
                 skip_optimize=skip_optimize,
                 skip_evaluate=skip_evaluate,
                 skip_publish=skip_publish,

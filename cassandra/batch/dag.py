@@ -5,11 +5,22 @@ so terraform can declare the nodes but not the edges. This is the edges.
 
 The shape:
 
+    anchors (array job, one child per league that has division anchors)
+        |
+        v
     optimize (array job, one child per league/model)
         |
         +--> evaluate (one job, all leagues)
         |
         +--> publish  (array job, one child per league)
+
+anchors comes first because it decides the scale everything downstream is on:
+the anchor is what a team's rating starts at and regresses toward, so a search
+run before the anchors exist is fit against a different rating scale than the
+same search run after. `run_models.sh` builds them first for the same reason.
+It is one node ahead of the array rather than a step inside each optimize
+child because the fit is per league, and twenty children would fit the same
+three files twenty times -- and race each other writing them.
 
 evaluate and publish are siblings, not a chain: `publish.py` reads
 `<model>_result.json` and fits its own prob->margin mapping via `_best_fit`,
@@ -31,6 +42,7 @@ from aiobotocore.session import get_session
 
 from cassandra.batch import manifest
 from cassandra.batch.manifest import Work
+from cassandra.predictor import ANCHOR_LEAGUES
 
 # AWS Batch rejects an array job of size 1 -- `arrayProperties.size` has to be
 # at least 2. A single-model run is the normal way to test a change, so it
@@ -55,12 +67,14 @@ def _job_name(stem: str) -> str:
 
 async def submit(
     *,
+    anchors_job_definition: str,
     optimize_job_definition: str,
     evaluate_job_definition: str,
     publish_job_definition: str,
     job_queue: str,
     leagues: list[str] | None = None,
     models: list[str] | None = None,
+    skip_anchors: bool = False,
     skip_optimize: bool = False,
     skip_evaluate: bool = False,
     skip_publish: bool = False,
@@ -69,7 +83,12 @@ async def submit(
     """Submit the DAG, returning what was submitted in dependency order.
 
     `skip_optimize` is what the daily publish schedule uses: republish from
-    whatever results are already in s3, without paying for a re-search.
+    whatever results are already in s3, without paying for a re-search. It
+    implies `skip_anchors`: the anchors set the scale a *search* is fit
+    against, and a republish reads that scale back out of s3 rather than
+    deciding it. `skip_anchors` on its own is for the run that knows its
+    anchors are already built and doesn't want to pay a container to confirm
+    it.
     """
     work = manifest.load_manifest(leagues=leagues, models=models)
     if not work and not skip_optimize:
@@ -79,10 +98,16 @@ async def submit(
             + (f" models={models}" if models else "")
         )
 
-    # Publish fans out over leagues, not models: `publish.py --league` reads
-    # that league's seasons and odds once and does every model in it, so a
-    # child per model would re-read the same s3 objects per model.
-    publish_leagues = sorted(leagues) if leagues else sorted({w.league for w in work})
+    # The leagues this run touches. Both fan-outs below go over leagues rather
+    # than models: `publish.py --league` reads that league's seasons and odds
+    # once and does every model in it, so a child per model would re-read the
+    # same s3 objects per model, and an anchor fit has no per-model input at
+    # all.
+    scope_leagues = sorted(leagues) if leagues else sorted({w.league for w in work})
+
+    # Only the leagues that have anchors to fit. `nfl` never does, and a run
+    # scoped to it should not submit an array of zero.
+    anchor_leagues = [league for league in ANCHOR_LEAGUES if league in scope_leagues]
 
     # A dry run builds every request and sends none, so it must not need a
     # client -- creating one costs a region and credentials, which is exactly
@@ -96,6 +121,17 @@ async def submit(
         submitter = _Submitter(client, job_queue, dry_run)
         submitted: list[Submitted] = []
 
+        anchors_job = None
+        if anchor_leagues and not (skip_anchors or skip_optimize):
+            anchors_job = await submitter.run(
+                name=_job_name("anchors"),
+                job_definition=anchors_job_definition,
+                command=["anchors"],
+                size=len(anchor_leagues),
+                environment={_ANCHOR_LEAGUES_ENV_VAR: ",".join(anchor_leagues)},
+            )
+            submitted.append(anchors_job)
+
         optimize_job = None
         if not skip_optimize:
             optimize_job = await submitter.run(
@@ -107,11 +143,18 @@ async def submit(
                 # than rebuilding it, so a launcher and an image on different
                 # commits fail loudly instead of quietly disagreeing.
                 environment={manifest.MANIFEST_ENV_VAR: manifest.encode(work)},
+                # Every child reads the anchors this produced. Waiting on the
+                # array's parent waits for all of it, so no child starts
+                # searching against a scale that is still being fit.
+                depends_on=[anchors_job.job_id] if anchors_job else [],
             )
             submitted.append(optimize_job)
 
-        # Both downstream stages depend on the whole array. With
-        # --skip-optimize there's nothing to wait for and they start at once.
+        # Both downstream stages wait on the optimize array, and through it on
+        # anchors -- there is no anchors job without an optimize job to feed,
+        # so naming it here as well would be an edge that can never be the
+        # only one. With --skip-optimize there's nothing to wait for and they
+        # start at once.
         depends_on = [optimize_job.job_id] if optimize_job else []
 
         if not skip_evaluate:
@@ -131,8 +174,8 @@ async def submit(
                     name=_job_name("publish"),
                     job_definition=publish_job_definition,
                     command=["publish"],
-                    size=len(publish_leagues),
-                    environment={_PUBLISH_LEAGUES_ENV_VAR: ",".join(publish_leagues)},
+                    size=len(scope_leagues),
+                    environment={_PUBLISH_LEAGUES_ENV_VAR: ",".join(scope_leagues)},
                     depends_on=depends_on,
                 )
             )
@@ -140,9 +183,10 @@ async def submit(
     return submitted
 
 
-# The publish array child reads its league out of this by array index, the
-# same trick the optimize array uses for its work list.
+# Each league-fan-out array child reads its league out of one of these by array
+# index, the same trick the optimize array uses for its work list.
 _PUBLISH_LEAGUES_ENV_VAR = "CASSANDRA_PUBLISH_LEAGUES"
+_ANCHOR_LEAGUES_ENV_VAR = "CASSANDRA_ANCHOR_LEAGUES"
 
 
 def _league_args(leagues: list[str] | None) -> list[str]:
@@ -224,11 +268,26 @@ async def wait(job_ids: list[str], poll_seconds: int = 30) -> dict[str, str]:
 
 def publish_league(index: int) -> str:
     """Which league this publish array child owns."""
-    raw = os.environ.get(_PUBLISH_LEAGUES_ENV_VAR)
+    return _league_at(_PUBLISH_LEAGUES_ENV_VAR, index)
+
+
+def anchor_league(index: int) -> str:
+    """Which league this anchors array child owns."""
+    return _league_at(_ANCHOR_LEAGUES_ENV_VAR, index)
+
+
+def _league_at(env_var: str, index: int) -> str:
+    """One league out of a launcher-pinned list, by array index.
+
+    Pinned rather than recomputed for the same reason the optimize manifest
+    is: the list the launcher sized the array against is the only list whose
+    indices mean what the launcher meant.
+    """
+    raw = os.environ.get(env_var)
     if raw is None:
         raise ValueError(
-            f"{_PUBLISH_LEAGUES_ENV_VAR} is not set; the publish job expects the "
-            "launcher to pin the league list it sized the array against."
+            f"{env_var} is not set; this job expects the launcher to pin the "
+            "league list it sized the array against."
         )
     leagues = raw.split(",")
     if not 0 <= index < len(leagues):

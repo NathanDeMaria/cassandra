@@ -104,26 +104,95 @@ def test_dry_run_submits_nothing() -> None:
     assert submitted.size == 3
 
 
-def test_dry_run_never_builds_a_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The point of a dry run is checking a submission without AWS set up."""
+def _submit(monkeypatch: pytest.MonkeyPatch, **kwargs) -> list[dag.Submitted]:
+    """A dry-run submit with the job definitions filled in.
+
+    Dry run because the point of these is the shape of the DAG, and building
+    it must not need AWS -- so the batch client is booby-trapped rather than
+    faked.
+    """
 
     def _explode(*args, **kwargs):
         raise AssertionError("dry run touched the batch client")
 
     monkeypatch.setattr(dag, "get_session", _explode)
 
-    submitted = asyncio.run(
+    return asyncio.run(
         dag.submit(
+            anchors_job_definition="a",
             optimize_job_definition="o",
             evaluate_job_definition="e",
             publish_job_definition="p",
             job_queue="queue",
-            leagues=["mens"],
             dry_run=True,
+            **kwargs,
         )
     )
 
-    assert [job.name.rsplit("-", 2)[0] for job in submitted] == [
+
+def _stages(submitted: list[dag.Submitted]) -> list[str]:
+    """Stage names, with `_job_name`'s timestamp suffix trimmed off."""
+    return [job.name.rsplit("-", 2)[0] for job in submitted]
+
+
+def test_dry_run_never_builds_a_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The point of a dry run is checking a submission without AWS set up."""
+    submitted = _submit(monkeypatch, leagues=["mens"])
+
+    assert _stages(submitted) == [
+        "cassandra-anchors",
+        "cassandra-optimize",
+        "cassandra-evaluate",
+        "cassandra-publish",
+    ]
+
+
+def test_a_league_with_no_anchors_gets_no_anchors_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """nfl's 32 teams all play each other; there is no tier gap to fit."""
+    assert "nfl" not in dag.ANCHOR_LEAGUES
+    submitted = _submit(monkeypatch, leagues=["nfl"])
+
+    assert "cassandra-anchors" not in _stages(submitted)
+
+
+def test_skipping_optimize_skips_the_anchors_it_would_have_fed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the daily publish submits: republish, don't re-decide the scale."""
+    submitted = _submit(monkeypatch, leagues=["mens"], skip_optimize=True)
+
+    assert _stages(submitted) == ["cassandra-evaluate", "cassandra-publish"]
+
+
+def test_optimize_waits_for_the_anchors() -> None:
+    """A search that starts before the anchors land is fit on the wrong scale."""
+    client = _FakeBatchClient()
+    submitter = _Submitter(client, "queue", dry_run=False)
+
+    anchors = asyncio.run(
+        submitter.run(name="a", job_definition="a", command=["anchors"], size=3)
+    )
+    asyncio.run(
+        submitter.run(
+            name="o",
+            job_definition="o",
+            command=["optimize"],
+            size=8,
+            depends_on=[anchors.job_id],
+        )
+    )
+
+    assert client.requests[1]["dependsOn"] == [{"jobId": anchors.job_id}]
+
+
+def test_skipping_anchors_alone_still_optimizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    submitted = _submit(monkeypatch, leagues=["mens"], skip_anchors=True)
+
+    assert _stages(submitted) == [
         "cassandra-optimize",
         "cassandra-evaluate",
         "cassandra-publish",
@@ -148,3 +217,32 @@ def test_publish_league_without_the_list_says_what_is_missing(
 
     with pytest.raises(ValueError, match="CASSANDRA_PUBLISH_LEAGUES"):
         dag.publish_league(0)
+
+
+def test_anchor_league_reads_its_own_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two fan-outs, two lists: an anchors child must not index publish's."""
+    monkeypatch.setenv("CASSANDRA_ANCHOR_LEAGUES", "mens,ncaafb")
+    monkeypatch.setenv("CASSANDRA_PUBLISH_LEAGUES", "nfl,womens")
+
+    assert dag.anchor_league(1) == "ncaafb"
+    assert dag.publish_league(1) == "womens"
+
+
+def test_the_anchors_child_gets_the_list_the_array_was_sized_against() -> None:
+    """The pinned list is the contract between launcher and child."""
+    client = _FakeBatchClient()
+    submitter = _Submitter(client, "queue", dry_run=False)
+
+    asyncio.run(
+        submitter.run(
+            name="a",
+            job_definition="a",
+            command=["anchors"],
+            size=2,
+            environment={"CASSANDRA_ANCHOR_LEAGUES": "mens,ncaafb"},
+        )
+    )
+
+    request = client.requests[0]
+    assert request["arrayProperties"] == {"size": 2}
+    assert _environment(request)["CASSANDRA_ANCHOR_LEAGUES"] == "mens,ncaafb"
