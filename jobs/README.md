@@ -121,6 +121,50 @@ manifest the array job does and the same `ANCHOR_LEAGUES` the anchors array is
 sized against, so "optimize everything" means the same set of models, fit on
 the same rating scale, locally and in the cloud.
 
+## CI
+
+`.github/workflows/terraform.yml` lints on every branch, plans on branches and
+PRs, and applies on main -- the same shape as `aws-batch-optimization/infra`
+and `endgame/jobs`.
+
+| Job | When | Credentials |
+| --- | --- | --- |
+| `lint` | every push and PR touching `jobs/**` | none |
+| `plan` | every branch and PR except main | `AWS_PLAN_ROLE_ARN` |
+| `apply` | main only | `AWS_APPLY_ROLE_ARN` |
+
+Two roles, not one: `terraform plan` executes provider code and runs on every
+branch, so it must not be able to reach credentials that can apply. `oidc.tf`
+creates both here rather than one repo minting roles for the others — the trust
+policy is per-repository, so there's nothing to share and nothing to keep in
+sync. The plan role gets `ReadOnlyAccess` plus write on this stack's state key
+(a plan takes the lock, so it writes the `.tflock` beside the state even though
+it changes nothing). The apply role gets `PowerUserAccess`, which denies IAM,
+plus IAM scoped to `cassandra-*` — and `iam:PassRole` on the shared
+`batch-execution-role` and `batch-scheduler-role`, which this stack references
+but doesn't own: creating a job definition or a schedule passes them.
+
+`lint` needs no credentials and no backend, so it runs before any of this
+exists. Both other jobs check their role variable against `''` and skip while
+it's unset, so the workflow lies dormant instead of failing red on every push
+until you've wired the roles up:
+
+```bash
+cd jobs && make apply          # once, locally: creates the two CI roles
+gh variable set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw ci_plan_role_arn)"
+gh variable set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw ci_apply_role_arn)"
+```
+
+Repository *variables*, not secrets — a role ARN isn't one, and the `!= ''`
+check needs to be able to read it. The one secret this workflow reads is
+`NOTIFICATION_EMAIL`, and leaving it unset is fine: an unset secret arrives as
+`""` rather than as nothing, which `main.tf` normalises back to `null` so the
+SNS topic and its rule simply aren't created.
+
+`image_tag` stays at its `latest` default in CI, which is the tag a push to
+main publishes. Pin a SHA in `terraform.tfvars` locally to make a run
+reproducible.
+
 ## First-time setup
 
 Ordering matters — steps 1–3 are in the other repo, and this project's
@@ -139,6 +183,8 @@ Ordering matters — steps 1–3 are in the other repo, and this project's
 3. **Push an image.** Merge to main, or `make push TAG=<sha>` locally.
 4. **Here.** `cp terraform.tfvars.example terraform.tfvars`, set `image_tag`,
    then `make apply`.
+5. **CI roles.** That apply created them; publish their ARNs as repository
+   variables so the terraform workflow wakes up. See [CI](#ci).
 
 `make update` re-fetches the shared modules — terraform caches git modules and
 won't notice a change on the other end otherwise.

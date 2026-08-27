@@ -1,0 +1,204 @@
+name: Terraform
+
+# Lint everywhere, plan on every branch and PR, apply on main.
+# Credentials come from OIDC -- two roles, so a plan running on an arbitrary
+# branch cannot reach anything that can apply.
+on:
+  push:
+    # "**" not "*" -- a single star matches one path segment, so `["*"]`
+    # silently skips every branch with a slash in it (claude/foo, feature/bar).
+    branches: ["**"]
+    paths:
+      - "jobs/**"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    branches: ["**"]
+    paths:
+      - "jobs/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  TF_IN_AUTOMATION: "1"
+  AWS_REGION: us-east-2
+  # The tfvars file `make plan`/`make apply` reads locally is gitignored, so CI
+  # supplies what it needs as TF_VAR_*. Only this one: everything else has a
+  # default, the queue and the buckets come from the shared stack's remote
+  # state, and `image_tag` deliberately stays at its `latest` default, which is
+  # the tag a push to main publishes.
+  #
+  # An unset secret arrives as "" rather than as nothing, which main.tf
+  # normalises back to null -- see `local.notification_email`.
+  TF_VAR_notification_email: ${{ secrets.NOTIFICATION_EMAIL }}
+
+jobs:
+  # No credentials and no backend, so this runs everywhere -- including before
+  # the OIDC roles exist, when it's the only signal this workflow gives.
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jobs
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      - run: make lint
+
+  plan:
+    # Skipped on main, where the apply job re-plans anyway. Also skipped until
+    # AWS_PLAN_ROLE_ARN is set, so this workflow lies dormant rather than
+    # failing red on every push before the roles are wired up.
+    if: >-
+      github.ref != 'refs/heads/main'
+      && github.event_name != 'workflow_dispatch'
+      && vars.AWS_PLAN_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jobs
+    # Keyed on the branch, not github.ref: a push and its pull_request see
+    # different refs (refs/heads/x vs refs/pull/N/merge), so keying on the ref
+    # puts them in *different* groups and both plan the same state at once --
+    # one then dies on the terraform state lock.
+    #
+    # cancel-in-progress stays false even for plans. Killing terraform while it
+    # holds the lock leaves a stale lock behind that needs a manual
+    # force-unlock, which is worse than letting a superseded plan finish.
+    concurrency:
+      group: terraform-plan-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      - run: terraform init -input=false
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          # -lock-timeout so an overlap waits its turn instead of failing.
+          # The concurrency group prevents plan-vs-plan; this also covers
+          # plan-vs-apply, which are in different groups by design.
+          terraform plan -no-color -input=false -lock-timeout=180s \
+            -out=tfplan 2>&1 | tee /tmp/plan.txt
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: Summary
+        if: always()
+        run: |
+          # Written unconditionally: planning on branch pushes means there is
+          # often no PR to comment on, and the run page is the only place the
+          # output would otherwise appear.
+          {
+            echo "### terraform plan"
+            echo
+            echo '<details><summary>Show plan</summary>'
+            echo
+            echo '```terraform'
+            # GitHub drops step summaries over 1MB.
+            head -c 60000 /tmp/plan.txt || true
+            echo
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on the PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- terraform-plan -->';
+            let plan = '';
+            try { plan = fs.readFileSync('/tmp/plan.txt', 'utf8'); } catch {}
+            // Comments cap at 65536 characters.
+            if (plan.length > 60000) plan = plan.slice(-60000);
+            const body = [
+              marker,
+              `### terraform plan \`${{ steps.plan.outputs.exit_code == 0 && 'ok' || 'failed' }}\``,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```terraform',
+              plan,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const existing = await github.paginate(
+              github.rest.issues.listComments, { owner, repo, issue_number },
+            );
+            // Update in place so a chatty PR doesn't accumulate one plan per push.
+            const mine = existing.find((c) => c.body?.startsWith(marker));
+            if (mine) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  apply:
+    if: github.ref == 'refs/heads/main' && vars.AWS_APPLY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jobs
+    # NOT cancel-in-progress: killing terraform mid-apply leaves a stale lock
+    # and half-built infrastructure.
+    concurrency:
+      group: terraform-apply
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      - run: terraform init -input=false
+
+      # Re-plans rather than applying a saved plan from the branch. Simpler,
+      # and fine while one person merges.
+      - run: terraform apply -auto-approve -input=false -lock-timeout=180s
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### terraform apply"
+            echo
+            terraform output -json 2>/dev/null \
+              | jq -r 'to_entries[] | select(.value.sensitive | not) | "- **\(.key)**: `\(.value.value)`"' \
+              || echo "(no outputs)"
+          } >> "$GITHUB_STEP_SUMMARY"

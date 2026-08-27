@@ -16,8 +16,21 @@ data "terraform_remote_state" "shared" {
 
 data "aws_caller_identity" "current" {}
 
+data "aws_partition" "current" {}
+
 locals {
   shared = data.terraform_remote_state.shared.outputs
+
+  # An unset GitHub Actions secret interpolates to "", not to nothing, so CI
+  # would hand terraform `TF_VAR_notification_email=""` and a bare `== null`
+  # check would read that as "yes, email me" -- then fail the apply on an SNS
+  # subscription with an empty endpoint. Normalising here keeps every `count`
+  # below reading as one decision.
+  notification_email = (
+    var.notification_email == null || var.notification_email == ""
+    ? null
+    : var.notification_email
+  )
 
   image = "${local.shared.repo_urls["cassandra"]}:${var.image_tag}"
 
@@ -249,19 +262,19 @@ module "daily_publish" {
 # A weekly job that quietly stops working is a model that quietly goes stale,
 # and nothing else here would say so.
 resource "aws_sns_topic" "failures" {
-  count = var.notification_email == null ? 0 : 1
+  count = local.notification_email == null ? 0 : 1
   name  = "cassandra-batch-failures"
 }
 
 resource "aws_sns_topic_subscription" "failures" {
-  count     = var.notification_email == null ? 0 : 1
+  count     = local.notification_email == null ? 0 : 1
   topic_arn = aws_sns_topic.failures[0].arn
   protocol  = "email"
-  endpoint  = var.notification_email
+  endpoint  = local.notification_email
 }
 
 resource "aws_cloudwatch_event_rule" "job_failed" {
-  count       = var.notification_email == null ? 0 : 1
+  count       = local.notification_email == null ? 0 : 1
   name        = "cassandra-batch-job-failed"
   description = "Any cassandra Batch job entering FAILED"
 
@@ -278,14 +291,14 @@ resource "aws_cloudwatch_event_rule" "job_failed" {
 }
 
 resource "aws_cloudwatch_event_target" "job_failed" {
-  count     = var.notification_email == null ? 0 : 1
+  count     = local.notification_email == null ? 0 : 1
   rule      = aws_cloudwatch_event_rule.job_failed[0].name
   target_id = "sns"
   arn       = aws_sns_topic.failures[0].arn
 }
 
 data "aws_iam_policy_document" "sns_publish" {
-  count = var.notification_email == null ? 0 : 1
+  count = local.notification_email == null ? 0 : 1
 
   statement {
     actions   = ["SNS:Publish"]
@@ -299,7 +312,7 @@ data "aws_iam_policy_document" "sns_publish" {
 }
 
 resource "aws_sns_topic_policy" "failures" {
-  count  = var.notification_email == null ? 0 : 1
+  count  = local.notification_email == null ? 0 : 1
   arn    = aws_sns_topic.failures[0].arn
   policy = data.aws_iam_policy_document.sns_publish[0].json
 }
