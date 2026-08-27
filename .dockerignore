@@ -13,7 +13,7 @@ releases/
 *.env
 
 # NOTE: config.json is deliberately NOT ignored. The runtime stage copies it to
-# /root/.aws-batch/config.json, which is where endgame_aws's Config finds the
+# ~dev/.aws-batch/config.json, which is where endgame_aws's Config finds the
 # bucket name. Without it every job dies at startup on FileNotFoundError.
 
 # NOTE: models/ is deliberately NOT ignored either, despite being *.json. The

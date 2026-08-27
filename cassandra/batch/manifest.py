@@ -117,6 +117,25 @@ def encode(work: list[Work]) -> str:
     return json.dumps([item.name for item in work])
 
 
+def array_index(explicit: int | None = None) -> int | None:
+    """Which child of an array job this is: the flag, else what Batch set.
+
+    `None` means neither -- no `--index` and no `AWS_BATCH_JOB_ARRAY_INDEX`,
+    so this is a hand-run process rather than one child of a fan-out. Callers
+    read that as "not scoped to one item" and do whatever their whole-run
+    default is.
+
+    Here rather than in each stage because every fan-out needs it and only
+    one of them can afford to get it wrong quietly: a stage that forgets to
+    read the environment doesn't fail, it just has every child do the whole
+    job.
+    """
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get(ARRAY_INDEX_ENV_VAR)
+    return None if raw is None else int(raw)
+
+
 def resolve_index(index: int | None = None) -> Work:
     """The work item this array child is responsible for.
 
@@ -128,15 +147,13 @@ def resolve_index(index: int | None = None) -> Work:
     children don't have. Pinning turns that into a `KeyError` at startup
     instead of a run that optimizes the wrong models.
     """
+    index = array_index(index)
     if index is None:
-        raw_index = os.environ.get(ARRAY_INDEX_ENV_VAR)
-        if raw_index is None:
-            raise ValueError(
-                f"No --index given and {ARRAY_INDEX_ENV_VAR} is not set; this is "
-                "meant to run as a child of an array job, or with an explicit "
-                "--league/--model."
-            )
-        index = int(raw_index)
+        raise ValueError(
+            f"No --index given and {ARRAY_INDEX_ENV_VAR} is not set; this is "
+            "meant to run as a child of an array job, or with an explicit "
+            "--league/--model."
+        )
 
     pinned = os.environ.get(MANIFEST_ENV_VAR)
     if pinned is None:

@@ -1,7 +1,7 @@
 # Batch jobs
 
-Runs cassandra's optimize/evaluate/publish pipeline on AWS Batch, on the shared
-queue from [aws-batch-optimization][infra].
+Runs cassandra's anchors/optimize/evaluate/publish pipeline on AWS Batch, on
+the shared queue from [aws-batch-optimization][infra].
 
 [infra]: https://github.com/NathanDeMaria/aws-batch-optimization
 
@@ -12,7 +12,7 @@ moves when cassandra deploys lives here.**
 
 | Shared (`aws-batch-optimization`) | Here (`cassandra/jobs`) |
 | --- | --- |
-| Job queue, compute environment, network | The four job definitions |
+| Job queue, compute environment, network | The five job definitions |
 | ECR repo `cassandra` + its push user | Both schedules |
 | `batch-execution-role` (pulls images) | `cassandra-batch-job-role` (what the code touches) |
 | `batch-scheduler-role` (submits jobs) | |
@@ -32,6 +32,9 @@ the `?ref=` in `main.tf` — there's deliberately no variable for it.
 ## The DAG
 
 ```
+anchors   (array job, one child per league with division anchors — 3 today)
+    |
+    v
 optimize  (array job, one child per league/model — 16 today)
     |
     +--> evaluate  (one job, scores everything, writes the metrics csv)
@@ -39,13 +42,29 @@ optimize  (array job, one child per league/model — 16 today)
     +--> publish   (array job, one child per league)
 ```
 
+`anchors` runs first because it decides the scale everything downstream is on.
+A team's anchor is the rating it starts at and regresses toward between
+seasons, so a search run before the anchors exist is fit against a different
+rating scale than the same search run after — and Brier score can't see the
+difference, because it's dominated by games within a division. It's one node
+ahead of the array rather than a step inside each optimize child because the
+fit is per league: twenty children would fit the same three files twenty times,
+and race each other writing them.
+
+It's normally a no-op. `--if-missing` is on by default and checks the *bucket*,
+not the container's disk, so once a league has anchors this is one s3 listing
+and an exit. Refitting moves every rating the pipeline publishes, so it's
+something you ask for — `jobs.py anchors --league ncaafb --no-if-missing`, or
+deleting the object — not something the weekly run does to itself. `nfl` never
+gets a child: 32 teams who all play each other have no tier gap to fit.
+
 `evaluate` and `publish` are siblings, not a chain: `publish.py` reads
 `<model>_result.json` and fits its own prob→margin mapping, so it needs the
 optimizer's output but nothing evaluate produces.
 
 **The edges are not in this terraform, and can't be.** Batch takes `dependsOn`
 on `SubmitJob`, not on a job definition — so terraform declares the nodes and
-`cassandra/batch/dag.py` declares the edges. That's what the fourth job
+`cassandra/batch/dag.py` declares the edges. That's what the fifth job
 definition, `cassandra-launcher`, runs. It's a Batch job rather than a Lambda
 so it runs the same image as the work it submits: the manifest it sizes the
 array against has to be the one the children resolve their indices in, which is
@@ -60,6 +79,9 @@ Both schedules target the launcher and differ only in command:
 
 Optimization is the expensive stage, so it's weekly. Publish is daily because
 ratings move with new games every day even when the fitted parameters don't.
+`--skip-optimize` implies skipping anchors: the anchors decide the scale a
+*search* is fit against, and a republish reads that scale back out of s3
+rather than deciding it.
 
 ## State between stages
 
@@ -72,6 +94,13 @@ key-for-key under a `cassandra/` prefix in the batch bucket:
 optimize uploads its result; evaluate and publish download the lot first. See
 `cassandra/batch/artifacts.py`.
 
+The anchors ride the same mirror, under `cassandra/predictor/data/`, and *every*
+stage pulls them — not just the one that writes them. A result file carries the
+fitted parameters but not the anchors (`PredictorConfig.params` is `float | str`,
+and a per-team mapping is neither), so a replay rebuilds them by reading the
+file. A publish container without it would ship ratings on a different scale
+than the models were fit on, with nothing in the output saying so.
+
 ## Running it
 
 ```bash
@@ -81,13 +110,16 @@ make submit ARGS="--dry-run"                   # print what would be submitted, 
 make submit ARGS="--league mens"               # one league
 make submit ARGS="--league mens --model elo --skip-evaluate"   # one model, as a test
 make submit ARGS="--skip-optimize"             # re-evaluate and re-publish from s3
+make submit ARGS="--skip-anchors"              # optimize, but don't re-check the anchors
 
 poetry run python jobs.py manifest             # the work list, in array-index order
+poetry run python jobs.py anchors --league ncaafb --no-if-missing   # force a refit
 ```
 
-`./run_models.sh` still runs everything on one machine and is unchanged. It
-reads the same manifest the array job does, so "optimize everything" means the
-same set of models locally and in the cloud.
+`./run_models.sh` still runs everything on one machine. It reads the same
+manifest the array job does and the same `ANCHOR_LEAGUES` the anchors array is
+sized against, so "optimize everything" means the same set of models, fit on
+the same rating scale, locally and in the cloud.
 
 ## First-time setup
 

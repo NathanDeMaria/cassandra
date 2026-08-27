@@ -20,10 +20,17 @@ from pathlib import Path
 from aiobotocore.session import get_session
 
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.predictor import anchor_path, load_anchors
 
 # Shared bucket, so cassandra's generated files get a prefix of their own
 # rather than sitting next to endgame's `seasons/` and `odds/`.
 ARTIFACT_PREFIX = "cassandra"
+
+# Where `division_anchors.py` writes, CASSANDRA_HOME-relative. Every stage
+# pulls this: the anchor is what a rating starts at and regresses toward, so a
+# job that optimizes with it and one that publishes without it disagree about
+# what a rating means, and nothing in either job's output says so.
+ANCHOR_PREFIX = "predictor/data/"
 
 # S3 has no directories, so a "download the results" call is a prefix listing.
 # Uploads go one object at a time but concurrently; these are small json files
@@ -104,6 +111,30 @@ async def _list_keys(client, bucket: str, prefix: str) -> AsyncIterator[str]:
             # where a later key wants a file.
             if not item["Key"].endswith("/"):
                 yield item["Key"]
+
+
+async def download_anchors(bucket: str) -> list[Path]:
+    """Pull the division anchors, and drop the cached read of them.
+
+    `load_anchors` is cached because an optimization builds a predictor per
+    probe and they would all re-read the same file. That caching is why this
+    isn't just `download(bucket, ANCHOR_PREFIX)`: resolving the manifest
+    constructs one predictor per config, and each of those caches an empty
+    read for its league. Downloading after that would leave the job
+    regressing toward MEAN_RATING with the anchor file sitting unread on
+    disk -- a silently different fit, not a failure.
+
+    Returns the paths written; empty is ordinary, and means no league in this
+    bucket has had its anchors fit yet.
+    """
+    paths = await download(bucket, ANCHOR_PREFIX)
+    load_anchors.cache_clear()
+    return paths
+
+
+def anchors_for(league: str) -> list[Path]:
+    """The file one anchor fit produces, whether or not it exists."""
+    return [anchor_path(league)]
 
 
 def results_for(league: str, model: str) -> list[Path]:

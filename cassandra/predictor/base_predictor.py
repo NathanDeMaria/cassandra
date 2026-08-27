@@ -13,6 +13,30 @@ from .types import Matchup, Prediction, Rating
 
 _ANCHOR_DIR = CASSANDRA_HOME / "predictor" / "data"
 
+# Leagues whose teams don't all play each other, and so need a per-team anchor
+# rather than one league-wide MEAN_RATING to start from and regress toward.
+#
+# ncaafb is the obvious one -- it spans FBS through D-III, and a D-III team's
+# schedule never touches FBS. mens and womens are all D-I, but division_anchors
+# tiers by conference within a division, which is what separates the ACC from
+# the MEAC. nfl is deliberately absent: 32 teams who all play each other have
+# nothing for a tier fit to find.
+#
+# Here rather than in `division_anchors.py` because three callers need the list
+# without fitting anything: `run_models.sh`, the batch launcher that sizes the
+# anchor array job, and the array child that turns an index back into a league.
+ANCHOR_LEAGUES = ("ncaafb", "mens", "womens")
+
+
+def anchor_path(league: str) -> Path:
+    """Where a league's fitted anchors live, whether or not they exist yet.
+
+    One definition because both sides of the handoff need it: the fit writes
+    this path, `load_anchors` reads it, and the batch stages upload and
+    download it by name.
+    """
+    return _ANCHOR_DIR / f"{league}_division_anchors.json"
+
 
 class RatingsUnsupported(NotImplementedError):
     """A predictor with no per-team ratings was asked for them.
@@ -62,7 +86,7 @@ def load_anchors(league: str) -> Mapping[str, float]:
     hundreds of them -- and they'd all read the same file. Callers copy it
     rather than holding the shared mapping.
     """
-    path = _ANCHOR_DIR / f"{league}_division_anchors.json"
+    path = anchor_path(league)
     if not path.exists():
         return {}
     return json.loads(path.read_text())

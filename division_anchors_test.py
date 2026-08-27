@@ -99,7 +99,7 @@ def test_if_missing_leaves_an_existing_file_alone(
     """
     path = tmp_path / "ncaafb_division_anchors.json"
     path.write_text("{}")
-    monkeypatch.setattr("division_anchors._anchor_path", lambda league: path)
+    monkeypatch.setattr("division_anchors.anchor_path", lambda league: path)
     monkeypatch.setattr("division_anchors._build", _never_built)
 
     main(league="ncaafb", write=True, if_missing=True)
@@ -110,7 +110,7 @@ def test_if_missing_builds_when_there_is_no_file(
 ) -> None:
     built = []
     monkeypatch.setattr(
-        "division_anchors._anchor_path", lambda league: tmp_path / "absent.json"
+        "division_anchors.anchor_path", lambda league: tmp_path / "absent.json"
     )
 
     async def _record(league: str, write: bool) -> None:

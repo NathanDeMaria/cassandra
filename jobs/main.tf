@@ -26,6 +26,7 @@ locals {
   batch_bucket = local.shared.bucket
 
   job_definitions = {
+    anchors  = module.anchors.name
     optimize = module.optimize.name
     evaluate = module.evaluate.name
     publish  = module.publish.name
@@ -107,6 +108,27 @@ resource "aws_iam_role_policy" "job" {
 # all of it -- are `dependsOn` arguments to SubmitJob, which a job definition
 # has no field for. `cassandra/batch/submit.py` is where the DAG actually is.
 
+# Fits the per-team regression anchors the search is scored against. Ahead of
+# optimize in the DAG, and normally a no-op: `--if-missing` is on by default,
+# so once a league has anchors in the bucket this is one s3 listing and an
+# exit. The memory is `publish`'s rather than `optimize`'s because the fit
+# reads every stored season for a league, the same as a release build does.
+module "anchors" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
+
+  job_name           = "cassandra-anchors"
+  image              = local.image
+  command            = ["anchors"]
+  execution_role_arn = local.shared.batch_execution_role_arn
+  job_role_arn       = aws_iam_role.job.arn
+  memory             = var.publish_memory
+  retry_attempts     = 3
+
+  environment_variables = [
+    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
+  ]
+}
+
 module "optimize" {
   source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
 
@@ -161,7 +183,7 @@ module "publish" {
   ]
 }
 
-# The launcher: submits the other three with the right dependencies. It's a
+# The launcher: submits the other four with the right dependencies. It's a
 # Batch job rather than a Lambda so it runs the same image as the work it
 # submits -- the manifest it sizes the array against is the one the children
 # will resolve indices in, which is only guaranteed if it's literally the same
@@ -181,6 +203,7 @@ module "launcher" {
 
   environment_variables = [
     { name = "CASSANDRA_JOB_QUEUE", value = local.shared.job_queue_name },
+    { name = "CASSANDRA_ANCHORS_JOB_DEFINITION", value = local.job_definitions.anchors },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
     { name = "CASSANDRA_EVALUATE_JOB_DEFINITION", value = local.job_definitions.evaluate },
     { name = "CASSANDRA_PUBLISH_JOB_DEFINITION", value = local.job_definitions.publish },
