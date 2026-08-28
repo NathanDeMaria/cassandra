@@ -145,6 +145,18 @@ variable "resource_name_prefix" {
   default     = "cassandra"
 }
 
+variable "ecr_repository_name" {
+  description = <<-EOT
+    The ECR repository the image workflow pushes to.
+
+    Owned by the shared stack's `repos` module, not by this one -- named here
+    only so the image role's policy can be scoped to it rather than to every
+    repository in the account.
+  EOT
+  type        = string
+  default     = "cassandra"
+}
+
 variable "shared_role_names" {
   description = <<-EOT
     Roles from the shared Batch stack that this one passes but does not manage.
