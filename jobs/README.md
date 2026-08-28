@@ -165,6 +165,26 @@ SNS topic and its rule simply aren't created.
 main publishes. Pin a SHA in `terraform.tfvars` locally to make a run
 reproducible.
 
+## Editing the terraform
+
+`jobs/.devcontainer` is a second devcontainer, separate from the repo's Python
+one: terraform and the AWS CLI, no poetry and no model dependencies. Two
+containers rather than one because the two jobs share nothing — a terraform
+edit doesn't want scikit-learn, and the Python container has no terraform, so
+`make plan` there fails at the first command.
+
+VS Code offers both when reopening in a container; this one is
+**cassandra-infra**, and it opens in `jobs/` so terraform runs where the state
+is. Its terraform version is pinned to the same one
+`.github/workflows/terraform.yml` gives `hashicorp/setup-terraform` — a local
+`make lint` that passes against a different terraform than CI runs is worth
+very little, since `fmt` rules and `validate` diagnostics both move between
+minor versions.
+
+It runs as the same non-root `dev` user as the Python container, for the same
+reason: `~/.aws` is bind-mounted from the host, and a root-owned SSO token
+written inside the container is one the host can no longer refresh.
+
 ## First-time setup
 
 Ordering matters — steps 1–3 are in the other repo, and this project's

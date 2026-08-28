@@ -4,5 +4,8 @@ __pycache__
 *.json
 # The model definitions are hand-written inputs, not scratch output
 !models/**/*.json
+# So is a devcontainer config. The root one is tracked only because it predates
+# the `*.json` rule above; without this a new one is silently never added.
+!**/.devcontainer/*.json
 .env
 logs/
