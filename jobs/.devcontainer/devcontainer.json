@@ -4,13 +4,9 @@
     // The repo root, not `jobs/` -- so this config can be opened from the same
     // checkout as the Python devcontainer without VS Code mounting a
     // different folder for each.
-    "context": "../..",
+    "context": "..",
     "dockerfile": "./Dockerfile"
   },
-  // Open in `jobs/`, which is where every terraform command in this container
-  // is meant to run. `localWorkspaceFolderBasename` rather than a literal
-  // `cassandra`, which would break in a differently-named checkout.
-  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}/jobs",
   "customizations": {
     "vscode": {
       "settings": {

@@ -12,6 +12,7 @@ ARG TERRAFORM_VERSION=1.15.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
+    build-essential \
     ca-certificates \
     curl \
     git \
