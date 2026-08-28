@@ -132,9 +132,11 @@ and `endgame/jobs`.
 | `lint` | every push and PR touching `jobs/**` | none |
 | `plan` | every branch and PR except main | `AWS_PLAN_ROLE_ARN` |
 | `apply` | main only | `AWS_APPLY_ROLE_ARN` |
+| `image` (in `image.yml`) | build on PRs, push on main | `AWS_IMAGE_ROLE_ARN` |
 
-Two roles, not one: `terraform plan` executes provider code and runs on every
-branch, so it must not be able to reach credentials that can apply. `oidc.tf`
+Three roles, not one: `terraform plan` executes provider code and runs on every
+branch, so it must not be able to reach credentials that can apply — and a
+docker build has no business holding either. `oidc.tf`
 creates both here rather than one repo minting roles for the others — the trust
 policy is per-repository, so there's nothing to share and nothing to keep in
 sync. The plan role gets `ReadOnlyAccess` plus write on this stack's state key
@@ -144,15 +146,22 @@ plus IAM scoped to `cassandra-*` — and `iam:PassRole` on the shared
 `batch-execution-role` and `batch-scheduler-role`, which this stack references
 but doesn't own: creating a job definition or a schedule passes them.
 
+The image role is smaller than both: push/pull on the one ECR repository, the
+account-wide `ecr:GetAuthorizationToken` that a docker login needs and that
+takes no resource, and `s3:GetObject` on the shared stack's state object —
+nothing else, and no write anywhere. It replaces the `ecr-pusher-cassandra`
+user's long-lived access key, which used to live in this repo as two secrets.
+
 `lint` needs no credentials and no backend, so it runs before any of this
 exists. Both other jobs check their role variable against `''` and skip while
 it's unset, so the workflow lies dormant instead of failing red on every push
 until you've wired the roles up:
 
 ```bash
-cd jobs && make apply          # once, locally: creates the two CI roles
+cd jobs && make apply          # once, locally: creates the three CI roles
 gh variable set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw ci_plan_role_arn)"
 gh variable set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw ci_apply_role_arn)"
+gh variable set AWS_IMAGE_ROLE_ARN --body "$(terraform output -raw ci_image_role_arn)"
 ```
 
 Repository *variables*, not secrets — a role ARN isn't one, and the `!= ''`
@@ -164,6 +173,25 @@ SNS topic and its rule simply aren't created.
 `image_tag` stays at its `latest` default in CI, which is the tag a push to
 main publishes. Pin a SHA in `terraform.tfvars` locally to make a run
 reproducible.
+
+### Where the image build gets its config
+
+`config.json` — the bucket name for `Config.init_from_file`, the ECR URL for
+the Makefile, the queue name for `jobs.py` — is **derived from the shared
+stack's terraform state**, not pasted into a secret. The push job reads the
+state object with the image role and filters it to those three keys:
+
+```bash
+aws s3 cp "s3://nathan-terraform/batch-state" - | jq '{bucket, repo_urls, job_queue_name} ...'
+```
+
+Two things that buys, beyond one less secret to rotate. It can't go stale: the
+old `BATCH_CONFIG` secret was a snapshot of `terraform output -json` and had to
+be re-pasted whenever the shared stack changed. And it stops shipping
+credentials: `terraform output -json` includes sensitive values in full, so
+that secret carried the `ecr_iam_users` access keys and baked them into every
+image. The filter drops them. A key going missing fails the step rather than a
+Batch job an hour later.
 
 ## Editing the terraform
 
@@ -193,18 +221,16 @@ Ordering matters — steps 1–3 are in the other repo, and this project's
 1. **Shared infra.** In `aws-batch-optimization/infra`: `make apply`, then
    `make outputs`. That creates the `cassandra` ECR repo, its push user, and
    the shared roles, and writes `~/.aws-batch/config.json`.
-2. **GitHub secrets** on this repo, for `.github/workflows/image.yml`:
-   - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — from
-     `terraform output -json ecr_iam_users`, the `cassandra` entry.
-   - `IMAGE_URL` — from `terraform output -json repo_urls`.
-   - `BATCH_CONFIG` — the contents of `~/.aws-batch/config.json`. It's baked
-     into the image at `~dev/.aws-batch/config.json`; without it every job
-     dies at startup looking for the bucket name.
-3. **Push an image.** Merge to main, or `make push TAG=<sha>` locally.
-4. **Here.** `cp terraform.tfvars.example terraform.tfvars`, set `image_tag`,
-   then `make apply`.
-5. **CI roles.** That apply created them; publish their ARNs as repository
-   variables so the terraform workflow wakes up. See [CI](#ci).
+2. **Here.** `cp terraform.tfvars.example terraform.tfvars`, set `image_tag`,
+   then `make apply`. Nothing needs a pushed image first — a Batch job
+   definition naming a tag that doesn't exist yet applies fine.
+3. **CI roles.** That apply created all three; publish their ARNs as
+   repository variables so both workflows wake up. See [CI](#ci).
+4. **Push an image.** Merge to main, or `make push TAG=<sha>` locally.
+
+The only *secret* this repo needs is the optional `NOTIFICATION_EMAIL`. The
+image workflow used to want four more; it reads the shared stack's terraform
+state instead. See [Where the image build gets its config](#where-the-image-build-gets-its-config).
 
 `make update` re-fetches the shared modules — terraform caches git modules and
 won't notice a change on the other end otherwise.

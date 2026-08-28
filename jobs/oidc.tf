@@ -179,6 +179,80 @@ resource "aws_iam_role_policy_attachment" "ci_plan_state" {
 }
 
 # ------------------------------------------------------------------------------
+# Image role: main only, and only enough to push one repository's images.
+#
+# Replaces the `ecr-pusher-cassandra` IAM user's long-lived access key, which
+# `.github/workflows/image.yml` used to carry as two repository secrets. Same
+# OIDC trust as apply -- images are only pushed from main -- but a separate
+# role, because the thing it is trusted to do is much smaller than an apply
+# and there's no reason to hand a docker build PowerUserAccess.
+#
+# The s3 read is what lets the workflow build its `config.json` out of the
+# shared stack's terraform state instead of carrying it as a third secret.
+# ------------------------------------------------------------------------------
+
+resource "aws_iam_role" "ci_image" {
+  name               = "${var.resource_name_prefix}-ci-image"
+  description        = "docker push to the ${var.ecr_repository_name} ECR repo from main of ${var.github_repository}"
+  assume_role_policy = data.aws_iam_policy_document.apply_assume_role.json
+}
+
+data "aws_iam_policy_document" "ci_image" {
+  statement {
+    sid = "PushAndPullOneRepo"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:DescribeRepositories",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:GetRepositoryPolicy",
+      "ecr:InitiateLayerUpload",
+      "ecr:ListImages",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/${var.ecr_repository_name}",
+    ]
+  }
+
+  # `ecr:GetAuthorizationToken` is account-wide by definition -- it mints the
+  # docker login token and takes no resource -- so it cannot be scoped to the
+  # one repository above. The push actions that matter still are.
+  statement {
+    sid       = "EcrLogin"
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  # Read-only, and only the shared stack's state object: that is where the
+  # bucket name and the repository URL come from. Deliberately not
+  # `s3:ListBucket`, and deliberately not this stack's own state -- an image
+  # build has no business reading, let alone locking, either one.
+  statement {
+    sid       = "ReadSharedState"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.shared_infra_state.bucket}/${var.shared_infra_state.key}"]
+  }
+}
+
+resource "aws_iam_policy" "ci_image" {
+  name        = "${var.resource_name_prefix}-ci-image"
+  description = "Push images to the ${var.ecr_repository_name} ECR repository"
+  policy      = data.aws_iam_policy_document.ci_image.json
+}
+
+resource "aws_iam_role_policy_attachment" "ci_image" {
+  role       = aws_iam_role.ci_image.name
+  policy_arn = aws_iam_policy.ci_image.arn
+}
+
+
+# ------------------------------------------------------------------------------
 # Apply role: main only.
 # ------------------------------------------------------------------------------
 

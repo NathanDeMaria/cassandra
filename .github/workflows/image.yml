@@ -11,6 +11,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-2
+  # Where the shared stack keeps its state. The push job reads the bucket name
+  # and the ECR URL out of it rather than carrying either as a secret, so this
+  # is the one piece of coordinates CI has to know. Matches the default of
+  # `shared_infra_state` in jobs/variables.tf; if that ever moves, both move.
+  SHARED_STATE_BUCKET: nathan-terraform
+  SHARED_STATE_KEY: batch-state
+
 jobs:
   image:
     runs-on: ubuntu-latest
@@ -24,7 +37,7 @@ jobs:
       # A PR builds but does not push. Nothing wants a PR's image in ECR --
       # the documented way to get one is `make push TAG=<sha>` from a laptop
       # -- and asking for credentials to prove the Dockerfile still compiles
-      # means the check can't run on a fork, or before the repo's secrets are
+      # means the check can't run on a fork, or before the repo's roles are
       # set up. `--output` is empty rather than `--load`: nothing here reads
       # the image back, and the tag is a placeholder because buildx wants
       # something parseable in `-t`.
@@ -34,12 +47,42 @@ jobs:
           echo '{}' > config.json
           make build IMAGE_URL=cassandra TAG=pr BUILD_OUTPUT=
 
+      # Skipped until AWS_IMAGE_ROLE_ARN is set, so this stays dormant rather
+      # than failing red on every push to main before the roles exist -- the
+      # same guard the terraform workflow uses.
+      - name: Configure AWS credentials
+        if: github.event_name == 'push' && vars.AWS_IMAGE_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_IMAGE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # `config.json` is what `Config.init_from_file` reads for the bucket
+      # name, what the Makefile reads for the ECR URL, and what `jobs.py`
+      # reads for the queue name. It used to be a repository secret holding a
+      # whole `terraform output -json`; it's derived from the shared stack's
+      # state instead, so there is nothing to re-paste when that stack
+      # changes.
+      #
+      # Filtered to the three keys this repo actually reads, which also keeps
+      # `ecr_iam_users` out of it: that output is sensitive, it holds live
+      # access keys, and the previous secret baked all of it into every image.
+      # A missing key here fails now, rather than at `Config.init_from_file`
+      # in a Batch job an hour later.
+      - name: Build config.json from the shared terraform state
+        if: github.event_name == 'push' && vars.AWS_IMAGE_ROLE_ARN != ''
+        run: |
+          aws s3 cp "s3://${SHARED_STATE_BUCKET}/${SHARED_STATE_KEY}" - \
+            | jq --exit-status '{
+                bucket: .outputs.bucket,
+                repo_urls: .outputs.repo_urls,
+                job_queue_name: .outputs.job_queue_name,
+              } | if any(.[]; . == null) then error("missing output") else . end' \
+            > config.json
+          echo "IMAGE_URL=$(jq -r .repo_urls.value.cassandra config.json)" >> "$GITHUB_ENV"
+
       - name: Push the image
-        if: github.event_name == 'push'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          IMAGE_URL: ${{ secrets.IMAGE_URL }}
+        if: github.event_name == 'push' && vars.AWS_IMAGE_ROLE_ARN != ''
         # Layer cache lives in ECR alongside the image rather than in the
         # Actions cache: `type=gha` needs ACTIONS_RUNTIME_TOKEN, which the
         # runner hands to JS actions and withholds from `run:` steps, so a
@@ -49,7 +92,6 @@ jobs:
         # image-manifest/oci-mediatypes are required -- ECR rejects buildx's
         # default cache manifest format.
         run: |
-          echo '${{ secrets.BATCH_CONFIG }}' > config.json
           make push TAG=${GITHUB_SHA::7} \
             CACHE_FLAGS="--cache-from type=registry,ref=${IMAGE_URL}:buildcache \
               --cache-to type=registry,ref=${IMAGE_URL}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true"
