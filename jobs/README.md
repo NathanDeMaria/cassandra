@@ -153,22 +153,29 @@ nothing else, and no write anywhere. It replaces the `ecr-pusher-cassandra`
 user's long-lived access key, which used to live in this repo as two secrets.
 
 `lint` needs no credentials and no backend, so it runs before any of this
-exists. Both other jobs check their role variable against `''` and skip while
-it's unset, so the workflow lies dormant instead of failing red on every push
-until you've wired the roles up:
+exists. Every other job reads its role ARN through a `guard` step and skips
+while it's unset, so the workflows lie dormant instead of failing red on every
+push until you've wired the roles up:
 
 ```bash
 cd jobs && make apply          # once, locally: creates the three CI roles
-gh variable set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw ci_plan_role_arn)"
-gh variable set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw ci_apply_role_arn)"
-gh variable set AWS_IMAGE_ROLE_ARN --body "$(terraform output -raw ci_image_role_arn)"
+gh secret set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw ci_plan_role_arn)"
+gh secret set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw ci_apply_role_arn)"
+gh secret set AWS_IMAGE_ROLE_ARN --body "$(terraform output -raw ci_image_role_arn)"
 ```
 
-Repository *variables*, not secrets — a role ARN isn't one, and the `!= ''`
-check needs to be able to read it. The one secret this workflow reads is
-`NOTIFICATION_EMAIL`, and leaving it unset is fine: an unset secret arrives as
-`""` rather than as nothing, which `main.tf` normalises back to `null` so the
-SNS topic and its rule simply aren't created.
+All three are repository *secrets*, and all three must be set the same way —
+mixing the two contexts is what left the ECR repo empty once before, because
+`vars.AWS_IMAGE_ROLE_ARN` reads as `''` when the ARN is stored as a secret and
+the push then skips silently on a green run. That constraint is also why the
+"is it wired up yet" check is a `guard` step rather than a job-level `if`: the
+`secrets` context isn't available in a job `if`, and naming it there makes the
+whole workflow invalid.
+
+The other secret these workflows read is `NOTIFICATION_EMAIL`, and leaving it
+unset is fine: an unset secret arrives as `""` rather than as nothing, which
+`main.tf` normalises back to `null` so the SNS topic and its rule simply aren't
+created.
 
 `image_tag` stays at its `latest` default in CI, which is the tag a push to
 main publishes. Pin a SHA in `terraform.tfvars` locally to make a run

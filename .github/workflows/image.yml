@@ -47,14 +47,34 @@ jobs:
           echo '{}' > config.json
           make build IMAGE_URL=cassandra TAG=pr BUILD_OUTPUT=
 
-      # Skipped until AWS_IMAGE_ROLE_ARN is set, so this stays dormant rather
-      # than failing red on every push to main before the roles exist -- the
-      # same guard the terraform workflow uses.
+      # Before the OIDC role is wired up there is nothing to authenticate with,
+      # so every push step below is a no-op and the job reports green with a
+      # note rather than failing red on every push to main. Secrets can't be
+      # tested in a job-level `if`, but they can be read into a step's env,
+      # which is what makes this the one place the check can go -- the same
+      # guard the terraform workflow uses.
+      #
+      # Skipped entirely on a pull request, which leaves `configured` empty and
+      # so keeps every step below it skipped: a PR builds but never pushes.
+      - name: Check for the image role
+        id: guard
+        if: github.event_name == 'push'
+        env:
+          ROLE_ARN: ${{ secrets.AWS_IMAGE_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "AWS_IMAGE_ROLE_ARN is not set -- skipping the push." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure AWS credentials
-        if: github.event_name == 'push' && vars.AWS_IMAGE_ROLE_ARN != ''
+        if: steps.guard.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ vars.AWS_IMAGE_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_IMAGE_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       # `config.json` is what `Config.init_from_file` reads for the bucket
@@ -70,7 +90,7 @@ jobs:
       # A missing key here fails now, rather than at `Config.init_from_file`
       # in a Batch job an hour later.
       - name: Build config.json from the shared terraform state
-        if: github.event_name == 'push' && vars.AWS_IMAGE_ROLE_ARN != ''
+        if: steps.guard.outputs.configured == 'true'
         run: |
           aws s3 cp "s3://${SHARED_STATE_BUCKET}/${SHARED_STATE_KEY}" - \
             | jq --exit-status '{
@@ -82,7 +102,7 @@ jobs:
           echo "IMAGE_URL=$(jq -r .repo_urls.value.cassandra config.json)" >> "$GITHUB_ENV"
 
       - name: Push the image
-        if: github.event_name == 'push' && vars.AWS_IMAGE_ROLE_ARN != ''
+        if: steps.guard.outputs.configured == 'true'
         # Layer cache lives in ECR alongside the image rather than in the
         # Actions cache: `type=gha` needs ACTIONS_RUNTIME_TOKEN, which the
         # runner hands to JS actions and withholds from `run:` steps, so a
