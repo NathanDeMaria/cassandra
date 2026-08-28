@@ -55,13 +55,13 @@ jobs:
       - run: make lint
 
   plan:
-    # Skipped on main, where the apply job re-plans anyway. Also skipped until
-    # AWS_PLAN_ROLE_ARN is set, so this workflow lies dormant rather than
-    # failing red on every push before the roles are wired up.
+    # Skipped on main, where the apply job re-plans anyway. The other half of
+    # the condition -- "only once AWS_PLAN_ROLE_ARN exists" -- can't live here:
+    # the `secrets` context isn't available in a job-level `if`, and naming it
+    # makes the whole workflow invalid. It's the `guard` step below instead.
     if: >-
       github.ref != 'refs/heads/main'
       && github.event_name != 'workflow_dispatch'
-      && vars.AWS_PLAN_ROLE_ARN != ''
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -80,20 +80,42 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Before the OIDC roles are wired up there is nothing to authenticate
+      # with, so every step below is a no-op and the job reports green with a
+      # note rather than failing red on every push. Secrets can't be tested in
+      # a job-level `if`, but they can be read into a step's env, which is what
+      # makes this the one place the check can go.
+      - name: Check for the plan role
+        id: guard
+        env:
+          ROLE_ARN: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "AWS_PLAN_ROLE_ARN is not set -- skipping the plan." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: aws-actions/configure-aws-credentials@v5
+        if: steps.guard.outputs.configured == 'true'
         with:
-          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
+        if: steps.guard.outputs.configured == 'true'
         with:
           terraform_version: "1.15.8"
           terraform_wrapper: false
 
       - run: terraform init -input=false
+        if: steps.guard.outputs.configured == 'true'
 
       - name: Plan
         id: plan
+        if: steps.guard.outputs.configured == 'true'
         run: |
           set +e
           # -lock-timeout so an overlap waits its turn instead of failing.
@@ -106,7 +128,7 @@ jobs:
           exit $code
 
       - name: Summary
-        if: always()
+        if: always() && steps.guard.outputs.configured == 'true'
         run: |
           # Written unconditionally: planning on branch pushes means there is
           # often no PR to comment on, and the run page is the only place the
@@ -126,7 +148,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on the PR
-        if: always() && github.event_name == 'pull_request'
+        if: >-
+          always() && github.event_name == 'pull_request'
+          && steps.guard.outputs.configured == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -163,7 +187,9 @@ jobs:
             }
 
   apply:
-    if: github.ref == 'refs/heads/main' && vars.AWS_APPLY_ROLE_ARN != ''
+    # Same as plan: the "is the role wired up yet" half of this condition lives
+    # in the `guard` step, because `secrets` can't be referenced here.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -176,24 +202,41 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check for the apply role
+        id: guard
+        env:
+          ROLE_ARN: ${{ secrets.AWS_APPLY_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "AWS_APPLY_ROLE_ARN is not set -- skipping the apply." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: aws-actions/configure-aws-credentials@v5
+        if: steps.guard.outputs.configured == 'true'
         with:
-          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
+        if: steps.guard.outputs.configured == 'true'
         with:
           terraform_version: "1.15.8"
           terraform_wrapper: false
 
       - run: terraform init -input=false
+        if: steps.guard.outputs.configured == 'true'
 
       # Re-plans rather than applying a saved plan from the branch. Simpler,
       # and fine while one person merges.
       - run: terraform apply -auto-approve -input=false -lock-timeout=180s
+        if: steps.guard.outputs.configured == 'true'
 
       - name: Summary
-        if: always()
+        if: always() && steps.guard.outputs.configured == 'true'
         run: |
           {
             echo "### terraform apply"
