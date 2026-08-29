@@ -2,7 +2,7 @@ from typing import Any, Sequence
 
 import pytest
 
-from .optimize import _diagnose, optimize
+from .optimize import _DOMAINS, _diagnose, optimize
 
 
 def _results(
@@ -198,7 +198,9 @@ def test_diagnose__a_deviation_is_not_widened_below_zero() -> None:
     (hit,) = diagnostics.bound_hits
     assert hit.edge == "lower"
     # Clamped to the floor rather than the -190 a bare doubling would give.
-    assert hit.suggestion == (0.0, 350.0)
+    # Not to 0 either: the Glicko update divides by the deviation, so a
+    # suggestion of exactly zero would kill the run it was advising.
+    assert hit.suggestion == (1.0, 350.0)
 
 
 def test_diagnose__an_unlisted_parameter_still_widens_freely() -> None:
@@ -214,3 +216,35 @@ def test_diagnose__an_unlisted_parameter_still_widens_freely() -> None:
 
     (hit,) = diagnostics.bound_hits
     assert hit.suggestion == (100.0, 280.0)
+
+
+def test_diagnose__a_deviation_floor_is_computable() -> None:
+    """
+    `initial_rd` reads like the increments next to it and isn't: they can be
+    zero ("doesn't move"), while the deviation itself is divided by. A
+    suggestion of 0 would take down the next run.
+    """
+    from datetime import datetime
+
+    from endgame.types import Game
+
+    from .predictor import GlickoPredictor
+
+    low, _ = _DOMAINS["initial_rd"]
+    assert low > 0
+
+    game = Game(
+        home="A",
+        home_score=80,
+        away="B",
+        away_score=70,
+        neutral_site=False,
+        completed=True,
+        date=datetime(2020, 6, 1),
+        game_id="1",
+    )
+    # The floor is usable ...
+    GlickoPredictor("wnba", initial_rd=low).update_game(game)
+    # ... and anything below it is not.
+    with pytest.raises(ZeroDivisionError):
+        GlickoPredictor("wnba", initial_rd=0.0).update_game(game)
