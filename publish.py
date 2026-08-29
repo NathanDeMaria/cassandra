@@ -21,6 +21,11 @@ a row in the evaluations csv mean the same thing by the same name.
 Nothing here is new capability. `join_with_odds` runs the model,
 `score_predictions` fits the prob->margin mapping, and `cassandra.serving`
 owns the schema; this is the assembly.
+
+The one judgment call it does make is *when* the offseason rollover lands in
+a release, since publishing is the only caller that reads a predictor's
+ratings after the replay rather than its predictions during one. See
+`rollover_due`.
 """
 
 import asyncio
@@ -29,7 +34,7 @@ import sys
 from collections import Counter
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
 from typing import NamedTuple
@@ -272,8 +277,40 @@ def _as_leagues(league: str | Sequence[str] | None) -> list[str]:
     return [league] if isinstance(league, str) else list(league)
 
 
+# How long after the last game the offseason rollover waits. A month, so the
+# release people read for the weeks right after a title game still says where
+# the season left the teams.
+ROLLOVER_DELAY = timedelta(days=30)
+
+
+def rollover_due(df: pd.DataFrame, now: datetime) -> bool:
+    """Whether this release should carry the offseason regression yet.
+
+    The rollover -- `pass_season`, regression toward each team's anchor plus
+    Glicko's season rd bump -- is a prior on a season nobody has played. It
+    belongs in the ratings that predict that season's first game, not in the
+    ratings someone reads the week after the last one, where it silently
+    pulls the champion back toward the field.
+
+    "The season ended" is read off the games rather than a calendar: the last
+    game in the data is the last game there was. In season that date is days
+    old and this is False, which is what keeps a mid-season publish from
+    regressing everybody every week -- so the same rule covers both without a
+    separate "is the season over" flag to keep in sync.
+    """
+    last_game = pd.Timestamp(df["date"].max())
+    # Season pickles carry naive datetimes in some leagues and aware ones in
+    # others; comparing the wrong pair raises rather than misjudging by a day.
+    if last_game.tzinfo is None:
+        last_game = last_game.tz_localize(UTC)
+    return now - last_game.to_pydatetime() >= ROLLOVER_DELAY
+
+
 def _predictions(
-    job: _Job, seasons: Sequence[Season], odds_db: OddsDatabase
+    job: _Job,
+    seasons: Sequence[Season],
+    odds_db: OddsDatabase,
+    now: datetime | None = None,
 ) -> tuple[Predictor, pd.DataFrame]:
     """Replay one model over already-loaded seasons.
 
@@ -282,11 +319,33 @@ def _predictions(
     per model, and the point of publishing every model in one process is to
     pay that once. It also hands back the trained predictor directly, so the
     ratings don't have to come back off the state file.
+
+    The replay stops short of the final `pass_season` and this decides
+    whether to apply it, because publishing is the one caller that reads the
+    ratings afterward. See `rollover_due`.
     """
     predictor_class = load_predictor_class(job.config.predictor_class)
     predictor = predictor_class(job.league, **job.config.params)  # type: ignore[call-arg]
-    predictions = join_with_odds(predictor, seasons, odds_db, post_callbacks=False)
-    return predictor, pd.DataFrame([asdict(p) for p in predictions])
+    predictions = join_with_odds(
+        predictor,
+        seasons,
+        odds_db,
+        post_callbacks=False,
+        roll_over_final_season=False,
+    )
+    df = pd.DataFrame([asdict(p) for p in predictions])
+    # An empty frame has no `date` to ask about. Nothing to roll over either,
+    # and `score_predictions` is about to say "No games to score" -- a better
+    # message than whatever a max() over nothing would produce here.
+    if not df.empty:
+        rolled = rollover_due(df, now or datetime.now(UTC))
+        if rolled:
+            predictor.pass_season()
+        # Said out loud either way: two runs a day apart can publish
+        # different ratings off identical games, and this is the only thing
+        # that explains it.
+        print(f"  offseason rollover: {'applied' if rolled else 'not yet'}")
+    return predictor, df
 
 
 async def _publish_one(

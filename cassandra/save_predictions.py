@@ -33,7 +33,19 @@ def generate_predictions(
     seasons: Iterable[Season],
     post_callbacks: bool = False,
     namer: TeamNamer | None = None,
+    roll_over_final_season: bool = True,
 ) -> Iterator[GameResult]:
+    """Replay every season in order, training the predictor as it goes.
+
+    `roll_over_final_season` is about the last `pass_season` and nothing else.
+    Between two seasons the rollover -- regression toward each team's anchor,
+    and Glicko's season rd bump -- has to happen, or the next season's games
+    are predicted by ratings that never cooled off. After the *last* season
+    it's a bet about a season that hasn't started, applied to ratings that are
+    about to be read as "where the teams stand". Scoring can't tell the
+    difference, since no game follows it, so this defaults to True and only
+    publish -- which does read the ratings afterward -- turns it off.
+    """
     # Team names are canonicalized here, before anything sees a game, so the
     # predictor, the predictions and the release all agree on who a team is.
     # Defaulted rather than required: every caller wants the league's
@@ -45,7 +57,8 @@ def generate_predictions(
     # results from the future. iter_weeks raises if a season's weeks overlap
     # in time, which means its games are grouped into the wrong weeks and
     # sorting can't save us.
-    for season in sorted(seasons, key=lambda s: s.year):
+    ordered = sorted(seasons, key=lambda s: s.year)
+    for index, season in enumerate(ordered):
         for week in iter_weeks(season):
             for game in week.games_in_order:
                 game = namer.apply(game)
@@ -54,7 +67,8 @@ def generate_predictions(
                     prediction, game, year=season.year, week_number=week.number
                 )
             predictor.pass_week()
-        predictor.pass_season()
+        if roll_over_final_season or index < len(ordered) - 1:
+            predictor.pass_season()
     if post_callbacks:
         predictor.postrun_callback()
 
@@ -148,10 +162,14 @@ def join_with_odds(
     seasons: Iterable[Season],
     odds_db: OddsDatabase,
     post_callbacks: bool,
+    roll_over_final_season: bool = True,
 ) -> Iterator[_Prediction]:
     # like build_predictions_df, but meant for optimization that already has read seasons/odds into memory
     for result in generate_predictions(
-        predictor, seasons, post_callbacks=post_callbacks
+        predictor,
+        seasons,
+        post_callbacks=post_callbacks,
+        roll_over_final_season=roll_over_final_season,
     ):
         odds = odds_db.get_odds(result.game.game_id)
         yield _build_prediction(result, odds)
