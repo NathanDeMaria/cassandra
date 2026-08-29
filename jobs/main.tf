@@ -215,6 +215,13 @@ module "launcher" {
   timeout_seconds = 900
 
   environment_variables = [
+    # The only stage that calls an AWS API needing a region to resolve an
+    # endpoint. The other four talk to s3, which botocore will resolve
+    # without one, so this is the single job definition that has to say it --
+    # and until it did, both schedules died on `NoRegionError` before
+    # submitting anything, which reads as "no run happened" rather than as a
+    # failure of the run.
+    { name = "AWS_DEFAULT_REGION", value = var.aws_region },
     { name = "CASSANDRA_JOB_QUEUE", value = local.shared.job_queue_name },
     { name = "CASSANDRA_ANCHORS_JOB_DEFINITION", value = local.job_definitions.anchors },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
