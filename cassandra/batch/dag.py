@@ -190,7 +190,17 @@ _ANCHOR_LEAGUES_ENV_VAR = "CASSANDRA_ANCHOR_LEAGUES"
 
 
 def _league_args(leagues: list[str] | None) -> list[str]:
-    return [arg for league in leagues or [] for arg in ("--league", league)]
+    """`--league` for the stage that takes its scope on the command line.
+
+    One comma-joined flag rather than one flag per league, because the other
+    end is `jobs.py`, and fire keeps only the *last* of a repeated flag:
+    `--league nhl --league wnba` arrives as `"wnba"` and the run scores one
+    league while reporting success for the set. `--league nhl,wnba` arrives
+    as `("nhl", "wnba")`, which is what `_as_list` is written against.
+    """
+    if not leagues:
+        return []
+    return ["--league", ",".join(leagues)]
 
 
 class _Submitter:
