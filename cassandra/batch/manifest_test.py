@@ -41,6 +41,7 @@ def _models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # test starts from neither being set.
     monkeypatch.delenv(manifest.MANIFEST_ENV_VAR, raising=False)
     monkeypatch.delenv(manifest.ARRAY_INDEX_ENV_VAR, raising=False)
+    monkeypatch.delenv(manifest.PINNED_INDEX_ENV_VAR, raising=False)
     return models_dir
 
 
@@ -197,3 +198,28 @@ def test_array_index_is_none_outside_an_array_job(
     monkeypatch.delenv(manifest.ARRAY_INDEX_ENV_VAR, raising=False)
 
     assert manifest.array_index() is None
+
+
+def test_array_index_reads_the_pinned_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A one-item array runs as a plain job, so Batch sets nothing and the
+    launcher pins the index itself -- under a name it's allowed to set.
+    """
+    monkeypatch.delenv(manifest.ARRAY_INDEX_ENV_VAR, raising=False)
+    monkeypatch.setenv(manifest.PINNED_INDEX_ENV_VAR, "0")
+    assert manifest.array_index() == 0
+
+
+def test_batch_wins_over_the_pinned_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real array child takes its index from Batch, not from a leftover."""
+    monkeypatch.setenv(manifest.ARRAY_INDEX_ENV_VAR, "3")
+    monkeypatch.setenv(manifest.PINNED_INDEX_ENV_VAR, "0")
+    assert manifest.array_index() == 3
+
+
+def test_the_pinned_name_is_not_reserved_by_batch() -> None:
+    """
+    `AWS_BATCH*` overrides are accepted by SubmitJob and then dropped before
+    the container sees them, so the pinned name must sit outside that prefix.
+    """
+    assert not manifest.PINNED_INDEX_ENV_VAR.startswith("AWS_BATCH")
