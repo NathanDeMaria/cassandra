@@ -1,15 +1,15 @@
 """The work list: every optimization config in the repo, in the order to run them.
 
-This is the one definition of "what is there to optimize", shared by three
-callers that used to answer it separately: `run_models.sh`, the batch launcher
-that sizes the array job, and the array child that has to turn an integer index
-back into a config. Those last two *must* agree -- a child that resolves index
-3 differently than the launcher intended optimizes the wrong model and writes
-the wrong result file -- so the ordering here is a contract, not a convenience.
+This is the one definition of "what is there to optimize", shared by the batch
+launcher that sizes the array job and the array child that has to turn an
+integer index back into a config. The two *must* agree -- a child that resolves
+index 3 differently than the launcher intended optimizes the wrong model and
+writes the wrong result file -- so the ordering here is a contract, not a
+convenience.
 
-Cheap configs sort first, matching what `run_models.sh` has always done: a
-mistake surfaces in the low-`n_iter` runs before the expensive ones burn an
-hour. Ties break on league then path so the order is total and stable.
+Cheap configs sort first, so a mistake surfaces in the low-`n_iter` children
+before the expensive ones burn an hour of queue time. Ties break on league then
+path so the order is total and stable.
 """
 
 import json
@@ -96,8 +96,8 @@ def _all_work() -> list[Work]:
                 )
             predictor = load_predictor_class(config.predictor_class)(config.league)
             # Predictors that build opponent priors stash a manager; the rest
-            # don't, and asking for the attribute is how run_models.sh has
-            # always found out.
+            # don't, and asking for the attribute is the only way to find out
+            # without instantiating a search.
             manager = getattr(predictor, "_prior_manager", None)
             work.append(
                 Work(

@@ -13,12 +13,11 @@ test:
 	poetry run pytest .
 
 
-# Kick off a full optimize+eval run in the background. $$ escapes the dollar so
-# make passes it through to the shell instead of expanding it itself.
-run-all:
-	@log="logs/$$(date +%Y-%m-%d_%H-%M-%S).log"; \
-		nohup ./run_models.sh > "$$log" 2>&1 & \
-		printf 'running in background\ntail -f %s\nto follow\n' "$$log"
+# Condense the newest Batch run into a report. Pass a run id to pick an older
+# one, e.g. `make report ARGS=20260829-022910`; `--list` shows what's there.
+# Needs credentials -- AWS_PROFILE, or `--cached` to re-read the last fetch.
+report:
+	poetry run python .claude/skills/run-report/summarize_run.py $(ARGS)
 
 
 # Build a release for every model in every league, locally. Reads the seasons
@@ -82,4 +81,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test run-all publish build push _ecr_login submit
+.PHONY: lint check test report publish build push _ecr_login submit

@@ -282,7 +282,7 @@ def main(league: str = "ncaafb", write: bool = False, if_missing: bool = False) 
     since the file it replaces changes every rating the next run produces.
 
     `--if-missing` turns this into a no-op when the league already has an
-    anchor file. That's what `run_models.sh` calls, so a first run builds the
+    anchor file. That's what the anchors job calls, so a first run builds the
     anchors and every run after it leaves them alone -- refitting on each run
     would silently re-rate every model against a slightly different scale.
     Rebuilding on purpose means deleting the file, which is the same shape as

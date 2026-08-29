@@ -17,7 +17,7 @@ The shape:
 anchors comes first because it decides the scale everything downstream is on:
 the anchor is what a team's rating starts at and regresses toward, so a search
 run before the anchors exist is fit against a different rating scale than the
-same search run after. `run_models.sh` builds them first for the same reason.
+same search run after.
 It is one node ahead of the array rather than a step inside each optimize
 child because the fit is per league, and twenty children would fit the same
 three files twenty times -- and race each other writing them.

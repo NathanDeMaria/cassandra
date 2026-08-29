@@ -91,7 +91,7 @@ def test_a_tier_with_no_games_at_all_falls_back() -> None:
 def test_if_missing_leaves_an_existing_file_alone(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """`run_models.sh` calls this on every run, so it has to be a no-op.
+    """The anchors job calls this on every run, so it has to be a no-op.
 
     Refitting each time would re-rate every model against a slightly different
     scale without anyone asking for it -- and it would spend the s3 read that

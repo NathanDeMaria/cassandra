@@ -245,7 +245,8 @@ def _job(config_path: Path, league: str | None = None) -> _Job:
     if league is not None and config.league != league:
         # evaluate_models.py labels a model by its directory, so a config that
         # disagrees would be published under one league and scored under
-        # another. run_models.sh makes the same check for optimization configs.
+        # another. `manifest._all_work` makes the same check for the configs
+        # the optimize array is built from.
         raise ValueError(
             f"{config_path}: league {config.league!r} does not match directory "
             f"{league!r}"
@@ -340,7 +341,8 @@ async def _publish(
     if not jobs:
         raise ValueError(
             f"No models to publish. Optimized results land under "
-            f"{CASSANDRA_HOME / 'models'}; run ./run_models.sh first."
+            f"{CASSANDRA_HOME / 'models'}; run `make submit` first, or "
+            "`jobs.py publish` to pull them from s3."
         )
 
     bucket = Config.init_from_file().bucket

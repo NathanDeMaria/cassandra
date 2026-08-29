@@ -1,38 +1,46 @@
 #!/usr/bin/env python3
-"""Condense a `make run-all` log into a report small enough to reason about.
+"""Condense one AWS Batch run into a report small enough to reason about.
 
-The raw logs are mostly bayes_opt probe tables wrapped in ANSI color codes --
-a few hundred KB of numbers whose only interesting rows are the best one and
-whatever `[optimize]` printed afterwards. This pulls out the parts a reviewer
-acts on: per-model status, convergence, bound diagnostics, grouped failures,
-and the evaluation table.
+The container logs are mostly bayes_opt probe tables -- a few hundred KB of
+numbers whose only interesting rows are the best one and whatever `[optimize]`
+printed afterwards. This pulls out the parts a reviewer acts on: per-model
+status, convergence, bound diagnostics, grouped failures, and the evaluation
+table.
 
-    python3 summarize_run.py [LOG]        # newest log under logs/ by default
+    poetry run python summarize_run.py                # newest run
+    poetry run python summarize_run.py 20260829-022910
+    poetry run python summarize_run.py --cached       # don't call AWS
 
-Stdlib only, so it runs without the poetry env.
+Status and timing come from Batch itself (`run.json`), not from scraping the
+logs: a job's own `startedAt`/`stoppedAt` and `status` are authoritative, and
+the array children run in parallel, so there is no sequential log to infer them
+from. `fetch_run.py` puts both on disk.
 """
 
 import csv
-import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import fetch_run
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CASSANDRA_HOME = Path(os.environ.get("CASSANDRA_HOME", Path.home() / ".cassandra"))
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
-# `=== mens / glicko_full (GlickoPredictor, n_iter=300) ===`
+# `=== mens/elo538 (Elo538Predictor, n_iter=60) ===`, from `jobs.py`. The
+# spaces around the slash are optional because `jobs.py` prints `work.name`
+# (no spaces) for a model and `f"{league} / division anchors"` (spaces) for an
+# anchor fit, and both come through the same parser.
 _SECTION = re.compile(
-    r"^=== (?P<league>[^/\s]+) / (?P<model>\S+) "
+    r"^=== (?P<league>[^/\s]+) ?/ ?(?P<model>\S+) "
     r"\((?P<cls>\w+), n_iter=(?P<n_iter>\d+)\) ===$"
 )
-_EVAL_SECTION = re.compile(r"^=== evaluating (?P<scope>.+) ===$")
 # `| 61        | -0.179261 | 106.28371 | 59.809930 |`
 _PROBE = re.compile(r"^\|\s*(\d+)\s*\|\s*(-?[\d.]+(?:e[-+]?\d+)?)\s*\|")
-_RESULT = re.compile(r"^\s+-> (?P<path>\S+)$")
-_FAILED = re.compile(r"^\s+FAILED \(log: (?P<path>\S+)\)$")
+# The last line a finished optimize child prints: `artifacts.upload` echoing
+# the key it wrote. Its absence in a SUCCEEDED job means --upload=False.
+_UPLOADED = re.compile(r"^\s+uploaded (?P<key>s3://\S+)$")
 _DIAGNOSTIC = re.compile(r"^\[optimize\] (?P<message>.+)$")
 _WARNING = re.compile(r"^(?P<origin>\S+?:\d+): (?P<kind>\w*Warning): (?P<message>.+)$")
 _EXCEPTION = re.compile(
@@ -40,30 +48,47 @@ _EXCEPTION = re.compile(
 )
 _FRAME = re.compile(r'^\s+File "(?P<file>[^"]+)", line (?P<line>\d+)')
 _EVALUATING = re.compile(r"^Evaluating (?P<league>[^:]+): (?P<model>\S+)$")
-_FAILURE_TALLY = re.compile(r"^(?P<failed>\d+) of (?P<ran>\d+) optimizations failed:$")
-_LOG_ROOT = re.compile(r"^Logs: (?P<path>\S+)$")
-_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
+
+# Batch states that mean the job is still on its way to running. A whole array
+# sitting here is a capacity story, not a model story: the queue is all spot
+# `.large`, so RUNNABLE means nothing is being placed.
+_WAITING = {"SUBMITTED", "PENDING", "RUNNABLE", "STARTING"}
 
 
-class Model:
-    """One `=== league / model ===` block."""
+class Child:
+    """One container: its Batch record, plus whatever its log said."""
 
-    def __init__(self, league, name, predictor_class, n_iter):
-        self.league = league
-        self.name = name
-        self.predictor_class = predictor_class
-        self.n_iter = n_iter
+    def __init__(self, stage, record):
+        self.stage = stage
+        self.index = record["index"]
+        self.name = record["name"]
+        self.status = record["status"]
+        self.exit_code = record["exit_code"]
+        self.status_reason = record["status_reason"]
+        self.container_reason = record["container_reason"]
+        self.attempts = record["attempts"]
+        self.log = record["log"]
+        self.started_at = record["started_at"]
+        self.stopped_at = record["stopped_at"]
+
+        # Filled in from the log, when there is one.
+        self.predictor_class = None
+        self.n_iter = None
         self.targets = []
-        self.status = "running"
-        self.result_path = None
-        self.model_log = None
         self.diagnostics = []
-        self.error = None  # (type, message, frames)
-        self.duration = None
+        self.error = None
+        self.uploaded = None
 
     @property
-    def label(self):
-        return f"{self.league}/{self.name}"
+    def league(self):
+        return self.name.split("/")[0]
+
+    @property
+    def duration(self):
+        if self.started_at is None:
+            return None
+        end = self.stopped_at or datetime.now(timezone.utc).timestamp() * 1000
+        return timedelta(milliseconds=end - self.started_at)
 
     @property
     def best(self):
@@ -71,80 +96,63 @@ class Model:
 
     @property
     def best_iteration(self):
-        """1-based index of the best probe."""
         return self.targets.index(self.best) + 1 if self.targets else None
 
     @property
     def last_improvement(self):
-        """1-based index of the last probe that raised the best-so-far score."""
+        """The last probe that raised the best-so-far.
+
+        Near the end means the search was still climbing when it ran out of
+        iterations; well before it means more probes would have been wasted.
+        """
         if not self.targets:
             return None
-        best, index = self.targets[0], 1
-        for position, target in enumerate(self.targets[1:], start=2):
+        best = self.targets[0]
+        last = 1
+        for index, target in enumerate(self.targets[1:], start=2):
             if target > best:
-                best, index = target, position
-        return index
+                best, last = target, index
+        return last
 
     @property
     def gain(self):
-        """How much the search improved on its own first probe."""
-        return self.best - self.targets[0] if self.targets else None
+        return None if not self.targets else self.best - self.targets[0]
+
+    @property
+    def failed(self):
+        return self.status == "FAILED"
+
+    @property
+    def waiting(self):
+        return self.status in _WAITING
 
 
-def _parse(lines):
-    models = []
-    current = None
-    warnings = {}
-    eval_models = []
-    eval_scope = None
-    eval_error = None
-    tally = None
-    log_root = None
+def _parse_log(child, lines, warnings):
+    """Pull the interesting rows out of one container's stdout."""
     pending_frames = []
-    in_eval = False
-
     for raw in lines:
         line = _ANSI.sub("", raw.rstrip("\n"))
 
         section = _SECTION.match(line)
         if section:
-            in_eval = False
-            current = Model(
-                section["league"],
-                section["model"],
-                section["cls"],
-                int(section["n_iter"]),
-            )
-            models.append(current)
-            pending_frames = []
-            continue
-
-        eval_section = _EVAL_SECTION.match(line)
-        if eval_section:
-            in_eval, current, eval_scope = True, None, eval_section["scope"]
+            child.predictor_class = section["cls"]
+            child.n_iter = int(section["n_iter"])
             pending_frames = []
             continue
 
         probe = _PROBE.match(line)
-        if probe and current is not None:
-            current.targets.append(float(probe.group(2)))
+        if probe:
+            child.targets.append(float(probe.group(2)))
             continue
 
-        result = _RESULT.match(line)
-        if result and current is not None:
-            current.status = "ok"
-            current.result_path = result["path"]
-            continue
-
-        failed = _FAILED.match(line)
-        if failed and current is not None:
-            current.status = "failed"
-            current.model_log = failed["path"]
+        uploaded = _UPLOADED.match(line)
+        if uploaded:
+            child.uploaded = uploaded["key"]
             continue
 
         diagnostic = _DIAGNOSTIC.match(line)
-        if diagnostic and current is not None:
-            current.diagnostics.append(diagnostic["message"])
+        if diagnostic:
+            child.diagnostics.append(diagnostic["message"])
             continue
 
         warning = _WARNING.match(line)
@@ -162,98 +170,40 @@ def _parse(lines):
 
         exception = _EXCEPTION.match(line)
         if exception:
-            error = (
+            # Chained tracebacks end with the exception that actually escaped,
+            # so later matches win.
+            child.error = (
                 exception["type"],
                 exception["message"],
                 tuple(pending_frames[-3:]),
             )
-            if in_eval:
-                eval_error = error
-            elif current is not None:
-                # Chained tracebacks end with the exception that actually
-                # escaped, so later matches win.
-                current.error = error
             pending_frames = []
             continue
 
-        evaluating = _EVALUATING.match(line)
-        if evaluating:
-            eval_models.append(f"{evaluating['league']}/{evaluating['model']}")
-            continue
 
-        failure_tally = _FAILURE_TALLY.match(line)
-        if failure_tally:
-            tally = (int(failure_tally["failed"]), int(failure_tally["ran"]))
-            continue
-
-        root = _LOG_ROOT.match(line)
-        if root:
-            log_root = root["path"]
-
-    return {
-        "models": models,
-        "warnings": warnings,
-        "eval_models": eval_models,
-        "eval_scope": eval_scope,
-        "eval_error": eval_error,
-        "tally": tally,
-        "log_root": log_root,
-        "in_eval": in_eval,
-    }
-
-
-def _start_time(log_path):
-    match = _STAMP.search(log_path.name)
-    if not match:
-        return None
-    return datetime.strptime(match.group(), "%Y-%m-%d_%H-%M-%S")
-
-
-def _attach_durations(parsed, log_path, start):
-    """Approximate per-model wall time from the per-model logs' mtimes.
-
-    run_models.sh tees each optimization to its own file and writes it as the
-    run goes, so consecutive mtimes bracket each model. Approximate: the clock
-    includes that model's poetry startup.
-    """
-    root = parsed["log_root"]
-    if root is None:
-        for model in parsed["models"]:
-            if model.model_log:
-                root = str(Path(model.model_log).parent)
-                break
-    if root is None and start is not None:
-        candidate = CASSANDRA_HOME / "logs" / log_path.stem
-        root = str(candidate) if candidate.is_dir() else None
-    if root is None or not Path(root).is_dir():
-        return None
-
-    previous = start
-    for model in parsed["models"]:
-        path = Path(root) / f"{model.league}-{model.name}.log"
-        if not path.exists():
-            continue
-        finished = datetime.fromtimestamp(path.stat().st_mtime)
-        if previous is not None and finished >= previous:
-            model.duration = finished - previous
-        previous = finished
-    return root
-
-
-def _evaluation_csv(start):
-    """The evaluation table this run produced, if it got that far."""
-    directory = CASSANDRA_HOME / "evaluations"
-    if not directory.is_dir():
-        return None
-    candidates = sorted(directory.glob("*.csv"), key=lambda p: p.stat().st_mtime)
-    if not candidates:
-        return None
-    newest = candidates[-1]
-    written = datetime.fromtimestamp(newest.stat().st_mtime)
-    if start is not None and written < start:
-        return None  # Predates this run; belongs to an earlier one.
-    with newest.open() as handle:
-        return newest, written, list(csv.DictReader(handle))
+def _load(cache_dir, payload):
+    """Every stage's children, with their logs parsed."""
+    warnings = {}
+    stages = {}
+    evaluated = []
+    for stage, record in payload["stages"].items():
+        children = []
+        for entry in record["children"]:
+            child = Child(stage, entry)
+            if child.log:
+                path = cache_dir / child.log
+                if path.exists():
+                    lines = path.read_text(errors="replace").splitlines()
+                    _parse_log(child, lines, warnings)
+                    if stage == "evaluate":
+                        evaluated += [
+                            f"{m['league']}/{m['model']}"
+                            for m in (_EVALUATING.match(line) for line in lines)
+                            if m
+                        ]
+            children.append(child)
+        stages[stage] = {"record": record, "children": children}
+    return stages, warnings, evaluated
 
 
 def _duration(delta):
@@ -267,6 +217,12 @@ def _duration(delta):
     return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
 
 
+def _stamp(millis):
+    if millis is None:
+        return "?"
+    return datetime.fromtimestamp(millis / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _metric(value):
     """Round CSV floats for display, leaving counts and text alone."""
     try:
@@ -274,6 +230,16 @@ def _metric(value):
     except (TypeError, ValueError):
         return value
     return value if number.is_integer() else f"{number:.4f}"
+
+
+def _optional_float(row, key):
+    try:
+        value = float(row[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+    # A metric a league had no data for is written as nan, which formats as
+    # "nan" rather than dropping out of the line.
+    return None if value != value else value
 
 
 def _accuracy_by_league(rows):
@@ -330,16 +296,6 @@ def _accuracy_by_league(rows):
     return out
 
 
-def _optional_float(row, key):
-    try:
-        value = float(row[key])
-    except (KeyError, TypeError, ValueError):
-        return None
-    # A metric a league had no data for is written as nan, which formats as
-    # "nan" rather than dropping out of the line.
-    return None if value != value else value
-
-
 def _table(rows, headers):
     widths = [
         max(len(str(row[index])) for row in [headers, *rows])
@@ -355,178 +311,372 @@ def _table(rows, headers):
     return lines
 
 
-def _report(log_path, parsed, start, log_root, evaluation):
-    models = parsed["models"]
-    ok = [m for m in models if m.status == "ok"]
-    failed = [m for m in models if m.status == "failed"]
-    running = [m for m in models if m.status == "running"]
+def _stage_line(stage, entry):
+    """One line per DAG node: how its children ended up."""
+    children = entry["children"]
+    counts = {}
+    for child in children:
+        counts[child.status] = counts.get(child.status, 0) + 1
+    breakdown = ", ".join(f"{count} {status.lower()}" for status, count in counts.items())
+    started = [c.started_at for c in children if c.started_at]
+    stopped = [c.stopped_at for c in children if c.stopped_at]
+    span = ""
+    if started and stopped and len(stopped) == len(children):
+        # Wall clock for the stage, not the sum of its children: the array runs
+        # in parallel, so the sum is what it would have cost sequentially.
+        span = f"  wall {_duration(timedelta(milliseconds=max(stopped) - min(started)))}"
+    return f"  {stage:<9} {entry['record']['status']:<10} {breakdown}{span}"
 
-    out = [f"RUN  {log_path}"]
-    if start:
-        out.append(f"started  {start:%Y-%m-%d %H:%M:%S}")
 
-    # run_models.sh only reaches its `Logs:` line if evaluation survived, so a
-    # crash there means `set -e` tore the run down mid-flight.
-    if parsed["log_root"] is not None:
-        state = "COMPLETE" if not failed else "COMPLETE (with failed optimizations)"
-    elif parsed["eval_error"]:
-        state = "DEAD -- evaluation crashed and set -e aborted the run"
-    elif parsed["in_eval"]:
-        state = "IN PROGRESS -- optimizations done, evaluation running"
-    elif running:
-        state = f"IN PROGRESS -- optimizing {running[-1].label}"
+def _infrastructure_notes(stages):
+    """What went wrong outside the code: reclaims, and containers that never ran.
+
+    Deliberately narrow. A job that failed with a traceback is a FAILURES
+    entry, and a whole DAG reading "Dependent Job failed" is one root cause
+    grouped there, not twenty-one findings here. What lands here is what no
+    traceback can express: an attempt Batch threw away, and a container the
+    agent could not start.
+    """
+    reclaimed = []
+    unstartable = {}
+    for stage, entry in stages.items():
+        for child in entry["children"]:
+            label = f"{stage}/{child.name}"
+            if child.attempts > 1:
+                # `retry_strategy` only retries on `Host EC2*`, and nothing
+                # checkpoints, so an earlier attempt's search was discarded --
+                # true even when the job eventually SUCCEEDED, which is why
+                # this can't be folded into the failure grouping.
+                reclaimed.append((label, child.attempts, child.duration))
+            if child.container_reason:
+                unstartable.setdefault(child.container_reason, []).append(label)
+
+    out = []
+    for label, attempts, duration in reclaimed:
+        out.append(
+            f"  {label}: {attempts} attempts -- spot reclaim. Nothing "
+            f"checkpoints, so only the last attempt's {_duration(duration)} "
+            "produced anything."
+        )
+    for reason, labels in unstartable.items():
+        shown = ", ".join(labels[:4]) + (
+            f", +{len(labels) - 4} more" if len(labels) > 4 else ""
+        )
+        out.append(f"  container never started x{len(labels)}: {shown}")
+        out.append(f"    {reason}")
+    return out
+
+
+def _root_cause(stages):
+    """The earliest stage that failed on its own, for a cascaded run.
+
+    Batch marks every downstream job "Dependent Job failed", so the DAG order
+    is what says which one was the cause rather than a casualty.
+    """
+    cascaded = any(
+        child.status_reason == "Dependent Job failed"
+        for entry in stages.values()
+        for child in entry["children"]
+    )
+    if not cascaded:
+        return None
+    for stage in fetch_run.STAGES:
+        entry = stages.get(stage)
+        if entry is None:
+            continue
+        causes = [
+            child
+            for child in entry["children"]
+            if child.failed and child.status_reason != "Dependent Job failed"
+        ]
+        if causes:
+            reasons = sorted({c.status_reason or "no reason given" for c in causes})
+            return (
+                f"{stage} failed ({len(causes)} of {len(entry['children'])}: "
+                f"{'; '.join(reasons)}) and every later stage was cancelled with "
+                "it -- nothing downstream ran, so their failures say nothing"
+            )
+    return None
+
+
+def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
+    optimize = stages.get("optimize", {}).get("children", [])
+    ok = [c for c in optimize if c.status == "SUCCEEDED"]
+    failed = [c for c in optimize if c.failed]
+    running = [c for c in optimize if c.status == "RUNNING"]
+    waiting = [c for c in optimize if c.waiting]
+
+    out = [f"RUN  {payload['run_id']}   ({cache_dir})"]
+    out.append(f"submitted  {_stamp(payload['created_at'])}")
+
+    statuses = {entry["record"]["status"] for entry in stages.values()}
+    if statuses <= {"SUCCEEDED"}:
+        state = "COMPLETE"
+    elif statuses & {"RUNNING", "STARTING"}:
+        state = "IN PROGRESS"
+    elif statuses & {"SUBMITTED", "PENDING", "RUNNABLE"}:
+        # All spot `.large`; a queue that isn't placing anything looks exactly
+        # like this and looks nothing like a hung job.
+        state = "WAITING FOR CAPACITY -- nothing placed yet"
+    elif "FAILED" in statuses:
+        state = "FAILED"
     else:
-        state = "IN PROGRESS or died without a completion marker"
-    out.append(f"status   {state}")
+        state = ", ".join(sorted(statuses))
+    if failed and state == "COMPLETE":
+        state = "COMPLETE (with failed optimizations)"
+    out.append(f"status     {state}")
 
-    last_touch = datetime.fromtimestamp(log_path.stat().st_mtime)
-    idle = datetime.now() - last_touch
-    stalled = (
-        " -- STALLED?"
-        if state.startswith("IN PROGRESS") and idle > timedelta(minutes=15)
-        else ""
-    )
-    out.append(
-        f"last log write  {last_touch:%H:%M:%S} ({_duration(idle)} ago){stalled}"
-    )
-    if start:
-        out.append(f"elapsed  {_duration(last_touch - start)}")
-    out.append(
-        f"models   {len(ok)} ok, {len(failed)} failed"
-        + (f", {len(running)} unfinished" if running else "")
-    )
-    if parsed["tally"]:
-        out.append(f"script tally  {parsed['tally'][0]} of {parsed['tally'][1]} failed")
-    if log_root:
-        out.append(f"per-model logs  {log_root}")
+    out += ["", "STAGES"]
+    for stage in fetch_run.STAGES:
+        if stage in stages:
+            out.append(_stage_line(stage, stages[stage]))
+
+    manifest = payload.get("manifest")
+    if manifest and len(manifest) != len(optimize):
+        out.append(
+            f"  (manifest has {len(manifest)} models but {len(optimize)} "
+            "children exist -- the array was resized or is still fanning out)"
+        )
+
+    notes = _infrastructure_notes(stages)
+    if notes:
+        out += ["", f"INFRASTRUCTURE ({len(notes)})"]
+        out += notes
 
     out += ["", "OPTIMIZATIONS"]
     rows = []
-    for model in models:
-        if model.targets:
-            best = f"{model.best:.6f}"
-            probes = f"{len(model.targets)}"
-            converged = f"best@{model.best_iteration} last+@{model.last_improvement}"
-            gain = f"{model.gain:+.6f}"
+    for child in optimize:
+        if child.targets:
+            best = f"{child.best:.6f}"
+            probes = f"{len(child.targets)}"
+            converged = f"best@{child.best_iteration} last+@{child.last_improvement}"
+            gain = f"{child.gain:+.6f}"
         else:
             best = probes = converged = gain = "-"
         rows.append(
             [
-                model.status.upper() if model.status != "ok" else "ok",
-                model.label,
-                model.predictor_class,
-                f"n_iter={model.n_iter}",
+                "ok" if child.status == "SUCCEEDED" else child.status,
+                child.name,
+                child.predictor_class or "?",
+                f"n_iter={child.n_iter if child.n_iter is not None else '?'}",
                 f"probes={probes}",
                 f"best={best}",
                 f"gain={gain}",
                 converged,
-                _duration(model.duration),
+                _duration(child.duration),
             ]
         )
-    out += ["  " + line for line in _table(rows, [""] * 9)[1:]]
+    if rows:
+        out += ["  " + line for line in _table(rows, [""] * 9)[1:]]
+        out.append(
+            "  (gain = best minus the run's first probe; last+ = last probe that "
+            "improved"
+        )
+        out.append(
+            "   the best-so-far, so last+ near the end means it was still climbing)"
+        )
+    else:
+        out.append("  none -- this run submitted no optimize stage")
+
     out.append(
-        "  (gain = best minus the run's first probe; last+ = last probe that improved"
+        f"  {len(ok)} ok, {len(failed)} failed"
+        + (f", {len(running)} running" if running else "")
+        + (f", {len(waiting)} waiting" if waiting else "")
     )
-    out.append("   the best-so-far, so last+ near the end means it was still climbing)")
 
     leagues = {}
-    for model in ok:
-        if model.best is not None:
-            leagues.setdefault(model.league, []).append((model.best, model.name))
+    for child in ok:
+        if child.best is not None:
+            leagues.setdefault(child.league, []).append((child.best, child.name))
     if leagues:
         out += ["", "BEST TARGET BY LEAGUE  (comparable within a league, not across)"]
         for league, entries in sorted(leagues.items()):
             ranked = sorted(entries, reverse=True)
             out.append(
                 f"  {league}: "
-                + ", ".join(f"{name} {best:.6f}" for best, name in ranked)
+                + ", ".join(f"{name.split('/')[-1]} {best:.6f}" for best, name in ranked)
             )
 
-    tuning = [(m, d) for m in models for d in m.diagnostics]
+    tuning = [
+        (child, message)
+        for entry in stages.values()
+        for child in entry["children"]
+        for message in child.diagnostics
+    ]
     out += ["", f"TUNING DIAGNOSTICS ({len(tuning)})"]
     if tuning:
-        for model, message in tuning:
-            out.append(f"  {model.label}: {message}")
+        for child, message in tuning:
+            out.append(f"  {child.name}: {message}")
     else:
         out.append("  none -- no model hit a bound or ended while still improving")
 
-    out += ["", f"FAILURES ({len(failed)})"]
-    if failed:
+    all_failed = [
+        child
+        for entry in stages.values()
+        for child in entry["children"]
+        if child.failed
+    ]
+    out += ["", f"FAILURES ({len(all_failed)})"]
+    if all_failed:
+        # A stage that failed only because something upstream did carries no
+        # information; naming the stage that actually broke turns twenty-one
+        # findings back into one.
+        root = _root_cause(stages)
+        if root:
+            out.append(f"  cascade: {root}")
         grouped = {}
-        for model in failed:
-            kind, message, frames = model.error or ("unknown", "(no traceback)", ())
-            grouped.setdefault((kind, message, frames), []).append(model.label)
-        for (kind, message, frames), labels in grouped.items():
-            out.append(f"  {kind} x{len(labels)}: {', '.join(labels)}")
+        for child in all_failed:
+            key = child.error or (
+                "no traceback",
+                child.status_reason or child.container_reason or "(no reason given)",
+                (),
+            )
+            grouped.setdefault(key, []).append(child)
+        # Real causes first; "Dependent Job failed" is the consequence.
+        ordered = sorted(
+            grouped.items(), key=lambda item: "Dependent Job failed" in item[0][1]
+        )
+        for (kind, message, frames), children in ordered:
+            names = [f"{c.stage}/{c.name}" for c in children]
+            labels = ", ".join(names[:6]) + (
+                f", +{len(names) - 6} more" if len(names) > 6 else ""
+            )
+            out.append(f"  {kind} x{len(children)}: {labels}")
             out.append(f"    {message}")
             for frame in frames:
                 out.append(f"    at {frame}")
             # One representative log is enough to read a shared failure; the
-            # rest follow the same <league>-<model>.log naming in that dir.
-            logs = [m.model_log for m in failed if m.label in labels and m.model_log]
-            for path in logs[:2]:
-                out.append(f"    log: {path}")
+            # rest are beside it in the same cache dir.
+            logs = [c.log for c in children if c.log]
+            for name in logs[:2]:
+                out.append(f"    log: {cache_dir / name}")
             if len(logs) > 2:
                 out.append(f"    log: ... and {len(logs) - 2} more in the same dir")
     else:
         out.append("  none")
 
-    out += ["", f"WARNINGS ({sum(parsed['warnings'].values())})"]
-    if parsed["warnings"]:
-        for (kind, message, origin), count in parsed["warnings"].items():
+    out += ["", f"WARNINGS ({sum(warnings.values())})"]
+    if warnings:
+        for (kind, message, origin), count in warnings.items():
             out.append(f"  {count}x {kind} at {origin}")
             out.append(f"    {message}")
     else:
         out.append("  none")
 
     out += ["", "EVALUATION"]
-    if parsed["eval_scope"]:
-        out.append(f"  scope: {parsed['eval_scope']}")
-    if parsed["eval_models"]:
-        out.append(f"  scored so far: {', '.join(parsed['eval_models'])}")
-    if parsed["eval_error"]:
-        kind, message, frames = parsed["eval_error"]
-        out.append(f"  FAILED  {kind}: {message}")
-        for frame in frames:
-            out.append(f"    at {frame}")
+    evaluate = stages.get("evaluate")
+    if evaluate is None:
+        out.append("  not submitted (--skip-evaluate)")
+    else:
+        out.append(f"  job: {evaluate['record']['status']}")
+        if evaluated:
+            out.append(f"  scored: {', '.join(evaluated)}")
     if evaluation:
-        path, written, rows = evaluation
-        out.append(f"  metrics: {path} ({written:%H:%M:%S})")
+        meta, rows = evaluation
+        out.append(f"  metrics: s3://.../{meta['key']}  ({_stamp(meta['written_at'])})")
         # Whatever columns score_predictions emits, so metrics added there
         # show up here without this script having to learn their names.
         headers = list(rows[0]) if rows else []
         table = [[_metric(row.get(h, "")) for h in headers] for row in rows]
         out += ["  " + line for line in _table(table, headers)]
         out += _accuracy_by_league(rows)
-    elif not parsed["eval_models"] and not parsed["eval_scope"]:
-        out.append("  not reached")
-    elif not evaluation:
-        out.append("  no metrics CSV from this run yet")
+    elif evaluate is not None:
+        out.append("  no metrics csv from this run in the bucket yet")
+
+    publish = stages.get("publish")
+    if publish is not None:
+        out += ["", "PUBLISH"]
+        for child in publish["children"]:
+            out.append(
+                f"  {child.name}: {child.status}"
+                + (f"  ({child.status_reason})" if child.failed else "")
+            )
 
     return "\n".join(out)
 
 
+def _evaluation(cache_dir, payload):
+    meta = payload.get("evaluations")
+    if not meta:
+        return None
+    path = cache_dir / meta["file"]
+    if not path.exists():
+        return None
+    with path.open(errors="replace") as handle:
+        return meta, list(csv.DictReader(handle))
+
+
 def main(argv):
-    if len(argv) > 1:
-        log_path = Path(argv[1])
-    else:
-        logs = sorted(
-            (REPO_ROOT / "logs").glob("*.log"), key=lambda p: p.stat().st_mtime
+    profile = None
+    if "--profile" in argv:
+        profile = argv[argv.index("--profile") + 1]
+    positional = [
+        arg
+        for index, arg in enumerate(argv[1:], start=1)
+        if not arg.startswith("-") and argv[index - 1] != "--profile"
+    ]
+    run_id = positional[0] if positional else None
+
+    if "--list" in argv:
+        # Delegated rather than reimplemented: the listing is `fetch_run`'s
+        # view of the queue, and the only reason it's reachable from here is
+        # that `make report` is the one command the skill documents.
+        fetch_run.main([argv[0], "--list"] + (["--profile", profile] if profile else []))
+        return
+
+    if "--cached" in argv:
+        # No AWS at all: read whatever the last fetch left behind. Useful when
+        # the SSO session has expired and the question is about a run that has
+        # already been pulled.
+        cached = sorted(p.parent for p in fetch_run.CACHE_ROOT.glob("*/run.json"))
+        if not cached:
+            sys.exit("Nothing cached under logs/batch -- run without --cached first.")
+        cache_dir = (
+            fetch_run.CACHE_ROOT / run_id if run_id else sorted(cached)[-1]
         )
-        if not logs:
+        payload = fetch_run.load(cache_dir.name)
+        if payload is None:
+            sys.exit(f"No cached run {cache_dir.name}. Have: "
+                     + ", ".join(p.name for p in cached))
+    else:
+        try:
+            runs, launchers = fetch_run.discover(profile=profile)
+        except fetch_run.AwsUnavailable as error:
             sys.exit(
-                f"No logs under {REPO_ROOT / 'logs'} -- has `make run-all` been run?"
+                f"{error}\n\nSet AWS_PROFILE to an SSO profile from "
+                "~/.aws/config (or pass --profile), re-run `aws sso login` if "
+                "it has expired, or pass --cached to read an earlier fetch."
             )
-        log_path = logs[-1]
-    if not log_path.exists():
-        sys.exit(f"No such log: {log_path}")
+        if not runs:
+            message = "No cassandra runs on the queue."
+            if launchers:
+                message += "\nLauncher jobs (a failed one means no run was submitted):"
+                for job in launchers[:5]:
+                    message += f"\n  {job['jobName']}  {job['status']}"
+            sys.exit(message)
+        if run_id:
+            matches = [run for run in runs if run.run_id == run_id]
+            if not matches:
+                sys.exit(
+                    f"No run {run_id}. Recent: "
+                    + ", ".join(r["run_id"] for r in runs[:10])
+                )
+            run = matches[0]
+        else:
+            run = runs[0]
+        cache_dir, payload = fetch_run.fetch(run, profile)
 
-    with log_path.open(errors="replace") as handle:
-        parsed = _parse(handle)
-
-    start = _start_time(log_path)
-    log_root = _attach_durations(parsed, log_path, start)
-    print(_report(log_path, parsed, start, log_root, _evaluation_csv(start)))
+    stages, warnings, evaluated = _load(cache_dir, payload)
+    print(
+        _report(
+            cache_dir,
+            payload,
+            stages,
+            warnings,
+            evaluated,
+            _evaluation(cache_dir, payload),
+        )
+    )
 
 
 if __name__ == "__main__":

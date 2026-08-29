@@ -34,10 +34,10 @@ class OptimizationConfig(BaseModel):
     """A checked-in `models/<league>/<name>.json`: what to search, and how hard.
 
     The input side of the pair `PredictorConfig` completes. It lives here
-    rather than in `optimize.py` because three callers need to read one
-    without running a search -- the batch manifest, `run_models.sh`, and
-    `publish.py`'s "that's not a result config" error -- and importing a
-    root-level script to get at a schema is backwards.
+    rather than in `optimize.py` because two callers need to read one
+    without running a search -- the batch manifest, and `publish.py`'s
+    "that's not a result config" error -- and importing a root-level script
+    to get at a schema is backwards.
     """
 
     predictor_class: str

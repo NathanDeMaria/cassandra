@@ -13,9 +13,11 @@ per stage means "re-publish mens without re-optimizing anything" is a job
 submission rather than a code change. The stages hand off through s3 (see
 `cassandra.batch.artifacts`) because they don't share a disk.
 
-The local `make run-all` path is unchanged and still writes only to
-`~/.cassandra` -- `run_models.sh` remains the way to run everything on one
-machine, and nothing here uploads unless it was asked to.
+Every stage also runs locally, which is how a change gets tested before it
+costs a queue slot: `--download=False --upload=False` leaves s3 alone entirely
+and writes only to `~/.cassandra`. There is deliberately no local "run
+everything" driver -- `submit` is the only thing that knows the whole DAG, and
+a second copy of that ordering is a second thing to keep in step.
 """
 
 import asyncio
@@ -63,8 +65,7 @@ async def _anchors(
 
     # An array child gets its league from the list the launcher pinned, by the
     # index Batch set on it. A hand-run job gets it from --league, and one
-    # given neither does every anchored league -- which is what run_models.sh
-    # does locally.
+    # given neither does every anchored league.
     if leagues is None:
         child = manifest.array_index(index)
         leagues = (
@@ -127,8 +128,8 @@ async def _optimize(
     # `optimize.py` does a warm-up pass with post_callbacks=True to build the
     # opponent priors the search starts from, and OpponentPriorManager refuses
     # to overwrite an existing file. A fresh container has none, but a rerun
-    # in a warm one (or a local invocation) does -- same clearing
-    # run_models.sh does, for the same reason.
+    # in a warm one (or a local invocation) does, and an uncleared file is an
+    # instant ValueError rather than a search.
     if work.prior_path is not None and work.prior_path.exists():
         print(f"  clearing stale priors: {work.prior_path}")
         work.prior_path.unlink()

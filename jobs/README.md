@@ -116,10 +116,29 @@ poetry run python jobs.py manifest             # the work list, in array-index o
 poetry run python jobs.py anchors --league ncaafb --if-missing=False  # force a refit
 ```
 
-`./run_models.sh` still runs everything on one machine. It reads the same
-manifest the array job does and the same `ANCHOR_LEAGUES` the anchors array is
-sized against, so "optimize everything" means the same set of models, fit on
-the same rating scale, locally and in the cloud.
+Batch is the only way to run the whole thing; there is no local sweep. Each
+stage still runs on one machine for testing — `--download=False
+--upload=False` touches s3 not at all and writes only to `~/.cassandra`:
+
+```bash
+poetry run python jobs.py optimize --league mens --model elo --download=False --upload=False
+```
+
+## Reading a run
+
+```bash
+make report                      # newest run, condensed
+make report ARGS=--list          # what runs exist
+make report ARGS=20260829-022910 # a specific one
+```
+
+Job stdout goes to CloudWatch under `/aws/batch/job` — one stream per
+container, mostly bayes_opt probe tables. `make report` pulls a run's streams,
+its Batch status and timing, and evaluate's metrics csv into
+`logs/batch/<run-id>/` and condenses the lot; the `run-report` skill covers how
+to read what comes out. The log group has no retention policy, so old runs stay
+readable, but `list-jobs` only sees what the queue still holds — roughly the
+last day.
 
 ## CI
 
