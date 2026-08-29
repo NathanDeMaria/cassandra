@@ -235,8 +235,8 @@ class Jobs:
         `--if-missing` is on by default, and checks the bucket rather than
         this container's disk. Refitting changes the rating every downstream
         model produces, so it is something you ask for -- with
-        `--no-if-missing`, or by deleting the file from s3 -- not something a
-        scheduled run does to itself weekly.
+        `--if-missing=False`, or by deleting the file from s3 -- not something
+        a scheduled run does to itself weekly.
         """
         asyncio.run(_anchors(_as_list(league), index, if_missing, upload))
 
@@ -252,7 +252,7 @@ class Jobs:
 
         `--upload` is on by default because the only reason to run this in a
         container is to get the result somewhere the next stage can read it;
-        pass `--no-upload` for a local dry run. `--no-download` likewise
+        pass `--upload=False` for a local dry run. `--download=False` likewise
         leaves the anchors already on this disk alone.
         """
         asyncio.run(_optimize(index, league, model, download, upload))

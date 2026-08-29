@@ -43,7 +43,12 @@ from pydantic import ValidationError
 from cassandra import DEFAULT_FITTERS, ScoredPredictions, score_predictions
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.odds import OddsDatabase
-from cassandra.predictor import Predictor, PredictorConfig, load_predictor_class
+from cassandra.predictor import (
+    Predictor,
+    PredictorConfig,
+    RatingsUnsupported,
+    load_predictor_class,
+)
 from cassandra.save_predictions import join_with_odds, read_all_seasons
 from cassandra.serving import (
     ModelRelease,
@@ -357,6 +362,13 @@ async def _publish(
         for job in league_jobs:
             try:
                 await _publish_one(job, seasons, odds_db, out, upload, upload_bucket)
+            except RatingsUnsupported:
+                # Not a failure: a release is a table of team ratings, and
+                # FlatPredictor deliberately has none. It's a checked-in
+                # baseline in every league, so counting it would leave
+                # `jobs.py publish` exiting 1 on every league on every run --
+                # a red stage that can never go green, with nothing to fix.
+                print(f"  skipped {job.league}/{job.model}: no team ratings")
             except Exception as e:
                 # One bad model shouldn't cost the other nineteen their
                 # releases, the same way one unscoreable model doesn't cost

@@ -378,14 +378,14 @@ def test_publishing_everything_reads_each_league_once(
 def test_one_bad_model_doesnt_cost_the_others_their_releases(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A flat model has no ratings to publish, and says so when asked.
+    """A model that can't be built is a failure, and only its own.
 
-    It's a checked-in baseline, so it's in the listing and will be reached.
-    Letting it abort the run would mean one unpublishable baseline holding
-    back every real model behind it.
+    The run keeps going and every other model still gets its release; the
+    failure comes back in the list so `jobs.py publish` can exit non-zero
+    rather than calling a half-finished stage green.
     """
     configs = {
-        ("mens", "flat"): _config("FlatPredictor", league="mens"),
+        ("mens", "busted"): _config("NoSuchPredictor", league="mens"),
         ("mens", "elo"): _config("EloPredictor", league="mens"),
     }
     listing = _write_configs(tmp_path / "configs", configs)
@@ -395,7 +395,40 @@ def test_one_bad_model_doesnt_cost_the_others_their_releases(
     out = tmp_path / "releases"
     failures = asyncio.run(publish._publish(None, [], out, upload=False))
 
-    assert failures == ["mens/flat"]
+    assert failures == ["mens/busted"]
+    assert not (out / "models" / "mens" / "busted").exists()
+    assert (out / "models" / "mens" / "elo" / "latest.json").exists()
+
+
+def test_a_model_with_no_ratings_is_skipped_rather_than_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A flat model has no ratings to publish, and that isn't a failure.
+
+    It's a checked-in baseline in every league, so it's in the listing and
+    will be reached on every run. Counting it as a failure would leave
+    `jobs.py publish` exiting 1 for every league forever -- a red stage with
+    nothing to fix -- so it comes back out of `failures` while still
+    producing no release of its own.
+    """
+    configs = {
+        # Built here rather than through `_config`, whose default params are
+        # Elo's: FlatPredictor takes none, and passing them raises a TypeError
+        # in the constructor -- which would make this pass without ever
+        # reaching the ratings call it exists to cover.
+        ("mens", "flat"): PredictorConfig(
+            predictor_class="FlatPredictor", league="mens", target=0.0, params={}
+        ),
+        ("mens", "elo"): _config("EloPredictor", league="mens"),
+    }
+    listing = _write_configs(tmp_path / "configs", configs)
+    monkeypatch.setattr(publish, "_models", lambda leagues: listing)
+    _Bucket().install(monkeypatch, tmp_path / "home")
+
+    out = tmp_path / "releases"
+    failures = asyncio.run(publish._publish(None, [], out, upload=False))
+
+    assert failures == []
     assert not (out / "models" / "mens" / "flat").exists()
     assert (out / "models" / "mens" / "elo" / "latest.json").exists()
 
