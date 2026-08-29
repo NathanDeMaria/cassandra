@@ -30,6 +30,12 @@ _MODELS_DIR = _REPO_ROOT / "models"
 MANIFEST_ENV_VAR = "CASSANDRA_BATCH_MANIFEST"
 # AWS Batch sets this on each child of an array job.
 ARRAY_INDEX_ENV_VAR = "AWS_BATCH_JOB_ARRAY_INDEX"
+# What the launcher pins the index under when a one-item "array" runs as a
+# plain job and Batch therefore sets nothing. It can't reuse the name above:
+# `AWS_BATCH` is a reserved prefix, and an override using it is accepted by
+# SubmitJob -- it even reads back from DescribeJobs -- and then never reaches
+# the container. That silence is the whole reason for a second name.
+PINNED_INDEX_ENV_VAR = "CASSANDRA_ARRAY_INDEX"
 
 
 @dataclass(frozen=True)
@@ -120,10 +126,13 @@ def encode(work: list[Work]) -> str:
 def array_index(explicit: int | None = None) -> int | None:
     """Which child of an array job this is: the flag, else what Batch set.
 
-    `None` means neither -- no `--index` and no `AWS_BATCH_JOB_ARRAY_INDEX`,
-    so this is a hand-run process rather than one child of a fan-out. Callers
-    read that as "not scoped to one item" and do whatever their whole-run
-    default is.
+    `None` means none of them -- no `--index`, nothing from Batch and nothing
+    pinned -- so this is a hand-run process rather than one child of a
+    fan-out. Callers read that as "not scoped to one item" and do whatever
+    their whole-run default is.
+
+    Batch's own variable wins when it's there, and the launcher's pinned one
+    covers the case Batch doesn't set: an array of one runs as a plain job.
 
     Here rather than in each stage because every fan-out needs it and only
     one of them can afford to get it wrong quietly: a stage that forgets to
@@ -132,7 +141,7 @@ def array_index(explicit: int | None = None) -> int | None:
     """
     if explicit is not None:
         return explicit
-    raw = os.environ.get(ARRAY_INDEX_ENV_VAR)
+    raw = os.environ.get(ARRAY_INDEX_ENV_VAR) or os.environ.get(PINNED_INDEX_ENV_VAR)
     return None if raw is None else int(raw)
 
 
@@ -150,9 +159,9 @@ def resolve_index(index: int | None = None) -> Work:
     index = array_index(index)
     if index is None:
         raise ValueError(
-            f"No --index given and {ARRAY_INDEX_ENV_VAR} is not set; this is "
-            "meant to run as a child of an array job, or with an explicit "
-            "--league/--model."
+            f"No --index given, and neither {ARRAY_INDEX_ENV_VAR} nor "
+            f"{PINNED_INDEX_ENV_VAR} is set; this is meant to run as a child "
+            "of an array job, or with an explicit --league/--model."
         )
 
     pinned = os.environ.get(MANIFEST_ENV_VAR)

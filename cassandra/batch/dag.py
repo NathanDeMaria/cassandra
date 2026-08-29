@@ -238,9 +238,13 @@ class _Submitter:
         else:
             # A one-item "array" runs as a plain job, so nothing sets
             # AWS_BATCH_JOB_ARRAY_INDEX and the child would have no way to
-            # know which item it is. Pin it to 0.
+            # know which item it is. Pin it to 0 -- under our own name,
+            # because Batch reserves the `AWS_BATCH` prefix and drops an
+            # override that uses it without saying so. Pinning it under the
+            # reserved name is what made a single-league publish quietly
+            # republish every league instead.
             request["containerOverrides"]["environment"].append(
-                {"name": manifest.ARRAY_INDEX_ENV_VAR, "value": "0"}
+                {"name": manifest.PINNED_INDEX_ENV_VAR, "value": "0"}
             )
         if depends_on:
             request["dependsOn"] = [{"jobId": job_id} for job_id in depends_on]

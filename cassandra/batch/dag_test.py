@@ -44,6 +44,7 @@ def test_a_multi_item_run_becomes_an_array_job() -> None:
     # Batch sets the index per child; pinning one here would give every child
     # the same work item.
     assert dag.manifest.ARRAY_INDEX_ENV_VAR not in _environment(request)
+    assert dag.manifest.PINNED_INDEX_ENV_VAR not in _environment(request)
 
 
 def test_a_single_item_run_becomes_a_plain_job_with_the_index_pinned() -> None:
@@ -58,8 +59,12 @@ def test_a_single_item_run_becomes_a_plain_job_with_the_index_pinned() -> None:
     # Batch rejects arrayProperties.size below 2, and a plain job never gets
     # AWS_BATCH_JOB_ARRAY_INDEX, so the child would not know which item it is.
     assert "arrayProperties" not in request
-    assert _environment(request)[dag.manifest.ARRAY_INDEX_ENV_VAR] == "0"
+    assert _environment(request)[dag.manifest.PINNED_INDEX_ENV_VAR] == "0"
     assert _MIN_ARRAY_SIZE == 2
+    # Not under the reserved name: Batch accepts an AWS_BATCH_* override and
+    # then drops it, which is silent and cost a whole run's publish scope.
+    assert dag.manifest.ARRAY_INDEX_ENV_VAR not in _environment(request)
+    assert not dag.manifest.PINNED_INDEX_ENV_VAR.startswith("AWS_BATCH")
 
 
 def test_dependencies_are_passed_as_job_ids() -> None:
