@@ -56,6 +56,15 @@ def score_predictions(
     should call this once per fitter on the same df rather than re-fetching
     predictions each time.
     """
+    if df.empty:
+        # The same guard `brier_score_df` has, and it has to be here too:
+        # that one is called further down, and the assign below reaches for
+        # columns an empty frame doesn't have. Without this a caller gets
+        # `AttributeError: 'DataFrame' object has no attribute 'home_score'`,
+        # which reads like a schema bug rather than "there were no games" --
+        # publish spent a run failing that way on a league whose season had
+        # been uploaded with nothing in it.
+        raise ValueError("No games to score")
     games = df.assign(team1_mov=lambda x: x.home_score - x.away_score)
     # Fit against the margin every game actually finished at, so the fitter
     # trains on the whole schedule instead of only the games a book put a

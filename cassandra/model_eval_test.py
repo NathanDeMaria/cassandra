@@ -138,3 +138,22 @@ def test_brier_score_covers_games_without_a_line() -> None:
 
     expected = (0.3**2 + 0.4**2 + 0.4**2) / 3
     assert metrics["brier_score"] == pytest.approx(expected)
+
+
+def test_a_league_with_no_games_says_so() -> None:
+    """
+    A season can exist and hold nothing -- an upload made before the league
+    started playing. That used to surface as an AttributeError about
+    `home_score`, from the assign reaching for a column an empty frame has
+    no room for, which reads like a schema bug rather than empty input.
+    """
+    with pytest.raises(ValueError, match="No games to score"):
+        score_predictions(pd.DataFrame([]), _FixedMarginFitter(5.0))
+
+
+def test_an_empty_frame_fails_the_same_way_the_brier_does() -> None:
+    """Both entry points into scoring agree about what empty means."""
+    from .brier import brier_score_df
+
+    with pytest.raises(ValueError, match="No games to score"):
+        brier_score_df(pd.DataFrame([]))
