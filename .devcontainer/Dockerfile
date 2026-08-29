@@ -120,6 +120,21 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
     rm awscliv2.zip &&\
     rm -r ./aws
 
+# jq, for the Makefile's IMAGE_URL: `make build` and `make push` read the ECR
+# repo url out of ~/.aws-batch/config.json with it, and without jq make prints
+# "jq: No such file or directory" on *every* invocation -- including targets
+# like `make test` that never look at IMAGE_URL, because that line is a
+# `$(shell ...)` make expands up front.
+#
+# apt-get, unlike the gh install above, because jq is in Debian and pinning a
+# release binary by hand buys nothing here. `base` deletes the package lists,
+# so this refreshes them and drops them again rather than leaving the index in
+# the layer. Interactive-only, like the awscli: the runtime stage builds
+# images, it doesn't build them.
+RUN sudo apt-get update \
+    && sudo apt-get install -y --no-install-recommends jq \
+    && sudo rm -rf /var/lib/apt/lists/*
+
 # No `poetry install` here either, and this one is worth spelling out:
 # poetry.toml asks for an in-project venv, and "in project" at build time
 # means /home/dev/.venv -- but VS Code opens the bind-mounted workspace at
