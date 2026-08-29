@@ -19,12 +19,12 @@ _ANCHOR_DIR = CASSANDRA_HOME / "predictor" / "data"
 # ncaafb is the obvious one -- it spans FBS through D-III, and a D-III team's
 # schedule never touches FBS. mens and womens are all D-I, but division_anchors
 # tiers by conference within a division, which is what separates the ACC from
-# the MEAC. nfl is deliberately absent: 32 teams who all play each other have
-# nothing for a tier fit to find.
+# the MEAC. nfl, nhl and wnba are deliberately absent: a closed pro league whose
+# teams all play each other has nothing for a tier fit to find.
 #
-# Here rather than in `division_anchors.py` because three callers need the list
-# without fitting anything: `run_models.sh`, the batch launcher that sizes the
-# anchor array job, and the array child that turns an index back into a league.
+# Here rather than in `division_anchors.py` because two callers need the list
+# without fitting anything: the batch launcher that sizes the anchor array job,
+# and the array child that turns an index back into a league.
 ANCHOR_LEAGUES = ("ncaafb", "mens", "womens")
 
 

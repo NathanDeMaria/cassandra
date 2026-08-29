@@ -1,0 +1,23 @@
+{
+    "predictor_class": "GlickoPredictor",
+    "league": "nhl",
+    "parameters": {
+        "home_advantage": [
+            0,
+            200
+        ],
+        "initial_rd": [
+            80,
+            350
+        ],
+        "season_rd_increase": [
+            0,
+            250
+        ],
+        "season_regression": [
+            0,
+            0.75
+        ]
+    },
+    "n_iter": 80
+}

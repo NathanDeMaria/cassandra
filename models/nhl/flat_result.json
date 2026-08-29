@@ -1,0 +1,6 @@
+{
+    "predictor_class": "FlatPredictor",
+    "league": "nhl",
+    "target": 0.0,
+    "params": {}
+}
