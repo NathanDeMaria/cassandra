@@ -127,6 +127,39 @@ def test_generate_predictions_walks_seasons_chronologically() -> None:
     assert predictor.seen == ["older", "newer"]
 
 
+class _CountingPredictor(_RecordingPredictor):
+    """Records how many season rollovers it was put through."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rollovers = 0
+
+    def pass_season(self) -> None:
+        self.rollovers += 1
+
+
+def test_the_last_seasons_rollover_can_be_left_off() -> None:
+    """`roll_over_final_season=False` skips the last one and only the last one.
+
+    The rollover between two seasons is part of the replay -- without it the
+    later season is predicted by ratings that never cooled off -- so turning
+    the flag off has to leave that one alone. Only the trailing one, applied
+    to ratings nothing else in the replay reads, is optional; publish drops it
+    until a month after the season ends.
+    """
+    seasons = [
+        Season([Week([_game("older", 6, year=2022)], 1)], 2022),
+        Season([Week([_game("newer", 6, year=2023)], 1)], 2023),
+    ]
+
+    kept = _CountingPredictor()
+    list(generate_predictions(kept, seasons))
+    skipped = _CountingPredictor()
+    list(generate_predictions(skipped, seasons, roll_over_final_season=False))
+
+    assert (kept.rollovers, skipped.rollovers) == (2, 1)
+
+
 def _renamed_game(home: str, away: str, year: int) -> Game:
     return Game(
         home=home,

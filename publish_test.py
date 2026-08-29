@@ -7,8 +7,7 @@ the replay, the fit, the assembly, and the bytes on disk.
 
 import asyncio
 import json
-from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -22,15 +21,14 @@ from cassandra.odds import OddsDatabase
 from cassandra.predictor import (
     Predictor,
     PredictorConfig,
-    load_predictor_class,
     predict_matchup,
 )
+from cassandra.predictor.base_predictor import MEAN_RATING
 from cassandra.prob_to_margin import (
     BaseProbToMarginFitter,
     BaseProbToMarginPredictor,
     LogisticProbToMarginPredictor,
 )
-from cassandra.save_predictions import join_with_odds
 from cassandra.serving import LogisticMarginCalibration, Metrics, ModelRelease
 from publish import build_release, release_json, write_release
 
@@ -100,20 +98,30 @@ def _config(
     )
 
 
-def _run(config: PredictorConfig) -> tuple[Predictor, pd.DataFrame]:
-    """Replay the schedule, the way `_predictions` would off real seasons.
+# The last game in `_SCHEDULE`, which is what publish measures the offseason
+# from.
+_LAST_GAME = datetime(2026, 1, 3, tzinfo=timezone.utc)
 
-    The predictor is built *from* the config rather than alongside it: the
-    release carries `config.params` and a consumer feeds exactly those back
-    into the constructor, so a test that built the two separately could pass
-    while the real round trip drifted.
+
+def _run(
+    config: PredictorConfig, now: datetime = _LAST_GAME + timedelta(days=365)
+) -> tuple[Predictor, pd.DataFrame]:
+    """Replay the schedule the way publishing does, through `_predictions`.
+
+    The real function rather than a copy of it: everything expensive about a
+    publish is the s3 read that produced `seasons`, and passing hand-written
+    ones covers the rest of the path -- including the offseason rollover,
+    which `_predictions` and nothing else decides.
+
+    `now` defaults to long after the schedule ends, so a test that isn't
+    about the rollover gets the settled ratings and doesn't have to say so.
     """
-    predictor_class = load_predictor_class(config.predictor_class)
-    predictor = predictor_class(config.league, **config.params)  # type: ignore[call-arg]
-    predictions = join_with_odds(
-        predictor, _seasons(), OddsDatabase({}), post_callbacks=False
+    return publish._predictions(
+        publish._Job(config.league, _MODEL, config),
+        _seasons(),
+        OddsDatabase({}),
+        now=now,
     )
-    return predictor, pd.DataFrame([asdict(p) for p in predictions])
 
 
 def _published(config: PredictorConfig, out: Path) -> ModelRelease:
@@ -224,6 +232,44 @@ def test_records_come_from_this_season_only(tmp_path: Path) -> None:
         "Team C": (1, 1),
         "Team D": (0, 1),
     }
+
+
+def test_the_offseason_regression_waits_a_month_after_the_last_game() -> None:
+    """A release published the week after a title game says where teams ended.
+
+    `pass_season` regresses every rating toward its anchor -- a prior on a
+    season nobody has played. Applying it the moment the replay runs out of
+    games quietly pulls the champion back toward the field in the release
+    people read all offseason, so publish holds it for a month.
+    """
+    config = _config("EloPredictor", home_advantage=88.0, k=31.0, season_regression=0.5)
+
+    fresh, _ = _run(config, now=_LAST_GAME + timedelta(days=29))
+    rolled, _ = _run(config, now=_LAST_GAME + timedelta(days=30))
+
+    # Otherwise a model whose ratings all sat at the mean would pass this.
+    assert any(r.rating != MEAN_RATING for r in fresh.ratings.values())
+    assert {t: r.rating for t, r in rolled.ratings.items()} == pytest.approx(
+        {
+            team: MEAN_RATING + 0.5 * (rating.rating - MEAN_RATING)
+            for team, rating in fresh.ratings.items()
+        }
+    )
+
+
+def test_the_offseason_clock_starts_at_the_last_game() -> None:
+    """Measured off the games, not a calendar, and read as UTC when naive.
+
+    Season pickles carry both. A naive date compared against an aware `now`
+    raises rather than being off by a day, so this is the guard that keeps a
+    league's publish from failing on the timezone its games were stored in.
+    """
+    naive = pd.DataFrame([{"date": _LAST_GAME.replace(tzinfo=None)}])
+    aware = pd.DataFrame([{"date": _LAST_GAME}])
+
+    for df in (naive, aware):
+        assert not publish.rollover_due(df, _LAST_GAME + timedelta(days=29))
+        assert publish.rollover_due(df, _LAST_GAME + timedelta(days=31))
 
 
 def test_latest_is_a_copy_of_the_run_it_names(tmp_path: Path) -> None:
