@@ -16,7 +16,7 @@
         ],
         "season_rd_increase": [
             0,
-            500
+            1000
         ],
         "scoring_method": [
             "binary",

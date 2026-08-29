@@ -13,15 +13,21 @@ type _ParameterBound = tuple[float, float] | Sequence[str]
 #
 # `season_regression` is the one with a real ceiling: `validated_regression`
 # rejects anything outside [0, 1], because above 1 a team is reflected
-# through its anchor rather than pulled toward it. The deviations and
-# increments have a floor instead -- zero means "doesn't move", and there is
-# nothing below that. `home_advantage` is deliberately absent: a league where
-# the road team is favored is strange, not impossible, so nothing here should
-# rule it out.
+# through its anchor rather than pulled toward it. The increments have a
+# floor instead -- zero means "doesn't move", which is allowed. `initial_rd`
+# looks like an increment and isn't: it's the deviation itself, which the
+# Glicko update divides by, so zero is a ZeroDivisionError rather than a
+# model that ignores its uncertainty. Its floor is the smallest value that
+# still computes, not the smallest that makes sense -- this table is about
+# what the predictors accept, and how wide a starting spread is *sensible*
+# is the config's business.
+#
+# `home_advantage` is deliberately absent: a league where the road team is
+# favored is strange, not impossible, so nothing here should rule it out.
 _DOMAINS: Mapping[str, tuple[float, float]] = {
     "season_regression": (0.0, 1.0),
     "k": (0.0, math.inf),
-    "initial_rd": (0.0, math.inf),
+    "initial_rd": (1.0, math.inf),
     "weekly_rd_increase": (0.0, math.inf),
     "season_rd_increase": (0.0, math.inf),
 }
