@@ -246,3 +246,34 @@ def test_the_anchors_child_gets_the_list_the_array_was_sized_against() -> None:
     request = client.requests[0]
     assert request["arrayProperties"] == {"size": 2}
     assert _environment(request)["CASSANDRA_ANCHOR_LEAGUES"] == "mens,ncaafb"
+
+
+def test_league_args_survive_the_round_trip_through_fire() -> None:
+    """
+    The launcher writes this command line and `jobs.py` reads it back, so
+    the two have to agree about what more than one league looks like.
+
+    Repeated flags don't survive: fire keeps the last and the run scores one
+    league while reporting success for all of them.
+    """
+    import fire
+
+    from jobs import _as_list
+
+    args = dag._league_args(["nhl", "wnba"])
+    assert args == ["--league", "nhl,wnba"]
+
+    parsed: list[str] | None = None
+
+    class _Stage:
+        def evaluate(self, league=None):
+            nonlocal parsed
+            parsed = _as_list(league)
+
+    fire.Fire(_Stage, command=["evaluate"] + args)
+    assert parsed == ["nhl", "wnba"]
+
+
+def test_league_args_are_empty_without_leagues() -> None:
+    assert dag._league_args(None) == []
+    assert dag._league_args([]) == []
