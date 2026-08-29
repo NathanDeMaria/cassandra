@@ -146,3 +146,71 @@ def test_diagnose__ignores_categoricals() -> None:
 def test_diagnose__requires_results() -> None:
     with pytest.raises(ValueError):
         _diagnose([], {"x": (0.0, 1.0)})
+
+
+def test_diagnose__suggestion_stays_inside_what_the_model_accepts() -> None:
+    """
+    The case that cost a run: `season_regression` pinned at 0.75 with a
+    [0, 0.75] range, and the suggestion doubled the width to [0, 1.5].
+    `validated_regression` rejects anything above 1, so pasting that in
+    trades a finished search for one that dies on its first probe.
+    """
+    targets = [float(i) for i in range(10)]
+    diagnostics = _diagnose(
+        _results(targets, season_regression=[0.75 * i / 9 for i in range(10)]),
+        {"season_regression": (0.0, 0.75)},
+    )
+
+    (hit,) = diagnostics.bound_hits
+    assert hit.edge == "upper"
+    assert hit.suggestion == (0.0, 1.0)
+    assert any('try "season_regression": [0, 1]' in w for w in diagnostics.warnings())
+
+
+def test_diagnose__no_suggestion_at_the_top_of_the_domain() -> None:
+    """
+    Once the range already covers everything the parameter allows, the
+    search asking for more isn't something a wider bound can answer.
+    """
+    targets = [float(i) for i in range(10)]
+    diagnostics = _diagnose(
+        _results(targets, season_regression=[i / 9 for i in range(10)]),
+        {"season_regression": (0.0, 1.0)},
+    )
+
+    (hit,) = diagnostics.bound_hits
+    assert hit.edge == "upper"
+    assert hit.suggestion is None
+    assert any("as high as this parameter goes" in w for w in diagnostics.warnings())
+
+
+def test_diagnose__a_deviation_is_not_widened_below_zero() -> None:
+    """
+    `initial_rd` is a spread around a rating, so a negative floor is not a
+    smaller starting uncertainty -- it's nothing at all.
+    """
+    targets = [-float(i) for i in range(10)]
+    diagnostics = _diagnose(
+        _results(targets, initial_rd=[80 + 27 * i for i in range(10)]),
+        {"initial_rd": (80.0, 350.0)},
+    )
+
+    (hit,) = diagnostics.bound_hits
+    assert hit.edge == "lower"
+    # Clamped to the floor rather than the -190 a bare doubling would give.
+    assert hit.suggestion == (0.0, 350.0)
+
+
+def test_diagnose__an_unlisted_parameter_still_widens_freely() -> None:
+    """
+    `home_advantage` has no listed domain: a league where the road team is
+    favored is odd, not impossible, so nothing should rule it out.
+    """
+    targets = [float(i) for i in range(10)]
+    diagnostics = _diagnose(
+        _results(targets, home_advantage=[100 + 10 * i for i in range(10)]),
+        {"home_advantage": (100.0, 190.0)},
+    )
+
+    (hit,) = diagnostics.bound_hits
+    assert hit.suggestion == (100.0, 280.0)

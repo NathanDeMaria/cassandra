@@ -1,3 +1,4 @@
+import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Mapping, Sequence
@@ -5,6 +6,25 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 from bayes_opt import BayesianOptimization
 
 type _ParameterBound = tuple[float, float] | Sequence[str]
+
+# What each searchable parameter can be, whatever range a config asks for.
+# Only `_widen` reads this, to keep the bound it suggests inside the values
+# the predictors will accept.
+#
+# `season_regression` is the one with a real ceiling: `validated_regression`
+# rejects anything outside [0, 1], because above 1 a team is reflected
+# through its anchor rather than pulled toward it. The deviations and
+# increments have a floor instead -- zero means "doesn't move", and there is
+# nothing below that. `home_advantage` is deliberately absent: a league where
+# the road team is favored is strange, not impossible, so nothing here should
+# rule it out.
+_DOMAINS: Mapping[str, tuple[float, float]] = {
+    "season_regression": (0.0, 1.0),
+    "k": (0.0, math.inf),
+    "initial_rd": (0.0, math.inf),
+    "weekly_rd_increase": (0.0, math.inf),
+    "season_rd_increase": (0.0, math.inf),
+}
 
 # The share of the run that counts as "the end". If the best score was still
 # climbing in here, the search hadn't flattened out by the time it stopped.
@@ -43,11 +63,19 @@ class _BoundHit:
             f"point ({_number(self.value)}) against the {self.edge} bound, with "
             f"{self.top_share:.0%} of the best probes crowding the same edge"
         )
-        if self.suggestion is None:
-            # Only happens at a zero floor, where "wider" would mean negative.
+        if self.suggestion is None and self.edge == "lower":
+            # A floor there's nothing below, so "wider" would mean negative.
             return (
                 f"{head}: the search wants to go below {_number(low)}, so the "
                 "parameter may want to be off entirely rather than rescaled"
+            )
+        if self.suggestion is None:
+            # Already at the most this parameter accepts. Widening isn't the
+            # answer, and offering a bound the predictors reject would cost
+            # the next run rather than improve it.
+            return (
+                f"{head}: {_number(high)} is as high as this parameter goes, so "
+                "the search is asking for something the model can't do"
             )
         new_low, new_high = self.suggestion
         return (
@@ -205,24 +233,36 @@ def _find_bound_hits(
             value=float(best_params[name]),
             bounds=(low, high),
             top_share=in_zone / len(top_params),
-            suggestion=_widen((low, high), edge),
+            suggestion=_widen(name, (low, high), edge),
         )
 
 
 def _widen(
-    bounds: tuple[float, float], edge: Literal["lower", "upper"]
+    parameter: str, bounds: tuple[float, float], edge: Literal["lower", "upper"]
 ) -> tuple[float, float] | None:
-    """Extend the crowded end outward by the bound's own width."""
+    """Extend the crowded end outward by the bound's own width.
+
+    Clamped to what the parameter can actually be. A suggestion outside that
+    is worse than none at all: it reads as advice, and following it costs a
+    run -- `"season_regression": [0, 1.5]` is rejected by
+    `validated_regression` on the first probe, so the search dies at startup
+    instead of finishing wider.
+    """
     low, high = bounds
     width = high - low
+    domain_low, domain_high = _DOMAINS.get(parameter, (-math.inf, math.inf))
     if edge == "upper":
-        return (low, high + width)
+        # Already as high as the parameter goes, so there's nothing to widen
+        # into -- the search wanting more means something else is wrong.
+        if high >= domain_high:
+            return None
+        return (low, min(high + width, domain_high))
     # A floor of exactly 0 is the author saying the parameter bottoms out there
     # (an increment, a count, a rate), so going negative isn't a suggestion
     # worth making.
-    if low == 0:
+    if low == 0 or low <= domain_low:
         return None
-    return (low - width, high)
+    return (max(low - width, domain_low), high)
 
 
 def _continuous_bounds(
