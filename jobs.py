@@ -282,6 +282,7 @@ class Jobs:
         league: list[str] | str | None = None,
         model: list[str] | str | None = None,
         skip_anchors: bool = False,
+        rebuild_anchors: bool = False,
         skip_optimize: bool = False,
         skip_evaluate: bool = False,
         skip_publish: bool = False,
@@ -293,7 +294,13 @@ class Jobs:
         evaluate_job_definition: str | None = None,
         publish_job_definition: str | None = None,
     ) -> None:
-        """Submit the DAG to Batch and print what went out."""
+        """Submit the DAG to Batch and print what went out.
+
+        `--rebuild-anchors` refits the division anchors even though s3
+        already has some, and overwrites them. That re-rates every model in
+        the league against a new scale, so it is deliberately not what a
+        scheduled run does -- see `Jobs.anchors`.
+        """
         queue = job_queue or _default_queue()
         submitted = asyncio.run(
             dag.submit(
@@ -313,6 +320,7 @@ class Jobs:
                 leagues=_as_list(league),
                 models=_as_list(model),
                 skip_anchors=skip_anchors,
+                rebuild_anchors=rebuild_anchors,
                 skip_optimize=skip_optimize,
                 skip_evaluate=skip_evaluate,
                 skip_publish=skip_publish,

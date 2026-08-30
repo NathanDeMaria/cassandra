@@ -282,3 +282,107 @@ def test_league_args_survive_the_round_trip_through_fire() -> None:
 def test_league_args_are_empty_without_leagues() -> None:
     assert dag._league_args(None) == []
     assert dag._league_args([]) == []
+
+
+class _FakeSession:
+    """Enough of the aiobotocore session for `submit` to reach a fake client.
+
+    The dry-run helper above booby-traps this, which is right for the tests
+    that only care which stages get submitted. Asserting on a *command*
+    needs the request itself, and that only exists on the real path.
+    """
+
+    def __init__(self, client: _FakeBatchClient) -> None:
+        self._client = client
+
+    def create_client(self, service: str) -> "_FakeSession":
+        assert service == "batch"
+        return self
+
+    async def __aenter__(self) -> _FakeBatchClient:
+        return self._client
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _submitted_requests(
+    monkeypatch: pytest.MonkeyPatch, **kwargs
+) -> list[dict]:
+    """Every SubmitJob request a real (non-dry) submit would send."""
+    client = _FakeBatchClient()
+    monkeypatch.setattr(dag, "get_session", lambda: _FakeSession(client))
+    asyncio.run(
+        dag.submit(
+            anchors_job_definition="a",
+            optimize_job_definition="o",
+            evaluate_job_definition="e",
+            publish_job_definition="p",
+            job_queue="queue",
+            **kwargs,
+        )
+    )
+    return client.requests
+
+
+def _command(requests: list[dict], stage: str) -> list[str]:
+    for request in requests:
+        command = request["containerOverrides"]["command"]
+        if command[0] == stage:
+            return command
+    raise AssertionError(f"no {stage} job was submitted")
+
+
+def test_the_anchors_job_leaves_existing_anchors_alone_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scheduled run must not re-rate a league it was only asked to publish."""
+    requests = _submitted_requests(monkeypatch, leagues=["mens"])
+
+    assert _command(requests, "anchors") == ["anchors"]
+
+
+def test_rebuild_anchors_tells_the_job_to_refit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one way to overwrite anchors from a batch run."""
+    requests = _submitted_requests(
+        monkeypatch, leagues=["mens"], rebuild_anchors=True
+    )
+
+    assert _command(requests, "anchors") == ["anchors", "--if-missing=False"]
+
+
+@pytest.mark.parametrize("dropped", ["skip_anchors", "skip_optimize"])
+def test_rebuilding_anchors_that_would_not_run_is_an_error(
+    monkeypatch: pytest.MonkeyPatch, dropped: str
+) -> None:
+    """Both readings of the contradiction re-rate a league, or don't. Ask."""
+    with pytest.raises(ValueError, match="rebuild_anchors"):
+        _submit(monkeypatch, leagues=["mens"], rebuild_anchors=True, **{dropped: True})
+
+
+def test_the_rebuild_flag_survives_the_round_trip_through_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The launcher writes `--if-missing=False`; `jobs.py` has to read it as
+    a boolean. Parsed as the *string* "False" it is truthy, the anchors job
+    leaves the existing file alone, and a run asked to re-rate the league
+    reports success having changed nothing.
+    """
+    import fire
+
+    command = _command(
+        _submitted_requests(monkeypatch, leagues=["mens"], rebuild_anchors=True),
+        "anchors",
+    )
+
+    seen: object = "not called"
+
+    class _Stage:
+        def anchors(self, league=None, index=None, if_missing=True, upload=True):
+            nonlocal seen
+            seen = if_missing
+
+    fire.Fire(_Stage, command=command)
+    assert seen is False
