@@ -82,7 +82,17 @@ def generate_predictions(
                 )
             predictor.pass_week()
         if roll_over_final_season or index < len(ordered) - 1:
-            predictor.pass_season()
+            # The season being entered, so a predictor with per-season
+            # anchors regresses each team toward the division it is about to
+            # play in. Past the last stored season that's a year nobody has
+            # played, and the anchors -- fit from played seasons -- have
+            # nothing for it; `anchor_in` holds the last one it does have.
+            following = (
+                ordered[index + 1].year
+                if index + 1 < len(ordered)
+                else season.year + 1
+            )
+            predictor.pass_season(following)
     if post_callbacks:
         predictor.postrun_callback()
 

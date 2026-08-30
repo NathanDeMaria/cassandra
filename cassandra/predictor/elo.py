@@ -4,6 +4,7 @@ from typing import Any, Self
 from endgame.types import Game
 
 from .base_predictor import (
+    Anchor,
     Predictor,
     resolved_anchors,
     validated_regression,
@@ -19,7 +20,7 @@ class EloPredictor(Predictor):
         k: float = 20,
         season_regression: float = 0.0,
         ratings: dict[str, float] | None = None,
-        anchors: Mapping[str, float] | None = None,
+        anchors: Mapping[str, Anchor] | None = None,
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
@@ -62,7 +63,7 @@ class EloPredictor(Predictor):
         # downstream can put it on the same scale as an FBS team.
         return self._ratings.get(team, self.anchor(team))
 
-    def pass_season(self) -> None:
+    def _roll_over(self) -> None:
         self._ratings = {
             team: self.regress(team, rating) for team, rating in self._ratings.items()
         }

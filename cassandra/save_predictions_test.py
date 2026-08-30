@@ -138,7 +138,7 @@ class _CountingPredictor(_RecordingPredictor):
     def pass_week(self) -> None:
         self.weeks += 1
 
-    def pass_season(self) -> None:
+    def _roll_over(self) -> None:
         self.rollovers += 1
 
 

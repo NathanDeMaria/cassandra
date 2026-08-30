@@ -6,6 +6,7 @@ from endgame.types import Game
 
 from ..scoring import get_scoring_function
 from .base_predictor import (
+    Anchor,
     Predictor,
     resolved_anchors,
     validated_regression,
@@ -41,7 +42,7 @@ class GlickoPredictor(Predictor):
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, _Rating] | None = None,
-        anchors: Mapping[str, float] | None = None,
+        anchors: Mapping[str, Anchor] | None = None,
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
@@ -136,7 +137,7 @@ class GlickoPredictor(Predictor):
             for team, rating in self._ratings.items()
         }
 
-    def pass_season(self):
+    def _roll_over(self) -> None:
         self._ratings = {
             team: _Rating(
                 self.regress(team, rating.rating),

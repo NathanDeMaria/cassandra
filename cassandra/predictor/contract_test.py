@@ -223,6 +223,85 @@ def test_anchors_round_trip_through_the_state_dict(model: RatedModel) -> None:
 
 
 @rated_model
+def test_a_promoted_team_is_anchored_where_it_moved_to(model: RatedModel) -> None:
+    """The reason an anchor can carry a history at all.
+
+    North Dakota State was D-II in 2002 and has been the best team in FCS
+    ever since. Anchored at the division it started in, it enters the replay
+    hundreds of points below the teams it plays and is pulled back down there
+    every offseason after the move.
+    """
+    predictor = model("test_league", anchors={"Team A": [[2002, 1200], [2004, 1500]]})
+
+    assert _rating(predictor, "Team A") == 1200
+
+    predictor.pass_season(2004)
+
+    assert _rating(predictor, "Team A") == 1500
+
+
+@rated_model
+def test_an_anchor_history_is_read_at_the_season_in_hand(model: RatedModel) -> None:
+    """Each step holds until the next one starts, and the ends clamp."""
+    predictor = model("test_league", anchors={"Team A": [[2002, 1200], [2010, 1500]]})
+
+    for year, expected in ((1998, 1200), (2002, 1200), (2009, 1200), (2010, 1500)):
+        predictor.pass_season(year)
+        assert _rating(predictor, "Team A") == expected, year
+
+    # Past the last step -- an offseason rollover into a season nobody has
+    # played -- holds the last one rather than falling off the end.
+    predictor.pass_season(2030)
+    assert _rating(predictor, "Team A") == 1500
+
+
+@rated_model
+def test_rolling_over_without_a_year_keeps_the_season(model: RatedModel) -> None:
+    """`publish` rolls into a season it can't name; that must not reset the
+    clock to a promoted team's first division."""
+    predictor = model("test_league", anchors={"Team A": [[2002, 1200], [2004, 1500]]})
+    predictor.pass_season(2004)
+
+    predictor.pass_season()
+
+    assert _rating(predictor, "Team A") == 1500
+
+
+@rated_model
+def test_the_clock_moves_before_the_regression(
+    model: RatedModel, game: GameFactory
+) -> None:
+    """A team regresses toward where it is about to play, not where it was.
+
+    Full regression makes the ordering visible: after crossing into 2004 the
+    rating has to land on the 2004 anchor, not the 2002 one.
+    """
+    predictor = model(
+        "test_league",
+        season_regression=1.0,
+        anchors={"Team A": [[2002, 1200], [2004, 1500]]},
+    )
+    predictor.update_game(game("Team A", "Team B", 1, 0))
+
+    predictor.pass_season(2004)
+
+    assert _rating(predictor, "Team A") == pytest.approx(1500)
+
+
+@rated_model
+def test_an_anchor_history_round_trips_through_the_state_dict(
+    model: RatedModel,
+) -> None:
+    steps = [[2002, 1200], [2004, 1500]]
+    predictor = model("test_league", anchors={"Team A": steps})
+
+    restored = model.from_state_dict(json.loads(json.dumps(predictor.state_dict())))
+
+    assert restored._anchors == {"Team A": steps}
+    assert _rating(restored, "Team A") == 1200
+
+
+@rated_model
 def test_explicit_empty_anchors_are_not_replaced_by_the_saved_ones(
     model: RatedModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
