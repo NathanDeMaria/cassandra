@@ -75,6 +75,7 @@ async def submit(
     leagues: list[str] | None = None,
     models: list[str] | None = None,
     skip_anchors: bool = False,
+    rebuild_anchors: bool = False,
     skip_optimize: bool = False,
     skip_evaluate: bool = False,
     skip_publish: bool = False,
@@ -89,7 +90,24 @@ async def submit(
     deciding it. `skip_anchors` on its own is for the run that knows its
     anchors are already built and doesn't want to pay a container to confirm
     it.
+
+    `rebuild_anchors` is the opposite end: refit them even though s3 already
+    has some, and overwrite what's there. Every rating downstream is on the
+    scale the anchors set, so a run that rebuilds them re-rates the whole
+    league -- which is why the anchors job defaults to leaving an existing
+    file alone and this has to be asked for by name.
+
+    Asking for it alongside anything that drops the anchors job raises rather
+    than quietly doing nothing: the two readings of `--rebuild-anchors
+    --skip-optimize` are "rebuild them" and "don't", and a run that re-rates
+    a league is not one to guess about.
     """
+    if rebuild_anchors and (skip_anchors or skip_optimize):
+        dropped = "skip_anchors" if skip_anchors else "skip_optimize"
+        raise ValueError(
+            f"rebuild_anchors asks for an anchors job that {dropped} removes. "
+            "Drop one of them."
+        )
     work = manifest.load_manifest(leagues=leagues, models=models)
     if not work and not skip_optimize:
         raise ValueError(
@@ -126,7 +144,11 @@ async def submit(
             anchors_job = await submitter.run(
                 name=_job_name("anchors"),
                 job_definition=anchors_job_definition,
-                command=["anchors"],
+                # `--if-missing` is the anchors job's own default and means
+                # "leave what s3 already has alone"; turning it off is what
+                # makes the job refit and overwrite.
+                command=["anchors"]
+                + (["--if-missing=False"] if rebuild_anchors else []),
                 size=len(anchor_leagues),
                 environment={_ANCHOR_LEAGUES_ENV_VAR: ",".join(anchor_leagues)},
             )
