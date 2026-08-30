@@ -504,6 +504,13 @@ def _unplaceable_divisions(games: Iterable[TierGame]) -> set[str]:
     divisions = {
         tier.division for game in games for tier in (game.home_tier, game.away_tier)
     }
+    if len(divisions) < 2:
+        # A league with one division has no ladder to place anything on, so
+        # "never plays another division" is the normal state rather than the
+        # symptom -- mens and womens are entirely D-I, and every game in them
+        # trips the count below. Without this the only division a league has
+        # is declared unplaceable and every team in it loses its anchor.
+        return set()
     unplaceable = {d for d in divisions if crossing[d] < _MIN_CROSS_DIVISION_GAMES}
     if unplaceable:
         print(
@@ -613,6 +620,17 @@ async def _build(league: str, write: bool) -> None:
         print(f"  {level:7.0f}  {division}")
 
     anchors = _anchors(seasons, namer, classifier, fit, folded, unplaceable)
+    if not anchors:
+        # Nothing downstream would notice: the file would be written empty,
+        # every team would silently fall back to MEAN_RATING, and the run
+        # would report success. There is no league where "classified teams
+        # but no anchors" is a real answer, so it's a bug in the fit above
+        # rather than something to publish.
+        raise ValueError(
+            f"Fit {len(classified)} classified {league!r} team(s) but produced "
+            "no anchors. Every division was dropped as unplaceable, or no tier "
+            "the teams are in came back rated."
+        )
     # Counted by where each team *enters*, since that's the tier it's being
     # listed under. A team that moved is counted once, at the division it
     # started in, and shows up again in the move list below.
