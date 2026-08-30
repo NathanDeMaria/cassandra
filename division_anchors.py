@@ -35,12 +35,12 @@ import asyncio
 import json
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import NamedTuple
 
 import fire
 from call_it_what_you_want import TeamNamer, default_classifications, registry_league
-from endgame.types import Season, iter_weeks
+from endgame.types import Game, Season, iter_weeks
 from endgame_aws import Config
 
 from cassandra.predictor.base_predictor import MEAN_RATING, anchor_path
@@ -134,16 +134,31 @@ def _win_probability(rating_difference: float) -> float:
     return 1 / (1 + math.exp(-rating_difference / _SCALE))
 
 
-def _first_years(seasons: Iterable[Season], namer: TeamNamer) -> dict[str, int]:
-    """The earliest season each canonical team name shows up in."""
-    first: dict[str, int] = {}
+def _played_games(seasons: Iterable[Season]) -> Iterator[tuple[Season, Game]]:
+    """Every game that has actually been played, with the season it's in.
+
+    Season pickles carry the fixtures ahead of them as well as the results
+    behind them, and neither thing here wants a fixture: a scheduled game
+    has no result to fit a tier gap on, and anchoring a team by the first
+    season it *appears* in would let a game it hasn't played yet decide
+    which tier it's judged against for good.
+    """
     for season in seasons:
         for week in iter_weeks(season, validate=False):
             for game in week.games:
-                for name in (game.home, game.away):
-                    canonical = namer.canonical(name)
-                    if season.year < first.get(canonical, season.year + 1):
-                        first[canonical] = season.year
+                if not game.completed:
+                    continue
+                yield season, game
+
+
+def _first_years(seasons: Iterable[Season], namer: TeamNamer) -> dict[str, int]:
+    """The earliest season each canonical team name shows up in."""
+    first: dict[str, int] = {}
+    for season, game in _played_games(seasons):
+        for name in (game.home, game.away):
+            canonical = namer.canonical(name)
+            if season.year < first.get(canonical, season.year + 1):
+                first[canonical] = season.year
     return first
 
 
@@ -188,23 +203,21 @@ def _tier_games(
     seasons: Iterable[Season], namer: TeamNamer, tiers: Mapping[str, str]
 ) -> list[TierGame]:
     games = []
-    for season in seasons:
-        for week in iter_weeks(season, validate=False):
-            for game in week.games:
-                home = tiers.get(namer.canonical(game.home))
-                away = tiers.get(namer.canonical(game.away))
-                if home is None or away is None:
-                    continue
-                if game.home_score == game.away_score:
-                    continue
-                games.append(
-                    TierGame(
-                        home,
-                        away,
-                        1.0 if game.home_score > game.away_score else 0.0,
-                        game.neutral_site,
-                    )
-                )
+    for _, game in _played_games(seasons):
+        home = tiers.get(namer.canonical(game.home))
+        away = tiers.get(namer.canonical(game.away))
+        if home is None or away is None:
+            continue
+        if game.home_score == game.away_score:
+            continue
+        games.append(
+            TierGame(
+                home,
+                away,
+                1.0 if game.home_score > game.away_score else 0.0,
+                game.neutral_site,
+            )
+        )
     return games
 
 

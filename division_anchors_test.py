@@ -1,6 +1,18 @@
-import pytest
+from datetime import datetime, timezone
 
-from division_anchors import TierGame, _merge_thin_tiers, _Tiers, fit_tiers, main
+import pytest
+from call_it_what_you_want import TeamNamer
+from endgame.types import Game, Season, Week
+
+from division_anchors import (
+    TierGame,
+    _first_years,
+    _merge_thin_tiers,
+    _tier_games,
+    _Tiers,
+    fit_tiers,
+    main,
+)
 
 
 def _games(
@@ -125,3 +137,55 @@ def test_if_missing_builds_when_there_is_no_file(
 
 async def _never_built(league: str, write: bool) -> None:
     raise AssertionError(f"rebuilt {league} anchors that already existed")
+
+
+def _game(
+    year: int,
+    home: str = "Big",
+    away: str = "Small",
+    home_score: int = 10,
+    away_score: int = 3,
+    completed: bool = True,
+) -> Game:
+    return Game(
+        home=home,
+        home_score=home_score,
+        away=away,
+        away_score=away_score,
+        neutral_site=False,
+        completed=completed,
+        date=datetime(year, 9, 2, tzinfo=timezone.utc),
+        game_id=f"{home}-{away}-{year}",
+    )
+
+
+def _season(year: int, *games: Game) -> Season:
+    return Season([Week(list(games), 1)], year)
+
+
+def test_first_years_ignores_a_game_that_hasnt_been_played() -> None:
+    """A fixture must not decide the tier a team is anchored against.
+
+    A season pickle pulled in August carries September's schedule, so
+    counting appearances would file every team under the coming season and
+    judge its whole history against that year's classification.
+    """
+    seasons = [
+        _season(2023, _game(2023, completed=False)),
+        _season(2024, _game(2024)),
+    ]
+
+    assert _first_years(seasons, TeamNamer.empty()) == {"Big": 2024, "Small": 2024}
+
+
+def test_tier_games_ignores_a_game_in_progress() -> None:
+    """The gap between tiers is fit on final scores only.
+
+    A game underway has a real, partial scoreline, so the tie guard below
+    doesn't catch it -- whoever happens to be ahead at the moment of the
+    fetch would otherwise be recorded as the winner.
+    """
+    tiers = {"Big": "fbs", "Small": "fcs"}
+    seasons = [_season(2024, _game(2024, completed=False))]
+
+    assert _tier_games(seasons, TeamNamer.empty(), tiers) == []

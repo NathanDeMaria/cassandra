@@ -128,11 +128,15 @@ def test_generate_predictions_walks_seasons_chronologically() -> None:
 
 
 class _CountingPredictor(_RecordingPredictor):
-    """Records how many season rollovers it was put through."""
+    """Records how many week and season rollovers it was put through."""
 
     def __init__(self) -> None:
         super().__init__()
         self.rollovers = 0
+        self.weeks = 0
+
+    def pass_week(self) -> None:
+        self.weeks += 1
 
     def pass_season(self) -> None:
         self.rollovers += 1
@@ -221,3 +225,61 @@ def test_generate_predictions_rejects_misgrouped_weeks() -> None:
 
     with pytest.raises(OverlappingWeeksError):
         list(generate_predictions(_RecordingPredictor(), [season]))
+
+
+def _fixture(game_id: str, day: int, month: int = 11, year: int = 2023) -> Game:
+    """A game ESPN has listed but nobody has played yet.
+
+    ESPN sends a 0-0 scoreline for a scheduled game, so a fixture is only
+    told from a real scoreless result by `completed`.
+    """
+    return _game(game_id, day, month=month, year=year)._replace(
+        home_score=0, away_score=0, completed=False, status="STATUS_SCHEDULED"
+    )
+
+
+def test_generate_predictions_skips_unplayed_games() -> None:
+    """Season pickles carry fixtures now; they are not results to train on.
+
+    A scheduled game comes back 0-0, so replaying one would teach the
+    predictor that the two teams drew.
+    """
+    week = Week([_game("played", 6), _fixture("scheduled", 8)], 1)
+
+    predictor = _RecordingPredictor()
+    results = list(generate_predictions(predictor, [Season([week], 2023)]))
+
+    assert predictor.seen == ["played"]
+    assert [r.game.game_id for r in results] == ["played"]
+
+
+def test_generate_predictions_doesnt_pass_a_week_that_hasnt_happened() -> None:
+    """The clock stops at the last week that was played.
+
+    `pass_week` is what ages a rating -- Glicko inflates every team's rd once
+    per week passed -- so walking the fixtures at the end of a pickle would
+    publish ratings aged by weeks nobody has played.
+    """
+    played = Week([_game("played", 6)], 1)
+    upcoming = [Week([_fixture("later", 13)], 2), Week([_fixture("latest", 20)], 3)]
+
+    predictor = _CountingPredictor()
+    list(generate_predictions(predictor, [Season([played, *upcoming], 2023)]))
+
+    assert (predictor.seen, predictor.weeks) == (["played"], 1)
+
+
+def test_generate_predictions_still_passes_a_week_with_no_games() -> None:
+    """A week the source had nothing for is not the future.
+
+    The NFL's season is always all 22 weeks, and a bye week or a week ESPN
+    returned nothing for arrives as a Week with no games at all. Those passed
+    before fixtures existed, and telling them from an upcoming week is the
+    only reason this looks at `week.games` rather than just the filter.
+    """
+    season = Season([Week([_game("played", 6)], 1), Week([], 2)], 2023)
+
+    predictor = _CountingPredictor()
+    list(generate_predictions(predictor, [season]))
+
+    assert predictor.weeks == 2

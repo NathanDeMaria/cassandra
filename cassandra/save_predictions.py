@@ -60,7 +60,21 @@ def generate_predictions(
     ordered = sorted(seasons, key=lambda s: s.year)
     for index, season in enumerate(ordered):
         for week in iter_weeks(season):
-            for game in week.games_in_order:
+            played = [g for g in week.games_in_order if g.completed]
+            if not played and week.games:
+                # Every game in the week is a fixture, so the week hasn't
+                # happened. Skipping it -- rather than falling through to an
+                # empty `pass_week` -- is what keeps the clock from running
+                # into the future: Glicko inflates every team's rd once per
+                # week passed, and a season pickle now carries weeks of
+                # games nobody has played.
+                #
+                # `week.games` is what tells the two empties apart. A week
+                # with no games at all is one the source itself had nothing
+                # for, and it passed before this existed; only a week
+                # emptied by the filter is the future.
+                continue
+            for game in played:
                 game = namer.apply(game)
                 prediction = predictor.update_game(game)
                 yield GameResult(
