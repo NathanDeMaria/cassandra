@@ -13,6 +13,7 @@ from division_anchors import (
     _drop_thin_conferences,
     _first_years,
     _tier_games,
+    _unplaceable_divisions,
     fit_tiers,
     main,
 )
@@ -425,3 +426,25 @@ def test_a_team_in_an_unplaceable_division_gets_no_anchor() -> None:
     )
 
     assert anchors == {}
+
+
+def test_a_single_division_league_is_not_declared_unplaceable() -> None:
+    """mens and womens are entirely D-I, so no game ever crosses a division.
+
+    The guard is for a division that never connects to the *others*; with no
+    others there is nothing to connect to. Reading that as "unplaceable"
+    stripped the anchor off every team in the league and wrote an empty file.
+    """
+    games = [
+        TierGame(_tier("d1/ACC"), _tier("d1/MEAC"), 1.0, True),
+        TierGame(_tier("d1/Big Ten"), _tier("d1/ACC"), 0.0, True),
+    ] * 500
+
+    assert _unplaceable_divisions(games) == set()
+
+
+def test_a_division_that_never_leaves_itself_is_unplaceable_when_others_exist() -> None:
+    """The all-star bowls, which is what the guard is actually for."""
+    games = _games("fbs", "fcs", 80, 20) + _games("bowls", "bowls", 3, 3)
+
+    assert _unplaceable_divisions(games) == {"bowls"}
