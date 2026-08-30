@@ -1,6 +1,6 @@
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import cache
 from pathlib import Path
 from typing import Any, Self
@@ -73,8 +73,46 @@ def validated_regression(season_regression: float) -> float:
     return season_regression
 
 
+# What one team's anchor looks like. A bare number is a team that stayed put
+# and is anchored the same way in every season it played. A list of
+# [year, rating] steps is a program that moved between divisions: the rating
+# is the one in effect from that year on, so the seasons it spent in D-II are
+# anchored at D-II and the ones after the move are anchored where it moved to.
+#
+# Both shapes rather than only the second because most teams never move, and
+# writing every one of them a 24-entry history would bury the handful that
+# did. The bare number is also the shape every release published before this
+# existed carries, and those have to keep replaying unchanged.
+Anchor = float | Sequence[Sequence[float]]
+
+
+def anchor_in(anchor: Anchor, season: int | None) -> float:
+    """The rating `anchor` calls for in `season`.
+
+    Clamped at both ends. Before the first step is the same answer as the
+    first step -- a team can't be anchored against a division it hadn't
+    reached yet, and its earliest recorded tier is the best guess for
+    whatever came before. After the last is the last, which is what an
+    offseason rollover into a season nobody has played needs: the anchors
+    are fit from played seasons, so there is nothing later to find.
+
+    `season` is None before the replay has entered any season, which reads
+    as "the earliest" for the same reason.
+    """
+    if isinstance(anchor, (int, float)):
+        return float(anchor)
+    rating = float(anchor[0][1])
+    if season is None:
+        return rating
+    for year, value in anchor:
+        if year > season:
+            break
+        rating = float(value)
+    return rating
+
+
 @cache
-def load_anchors(league: str) -> Mapping[str, float]:
+def load_anchors(league: str) -> Mapping[str, Anchor]:
     """A league's saved per-team regression targets, empty if it has none.
 
     Empty is the normal case: only ncaafb spans divisions, and even there
@@ -93,8 +131,8 @@ def load_anchors(league: str) -> Mapping[str, float]:
 
 
 def resolved_anchors(
-    league: str, anchors: Mapping[str, float] | None
-) -> dict[str, float]:
+    league: str, anchors: Mapping[str, Anchor] | None
+) -> dict[str, Anchor]:
     """The anchors a predictor should use, given what it was handed.
 
     A free function for the same reason `validated_regression` is: this
@@ -122,7 +160,11 @@ class Predictor(ABC):
         # play each other. It is *not* right for one like ncaafb, where D-III
         # teams are effectively a separate closed pool: pulling them toward
         # the same 1500 as an SEC team is what the anchor exists to fix.
-        self._anchors: dict[str, float] = {}
+        self._anchors: dict[str, Anchor] = {}
+        # Which season the replay is in, set by `pass_season`. None until it
+        # enters one, which is every team's earliest anchor -- see
+        # `anchor_in`. Only anchors with a history read it at all.
+        self._season: int | None = None
 
     @property
     def league(self) -> str:
@@ -196,14 +238,23 @@ class Predictor(ABC):
         pulls it back toward. Those have to be the same number: a team that
         starts at its division's level and reverts to the league mean would
         have the anchor slowly undone every offseason, and one that starts at
-        the mean never gets to the anchor at all -- with `season_regression`
-        tuned to 0, as it is in every ncaafb model, `regress` is a no-op and
-        the starting value is the *only* thing the anchor gets to say.
+        the mean never gets to the anchor at all -- where `season_regression`
+        tunes to 0, as it does for both ncaafb Glicko models, `regress` is a
+        no-op and the starting value is the *only* thing the anchor says.
+
+        Read at the season the replay is in, so a program that moved up is
+        anchored where it moved to for the seasons after the move. Anchoring
+        it at the division it started in instead costs it twice: it enters
+        the replay far below the teams it now plays, and every offseason
+        after the promotion pulls it back down there again.
 
         Falls back to MEAN_RATING for a team with no anchor, which is every
         team in a league whose divisions all play each other.
         """
-        return self._anchors.get(team, MEAN_RATING)
+        found = self._anchors.get(team)
+        if found is None:
+            return MEAN_RATING
+        return anchor_in(found, self._season)
 
     def regress(self, team: str, rating: float) -> float:
         """One season's worth of reversion toward the team's anchor.
@@ -224,8 +275,31 @@ class Predictor(ABC):
     def pass_week(self) -> None:
         pass
 
-    def pass_season(self) -> None:
-        pass
+    def pass_season(self, year: int | None = None) -> None:
+        """Cross into a new season. `year` is the one being entered.
+
+        The clock moves before the rollover, not after, so a team that
+        changed division regresses toward where it is about to play rather
+        than where it just was -- that ordering is the whole point of
+        knowing the year, so it's fixed here instead of left to each
+        subclass's `_roll_over`.
+
+        `year` is optional because the callers that roll over into a season
+        nobody has played can't name one, and because a flat anchor doesn't
+        care. Omitting it leaves the clock where it was rather than resetting
+        it, so those callers keep each team's most recent anchor instead of
+        silently falling back to its first.
+        """
+        if year is not None:
+            self._season = year
+        self._roll_over()
+
+    def _roll_over(self) -> None:
+        """The offseason itself: regression, and whatever else a model does.
+
+        Overridden instead of `pass_season` so a subclass cannot forget to
+        advance the clock first.
+        """
 
     def postrun_callback(self) -> None:
         """Called after all seasons have been processed.

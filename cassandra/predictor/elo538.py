@@ -5,6 +5,7 @@ import numpy as np
 from endgame.types import Game
 
 from .base_predictor import (
+    Anchor,
     Predictor,
     resolved_anchors,
     validated_regression,
@@ -27,7 +28,7 @@ class Elo538Predictor(Predictor):
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, float] | None = None,
-        anchors: Mapping[str, float] | None = None,
+        anchors: Mapping[str, Anchor] | None = None,
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
@@ -80,7 +81,7 @@ class Elo538Predictor(Predictor):
         # replay -- and so the priors it saves -- start from.
         return self._ratings.get(team, self.anchor(team))
 
-    def pass_season(self) -> None:
+    def _roll_over(self) -> None:
         self._ratings = {
             team: self.regress(team, rating) for team, rating in self._ratings.items()
         }
