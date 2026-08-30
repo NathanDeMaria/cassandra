@@ -8,4 +8,11 @@ __pycache__
 # the `*.json` rule above; without this a new one is silently never added.
 !**/.devcontainer/*.json
 .env
+
+# Machine-local devcontainer settings -- the AWS_PROFILE to use, mainly. The
+# point of the file is to keep that out of here; local.env.example is the
+# tracked copy that documents it. (The `.env` rule above doesn't cover this
+# one: an unanchored pattern matches a whole path component, not a suffix.)
+.devcontainer/local.env
+
 logs/

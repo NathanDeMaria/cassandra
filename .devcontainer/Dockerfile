@@ -161,6 +161,26 @@ RUN printf '%s' '{"hasCompletedOnboarding":true,"theme":"dark"}' \
 # For persisting bash history
 RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" && echo $SNIPPET >> "/home/dev/.bashrc"
 
+# Machine-local environment -- the AWS_PROFILE to use, mainly. It has to be
+# settable without committing it, so it lives in .devcontainer/local.env,
+# which .gitignore and .dockerignore both drop; devcontainer.json passes its
+# path down as DEVCONTAINER_ENV_FILE (from ${containerWorkspaceFolder}, since
+# where the workspace lands depends on which folder you opened).
+#
+# Sourced from two places on purpose, because bash reads different files
+# depending on how it was started and both cases matter here:
+#   .bashrc    interactive shells -- a VS Code terminal
+#   BASH_ENV   non-interactive ones -- `bash -c`, which is how Claude Code and
+#              anything scripted runs commands
+# Between them every bash in the container ends up with the profile set,
+# rather than just the ones a human typed into.
+#
+# Keep this script silent: BASH_ENV is read before *every* non-interactive
+# bash, so anything it prints lands in the output of every `$(...)` capture.
+COPY --chown=dev:dev .devcontainer/local-env.sh /home/dev/.local-env.sh
+ENV BASH_ENV=/home/dev/.local-env.sh
+RUN echo '. /home/dev/.local-env.sh' >> "/home/dev/.bashrc"
+
 # Is this a good way to add stuff on load?
 # Not sure, but it's working
 COPY --chown=dev:dev profile.sh /home/dev/profile.sh

@@ -11,6 +11,10 @@ reasoning/
 logs/
 releases/
 *.env
+# `**/` as well: an unanchored .dockerignore pattern matches from the context
+# root only, and .devcontainer/local.env is a directory down. Nothing copies
+# it into an image anyway -- this keeps it out of the context entirely.
+**/*.env
 
 # NOTE: config.json is deliberately NOT ignored. The runtime stage copies it to
 # ~dev/.aws-batch/config.json, which is where endgame_aws's Config finds the

@@ -40,7 +40,12 @@
   "remoteUser": "dev",
   "shutdownAction": "none",
   "remoteEnv": {
-    "GH_TOKEN": "${localEnv:GH_TOKEN}"
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    // Machine-local settings -- AWS_PROFILE, mainly -- read by the
+    // .local-env.sh that the Dockerfile hooks into every bash. Not a mount:
+    // the file lives in the workspace, which is already bind-mounted, so this
+    // only has to say where it landed.
+    "DEVCONTAINER_ENV_FILE": "${containerWorkspaceFolder}/.devcontainer/local.env"
   },
   "postCreateCommand": "sudo chown -R $(id -u):$(id -g) /commandhistory && poetry install",
   "postStartCommand": "nohup flock -n /home/dev/.claude-rc.lock claude rc --name cassandra >>/tmp/claude-rc.log 2>&1 &",
