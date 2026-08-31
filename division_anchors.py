@@ -78,6 +78,15 @@ _SCALE = 400 / math.log(10)
 # anybody else, and an offset fit on nothing at all.
 _MIN_CROSS_TIER_GAMES = 200
 
+# A conference also needs this many teams before its offset means anything.
+# Cross-tier games and team count catch different failures: a single team can
+# play a full out-of-conference schedule and clear the games threshold on its
+# own, at which point the "conference" anchor is that one team's fitted level
+# wearing a conference label, with nothing to average it against. ncaafb had
+# 11 such tiers, spread 1122 to 1368 around division buckets at 1227 and 1237
+# -- a 246-point spread that is all sampling noise.
+_MIN_TIER_TEAMS = 3
+
 # A division needs this much crossing out of it before it can be placed on
 # the ladder at all. Lower than the conference threshold on purpose: there
 # are only a handful of divisions and a real one -- even the lumped label
@@ -432,7 +441,9 @@ class _Resolved(NamedTuple):
     folded: dict[Tier, Tier]
 
 
-def _drop_thin_conferences(games: Iterable[TierGame]) -> _Resolved:
+def _drop_thin_conferences(
+    games: Iterable[TierGame], team_counts: Mapping[Tier, int] | None = None
+) -> _Resolved:
     """Fold conferences with too little to fit on back into their division.
 
     A conference whose games are nearly all against itself would otherwise
@@ -440,8 +451,13 @@ def _drop_thin_conferences(games: Iterable[TierGame]) -> _Resolved:
     have -- or, where it has none, by nothing at all -- and a confident
     wrong anchor is worse than the shared one, because it's the rating every
     team in it starts from.
+
+    `team_counts` applies the same reasoning to how many teams the offset is
+    averaged over. Omitting it checks games only, which is what the fit tests
+    that build games directly want.
     """
     games = list(games)
+    team_counts = team_counts or {}
     crossing: Counter[Tier] = Counter()
     for home, away, _, _ in games:
         if home == away:
@@ -449,18 +465,33 @@ def _drop_thin_conferences(games: Iterable[TierGame]) -> _Resolved:
         crossing[home] += 1
         crossing[away] += 1
     tiers = {tier for game in games for tier in (game.home_tier, game.away_tier)}
-    thin = {
+    thin_games = {
         tier
         for tier in tiers
         if tier.conference is not None and crossing[tier] < _MIN_CROSS_TIER_GAMES
     }
-    if thin:
+    thin_teams = {
+        tier
+        for tier in tiers
+        if tier.conference is not None
+        and tier not in thin_games
+        and team_counts.get(tier, _MIN_TIER_TEAMS) < _MIN_TIER_TEAMS
+    }
+    thin = thin_games | thin_teams
+    if thin_games:
         print(
-            f"  {len(thin)} conference(s) below {_MIN_CROSS_TIER_GAMES} games "
+            f"  {len(thin_games)} conference(s) below {_MIN_CROSS_TIER_GAMES} games "
             "outside themselves, using division:"
         )
-        for tier in sorted(thin, key=str):
+        for tier in sorted(thin_games, key=str):
             print(f"    {tier} ({crossing[tier]} of {_played_by(games, tier)})")
+    if thin_teams:
+        print(
+            f"  {len(thin_teams)} conference(s) below {_MIN_TIER_TEAMS} teams, "
+            "using division:"
+        )
+        for tier in sorted(thin_teams, key=str):
+            print(f"    {tier} ({team_counts.get(tier, 0)} team(s))")
 
     folded = {tier: Tier(tier.division) for tier in thin}
 
@@ -476,6 +507,22 @@ def _drop_thin_conferences(games: Iterable[TierGame]) -> _Resolved:
         ],
         folded,
     )
+
+
+def _tier_team_counts(
+    played: Mapping[str, Sequence[int]], classifier: _Classifier
+) -> Counter[Tier]:
+    """How many distinct teams each tier ever held.
+
+    Counted over every season rather than at entry, to match what the fit is
+    averaging over: a conference that had three teams across twenty seasons
+    but never two at once is as thin as the fit's view of it.
+    """
+    counts: Counter[Tier] = Counter()
+    for team, years in played.items():
+        for tier in {t for year in years if (t := classifier.tier(team, year))}:
+            counts[tier] += 1
+    return counts
 
 
 def _played_by(games: Iterable[TierGame], tier: Tier) -> int:
@@ -605,7 +652,7 @@ async def _build(league: str, write: bool) -> None:
             "first -- without it there's nothing to anchor teams to."
         )
 
-    games, folded = _drop_thin_conferences(raw)
+    games, folded = _drop_thin_conferences(raw, _tier_team_counts(played, classifier))
     unplaceable = frozenset(_unplaceable_divisions(games))
     divisions = {tier.division for g in games for tier in (g.home_tier, g.away_tier)}
     print(

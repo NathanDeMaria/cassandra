@@ -13,6 +13,7 @@ from division_anchors import (
     _drop_thin_conferences,
     _first_years,
     _tier_games,
+    _tier_team_counts,
     _unplaceable_divisions,
     fit_tiers,
     main,
@@ -168,6 +169,61 @@ def test_a_conference_that_plays_out_keeps_its_own_offset() -> None:
     _, folded = _drop_thin_conferences(games)
 
     assert folded == {}
+
+
+def test_a_conference_with_too_few_teams_falls_back_to_its_division() -> None:
+    """The one-team-tier case, which crossing games alone does not catch.
+
+    A single team playing a full out-of-conference schedule clears the games
+    threshold by itself, and the "conference" offset it earns is that one
+    team's fitted level with nothing to average it against.
+    """
+    games = _games("d2/gulf_south", "d2/other", 300, 300)
+
+    _, folded = _drop_thin_conferences(games, {_tier("d2/gulf_south"): 1})
+
+    assert folded == {_tier("d2/gulf_south"): _tier("d2")}
+
+
+def test_a_conference_with_enough_teams_keeps_its_own_offset() -> None:
+    games = _games("d2/gulf_south", "d2/other", 300, 300)
+
+    _, folded = _drop_thin_conferences(games, {_tier("d2/gulf_south"): 3})
+
+    assert folded == {}
+
+
+def test_team_counts_are_taken_over_every_season_played() -> None:
+    """Three teams that were never in the conference at the same time still
+    count as three: the fit pools all seasons, so its view of the tier does
+    too."""
+    classifier = _classifier(
+        {
+            ("Early", 2000): _found("d2", "gulf_south"),
+            ("Middle", 2001): _found("d2", "gulf_south"),
+            ("Late", 2002): _found("d2", "gulf_south"),
+        }
+    )
+
+    counts = _tier_team_counts(
+        {"Early": [2000], "Middle": [2001], "Late": [2002]}, classifier
+    )
+
+    assert counts[_tier("d2/gulf_south")] == 3
+
+
+def test_a_team_that_moved_counts_in_both_tiers() -> None:
+    classifier = _classifier(
+        {
+            ("Mover", 2000): _found("d2", "gulf_south"),
+            ("Mover", 2001): _found("d2", "lone_star"),
+        }
+    )
+
+    counts = _tier_team_counts({"Mover": [2000, 2001]}, classifier)
+
+    assert counts[_tier("d2/gulf_south")] == 1
+    assert counts[_tier("d2/lone_star")] == 1
 
 
 def _found(division: str, conference: str | None = None) -> TeamClassification:
