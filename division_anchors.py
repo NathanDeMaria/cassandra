@@ -82,9 +82,14 @@ _MIN_CROSS_TIER_GAMES = 200
 # Cross-tier games and team count catch different failures: a single team can
 # play a full out-of-conference schedule and clear the games threshold on its
 # own, at which point the "conference" anchor is that one team's fitted level
-# wearing a conference label, with nothing to average it against. ncaafb had
-# 11 such tiers, spread 1122 to 1368 around division buckets at 1227 and 1237
-# -- a 246-point spread that is all sampling noise.
+# wearing a conference label, with nothing to average it against.
+#
+# No league triggers this today -- it is a guard against a shape that has not
+# turned up yet, not a fix for one that has. Don't reach for it to explain a
+# suspicious anchor without checking the count first: the run report lists a
+# tier's teams *at entry* (see `counts` in `_build`), so a conference can show
+# "(1 teams)" there while holding a dozen across the seasons the fit pools.
+# ncaafb's apparent one-team tiers are all of that kind, 8 to 20 teams each.
 _MIN_TIER_TEAMS = 3
 
 # A division needs this much crossing out of it before it can be placed on
