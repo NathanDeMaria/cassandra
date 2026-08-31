@@ -306,6 +306,28 @@ def _log_name(stage, index, name):
     return f"{stage}-{index:02d}-{_slug(name)}.log"
 
 
+# CloudWatch keeps ingesting a stream for a few seconds after the container
+# exits, so a report run the moment a job lands writes a truncated log -- and
+# because the job is already terminal, that truncation would be cached forever.
+# It bites the longest child of a run first, which is the one whose numbers you
+# actually wanted: the report shows `n_iter=? best=-` and nothing says why.
+_SETTLE_SECONDS = 60
+
+
+def _cache_settled(path, stopped_at):
+    """Whether a cached log was written late enough to trust.
+
+    A cache from before the stream had settled gets dropped and re-fetched.
+    Deliberately content-agnostic: every stage writes a different last line,
+    and a marker per stage would go stale the first time one of them changed.
+    """
+    if not path.exists():
+        return False
+    if stopped_at is None:
+        return True
+    return path.stat().st_mtime > stopped_at / 1000 + _SETTLE_SECONDS
+
+
 async def _job_record(logs, stage, index, name, job, cache_dir, gate):
     """One container's status, timing and log, cached if it is finished."""
     container = job.get("container") or {}
@@ -338,7 +360,7 @@ async def _job_record(logs, stage, index, name, job, cache_dir, gate):
 
     log_name = _log_name(stage, index, name)
     path = cache_dir / log_name
-    if job["status"] in _TERMINAL and path.exists():
+    if job["status"] in _TERMINAL and _cache_settled(path, record["stopped_at"]):
         record["log"] = log_name
         return record
 
