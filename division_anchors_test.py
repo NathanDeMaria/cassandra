@@ -177,6 +177,10 @@ def test_a_conference_with_too_few_teams_falls_back_to_its_division() -> None:
     A single team playing a full out-of-conference schedule clears the games
     threshold by itself, and the "conference" offset it earns is that one
     team's fitted level with nothing to average it against.
+
+    Hypothetical: no league has produced this shape so far. The tiers that
+    look like it in a run report are counted at entry and hold plenty of
+    teams across all seasons.
     """
     games = _games("d2/gulf_south", "d2/other", 300, 300)
 
