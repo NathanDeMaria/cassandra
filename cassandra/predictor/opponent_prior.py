@@ -27,7 +27,11 @@ class OpponentPriorManager:
     def save(self, ratings: dict[str, float]) -> None:
         if self._prior_path.exists():
             raise ValueError(f"Priors already exist at {self._prior_path}")
-        # Save off priors for each time, equal to the average rating of their top 10 opponents
+        # Save off priors for each team, equal to the average rating of every
+        # opponent it played, weighted by how often it played them. This is a
+        # strength-of-schedule number, not a skill one: it drops the team's own
+        # earned rating, so a dominant D-III team and a bad one both land near
+        # the level of the D-III schedule they share.
         priors = {
             team: self._common_opponent_rating(team, ratings)
             for team in self._opponent_counter.keys()

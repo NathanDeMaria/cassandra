@@ -239,8 +239,13 @@ class Predictor(ABC):
         starts at its division's level and reverts to the league mean would
         have the anchor slowly undone every offseason, and one that starts at
         the mean never gets to the anchor at all -- where `season_regression`
-        tunes to 0, as it does for both ncaafb Glicko models, `regress` is a
+        tunes to 0, as it does for most models in most leagues, `regress` is a
         no-op and the starting value is the *only* thing the anchor says.
+
+        That is the usual outcome, not a corner case: of the twelve configs
+        across ncaafb, mens and womens, nine tune it to 0 and the other three
+        land under 0.07. Regressing toward a *tier* pulls every team in one
+        toward the same number, which costs more than the reversion buys.
 
         Read at the season the replay is in, so a program that moved up is
         anchored where it moved to for the seasons after the move. Anchoring
