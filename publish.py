@@ -45,8 +45,12 @@ from endgame.types import Season
 from endgame_aws import Config, save_data_to_s3
 from pydantic import ValidationError
 
-from cassandra import DEFAULT_FITTERS, ScoredPredictions, score_predictions
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.model_eval import (
+    DEFAULT_FITTERS,
+    ScoredPredictions,
+    score_predictions,
+)
 from cassandra.odds import OddsDatabase
 from cassandra.predictor import (
     Predictor,
