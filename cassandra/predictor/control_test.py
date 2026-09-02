@@ -107,15 +107,17 @@ def test_a_game_the_sweep_never_saw_is_the_baseline_too(game: GameFactory) -> No
     assert _rating(controlled, "Team A") == _rating(plain, "Team A")
 
 
-@pytest.mark.parametrize("scoring_method", ["pythagorean", "sigmoid"])
+@pytest.mark.parametrize("scoring_method", ["binary", "pythagorean", "sigmoid"])
 def test_the_size_of_the_control_number_reaches_the_rating(
     scoring_method: str, game: GameFactory
 ) -> None:
-    """Which scoring methods can hear the magnitude, and it isn't all of them.
+    """Every scoring method hears it, because the blend is after the scoring.
 
-    A team that controlled 0.9 of a three-point win did something a team that
-    controlled 0.55 of the same win didn't, and these two scoring functions
-    read the margin, so they can tell.
+    That is the payoff of blending the 0-1 result rather than the score line:
+    a team that controlled 0.9 of a three-point win did something a team that
+    controlled 0.55 of the same win didn't, and `binary_score` -- which reads
+    only the sign of the margin, and so can't tell those two games apart on
+    its own -- still ends up rating them differently.
     """
     played = game("Team A", "Team B", 20, 17, game_id="g1")
 
@@ -131,26 +133,28 @@ def test_the_size_of_the_control_number_reaches_the_rating(
     assert _rating(comfortable, "Team A") > _rating(narrow, "Team A")
 
 
-def test_binary_scoring_only_hears_the_crossover(game: GameFactory) -> None:
-    """The limit of the default, stated so a search result reads correctly.
+def test_the_scoreboard_still_decides_at_weight_zero(game: GameFactory) -> None:
+    """The other side of the same coin: control is off, scoring is not.
 
-    `binary_score` is 1/0.5/0 off the sign, so two control numbers on the
-    same side of even produce the same update. Control reaches a binary
-    Glicko only when the blend hands the game to the other team -- which is
-    real, and is exactly the case the first test covers.
+    A blowout and a one-point win differ under sigmoid whatever control says,
+    so this pins that the blend is layered on the scoring function rather
+    than replacing it.
     """
-    played = game("Team A", "Team B", 20, 17, game_id="g1")
+    blowout = game("Team A", "Team B", 42, 3, game_id="g1")
+    squeaker = game("Team A", "Team B", 20, 17, game_id="g1")
 
-    comfortable = ControlGlickoPredictor(
-        _LEAGUE, scoring_method="binary", game_control=_index(0.9)
-    )
-    comfortable.update_game(played)
-    narrow = ControlGlickoPredictor(
-        _LEAGUE, scoring_method="binary", game_control=_index(0.55)
-    )
-    narrow.update_game(played)
+    ratings = []
+    for played in (blowout, squeaker):
+        predictor = ControlGlickoPredictor(
+            _LEAGUE,
+            scoring_method="sigmoid",
+            game_control=_index(0.9),
+            control_weight=0.0,
+        )
+        predictor.update_game(played)
+        ratings.append(_rating(predictor, "Team A"))
 
-    assert _rating(comfortable, "Team A") == _rating(narrow, "Team A")
+    assert ratings[0] > ratings[1]
 
 
 def test_the_control_weight_round_trips(game: GameFactory) -> None:

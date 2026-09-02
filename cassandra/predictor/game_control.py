@@ -7,29 +7,26 @@ rather than as a win probability: 0.80 doesn't say the home team was ever 80%
 to win, it says that averaged over sixty minutes that's where the model had
 them.
 
-What cassandra does with it is turn a game into the score it *looked* like:
-the team that led wire to wire and lost on a last-second field goal did not
-play a one-point game, and a rating system that only sees 20-17 can't know
-that. `GameControlIndex.alternate` re-splits the game's real total by
-control, and every rating model here picks that up without changing, because
-all of them read the result through `home_score` / `away_score` -- Elo's
-sign, 538's margin-of-victory multiplier, and all three of Glicko's scoring
-functions.
+Which is the same shape as the thing a rating model already asks of a game:
+`cassandra.scoring` turns a final score into a number between 0 and 1 for the
+home team, and Glicko updates against it. So control doesn't need converting
+into anything -- it is another answer to that question, from the play-by-play
+instead of the scoreboard, and `GameControlIndex.blend` is how far to move
+from one to the other.
 
-Two things this module deliberately does not do.
+That is the whole of what this module does with it. It doesn't read the plays:
+deriving control means pyarrow and ~190MB of parquet per league, and the
+output is one float per game, so the sweep is a build step
+(`cassandra.game_control_build`) that writes `{league}_game_control.json` and
+everything on the replay path reads that. `cassandra.predictor` stays
+installable without the fitting stack.
 
-It doesn't read the plays. Deriving control means pyarrow and ~190MB of
-parquet per league, and the output is one float per game -- so the sweep is a
-build step that writes `{league}_game_control.json`, and everything on the
-replay path reads that. `cassandra.predictor` stays installable without the
-fitting stack.
-
-And it doesn't touch the game the replay records. `generate_predictions`
-yields the real `Game` alongside the prediction, and `_build_prediction`
-scores against its real score. The alternate line exists for the predictor's
-own state update and nowhere else -- put it in the replay instead and the
-brier score, the margin fit and the against-spread metrics are all computed
-against a game nobody played, which the optimizer would happily maximize.
+And it never touches the game itself. The replay records the game that was
+played -- `_build_prediction` takes the score, the winner and the margin every
+metric is computed from off it -- so control enters where the *rating* is
+decided and nowhere near where the model is scored. A model that learned from
+control and was then graded against control would look excellent and mean
+nothing.
 """
 
 from collections.abc import Mapping
@@ -37,7 +34,6 @@ from functools import cache
 from pathlib import Path
 from typing import Self
 
-from endgame.types import Game
 from pydantic import BaseModel
 
 from cassandra.constants import CASSANDRA_HOME
@@ -157,13 +153,13 @@ def validated_control_weight(control_weight: float) -> float:
 
 
 class GameControlIndex:
-    """Control numbers by game id, and the alternate score line they imply.
+    """Control numbers by game id, and the blend that folds them into a result.
 
     Managed rather than a bare dict because the same game is asked about
     repeatedly -- an optimization run replays every season once per probe --
     and because the lookup and the arithmetic that consumes it belong
-    together: a caller that got the float and did its own blend is a caller
-    that can get the weighting or the orientation subtly wrong.
+    together: a caller that got the float and blended it itself is a caller
+    that can put a `1 -` in the wrong place.
     """
 
     def __init__(self, control: Mapping[str, GameControl] | None = None) -> None:
@@ -190,34 +186,25 @@ class GameControlIndex:
         """
         return self._control.get(game_id)
 
-    def alternate(self, game: Game, weight: float) -> Game:
-        """`game` as control says it looked, blended `weight` of the way there.
+    def blend(self, result: float, game_id: str, weight: float) -> float:
+        """`result` moved `weight` of the way toward what control says.
 
-        The real total is preserved and only re-split, which is what keeps
-        every consumer of the result on its usual scale: a 6-3 defensive
-        game stays a low-scoring game, and `pythagorean_score` stays in the
-        domain it was written for. So the whole substitution is one number,
-        the home score, with the away score following from the total.
+        Both numbers are already the same measurement -- the share of the
+        game that belongs to the home team, between 0 and 1 -- so this is a
+        plain convex combination with nothing to rescale. `result` is what
+        the scoreboard says through `cassandra.scoring`; control is what the
+        play-by-play says.
 
-        `weight` interpolates between the game as played and the game as
-        controlled, and it earns its place twice over. At 0 this returns the
-        game untouched, so a search that finds control worthless recovers the
+        `weight` earns its place twice over. At 0 this returns `result`
+        untouched, so a search that finds control worthless recovers the
         plain model exactly rather than approximately. And a game with no
-        control is simply a game at weight 0 -- which is most of an NCAAFB
-        schedule and all of it before 2006 -- so the missing half needs no
-        fallback rule of its own.
-
-        Returns `game` itself, not a copy, whenever there is nothing to
-        change.
+        control is a game at weight 0 -- which is most of an NCAAFB schedule
+        and all of it before 2006 -- so the missing half needs no fallback
+        rule of its own.
         """
         if not weight:
-            return game
-        control = self.get(game.game_id)
+            return result
+        control = self.get(game_id)
         if control is None:
-            return game
-        # Rounded because `Game` scores are ints and a synthetic line that
-        # isn't one would be a lie about the type rather than a convenience.
-        # Against a football total the rounding is under a point.
-        total = game.home_score + game.away_score
-        home = round((1 - weight) * game.home_score + weight * total * control.home)
-        return game._replace(home_score=home, away_score=total - home)
+            return result
+        return (1 - weight) * result + weight * control.home

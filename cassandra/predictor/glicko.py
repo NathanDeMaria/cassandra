@@ -80,7 +80,7 @@ class GlickoPredictor(Predictor):
         prediction = self.predict_game(game)
         home_rating = self.get_rating(game.home)
         away_rating = self.get_rating(game.away)
-        actual = self._score(game)
+        actual = self._actual(game)
         home_adj = 0 if game.neutral_site else self._home_advantage
 
         self._update_rating(
@@ -92,6 +92,19 @@ class GlickoPredictor(Predictor):
 
         self._prior_manager.add_game(game)
         return prediction
+
+    def _actual(self, game: Game) -> float:
+        """What this game counts as for the home team, in [0, 1].
+
+        1 for a win, 0 for a loss, and whatever `scoring_method` says in
+        between. Its own method because it is the one part of the update
+        that isn't Glicko: everything around it is the rating arithmetic,
+        while this is the question of what the game is evidence *of*. A
+        subclass that answers it differently -- `ControlGlickoPredictor`
+        blends in how much of the game each team spent winning it -- replaces
+        this and inherits the rest.
+        """
+        return self._score(game)
 
     def _update_rating(
         self,

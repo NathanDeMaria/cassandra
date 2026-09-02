@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import GameFactory
 from .game_control import (
     GameControlIndex,
     game_control_path,
@@ -13,114 +12,60 @@ from .game_control import (
 )
 from .types import GameControl
 
-# A game the home team won by three while being behind on the field all
-# night: 0.80 of the way to controlled, and a 20-17 line that says nothing
-# about it. This is the case the whole feature exists for.
-_CLOSE_WIN = GameControl(home=0.8, seconds=3600)
+# A game the home team *lost* on the field and won on the scoreboard: it
+# controlled 0.2 of the sixty minutes and still came out ahead. The scoring
+# functions say 1.0; this is what the plays say instead, and the gap between
+# them is the case the whole feature exists for.
+_CLOSE_WIN = GameControl(home=0.2, seconds=3600)
 
 
 def _index(**control: GameControl) -> GameControlIndex:
     return GameControlIndex(control)
 
 
-def test_the_alternate_line_re_splits_the_real_total(game: GameFactory) -> None:
+def test_the_blend_moves_the_result_toward_control() -> None:
+    """A home win the plays say was a coin flip counts for less than a win."""
     index = _index(g1=_CLOSE_WIN)
 
-    alternate = index.alternate(game("A", "B", 20, 17, game_id="g1"), weight=1.0)
-
-    assert (alternate.home_score, alternate.away_score) == (30, 7)
+    assert index.blend(1.0, "g1", weight=1.0) == pytest.approx(0.2)
 
 
-def test_the_total_survives_the_substitution(game: GameFactory) -> None:
-    """Every consumer downstream is on the league's own scoring scale.
-
-    A 6-3 defensive game has to stay a low-scoring game, or `pythagorean_score`
-    and the margin-of-victory multiplier are both reading a different sport.
-    """
+def test_a_weight_of_zero_is_the_result_as_scored() -> None:
+    """The property that lets a search recover the plain model exactly."""
     index = _index(g1=_CLOSE_WIN)
 
-    for home_score, away_score in ((20, 17), (6, 3), (52, 49), (35, 0)):
-        played = game("A", "B", home_score, away_score, game_id="g1")
-        alternate = index.alternate(played, weight=1.0)
-
-        assert alternate.home_score + alternate.away_score == home_score + away_score
+    assert index.blend(1.0, "g1", weight=0.0) == 1.0
 
 
-def test_an_even_game_comes_out_even(game: GameFactory) -> None:
-    index = _index(g1=GameControl(home=0.5, seconds=3600))
-
-    alternate = index.alternate(game("A", "B", 24, 10, game_id="g1"), weight=1.0)
-
-    assert alternate.home_score == alternate.away_score == 17
-
-
-def test_a_weight_of_zero_is_the_game_as_played(game: GameFactory) -> None:
-    """The property that lets a search recover the plain model exactly.
-
-    Not "close to" the plain model -- the same object, so there is no rounding
-    between a control predictor at weight 0 and the one it subclasses.
-    """
-    index = _index(g1=_CLOSE_WIN)
-    played = game("A", "B", 20, 17, game_id="g1")
-
-    assert index.alternate(played, weight=0.0) is played
-
-
-def test_a_weight_between_the_two_blends_them(game: GameFactory) -> None:
+def test_a_weight_between_the_two_blends_them() -> None:
     index = _index(g1=_CLOSE_WIN)
 
-    alternate = index.alternate(game("A", "B", 20, 17, game_id="g1"), weight=0.5)
-
-    # Halfway between the 20 that was scored and the 29.6 control implies.
-    assert (alternate.home_score, alternate.away_score) == (25, 12)
+    assert index.blend(1.0, "g1", weight=0.5) == pytest.approx(0.6)
 
 
-def test_a_game_with_no_control_is_left_alone(game: GameFactory) -> None:
+def test_the_blend_stays_inside_the_scoring_range() -> None:
+    """Both ends are shares of a game, so no weight can leave [0, 1]."""
+    index = _index(g1=_CLOSE_WIN)
+
+    for result in (0.0, 0.25, 0.5, 1.0):
+        for weight in (0.0, 0.3, 0.7, 1.0):
+            assert 0.0 <= index.blend(result, "g1", weight) <= 1.0
+
+
+def test_a_game_with_no_control_keeps_its_result() -> None:
     """Most of an NCAAFB schedule, and all of it before 2006.
 
     The missing half needs no fallback rule of its own -- it is the weight-0
     case, reached without the predictor having to ask.
     """
     index = _index(g1=_CLOSE_WIN)
-    played = game("A", "B", 20, 17, game_id="not_in_the_index")
 
-    assert index.alternate(played, weight=1.0) is played
+    assert index.blend(1.0, "not_in_the_index", weight=1.0) == 1.0
 
 
-def test_an_empty_index_leaves_every_game_alone(game: GameFactory) -> None:
+def test_an_empty_index_leaves_every_result_alone() -> None:
     """A league with no sweep, which is four of the six cassandra rates."""
-    played = game("A", "B", 20, 17, game_id="g1")
-
-    assert GameControlIndex().alternate(played, weight=1.0) is played
-
-
-def test_a_scoreless_game_stays_scoreless(game: GameFactory) -> None:
-    """There is no total to re-split, so control has nothing to say."""
-    index = _index(g1=_CLOSE_WIN)
-
-    alternate = index.alternate(game("A", "B", 0, 0, game_id="g1"), weight=1.0)
-
-    assert (alternate.home_score, alternate.away_score) == (0, 0)
-
-
-def test_the_alternate_line_is_whole_points(game: GameFactory) -> None:
-    """`Game` scores are ints, and a synthetic line has to be one too."""
-    index = _index(g1=GameControl(home=0.61, seconds=3600))
-
-    alternate = index.alternate(game("A", "B", 20, 17, game_id="g1"), weight=1.0)
-
-    assert isinstance(alternate.home_score, int)
-    assert isinstance(alternate.away_score, int)
-
-
-def test_nothing_but_the_score_changes(game: GameFactory) -> None:
-    """The teams, the site and the id are what the replay matches on."""
-    index = _index(g1=_CLOSE_WIN)
-    played = game("A", "B", 20, 17, game_id="g1")
-
-    alternate = index.alternate(played, weight=1.0)
-
-    assert alternate._replace(home_score=20, away_score=17) == played
+    assert GameControlIndex().blend(1.0, "g1", weight=1.0) == 1.0
 
 
 def test_an_out_of_range_weight_is_rejected() -> None:

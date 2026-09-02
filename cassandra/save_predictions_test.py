@@ -294,14 +294,13 @@ def test_generate_predictions_still_passes_a_week_with_no_games() -> None:
 
 
 def test_the_replay_records_the_game_as_it_was_played() -> None:
-    """A control predictor learns from an alternate score. Scoring must not.
+    """A control predictor learns from the plays. Scoring must not.
 
     `_build_prediction` takes the score, the winner and the margin every
     metric is computed against off `result.game` -- the brier score, the
-    prob-to-margin fit, against-spread accuracy. So the alternate line has to
-    stop at the predictor's own state: let it reach the yielded game too and
-    the optimizer is maximizing fit to a game nobody played, with nothing in
-    the output to say so.
+    prob-to-margin fit, against-spread accuracy. Control has to stop at the
+    predictor's own state: a model that learned from control and was then
+    graded against control would look excellent and mean nothing.
 
     Both halves are asserted, because either one alone passes for the wrong
     reason -- a predictor that ignored control entirely would also record the
@@ -318,8 +317,9 @@ def test_the_replay_records_the_game_as_it_was_played() -> None:
         game_id="1",
     )
     season = Season(year=2023, weeks=[Week(games=[played], number=1)])
-    # Controlled 0.2 by the home team, so the line it learns from is 7-30 --
-    # a loss for the team the scoreboard has winning.
+    # Controlled 0.2 by the home team: the scoreboard scores this a 1.0 for
+    # the home side and the plays score it 0.2, so at full weight the model
+    # learns from a game the home team lost.
     predictor = ControlGlickoPredictor(
         "test_league",
         game_control=GameControlIndex({"1": GameControl(home=0.2, seconds=3600)}),
