@@ -1,6 +1,6 @@
 # Batch jobs
 
-Runs cassandra's anchors/optimize/evaluate/publish pipeline on AWS Batch, on
+Runs cassandra's anchors/game-control/optimize/evaluate/publish pipeline on AWS Batch, on
 the shared queue from [aws-batch-optimization][infra].
 
 [infra]: https://github.com/NathanDeMaria/aws-batch-optimization
@@ -12,7 +12,7 @@ moves when cassandra deploys lives here.**
 
 | Shared (`aws-batch-optimization`) | Here (`cassandra/jobs`) |
 | --- | --- |
-| Job queue, compute environment, network | The five job definitions |
+| Job queue, compute environment, network | The six job definitions |
 | ECR repo `cassandra` + its push user | Both schedules |
 | `batch-execution-role` (pulls images) | `cassandra-batch-job-role` (what the code touches) |
 | `batch-scheduler-role` (submits jobs) | |
@@ -32,10 +32,12 @@ the `?ref=` in `main.tf` — there's deliberately no variable for it.
 ## The DAG
 
 ```
-anchors   (array job, one child per league with division anchors — 3 today)
+anchors       (array job, one child per league with division anchors — 3 today)
+game-control  (array job, one child per football league — 2 today)
     |
+    |  (both, in parallel)
     v
-optimize  (array job, one child per league/model — 16 today)
+optimize  (array job, one child per league/model — 26 today)
     |
     +--> evaluate  (one job, scores everything, writes the metrics csv)
     |
@@ -58,13 +60,34 @@ something you ask for — `jobs.py anchors --league ncaafb --if-missing=False`,
 or deleting the object — not something the weekly run does to itself. `nfl` never
 gets a child: 32 teams who all play each other have no tier gap to fit.
 
+`game-control` is the anchors' sibling, not its successor: the anchor decides
+the scale a rating sits on, game control decides what a rating *learned* from
+each game, and neither reads the other. It sweeps stored play-by-play into
+`{league}_game_control.json` — one time-weighted average win probability per
+game — which the `glicko_control` models blend into their updates. Football
+only: it's the only sport with plays in the bucket, and the only one
+`lucky-ones` ships a fit for.
+
+It's idempotent on the fit rather than on the file. The artifact records which
+`lucky-ones` commit and which training run produced it, so a stage that finds
+its own fit already stored re-sweeps only the season still being played (about
+twenty weeks), and one that finds a different fit — a retrain, or a bumped pin
+— rebuilds the league from scratch. An index holding two models' numbers is one
+nobody can reproduce, so there is no merge path between them.
+
+Unlike the anchors, this is the one upstream stage `--skip-optimize` does *not*
+take with it. The anchors can be read back out of s3 because they don't change;
+the control index gains entries every week, and a republish that replays the
+newest games without sweeping them treats the week as though nobody had
+play-by-play for it.
+
 `evaluate` and `publish` are siblings, not a chain: `publish.py` reads
 `<model>_result.json` and fits its own prob→margin mapping, so it needs the
 optimizer's output but nothing evaluate produces.
 
 **The edges are not in this terraform, and can't be.** Batch takes `dependsOn`
 on `SubmitJob`, not on a job definition — so terraform declares the nodes and
-`cassandra/batch/dag.py` declares the edges. That's what the fifth job
+`cassandra/batch/dag.py` declares the edges. That's what the sixth job
 definition, `cassandra-launcher`, runs. It's a Batch job rather than a Lambda
 so it runs the same image as the work it submits: the manifest it sizes the
 array against has to be the one the children resolve their indices in, which is
@@ -81,7 +104,10 @@ Optimization is the expensive stage, so it's weekly. Publish is daily because
 ratings move with new games every day even when the fitted parameters don't.
 `--skip-optimize` implies skipping anchors: the anchors decide the scale a
 *search* is fit against, and a republish reads that scale back out of s3
-rather than deciding it.
+rather than deciding it. It deliberately does **not** imply skipping
+game-control — a daily publish replays games that were played since the last
+run, and their control has to be swept before it does. That run is the cheap
+path through the sweep: one season, not twenty.
 
 ## State between stages
 

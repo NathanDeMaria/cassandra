@@ -5,19 +5,30 @@ so terraform can declare the nodes but not the edges. This is the edges.
 
 The shape:
 
-    anchors (array job, one child per league that has division anchors)
-        |
-        v
-    optimize (array job, one child per league/model)
-        |
-        +--> evaluate (one job, all leagues)
-        |
-        +--> publish  (array job, one child per league)
+    anchors (array, one child per league with division anchors)  ---+
+    game_control (array, one child per football league)  ----------+
+                                                                   |
+                                                                   v
+                                                    optimize (array, per model)
+                                                                   |
+                                                    +--------------+
+                                                    |              |
+                                                    v              v
+                                        evaluate (one job)    publish (array)
 
-anchors comes first because it decides the scale everything downstream is on:
-the anchor is what a team's rating starts at and regresses toward, so a search
-run before the anchors exist is fit against a different rating scale than the
-same search run after.
+anchors and game_control are siblings, not a chain: the anchor decides the
+scale a rating sits on, game control decides what a rating learned from each
+game, and neither reads the other. Both come before optimize because both
+decide what a search is fit against -- a search run before them is fit
+against a different scale, and against games it saw at their real scores.
+
+game_control is the one stage `--skip-optimize` does *not* imply skipping. A
+daily republish reads the anchors back out of s3 rather than deciding them,
+but it replays the model over games that have been played since the last run,
+and those games need their control swept or the republished ratings quietly
+treat the newest week as uncontrolled. It is cheap in that mode -- the sweep
+is idempotent on the win probability fit, so an unchanged fit re-reads one
+season rather than twenty.
 It is one node ahead of the array rather than a step inside each optimize
 child because the fit is per league, and twenty children would fit the same
 three files twenty times -- and race each other writing them.
@@ -42,7 +53,7 @@ from aiobotocore.session import get_session
 
 from cassandra.batch import manifest
 from cassandra.batch.manifest import Work
-from cassandra.predictor import ANCHOR_LEAGUES
+from cassandra.predictor import ANCHOR_LEAGUES, CONTROL_LEAGUES
 
 # AWS Batch rejects an array job of size 1 -- `arrayProperties.size` has to be
 # at least 2. A single-model run is the normal way to test a change, so it
@@ -68,6 +79,7 @@ def _job_name(stem: str) -> str:
 async def submit(
     *,
     anchors_job_definition: str,
+    game_control_job_definition: str,
     optimize_job_definition: str,
     evaluate_job_definition: str,
     publish_job_definition: str,
@@ -76,6 +88,8 @@ async def submit(
     models: list[str] | None = None,
     skip_anchors: bool = False,
     rebuild_anchors: bool = False,
+    skip_game_control: bool = False,
+    rebuild_game_control: bool = False,
     skip_optimize: bool = False,
     skip_evaluate: bool = False,
     skip_publish: bool = False,
@@ -107,6 +121,16 @@ async def submit(
         raise ValueError(
             f"rebuild_anchors asks for an anchors job that {dropped} removes. "
             "Drop one of them."
+        )
+    # The same contradiction, milder: a forced re-sweep of the same fit over
+    # the same plays produces the same numbers, so this costs queue time
+    # rather than re-rating anything. It is still two instructions that cancel
+    # out, and a run that silently did nothing it was asked to is worse than
+    # one that says so.
+    if rebuild_game_control and skip_game_control:
+        raise ValueError(
+            "rebuild_game_control asks for a game_control job that "
+            "skip_game_control removes. Drop one of them."
         )
     work = manifest.load_manifest(leagues=leagues, models=models)
     if not work and not skip_optimize:
@@ -154,6 +178,24 @@ async def submit(
             )
             submitted.append(anchors_job)
 
+        control_leagues = [
+            league for league in CONTROL_LEAGUES if league in scope_leagues
+        ]
+        control_job = None
+        if control_leagues and not skip_game_control:
+            control_job = await submitter.run(
+                name=_job_name("game-control"),
+                job_definition=game_control_job_definition,
+                # No flag in the default case: the stage decides for itself
+                # whether the stored index came from this image's fit, and
+                # re-sweeps only what that answer calls for.
+                command=["game_control"]
+                + (["--rebuild=True"] if rebuild_game_control else []),
+                size=len(control_leagues),
+                environment={_CONTROL_LEAGUES_ENV_VAR: ",".join(control_leagues)},
+            )
+            submitted.append(control_job)
+
         optimize_job = None
         if not skip_optimize:
             optimize_job = await submitter.run(
@@ -165,19 +207,30 @@ async def submit(
                 # than rebuilding it, so a launcher and an image on different
                 # commits fail loudly instead of quietly disagreeing.
                 environment={manifest.MANIFEST_ENV_VAR: manifest.encode(work)},
-                # Every child reads the anchors this produced. Waiting on the
-                # array's parent waits for all of it, so no child starts
-                # searching against a scale that is still being fit.
-                depends_on=[anchors_job.job_id] if anchors_job else [],
+                # Every child reads what these produced -- the anchors for
+                # its scale, the control index for what `glicko_control`
+                # learns from each game. Waiting on an array's parent waits
+                # for all of it, so no child starts searching against a scale
+                # still being fit or an index still being written.
+                depends_on=[
+                    job.job_id for job in (anchors_job, control_job) if job
+                ],
             )
             submitted.append(optimize_job)
 
         # Both downstream stages wait on the optimize array, and through it on
         # anchors -- there is no anchors job without an optimize job to feed,
         # so naming it here as well would be an edge that can never be the
-        # only one. With --skip-optimize there's nothing to wait for and they
-        # start at once.
-        depends_on = [optimize_job.job_id] if optimize_job else []
+        # only one.
+        #
+        # game_control is different, and is named here: it is the one upstream
+        # stage that runs on a --skip-optimize republish, so without this edge
+        # publish would race the sweep and replay the newest week before its
+        # control had been written.
+        if optimize_job:
+            depends_on = [optimize_job.job_id]
+        else:
+            depends_on = [control_job.job_id] if control_job else []
 
         if not skip_evaluate:
             submitted.append(
@@ -209,6 +262,7 @@ async def submit(
 # index, the same trick the optimize array uses for its work list.
 _PUBLISH_LEAGUES_ENV_VAR = "CASSANDRA_PUBLISH_LEAGUES"
 _ANCHOR_LEAGUES_ENV_VAR = "CASSANDRA_ANCHOR_LEAGUES"
+_CONTROL_LEAGUES_ENV_VAR = "CASSANDRA_CONTROL_LEAGUES"
 
 
 def _league_args(leagues: list[str] | None) -> list[str]:
@@ -310,6 +364,11 @@ def publish_league(index: int) -> str:
 def anchor_league(index: int) -> str:
     """Which league this anchors array child owns."""
     return _league_at(_ANCHOR_LEAGUES_ENV_VAR, index)
+
+
+def control_league(index: int) -> str:
+    """Which league this game_control array child owns."""
+    return _league_at(_CONTROL_LEAGUES_ENV_VAR, index)
 
 
 def _league_at(env_var: str, index: int) -> str:

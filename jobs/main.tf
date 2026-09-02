@@ -39,10 +39,11 @@ locals {
   batch_bucket = local.shared.bucket
 
   job_definitions = {
-    anchors  = module.anchors.name
-    optimize = module.optimize.name
-    evaluate = module.evaluate.name
-    publish  = module.publish.name
+    anchors      = module.anchors.name
+    game_control = module.game_control.name
+    optimize     = module.optimize.name
+    evaluate     = module.evaluate.name
+    publish      = module.publish.name
   }
 }
 
@@ -142,6 +143,32 @@ module "anchors" {
   ]
 }
 
+# Sweeps stored play-by-play into the per-game control index the
+# `glicko_control` models blend into their updates. A sibling of `anchors`
+# rather than a step before or after it: the anchor decides the scale a rating
+# sits on, control decides what it learned from each game, and neither reads
+# the other.
+#
+# Sized for what it holds rather than for how long it runs: a handful of
+# NCAAFB weeks are decoded at once, ~20,000 plays each, plus the Arrow buffers
+# they came out of and the league's seasons. It is idempotent on the win
+# probability fit, so the common case re-reads one season rather than twenty.
+module "game_control" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
+
+  job_name           = "cassandra-game-control"
+  image              = local.image
+  command            = ["game_control"]
+  execution_role_arn = local.shared.batch_execution_role_arn
+  job_role_arn       = aws_iam_role.job.arn
+  memory             = var.game_control_memory
+  retry_attempts     = 3
+
+  environment_variables = [
+    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
+  ]
+}
+
 module "optimize" {
   source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
 
@@ -224,6 +251,7 @@ module "launcher" {
     { name = "AWS_DEFAULT_REGION", value = var.aws_region },
     { name = "CASSANDRA_JOB_QUEUE", value = local.shared.job_queue_name },
     { name = "CASSANDRA_ANCHORS_JOB_DEFINITION", value = local.job_definitions.anchors },
+    { name = "CASSANDRA_GAME_CONTROL_JOB_DEFINITION", value = local.job_definitions.game_control },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
     { name = "CASSANDRA_EVALUATE_JOB_DEFINITION", value = local.job_definitions.evaluate },
     { name = "CASSANDRA_PUBLISH_JOB_DEFINITION", value = local.job_definitions.publish },

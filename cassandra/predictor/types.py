@@ -42,6 +42,20 @@ class Rating(NamedTuple):
     rd: float | None = None
 
 
+class GameControl(NamedTuple):
+    """One game's control: the home team's time-weighted share of winning it.
+
+    Only the home side, because the away side is `1 - home` by construction
+    and carrying both in an artifact is how a `1 -` in the wrong place gets
+    shipped. `seconds` is how much regulation clock the average covers, which
+    is the part that says whether to trust it: a game whose play-by-play
+    stops at halftime reports half a game's worth of seconds.
+    """
+
+    home: float
+    seconds: int
+
+
 class Prediction(NamedTuple):
     team1_win_prob: float
 

@@ -2,6 +2,7 @@
 
     python jobs.py manifest                       # what would run, in order
     python jobs.py anchors --league ncaafb        # fit division anchors
+    python jobs.py game-control --league nfl      # sweep play-by-play
     python jobs.py optimize --index 3             # one array child
     python jobs.py optimize --league mens --model elo
     python jobs.py evaluate --league mens
@@ -31,7 +32,11 @@ from endgame_aws import Config
 
 from cassandra.batch import artifacts, dag, manifest
 from cassandra.constants import CASSANDRA_HOME
-from cassandra.predictor import ANCHOR_LEAGUES, anchor_path
+from cassandra.predictor import (
+    ANCHOR_LEAGUES,
+    CONTROL_LEAGUES,
+    anchor_path,
+)
 
 
 def _bucket() -> str:
@@ -78,7 +83,7 @@ async def _anchors(
     # `division_anchors.main` does would refit every league on every run --
     # and refitting moves every rating the downstream models produce.
     if if_missing:
-        await artifacts.download_anchors(bucket)
+        await artifacts.download_predictor_data(bucket)
 
     for league in leagues:
         path = anchor_path(league)
@@ -91,6 +96,46 @@ async def _anchors(
 
         if upload:
             keys = await artifacts.upload(bucket, artifacts.anchors_for(league))
+            for key in keys:
+                print(f"  uploaded s3://{bucket}/{key}")
+
+
+async def _game_control(
+    leagues: list[str] | None,
+    index: int | None,
+    rebuild: bool,
+    upload: bool,
+) -> None:
+    # Late, like the anchors fit above: this pulls pyarrow and `lucky_ones`,
+    # and `jobs.py submit` -- which runs on a laptop to launch the DAG -- has
+    # no reason to import a fitting stack to send a SubmitJob.
+    from endgame_aws.pbp_parquet import get_processed_plays_store
+    from lucky_ones.arrow import StorePlaySource
+
+    from cassandra.game_control_build import build
+    from cassandra.save_predictions import read_all_seasons
+
+    if leagues is None:
+        child = manifest.array_index(index)
+        leagues = (
+            [dag.control_league(child)] if child is not None else list(CONTROL_LEAGUES)
+        )
+
+    bucket = _bucket()
+    # Whether there is anything to do is a question about the *stored* index,
+    # and a fresh container has no files at all -- so the decision can only be
+    # made after this. It also drops the cached reads that resolving anything
+    # above may have populated.
+    await artifacts.download_predictor_data(bucket)
+
+    source = StorePlaySource(get_processed_plays_store())
+    for league in leagues:
+        print(f"=== {league} / game control ===")
+        seasons = [s async for s in read_all_seasons(league, bucket)]
+        await build(league, seasons, source, rebuild=rebuild)
+
+        if upload:
+            keys = await artifacts.upload(bucket, artifacts.game_control_for(league))
             for key in keys:
                 print(f"  uploaded s3://{bucket}/{key}")
 
@@ -119,11 +164,12 @@ async def _optimize(
     # The anchors decide what a rating means, so they have to be on disk
     # before the search starts: without them every team regresses toward
     # MEAN_RATING, and the parameters that come out are fit to a different
-    # scale than the ones the last run produced. `download_anchors` also drops
-    # the cached read that resolving the manifest just populated.
+    # scale than the ones the last run produced. The same download brings the
+    # game control `glicko_control` blends in, and drops the cached reads that
+    # resolving the manifest just populated.
     if download:
-        pulled = await artifacts.download_anchors(_bucket())
-        print(f"  {len(pulled)} anchor file(s) from s3://{_bucket()}")
+        pulled = await artifacts.download_predictor_data(_bucket())
+        print(f"  {len(pulled)} predictor data file(s) from s3://{_bucket()}")
 
     # `optimize.py` does a warm-up pass with post_callbacks=True to build the
     # opponent priors the search starts from, and OpponentPriorManager refuses
@@ -161,7 +207,7 @@ async def _evaluate(leagues: list[str] | None, download: bool, upload: bool) -> 
         # one. So replaying a model here rebuilds its anchors from the file,
         # and a container without the file scores every model against a scale
         # the model was never fit on.
-        await artifacts.download_anchors(bucket)
+        await artifacts.download_predictor_data(bucket)
 
     await evaluate_main(leagues)
 
@@ -206,7 +252,7 @@ async def _publish(
         # Same reason as evaluate: the replay behind a release reads the
         # anchors off disk, and publishing without them ships ratings on a
         # different scale than the ones the models were fit on.
-        await artifacts.download_anchors(bucket)
+        await artifacts.download_predictor_data(bucket)
 
     failures = await publish_main(None, leagues or [], Path("releases"), upload=upload)
     if failures:
@@ -240,6 +286,30 @@ class Jobs:
         a scheduled run does to itself weekly.
         """
         asyncio.run(_anchors(_as_list(league), index, if_missing, upload))
+
+    def game_control(
+        self,
+        league: list[str] | str | None = None,
+        index: int | None = None,
+        rebuild: bool = False,
+        upload: bool = True,
+    ) -> None:
+        """Sweep play-by-play into a league's game control index.
+
+        Idempotent on the win probability fit rather than on the file: a
+        league whose stored index was built by the `lucky_ones` this image
+        has re-sweeps only the season still being played, which is the
+        weekly case and about twenty weeks of reads. A league whose index
+        came from a different fit -- a retrain, or a bumped pin -- is rebuilt
+        from scratch, because an index holding two models' numbers is one
+        nobody can reproduce.
+
+        `--rebuild` forces the full sweep for a league that is already
+        current. Unlike the anchors, that is not a decision that re-rates
+        anything on its own: the same fit over the same plays produces the
+        same numbers, so this costs queue time rather than changing results.
+        """
+        asyncio.run(_game_control(_as_list(league), index, rebuild, upload))
 
     def optimize(
         self,
@@ -283,6 +353,8 @@ class Jobs:
         model: list[str] | str | None = None,
         skip_anchors: bool = False,
         rebuild_anchors: bool = False,
+        skip_game_control: bool = False,
+        rebuild_game_control: bool = False,
         skip_optimize: bool = False,
         skip_evaluate: bool = False,
         skip_publish: bool = False,
@@ -290,6 +362,7 @@ class Jobs:
         wait: bool = False,
         job_queue: str | None = None,
         anchors_job_definition: str | None = None,
+        game_control_job_definition: str | None = None,
         optimize_job_definition: str | None = None,
         evaluate_job_definition: str | None = None,
         publish_job_definition: str | None = None,
@@ -300,12 +373,21 @@ class Jobs:
         already has some, and overwrites them. That re-rates every model in
         the league against a new scale, so it is deliberately not what a
         scheduled run does -- see `Jobs.anchors`.
+
+        `--skip-game-control` is the one skip a scheduled republish should
+        not pass: unlike the anchors, the control index gains entries every
+        week, and publishing without sweeping them replays the newest games
+        as though nobody had play-by-play for them. It is there for a run
+        that knows the sweep has already happened.
         """
         queue = job_queue or _default_queue()
         submitted = asyncio.run(
             dag.submit(
                 anchors_job_definition=_job_definition(
                     "ANCHORS", anchors_job_definition
+                ),
+                game_control_job_definition=_job_definition(
+                    "GAME_CONTROL", game_control_job_definition
                 ),
                 optimize_job_definition=_job_definition(
                     "OPTIMIZE", optimize_job_definition
@@ -321,6 +403,8 @@ class Jobs:
                 models=_as_list(model),
                 skip_anchors=skip_anchors,
                 rebuild_anchors=rebuild_anchors,
+                skip_game_control=skip_game_control,
+                rebuild_game_control=rebuild_game_control,
                 skip_optimize=skip_optimize,
                 skip_evaluate=skip_evaluate,
                 skip_publish=skip_publish,
@@ -357,13 +441,15 @@ def _job_definition(stage: str, override: str | None) -> str:
     Terraform is the source of truth and puts these in the launcher's
     environment, so renaming a definition doesn't need a matching change here.
     The literal fallback is for running the launcher from a laptop against the
-    conventional names.
+    conventional names. Underscores become hyphens on the way: the stages are
+    named `GAME_CONTROL` here because the environment variable is, and
+    `cassandra-game-control` in terraform because every other job definition
+    is hyphenated.
     """
     if override is not None:
         return override
-    return os.environ.get(
-        f"CASSANDRA_{stage}_JOB_DEFINITION", f"cassandra-{stage.lower()}"
-    )
+    default = f"cassandra-{stage.lower().replace('_', '-')}"
+    return os.environ.get(f"CASSANDRA_{stage}_JOB_DEFINITION", default)
 
 
 def _default_queue() -> str:

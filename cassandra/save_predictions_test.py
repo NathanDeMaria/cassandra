@@ -5,7 +5,15 @@ import pytest
 from call_it_what_you_want import TeamNamer, teams_from_csv
 from endgame.types import Game, OverlappingWeeksError, Season, Week
 
-from .predictor import Elo538Predictor, EloPredictor, GlickoPredictor, Predictor
+from .predictor import (
+    ControlGlickoPredictor,
+    Elo538Predictor,
+    EloPredictor,
+    GameControl,
+    GameControlIndex,
+    GlickoPredictor,
+    Predictor,
+)
 from .predictor.opponent_prior import OpponentPriorManager
 from .predictor.types import Matchup, Prediction
 from .save_predictions import generate_predictions
@@ -283,3 +291,42 @@ def test_generate_predictions_still_passes_a_week_with_no_games() -> None:
     list(generate_predictions(predictor, [season]))
 
     assert predictor.weeks == 2
+
+
+def test_the_replay_records_the_game_as_it_was_played() -> None:
+    """A control predictor learns from an alternate score. Scoring must not.
+
+    `_build_prediction` takes the score, the winner and the margin every
+    metric is computed against off `result.game` -- the brier score, the
+    prob-to-margin fit, against-spread accuracy. So the alternate line has to
+    stop at the predictor's own state: let it reach the yielded game too and
+    the optimizer is maximizing fit to a game nobody played, with nothing in
+    the output to say so.
+
+    Both halves are asserted, because either one alone passes for the wrong
+    reason -- a predictor that ignored control entirely would also record the
+    real score.
+    """
+    played = Game(
+        home=_HOME,
+        away=_AWAY,
+        home_score=20,
+        away_score=17,
+        neutral_site=False,
+        completed=True,
+        date=datetime(2023, 1, 1, tzinfo=timezone.utc),
+        game_id="1",
+    )
+    season = Season(year=2023, weeks=[Week(games=[played], number=1)])
+    # Controlled 0.2 by the home team, so the line it learns from is 7-30 --
+    # a loss for the team the scoreboard has winning.
+    predictor = ControlGlickoPredictor(
+        "test_league",
+        game_control=GameControlIndex({"1": GameControl(home=0.2, seconds=3600)}),
+        control_weight=1.0,
+    )
+
+    (result,) = list(generate_predictions(predictor, [season]))
+
+    assert (result.game.home_score, result.game.away_score) == (20, 17)
+    assert predictor.get_rating(_HOME) < predictor.get_rating(_AWAY)

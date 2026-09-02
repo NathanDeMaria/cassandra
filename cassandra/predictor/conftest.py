@@ -13,7 +13,12 @@ class GameFactory(Protocol):
     """
 
     def __call__(
-        self, home: str, away: str, home_score: int = 0, away_score: int = 0
+        self,
+        home: str,
+        away: str,
+        home_score: int = 0,
+        away_score: int = 0,
+        game_id: str = "1",
     ) -> Game: ...
 
 
@@ -21,12 +26,20 @@ class GameFactory(Protocol):
 def game() -> GameFactory:
     """A completed game between two teams, with the rest of Game filled in.
 
-    Every predictor test needs one and none of them care about the fields
-    that aren't the two names and the score, so the date and id are fixed
-    here rather than in each file that wants a game.
+    Every predictor test needs one and most of them care only about the two
+    names and the score, so the date is fixed here rather than in each file
+    that wants a game. `game_id` is defaulted rather than fixed: it's the key
+    a game control index is looked up by, so the tests that use one need to
+    say which game they mean.
     """
 
-    def _game(home: str, away: str, home_score: int = 0, away_score: int = 0) -> Game:
+    def _game(
+        home: str,
+        away: str,
+        home_score: int = 0,
+        away_score: int = 0,
+        game_id: str = "1",
+    ) -> Game:
         return Game(
             home=home,
             away=away,
@@ -35,7 +48,7 @@ def game() -> GameFactory:
             neutral_site=False,
             completed=True,
             date=datetime(2023, 1, 1),
-            game_id="1",
+            game_id=game_id,
         )
 
     return _game

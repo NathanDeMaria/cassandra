@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Pull one Batch run out of AWS and cache it on disk for `summarize_run.py`.
 
-A "run" is one `jobs.py submit`: an anchors array, an optimize array, an
-evaluate job and a publish array, submitted back-to-back by the launcher. They
+A "run" is one `jobs.py submit`: an anchors array, a game-control array, an
+optimize array, an evaluate job and a publish array, submitted back-to-back by
+the launcher. They
 carry no shared identifier -- Batch has no notion of a workflow, and
 `dag.py:_job_name` stamps each stage from its own `datetime.now()` -- so the
 grouping here is by submission time, which is the only thing they share. See
@@ -65,11 +66,17 @@ _TERMINAL = {"SUCCEEDED", "FAILED"}
 
 # `cassandra-optimize-20260829-022910` -> stage, stamp. The scheduled launcher
 # jobs (`cassandra-optimize-weekly`, `cassandra-publish-daily`) deliberately
-# don't match: they're the job that *submits* a run, not part of one.
-_JOB_NAME = re.compile(r"^cassandra-(?P<stage>[a-z]+)-(?P<stamp>\d{8}-\d{6})$")
+# don't match: they're the job that *submits* a run, not part of one -- the
+# trailing timestamp is what separates them, not the stage pattern.
+#
+# Hyphens are allowed in the stage because one of them has one:
+# `cassandra-game-control`.
+_JOB_NAME = re.compile(r"^cassandra-(?P<stage>[a-z-]+)-(?P<stamp>\d{8}-\d{6})$")
 
-# The stages, in DAG order. Anything else on the queue isn't ours.
-STAGES = ("anchors", "optimize", "evaluate", "publish")
+# The stages, in DAG order. Anything else on the queue isn't ours. anchors and
+# game_control are siblings -- neither reads the other -- and are listed in the
+# order `dag.submit` sends them.
+STAGES = ("anchors", "game-control", "optimize", "evaluate", "publish")
 
 # The launcher pins each array's fan-out list into the parent's environment, so
 # an index can be turned back into a name without recomputing anything locally.
@@ -79,10 +86,11 @@ _MANIFEST_VARS = {
     "optimize": ("CASSANDRA_BATCH_MANIFEST", "json"),
     "publish": ("CASSANDRA_PUBLISH_LEAGUES", "csv"),
     "anchors": ("CASSANDRA_ANCHOR_LEAGUES", "csv"),
+    "game-control": ("CASSANDRA_CONTROL_LEAGUES", "csv"),
 }
 
 # Two jobs are the same run if they were submitted within this of each other.
-# `dag.submit` sends all four in one loop, milliseconds apart; the closest two
+# `dag.submit` sends every stage in one loop, milliseconds apart; the closest two
 # distinct runs observed are minutes apart. Anything in between would be two
 # launchers racing, which is worth showing as one run anyway.
 _RUN_WINDOW_MS = 60_000

@@ -18,6 +18,7 @@ import pytest
 
 from .base_predictor import MEAN_RATING
 from .conftest import GameFactory
+from .control import ControlGlickoPredictor
 from .elo import EloPredictor
 from .elo538 import Elo538Predictor
 from .flat import FlatPredictor
@@ -31,7 +32,18 @@ RatedModel = type[EloPredictor] | type[Elo538Predictor] | type[GlickoPredictor]
 Rated = EloPredictor | Elo538Predictor | GlickoPredictor
 Model = RatedModel | type[FlatPredictor]
 
-RATED_MODELS: list[RatedModel] = [EloPredictor, Elo538Predictor, GlickoPredictor]
+# The control model is here rather than only in `control_test.py` because what
+# it changes is the update, not the contract: it still has to save, load,
+# regress and anchor like anything else. Built for a league with no sweep it
+# holds an empty index and leaves every game at its real score, so every
+# assertion below reads the same for it as for the Glicko it subclasses --
+# which is the point.
+RATED_MODELS: list[RatedModel] = [
+    EloPredictor,
+    Elo538Predictor,
+    GlickoPredictor,
+    ControlGlickoPredictor,
+]
 MODELS: list[Model] = [*RATED_MODELS, FlatPredictor]
 
 any_model = pytest.mark.parametrize("model", MODELS, ids=lambda m: m.__name__)
@@ -93,8 +105,21 @@ def test_the_state_dict_is_plain_json(model: Model, game: GameFactory) -> None:
 def test_a_win_moves_the_winner_up_and_the_loser_down(
     model: RatedModel, game: GameFactory
 ) -> None:
+    """A decisive win, because a one-point one isn't unambiguously a win.
+
+    Under `sigmoid_score` a 1-0 game reads as 0.525 while Glicko expects
+    0.633 of a home team, so the winner *underperformed* and its rating goes
+    down -- which is the scoring function working, not a model that lost
+    track of who won. It only surfaced when a model defaulted to sigmoid,
+    and it is live behaviour: `glicko_full` fits sigmoid in five of six
+    leagues.
+
+    So the scoreline here is one that every scoring function agrees is a win.
+    What is being asserted is that a win moves the ratings apart, and a
+    margin nobody could read as a near-miss is what asks that question.
+    """
     predictor = model("test_league")
-    predictor.update_game(game("Team A", "Team B", 1, 0))
+    predictor.update_game(game("Team A", "Team B", 21, 0))
 
     assert _rating(predictor, "Team A") > MEAN_RATING > _rating(predictor, "Team B")
 

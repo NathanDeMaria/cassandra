@@ -1,11 +1,11 @@
 ---
 name: run-report
-description: Review an AWS Batch pipeline run (anchors, optimize, evaluate, publish) and report what happened plus what to change next. Use when asked to summarize, check on, or give recommendations about a run, a Batch job, whether a run is still going, why a scheduled run didn't produce anything, or which model config to tune next.
+description: Review an AWS Batch pipeline run (anchors, game control, optimize, evaluate, publish) and report what happened plus what to change next. Use when asked to summarize, check on, or give recommendations about a run, a Batch job, whether a run is still going, why a scheduled run didn't produce anything, or which model config to tune next.
 ---
 
 # Reviewing a Batch run
 
-`make submit` puts a four-stage DAG on the queue — anchors, then an optimize array
+`make submit` puts a five-stage DAG on the queue — anchors and game control, then an optimize array
 (one child per `models/<league>/*.json`), then evaluate and publish as siblings. Each
 container's stdout goes to CloudWatch under `/aws/batch/job`, and it is mostly bayes_opt
 probe tables — hundreds of KB of numbers per child. **Never read a raw stream
