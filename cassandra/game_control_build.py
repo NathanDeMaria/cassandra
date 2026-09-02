@@ -16,6 +16,12 @@ object per league-week, which is also the granularity `iter_weeks` hands out,
 so the sweep's `(year, week)` pairs are the same ones the raw pull wrote
 under. Nothing here has to guess a key or list a prefix.
 
+What the first full sweep found, which is the calibration for the filters
+below: the NFL keeps 4,984 of the 4,989 games it has plays for, and ncaafb
+25,307 of 26,330 (96%). Against the whole schedule those are smaller shares --
+cassandra replays football from 1980 and the processed plays start in 2006,
+and only about a third of an NCAAFB week is a game ESPN covers at all.
+
 Idempotency is keyed on the fit, not on the file existing. A stage that finds
 its own `ControlFit` already stored refreshes only the season still being
 played -- history can't change while the model doesn't -- and one that finds a
@@ -125,18 +131,42 @@ class SweepStats(NamedTuple):
     """Completed games in the seasons swept, whether or not they had plays."""
 
     disagreed: int
-    """Dropped, and shouted about: the plays and the result disagree on the winner.
+    """Dropped: the plays and the stored result name different winners.
 
-    Expected to be zero. `lucky_ones` orients a curve by the play table's own
-    `home_score`/`away_score`, which is ESPN's labelling -- the same source
-    `Game.home` comes from -- so the two agree by construction rather than by
-    a join. This is the assertion that they do. A number above zero means one
-    of them is not what this comment says it is, and a corrective flip before
-    anyone has looked would be guessing.
+    Not an orientation failure, which is what it was put here to catch.
+    `lucky_ones` orients a curve by the play table's own
+    `home_score`/`away_score` -- ESPN's labelling, the same source
+    `Game.home` comes from -- so the sides agree by construction, and the
+    first full sweep bears that out: zero across the NFL's 4,989 games with
+    play-by-play.
+
+    ncaafb reports 136 of 25,443 (0.5%), and their shape is what says this
+    is data rather than a bug. They are spread evenly over twenty seasons
+    rather than concentrated in one, and only 9 are a clean home/away swap;
+    the rest are play-by-play whose last scoring play simply doesn't match
+    the game's stored result. Those games keep their real score, which is
+    what every game without plays already does -- so the conservative
+    reading costs nothing and a corrective flip would have been guessing at
+    126 games it wouldn't have fixed.
     """
 
+    @property
+    def with_plays(self) -> int:
+        """Scheduled games the play store had anything for, kept or not.
+
+        The denominator that says whether the filters are set right. The
+        other one -- every completed game in every season swept -- is mostly
+        answering a different question, since cassandra replays the NFL from
+        1980 and the processed plays start in 2006.
+        """
+        return (
+            self.scored + self.incomplete + self.no_score + self.no_clock + self.disagreed
+        )
+
     def __str__(self) -> str:
-        share = f"{self.scored / self.played:.0%}" if self.played else "n/a"
+        def share(of: int) -> str:
+            return f"{self.scored / of:.0%}" if of else "n/a"
+
         dropped = ", ".join(
             f"{count} {label}"
             for label, count in (
@@ -147,7 +177,11 @@ class SweepStats(NamedTuple):
             )
             if count
         )
-        line = f"{self.scored} of {self.played} completed games have control ({share})"
+        line = (
+            f"{self.scored} of {self.with_plays} games with plays "
+            f"({share(self.with_plays)}), {self.played} played "
+            f"({share(self.played)} of the schedule)"
+        )
         if dropped:
             line += f" -- dropped {dropped}"
         if self.disagreed:
@@ -205,27 +239,36 @@ def completed_games(seasons: Iterable[Season]) -> dict[str, Game]:
 def _final_from_plays(plays: Sequence[Play]) -> tuple[int, int] | None:
     """The score the plays end at, as (home, away).
 
-    Taken as a maximum rather than off the last play: the scores are
-    cumulative and non-decreasing, and the last row of a game is often an
-    administrative one (END GAME) whose columns can be null. A game with no
-    scores at all -- which the play table does contain -- has no final.
+    The last play that carries one, not the maximum. A cumulative score
+    looks like it can only go up, and it can go down: a touchdown reversed
+    on review or wiped out by a penalty is scored on its own play and taken
+    off again on a later one. Reading the maximum picks up the points that
+    were taken back, which shows up as a game the plays and the schedule
+    disagree about -- five of them across the NFL's twenty seasons, four
+    with the plays exactly six points ahead of the result.
+
+    Scanned from the end rather than taken off `plays[-1]`, because the last
+    row of a game is usually an administrative one (END GAME) whose columns
+    can be null. Same reading as `lucky_ones.state.final_outcome`, which is
+    the other thing in this pipeline that has to answer the question.
+
+    None for a game where no play carries a score at all, which the play
+    table does contain.
     """
-    home = [play.home_score for play in plays if play.home_score is not None]
-    away = [play.away_score for play in plays if play.away_score is not None]
-    if not home or not away:
-        return None
-    return max(home), max(away)
+    for play in reversed(plays):
+        if play.home_score is not None and play.away_score is not None:
+            return play.home_score, play.away_score
+    return None
 
 
 def _disagrees(final: tuple[int, int], played: Game) -> bool:
     """Do the plays and the stored result disagree about who *won*?
 
-    A weaker question than `_covers`, and a much more alarming answer. Play-by-
-    play that stops early falls short of the final score without contradicting
-    it; this is the case where the two sources name different winners, which
-    they should not be able to do -- `lucky_ones` orients a curve by the play
-    table's `home_score`/`away_score`, ESPN's own labelling, and `Game.home`
-    comes from the same place.
+    A stronger contradiction than `_covers`. Play-by-play that stops early
+    falls short of the final score without contradicting it; this is the
+    case where the two sources name different winners, which orientation
+    alone should not be able to produce -- see `SweepStats.disagreed` for
+    what the first sweep found instead.
 
     Compared by sign, and only when both sides are decisive, so a tie on
     either end isn't read as a contradiction.
