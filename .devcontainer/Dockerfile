@@ -65,9 +65,10 @@ FROM base AS runtime
 # is free to keep asking for the venv a laptop wants.
 ENV POETRY_VIRTUALENVS_CREATE=false
 
-# `fit` carries scikit-learn, bayes_opt and fire -- optimize and publish are
-# both fitting paths, so the deployed image needs the group the webapp
-# deliberately doesn't. See the comment on the group in pyproject.toml.
+# `fit` carries scikit-learn, bayes_opt, fire and endgame_aws -- optimize and
+# publish are both fitting paths, and both read the bucket, so the deployed
+# image needs the group the webapp deliberately doesn't. See the comment on
+# the group in pyproject.toml.
 #
 # `--only main,fit`, NOT `--only main --with fit`: poetry ignores `--with`
 # whenever `--only` is given, and says so in a line that scrolls past in a
