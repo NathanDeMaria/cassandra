@@ -16,7 +16,7 @@ import pytest
 from endgame.types import Game, Season, Week
 
 import publish
-from cassandra import score_predictions
+from cassandra.model_eval import score_predictions
 from cassandra.odds import OddsDatabase
 from cassandra.predictor import (
     Predictor,
