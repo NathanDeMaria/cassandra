@@ -22,6 +22,49 @@ replays through code this never touches, and
 `models/<league>/glicko_control.json` competes as its own entry in `evaluate`
 instead of replacing `glicko_full`'s converged search with one that has an
 extra dimension.
+
+What this is measured to be worth, so nobody has to find out twice
+------------------------------------------------------------------
+
+It does not currently help. Against ncaafb's 25,307 games with play-by-play,
+holding `glicko_full`'s fitted parameters and varying only the blend, the best
+weight is ~0.25 and it improves brier by 0.00005. The gap between ncaafb's two
+best models is 0.0088, so that is about 1/180th of the resolution at which
+model choice matters here. nfl is worse: monotonically negative at every
+weight. It ships anyway, because the plumbing it needs -- the sweep, the
+index, the artifact, this seam -- is the same plumbing a better signal would
+need, and a model config is cheaper to delete than to rebuild.
+
+The reason it doesn't help is not scale. Standardising control to the scoring
+function's exact mean and standard deviation recovers only 15% of the loss,
+and rank-matching it onto that distribution exactly -- same marginal
+distribution, ordering the only thing left that can differ -- recovers none.
+
+What ties the negative results together is that every summary of the
+scoreboard path costs brier in proportion to how far it reorders games away
+from the final score, and by nothing else:
+
+    cost = 0.0124 x (1 - rank correlation with the final score)   R^2 = 0.991
+
+That was fit across eleven signals and holds to within 6e-5 for almost all of
+them: control, the time-weighted average margin, the margin entering the
+fourth quarter, the margin with 5:00 left, the largest lead either side held,
+a low quantile of the win probability curve, the share of the clock spent
+above 0.75, and the largest drawdown from each side's peak. A signal carrying
+information the final score lacks would come in *below* that line. Only one
+does -- the average over the game of each side's lowest *remaining* win
+probability, by 0.00023 -- and it is negative at every blend weight, because
+at 0.940 rank correlation with the final score it is closer to a noisy copy
+of the scoreboard than to a second look at the game.
+
+The one thing that does help is off that axis entirely. Success rate
+differential -- the share of snaps gaining enough of the distance to stay on
+schedule, which is `down`, `distance` and `yards_gained`, no model at all --
+is a *worse* replacement for the final score (it sits on the law) and a
+*better* supplement: blended at ~0.2 it improves brier by 0.00030, ten times
+what control manages, with a smooth unimodal weight curve and a shuffle null
+0.0014 away. It is the crude binary form of EPA, which is the signal worth
+building next and which would arrive through this exact seam.
 """
 
 from collections.abc import Mapping
