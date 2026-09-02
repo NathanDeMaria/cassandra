@@ -20,17 +20,27 @@ from pathlib import Path
 from aiobotocore.session import get_session
 
 from cassandra.constants import CASSANDRA_HOME
-from cassandra.predictor import anchor_path, load_anchors
+from cassandra.predictor import (
+    anchor_path,
+    game_control_path,
+    load_anchors,
+    load_game_control,
+)
 
 # Shared bucket, so cassandra's generated files get a prefix of their own
 # rather than sitting next to endgame's `seasons/` and `odds/`.
 ARTIFACT_PREFIX = "cassandra"
 
-# Where `division_anchors.py` writes, CASSANDRA_HOME-relative. Every stage
-# pulls this: the anchor is what a rating starts at and regresses toward, so a
-# job that optimizes with it and one that publishes without it disagree about
-# what a rating means, and nothing in either job's output says so.
-ANCHOR_PREFIX = "predictor/data/"
+# What a predictor reads off disk, CASSANDRA_HOME-relative. Every stage pulls
+# this, because everything under it changes what a rating means: the anchor is
+# what a rating starts at and regresses toward, and the game control a
+# `ControlGlickoPredictor` blends in decides what it learned from each game. A
+# job that optimizes with them and one that publishes without them disagree
+# about what a rating is, and nothing in either job's output says so.
+#
+# One prefix rather than one per file so a new thing a predictor reads is a
+# file that lands here, not another download call every stage has to remember.
+PREDICTOR_DATA_PREFIX = "predictor/data/"
 
 # S3 has no directories, so a "download the results" call is a prefix listing.
 # Uploads go one object at a time but concurrently; these are small json files
@@ -113,28 +123,44 @@ async def _list_keys(client, bucket: str, prefix: str) -> AsyncIterator[str]:
                 yield item["Key"]
 
 
-async def download_anchors(bucket: str) -> list[Path]:
-    """Pull the division anchors, and drop the cached read of them.
+async def download_predictor_data(bucket: str) -> list[Path]:
+    """Pull what the predictors read off disk, and drop the cached reads.
 
-    `load_anchors` is cached because an optimization builds a predictor per
-    probe and they would all re-read the same file. That caching is why this
-    isn't just `download(bucket, ANCHOR_PREFIX)`: resolving the manifest
-    constructs one predictor per config, and each of those caches an empty
-    read for its league. Downloading after that would leave the job
-    regressing toward MEAN_RATING with the anchor file sitting unread on
-    disk -- a silently different fit, not a failure.
+    Two things today: the division anchors, and the per-game control a
+    `ControlGlickoPredictor` blends into its update.
 
-    Returns the paths written; empty is ordinary, and means no league in this
-    bucket has had its anchors fit yet.
+    Dropping the caches is the whole reason this isn't just
+    `download(bucket, PREDICTOR_DATA_PREFIX)`. Both `load_anchors` and
+    `load_game_control` are cached, because an optimization builds a predictor
+    per probe and they would all re-read the same file -- and `load_manifest`
+    constructs one predictor per config to find its priors path, which
+    populates both caches with empty reads before this ever runs. Downloading
+    after that leaves the job regressing toward MEAN_RATING and blending
+    against no control, with both files sitting unread on disk. A silently
+    different fit, not a failure.
+
+    Both caches are cleared unconditionally rather than per file downloaded:
+    the empty read is cached whether or not the bucket has anything, so
+    keying the clear off what came back would skip it in exactly the case
+    that needs it.
+
+    Returns the paths written; empty is ordinary, and means nothing in this
+    bucket has been fit or swept yet.
     """
-    paths = await download(bucket, ANCHOR_PREFIX)
+    paths = await download(bucket, PREDICTOR_DATA_PREFIX)
     load_anchors.cache_clear()
+    load_game_control.cache_clear()
     return paths
 
 
 def anchors_for(league: str) -> list[Path]:
     """The file one anchor fit produces, whether or not it exists."""
     return [anchor_path(league)]
+
+
+def game_control_for(league: str) -> list[Path]:
+    """The file one game control sweep produces, whether or not it exists."""
+    return [game_control_path(league)]
 
 
 def results_for(league: str, model: str) -> list[Path]:

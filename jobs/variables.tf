@@ -46,6 +46,12 @@ variable "optimize_memory" {
   default     = 4096
 }
 
+variable "game_control_memory" {
+  description = "MiB for a game_control child. Holds a few weeks of decoded play-by-play at once, plus the league's seasons."
+  type        = number
+  default     = 4096
+}
+
 variable "publish_memory" {
   description = "MiB for a publish child. Higher than optimize: publish holds a league's seasons and the odds database at once."
   type        = number
