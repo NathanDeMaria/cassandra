@@ -1,29 +1,27 @@
-"""Glicko, fed a blend of the game that happened and the game that was played.
+"""Glicko, learning from a blend of the scoreboard and the play-by-play.
 
-`control_weight` interpolates between the two: at 0 this is `GlickoPredictor`
-exactly, at 1 it learns from the score control says the game looked like, and
-in between it takes both. It is a searched parameter rather than a constant,
-because how much of a result is signal and how much is the bounces is a
-question about a league, not a thing to assert -- and the search recovering 0
-is a real answer, not a failed run.
+`cassandra.scoring` already reduces a game to one number for the home team
+between 0 and 1, and Glicko updates against it. Game control is a second
+answer to that same question -- the share of the game the home team spent
+winning it, measured from the plays rather than from the final score -- so
+`control_weight` interpolates between them. At 0 this is `GlickoPredictor`
+exactly; at 1 the scoreboard only decides how many points were scored, not
+what the game was worth.
 
-A child of Glicko rather than of Elo or 538, and rather than a parameter on
-all three, for two reasons. The narrow one is that plain Elo reads only the
-sign of the margin, so control would move a rating there only when it flips
-the winner outright -- `scoring_method` is what lets the magnitude through,
-and Glicko is the model that has it. The broader one is that
+A searched parameter rather than a constant, because how much of a result is
+signal and how much is the bounces is a question about a league, not a thing
+to assert -- and the search recovering 0 is a real answer, not a failed run.
+
+A child of Glicko rather than of Elo or 538 because Glicko is the model whose
+result already goes through a scoring function: `_actual` is the seam, and
+Elo derives its outcome inline from the sign of the margin. Its own class
+rather than a parameter on `GlickoPredictor` so that
 `predictor_class(league, **config.params)` stays typed against the
 constructors that declare what they take, every release published so far
-replays through code this never touches, and `models/<league>/glicko_control.
-json` competes as its own entry in `evaluate` instead of replacing
-`glicko_full`'s converged search with one that has an extra dimension.
-
-The substitution is one line: hand `super().update_game` the blended score
-line instead of the real one. Everything below it -- Glicko's binary,
-pythagorean and sigmoid scoring -- reads the result out of `home_score` and
-`away_score` and so needs no changes at all. See
-`game_control.GameControlIndex.alternate` for what the line is, and for why
-the real game still reaches the replay that scores it.
+replays through code this never touches, and
+`models/<league>/glicko_control.json` competes as its own entry in `evaluate`
+instead of replacing `glicko_full`'s converged search with one that has an
+extra dimension.
 """
 
 from collections.abc import Mapping
@@ -35,7 +33,6 @@ from .base_predictor import Anchor
 from .game_control import GameControlIndex, validated_control_weight
 from .glicko import GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
-from .types import Prediction
 
 # Where a search starts, and what a hand-built one does with no argument:
 # take the controlled line whole wherever there is one. This class exists to
@@ -46,7 +43,7 @@ DEFAULT_CONTROL_WEIGHT = 1.0
 
 
 class ControlGlickoPredictor(GlickoPredictor):
-    """Glicko, updated on a blend of the real score and the controlled one.
+    """Glicko, updated on a blend of what the score said and what the plays did.
 
     Scoring defaults to sigmoid rather than Glicko's binary, and the config
     leaves it out of the search rather than paying a dimension to rediscover
@@ -55,19 +52,13 @@ class ControlGlickoPredictor(GlickoPredictor):
     other six besides. `scoring_method` is still a constructor argument, so
     trying another one is a keyword, not a subclass.
 
-    It also happens to be the choice that can hear this model at all.
-    `binary_score` reads only the sign, so two control numbers on the same
-    side of even give the identical update and the blend reaches a binary
-    Glicko only when it hands the game to the other team. Sigmoid and
-    pythagorean both read the margin.
-
     One thing to hold while reading a fitted `control_weight`: control is
     pulled toward 0.5 by construction -- every game starts 0-0 at even odds,
-    and those early snaps carry full clock weight -- so a controlled line's
-    margins are compressed against real ones. `k` and `control_weight` both
-    absorb some of that, but `sigmoid_score`'s divisor is a hardcoded 10 that
-    no search touches, so a controlled blowout reads as closer to a coin flip
-    than a real one of the same margin would.
+    and those early snaps carry full clock weight -- so a wire-to-wire
+    blowout tops out nearer 0.9 than 1.0. Against `binary_score`'s 1.0 that
+    makes even a heavily weighted blend read as a slightly softer win;
+    against `sigmoid_score`, whose own output is compressed by a hardcoded
+    divisor of 10, the two are on more similar footing.
     """
 
     def __init__(
@@ -109,9 +100,17 @@ class ControlGlickoPredictor(GlickoPredictor):
         # `state_dict` below.
         self._game_control = game_control or GameControlIndex.for_league(league)
 
-    def update_game(self, game: Game) -> Prediction:
-        return super().update_game(
-            self._game_control.alternate(game, self._control_weight)
+    def _actual(self, game: Game) -> float:
+        """Glicko's own answer, moved toward what the plays say.
+
+        The whole of the model, and it replaces `_actual` rather than
+        `update_game` because that is the only line of the update that is
+        about the game rather than about the ratings. Nothing here builds a
+        game that wasn't played, and nothing downstream can tell it was
+        given anything other than a number between 0 and 1.
+        """
+        return self._game_control.blend(
+            super()._actual(game), game.game_id, self._control_weight
         )
 
     def state_dict(self) -> dict[str, Any]:
