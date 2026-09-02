@@ -6,7 +6,14 @@ authors = []
 
 [tool.poetry.dependencies]
 python = "^3.14"
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "a1e3e8e8ed89bbe8398dedfd7eb0c47148e6bda3", subdirectory = "py-endgame-aws"}
+# The game and season types, and nothing that fetches them. Every predictor
+# and the release schema read `endgame.types.Game`, so this is genuinely a
+# serving dependency -- unlike `endgame_aws`, which reads the bucket those
+# games are stored in and now lives in the `fit` group below.
+#
+# Pinned to the rev `endgame_aws` resolves it at, so the two never disagree
+# about what a Game is. Bump them together.
+endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "f0be488a26c9bcf60a21ba00146581779485e852", subdirectory = "py-endgame"}
 # Team knowledge: which names are the same team, and what division and
 # conference each played in. Pure python apart from its extras, so it costs a
 # serving install one dependency it already has.
@@ -31,11 +38,44 @@ pydantic = "^2.12.5"
 #
 # The cost: `pip install cassandra` gives you a package that can rehydrate a
 # fit but not produce one. IsotonicProbToMarginFitter.fit imports sklearn
-# lazily so the ImportError lands there rather than at import time.
+# lazily so the ImportError lands there rather than at import time, and
+# `cassandra/__init__.py` defers its fit-path re-exports for the same reason.
 [tool.poetry.group.fit.dependencies]
 scikit-learn = "^1.8.0"
 fire = "^0.7.1"
 bayesian-optimization = "^3.2.1"
+# Where the seasons, the odds and the play-by-play live. Only `cassandra.odds`
+# and `cassandra.save_predictions` import it, and neither is on the path a
+# consumer reading a release takes -- so it belongs here with the rest of the
+# fitting stack rather than in package metadata.
+#
+# It is here rather than in `main` because of what it carries: aiobotocore,
+# and pyarrow at ~152MB. A web image that reads a calibration and calls
+# np.interp has no use for either. `import_boundary_test.py` is what keeps
+# that true.
+#
+# The rev is the one that adds the processed play-by-play layer -- the weekly
+# parquet `cassandra.game_control` reads -- and is deliberately the same rev
+# `lucky-ones` pins below, so the two packages that read that layer agree on
+# `PLAY_SCHEMA` rather than each having its own idea of it. Later revs only
+# touch the write side (a yardline clamp), which is nothing cassandra does.
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "26646aa4c3f77422a500603710f6b662fe94305e", subdirectory = "py-endgame-aws"}
+# In-game win probability, and the `game_control` number cassandra turns into
+# an alternate score line. The fits ship inside the package, so pinning the
+# rev pins the model: which win probability curve a rating was built against
+# has one answer, the way `call-it-what-you-want` pins team identity.
+#
+# `data` is pyarrow, for `lucky_ones.arrow` -- the adapter from endgame's
+# stored parquet, and the only part of the package cassandra imports that
+# needs it. Declared rather than left to endgame_aws's pyarrow, so the import
+# is backed by something that says why it's there.
+#
+# Deliberately *not* lucky-ones' `fit` extra, despite this being cassandra's
+# `fit` group: the two names mean opposite things here. That extra is the
+# scikit-learn that produces a win probability fit, and cassandra produces
+# none -- it reads the one that ships inside the package. The scikit-learn
+# above is cassandra's own, for the prob-to-margin calibration.
+lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "d253c4b9ef266aab50afce435bf3d2b3ae50eb96", extras = ["data"]}
 
 
 [tool.poetry.group.dev.dependencies]
