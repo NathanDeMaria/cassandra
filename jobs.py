@@ -2,7 +2,6 @@
 
     python jobs.py manifest                       # what would run, in order
     python jobs.py anchors --league ncaafb        # fit division anchors
-    python jobs.py game-control --league nfl      # sweep play-by-play
     python jobs.py optimize --index 3             # one array child
     python jobs.py optimize --league mens --model elo
     python jobs.py evaluate --league mens
@@ -19,6 +18,12 @@ costs a queue slot: `--download=False --upload=False` leaves s3 alone entirely
 and writes only to `~/.cassandra`. There is deliberately no local "run
 everything" driver -- `submit` is the only thing that knows the whole DAG, and
 a second copy of that ordering is a second thing to keep in step.
+
+`game_control` is the exception to the first line: a subcommand with no node
+behind it any more. It is kept runnable -- `python jobs.py game-control
+--league nfl` still sweeps play-by-play into the index -- because the signal
+it feeds is one worth measuring again, and a stage nobody can run is a stage
+nobody will revive. See `cassandra.predictor.control`.
 """
 
 import asyncio
@@ -102,7 +107,6 @@ async def _anchors(
 
 async def _game_control(
     leagues: list[str] | None,
-    index: int | None,
     rebuild: bool,
     upload: bool,
 ) -> None:
@@ -116,10 +120,7 @@ async def _game_control(
     from cassandra.save_predictions import read_all_seasons
 
     if leagues is None:
-        child = manifest.array_index(index)
-        leagues = (
-            [dag.control_league(child)] if child is not None else list(CONTROL_LEAGUES)
-        )
+        leagues = list(CONTROL_LEAGUES)
 
     bucket = _bucket()
     # Whether there is anything to do is a question about the *stored* index,
@@ -290,11 +291,14 @@ class Jobs:
     def game_control(
         self,
         league: list[str] | str | None = None,
-        index: int | None = None,
         rebuild: bool = False,
         upload: bool = True,
     ) -> None:
-        """Sweep play-by-play into a league's game control index.
+        """Sweep play-by-play into a league's game control index, by hand.
+
+        No longer a stage of the submitted DAG -- nothing in the run reads
+        what it writes. It is here for the next look at the play-by-play; see
+        `cassandra.predictor.control` for why there isn't one today.
 
         Idempotent on the win probability fit rather than on the file: a
         league whose stored index was built by the `lucky_ones` this image
@@ -309,7 +313,7 @@ class Jobs:
         anything on its own: the same fit over the same plays produces the
         same numbers, so this costs queue time rather than changing results.
         """
-        asyncio.run(_game_control(_as_list(league), index, rebuild, upload))
+        asyncio.run(_game_control(_as_list(league), rebuild, upload))
 
     def optimize(
         self,
@@ -353,8 +357,6 @@ class Jobs:
         model: list[str] | str | None = None,
         skip_anchors: bool = False,
         rebuild_anchors: bool = False,
-        skip_game_control: bool = False,
-        rebuild_game_control: bool = False,
         skip_optimize: bool = False,
         skip_evaluate: bool = False,
         skip_publish: bool = False,
@@ -362,7 +364,6 @@ class Jobs:
         wait: bool = False,
         job_queue: str | None = None,
         anchors_job_definition: str | None = None,
-        game_control_job_definition: str | None = None,
         optimize_job_definition: str | None = None,
         evaluate_job_definition: str | None = None,
         publish_job_definition: str | None = None,
@@ -373,21 +374,12 @@ class Jobs:
         already has some, and overwrites them. That re-rates every model in
         the league against a new scale, so it is deliberately not what a
         scheduled run does -- see `Jobs.anchors`.
-
-        `--skip-game-control` is the one skip a scheduled republish should
-        not pass: unlike the anchors, the control index gains entries every
-        week, and publishing without sweeping them replays the newest games
-        as though nobody had play-by-play for them. It is there for a run
-        that knows the sweep has already happened.
         """
         queue = job_queue or _default_queue()
         submitted = asyncio.run(
             dag.submit(
                 anchors_job_definition=_job_definition(
                     "ANCHORS", anchors_job_definition
-                ),
-                game_control_job_definition=_job_definition(
-                    "GAME_CONTROL", game_control_job_definition
                 ),
                 optimize_job_definition=_job_definition(
                     "OPTIMIZE", optimize_job_definition
@@ -403,8 +395,6 @@ class Jobs:
                 models=_as_list(model),
                 skip_anchors=skip_anchors,
                 rebuild_anchors=rebuild_anchors,
-                skip_game_control=skip_game_control,
-                rebuild_game_control=rebuild_game_control,
                 skip_optimize=skip_optimize,
                 skip_evaluate=skip_evaluate,
                 skip_publish=skip_publish,
@@ -441,10 +431,11 @@ def _job_definition(stage: str, override: str | None) -> str:
     Terraform is the source of truth and puts these in the launcher's
     environment, so renaming a definition doesn't need a matching change here.
     The literal fallback is for running the launcher from a laptop against the
-    conventional names. Underscores become hyphens on the way: the stages are
-    named `GAME_CONTROL` here because the environment variable is, and
-    `cassandra-game-control` in terraform because every other job definition
-    is hyphenated.
+    conventional names. Underscores become hyphens on the way because the two
+    conventions differ: an environment variable is `CASSANDRA_GAME_CONTROL`
+    and a job definition is `cassandra-game-control`. No stage left has a
+    two-word name, so the conversion currently does nothing -- it stays
+    because the next one to get one shouldn't have to notice.
     """
     if override is not None:
         return override

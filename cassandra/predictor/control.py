@@ -11,6 +11,7 @@ what the game was worth.
 A searched parameter rather than a constant, because how much of a result is
 signal and how much is the bounces is a question about a league, not a thing
 to assert -- and the search recovering 0 is a real answer, not a failed run.
+It recovered 0, in both leagues; see below.
 
 A child of Glicko rather than of Elo or 538 because Glicko is the model whose
 result already goes through a scoring function: `_actual` is the seam, and
@@ -18,22 +19,34 @@ Elo derives its outcome inline from the sign of the margin. Its own class
 rather than a parameter on `GlickoPredictor` so that
 `predictor_class(league, **config.params)` stays typed against the
 constructors that declare what they take, every release published so far
-replays through code this never touches, and
-`models/<league>/glicko_control.json` competes as its own entry in `evaluate`
-instead of replacing `glicko_full`'s converged search with one that has an
-extra dimension.
+replays through code this never touches, and a `glicko_control` config could
+compete as its own entry in `evaluate` instead of replacing `glicko_full`'s
+converged search with one that has an extra dimension.
+
+There is no such config any more. `models/nfl/glicko_control.json` and
+`models/ncaafb/glicko_control.json` are deleted and the `game_control` node is
+out of the DAG, so nothing scheduled constructs this class or reads the index
+it blends. The class, the sweep and `jobs.py game-control` all still work,
+because what follows is a map of where not to look next rather than a reason
+to throw the seam away.
 
 What this is measured to be worth, so nobody has to find out twice
 ------------------------------------------------------------------
 
-It does not currently help. Against ncaafb's 25,307 games with play-by-play,
-holding `glicko_full`'s fitted parameters and varying only the blend, the best
-weight is ~0.25 and it improves brier by 0.00005. The gap between ncaafb's two
-best models is 0.0088, so that is about 1/180th of the resolution at which
-model choice matters here. nfl is worse: monotonically negative at every
-weight. It ships anyway, because the plumbing it needs -- the sweep, the
-index, the artifact, this seam -- is the same plumbing a better signal would
-need, and a model config is cheaper to delete than to rebuild.
+It does not help. Against ncaafb's 25,307 games with play-by-play, holding
+`glicko_full`'s fitted parameters and varying only the blend, the best weight
+is ~0.25 and it improves brier by 0.00005. The gap between ncaafb's two best
+models is 0.0088, so that is about 1/180th of the resolution at which model
+choice matters here. nfl is worse: monotonically negative at every weight.
+
+Searched jointly rather than holding the rest of Glicko fixed, both leagues
+put the weight at 0.0 exactly -- 200 probes for nfl, 400 for ncaafb, with the
+optimizer reporting the whole top decile crowded against the lower bound in
+both. That is the stronger version of the paragraph above: given the freedom
+to refit `season_rd_increase` instead, the search would rather have the
+parameter off than have any of it. Since `blend` short-circuits on a zero
+weight, those two searches were paying for a play-by-play sweep to produce a
+number neither of them then read.
 
 The reason it doesn't help is not scale. Standardising control to the scoring
 function's exact mean and standard deviation recovers only 15% of the loss,
