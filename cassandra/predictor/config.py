@@ -1,7 +1,7 @@
 import importlib
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from .base_predictor import Predictor
 
@@ -43,7 +43,32 @@ class OptimizationConfig(BaseModel):
     predictor_class: str
     league: str
     parameters: dict[str, tuple[float, float] | list[str]]
+    # Constructor arguments held at one value rather than searched, and
+    # written into the result so the published predictor is rebuilt with
+    # them. A categorical whose answer is already known belongs here and not
+    # in `parameters` as a one-element list: bayes_opt rejects that outright
+    # ("At least two categories are required"), and even where it didn't, a
+    # search dimension with one value costs a probe budget it can't spend.
+    fixed: dict[str, float | str] = {}
     n_iter: int = 100
+
+    @model_validator(mode="after")
+    def _no_parameter_is_both(self) -> "OptimizationConfig":
+        """A name can be searched or pinned, not both.
+
+        Nothing downstream would raise: `optimize.py` merges the two, so the
+        search would run over a parameter whose value the constructor had
+        already been given, and the result would record the pinned value
+        beside a probe log that varied it. That is a config nobody can read
+        the output of, so it doesn't get to be written.
+        """
+        both = sorted(set(self.parameters) & set(self.fixed))
+        if both:
+            raise ValueError(
+                f"{', '.join(both)} appears in both `parameters` and `fixed`; "
+                "a parameter is either searched or pinned"
+            )
+        return self
 
 
 class PredictorConfig(BaseModel):

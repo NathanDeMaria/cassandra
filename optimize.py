@@ -60,7 +60,7 @@ async def _run_optimization(config_file: str) -> None:
     odds_db = await OddsDatabase.from_s3(aws_config.bucket)
 
     # Run once to make things like team priors
-    predictor = predictor_class(league)
+    predictor = predictor_class(league, **config_model.fixed)
     for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
         pass
 
@@ -70,6 +70,10 @@ async def _run_optimization(config_file: str) -> None:
         seasons=seasons,
         odds_db=odds_db,
         predictor_class=predictor_class,
+        # The pinned arguments reach the constructor the same way a searched
+        # one does; the optimizer simply never varies them. It is not told
+        # about them at all, so they cost no dimension and appear in no probe.
+        **config_model.fixed,
     )
     target, params = optimize(
         target_function, config_model.parameters, config_model.n_iter
@@ -79,7 +83,13 @@ async def _run_optimization(config_file: str) -> None:
         predictor_class=config_model.predictor_class,
         league=config_model.league,
         target=target,
-        params=params,
+        # Merged, not just recorded: `load_predictor` rebuilds from `params`
+        # alone, so a pinned argument left out here is one the published
+        # model silently takes the constructor default for -- which for
+        # `scoring_method` is `binary`, a different model than the one that
+        # scored `target`. The two dicts are disjoint by construction; see
+        # `OptimizationConfig._no_parameter_is_both`.
+        params={**config_model.fixed, **params},
     )
 
     # The config is a checked-in input; its result is generated, so it lands
