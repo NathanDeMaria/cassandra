@@ -38,6 +38,29 @@ locals {
   # results to under a `cassandra/` prefix.
   batch_bucket = local.shared.bucket
 
+  # What every job definition gets, whether or not it is known to need it.
+  #
+  # The region used to be the launcher's alone, on the reasoning that it was
+  # the only stage calling an API that needs one to resolve an endpoint and
+  # that the others only talk to s3, which botocore resolves without being
+  # told. The first half is still true; the second half was only ever true of
+  # botocore. It reaches instance metadata for a region when nothing else
+  # supplies one, and `game_control` reads parquet through
+  # `pyarrow.fs.S3FileSystem`, whose C++ SDK does not do that fallback. A
+  # container has no `~/.aws/config` either, so with nothing in the
+  # environment pyarrow resolved the empty region and every read came back
+  # HTTP 301 naming the bucket's real one. That took the 2026-09-03 daily
+  # publish down: `game_control` failed in 28 seconds and all six publish
+  # children cascaded behind it.
+  #
+  # Set for every stage rather than for the one that is known to need it,
+  # because "does this stage's s3 client happen to have a region fallback"
+  # is a property of a library the stage imports, not of the stage.
+  job_environment = [
+    { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
+  ]
+
   # What the launcher submits. `game_control` is deliberately absent: its
   # definition below still exists to be submitted by hand, but no node in the
   # DAG points at it, and a name in here is a name the launcher can start.
@@ -140,9 +163,7 @@ module "anchors" {
   memory             = var.publish_memory
   retry_attempts     = 3
 
-  environment_variables = [
-    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
-  ]
+  environment_variables = local.job_environment
 }
 
 # Declared, and nothing submits it. This sweeps stored play-by-play into the
@@ -171,9 +192,7 @@ module "game_control" {
   memory             = var.game_control_memory
   retry_attempts     = 3
 
-  environment_variables = [
-    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
-  ]
+  environment_variables = local.job_environment
 }
 
 module "optimize" {
@@ -193,9 +212,7 @@ module "optimize" {
   # once.
   retry_attempts = 3
 
-  environment_variables = [
-    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
-  ]
+  environment_variables = local.job_environment
 }
 
 module "evaluate" {
@@ -209,9 +226,7 @@ module "evaluate" {
   memory             = var.publish_memory
   retry_attempts     = 3
 
-  environment_variables = [
-    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
-  ]
+  environment_variables = local.job_environment
 }
 
 module "publish" {
@@ -225,9 +240,7 @@ module "publish" {
   memory             = var.publish_memory
   retry_attempts     = 3
 
-  environment_variables = [
-    { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
-  ]
+  environment_variables = local.job_environment
 }
 
 # The launcher: submits the other four with the right dependencies. It's a
@@ -248,20 +261,18 @@ module "launcher" {
   memory          = 1024
   timeout_seconds = 900
 
-  environment_variables = [
-    # The only stage that calls an AWS API needing a region to resolve an
-    # endpoint. The others talk to s3, which botocore will resolve
-    # without one, so this is the single job definition that has to say it --
-    # and until it did, both schedules died on `NoRegionError` before
-    # submitting anything, which reads as "no run happened" rather than as a
-    # failure of the run.
-    { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+  # The region in `job_environment` matters most here: this is the stage that
+  # calls Batch rather than s3, and until it was set both schedules died on
+  # `NoRegionError` before submitting anything -- which reads as "no run
+  # happened" rather than as a failure of the run. It is no longer the only
+  # stage that needs one; see the local.
+  environment_variables = concat(local.job_environment, [
     { name = "CASSANDRA_JOB_QUEUE", value = local.shared.job_queue_name },
     { name = "CASSANDRA_ANCHORS_JOB_DEFINITION", value = local.job_definitions.anchors },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
     { name = "CASSANDRA_EVALUATE_JOB_DEFINITION", value = local.job_definitions.evaluate },
     { name = "CASSANDRA_PUBLISH_JOB_DEFINITION", value = local.job_definitions.publish },
-  ]
+  ])
 }
 
 # ------------------------------------------------------------------------------
