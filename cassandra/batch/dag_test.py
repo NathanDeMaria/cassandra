@@ -125,7 +125,6 @@ def _submit(monkeypatch: pytest.MonkeyPatch, **kwargs) -> list[dag.Submitted]:
     return asyncio.run(
         dag.submit(
             anchors_job_definition="a",
-            game_control_job_definition="g",
             optimize_job_definition="o",
             evaluate_job_definition="e",
             publish_job_definition="p",
@@ -316,7 +315,6 @@ def _submitted_requests(
     asyncio.run(
         dag.submit(
             anchors_job_definition="a",
-            game_control_job_definition="g",
             optimize_job_definition="o",
             evaluate_job_definition="e",
             publish_job_definition="p",
@@ -390,136 +388,66 @@ def test_the_rebuild_flag_survives_the_round_trip_through_fire(
     assert seen is False
 
 
-# --- game control ---------------------------------------------------------
-# ncaafb is in both ANCHOR_LEAGUES and CONTROL_LEAGUES, which is what makes it
-# the league to assert the two-parent edge with.
+# --- what a football league does and doesn't get ---------------------------
+# ncaafb is the league to assert against: it is in ANCHOR_LEAGUES and was in
+# CONTROL_LEAGUES too, so it is the only one that ever had two parents to
+# lose one of.
 
 
 def _by_command(requests: list[dict]) -> dict[str, dict]:
     """Requests keyed by the stage they run, since submission order shifts.
 
     Indexing by position breaks the moment a run includes a stage it didn't
-    before -- which is exactly what adding this one did.
+    before -- which is exactly what adding and then removing one did.
     """
     return {r["containerOverrides"]["command"][0]: r for r in requests}
 
 
-def test_a_football_league_gets_a_game_control_job(
+def test_a_football_league_gets_no_game_control_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    submitted = _submit(monkeypatch, leagues=["nfl"])
-
-    assert "cassandra-game-control" in _stages(submitted)
-
-
-def test_a_league_with_no_play_by_play_gets_no_game_control_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Only football has stored plays, and only football has a shipped fit."""
-    assert "mens" not in dag.CONTROL_LEAGUES
-    submitted = _submit(monkeypatch, leagues=["mens"])
+    """The sweep fed `glicko_control`, and both leagues searched its weight
+    to zero -- so the models are gone from `models/` and the node that fed
+    them is gone from here. `cassandra.predictor.control` has the numbers.
+    """
+    submitted = _submit(monkeypatch, leagues=["ncaafb"])
 
     assert "cassandra-game-control" not in _stages(submitted)
-
-
-def test_optimize_waits_for_both_upstream_stages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The anchors set the scale; the sweep sets what each game taught.
-
-    A child that starts before either is fit against something that is still
-    being written, and nothing in its output would say which.
-    """
-    requests = _submitted_requests(monkeypatch, leagues=["ncaafb"])
-    by_command = _by_command(requests)
-    depends = {entry["jobId"] for entry in by_command["optimize"]["dependsOn"]}
-
-    # The fake client numbers jobs in submission order, and both upstream
-    # stages go out before optimize does.
-    assert depends == {"job-1", "job-2"}
-
-
-def test_a_republish_still_sweeps_game_control(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The one upstream stage --skip-optimize must not take with it.
-
-    The anchors can be read back out of s3 because they don't change; the
-    control index gains entries every week, and a publish that replays the
-    newest games without them treats the week as though nobody had plays.
-    """
-    submitted = _submit(monkeypatch, leagues=["ncaafb"], skip_optimize=True)
-
     assert _stages(submitted) == [
-        "cassandra-game-control",
+        "cassandra-anchors",
+        "cassandra-optimize",
         "cassandra-evaluate",
         "cassandra-publish",
     ]
 
 
-def test_a_republish_makes_publish_wait_for_the_sweep(
+def test_optimize_waits_for_the_anchors_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without the edge, publish races the sweep it depends on."""
+    """One parent, not two.
+
+    The anchors set the scale a search is fit against, and are the only
+    upstream stage left that decides anything a child reads. An extra
+    dependency here isn't wrong so much as unpayable: it names a job the
+    launcher no longer submits, and Batch rejects the whole request.
+    """
+    requests = _submitted_requests(monkeypatch, leagues=["ncaafb"])
+    depends = _by_command(requests)["optimize"]["dependsOn"]
+
+    # The fake client numbers jobs in submission order, and anchors is first.
+    assert depends == [{"jobId": "job-1"}]
+
+
+def test_a_football_republish_waits_for_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--skip-optimize` used to leave the sweep behind for publish to wait
+    on, even for a football league. With the sweep gone there is no upstream
+    stage left at all, and a republish starts immediately.
+    """
     requests = _submitted_requests(monkeypatch, leagues=["ncaafb"], skip_optimize=True)
     by_command = _by_command(requests)
 
-    assert by_command["publish"]["dependsOn"] == [{"jobId": "job-1"}]
-    assert by_command["evaluate"]["dependsOn"] == [{"jobId": "job-1"}]
-
-
-def test_the_game_control_job_decides_for_itself_by_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No flag: the stage compares the stored fit against its own."""
-    requests = _submitted_requests(monkeypatch, leagues=["nfl"])
-
-    assert _by_command(requests)["game_control"]["containerOverrides"]["command"] == [
-        "game_control"
-    ]
-
-
-def test_rebuild_game_control_tells_the_job_to_re_sweep(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests = _submitted_requests(
-        monkeypatch, leagues=["nfl"], rebuild_game_control=True
-    )
-
-    assert _by_command(requests)["game_control"]["containerOverrides"]["command"] == [
-        "game_control",
-        "--rebuild=True",
-    ]
-
-
-def test_rebuilding_game_control_that_would_not_run_is_an_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    with pytest.raises(ValueError, match="skip_game_control"):
-        _submit(
-            monkeypatch,
-            leagues=["nfl"],
-            rebuild_game_control=True,
-            skip_game_control=True,
-        )
-
-
-def test_control_league_reads_its_own_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Three fan-outs now, three lists: none of them may index another's."""
-    monkeypatch.setenv("CASSANDRA_CONTROL_LEAGUES", "nfl,ncaafb")
-    monkeypatch.setenv("CASSANDRA_ANCHOR_LEAGUES", "mens,womens")
-
-    assert dag.control_league(1) == "ncaafb"
-    assert dag.anchor_league(1) == "womens"
-
-
-def test_the_game_control_child_gets_the_list_the_array_was_sized_against(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests = _submitted_requests(monkeypatch, leagues=["nfl", "ncaafb"])
-    control = _by_command(requests)["game_control"]
-
-    # CONTROL_LEAGUES' order, not the caller's: the child resolves its index
-    # against this string, so the order has to come from something stable
-    # rather than from how someone spelled --league.
-    assert _environment(control)["CASSANDRA_CONTROL_LEAGUES"] == "nfl,ncaafb"
+    assert set(by_command) == {"evaluate", "publish"}
+    assert "dependsOn" not in by_command["publish"]
+    assert "dependsOn" not in by_command["evaluate"]

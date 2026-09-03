@@ -38,12 +38,14 @@ locals {
   # results to under a `cassandra/` prefix.
   batch_bucket = local.shared.bucket
 
+  # What the launcher submits. `game_control` is deliberately absent: its
+  # definition below still exists to be submitted by hand, but no node in the
+  # DAG points at it, and a name in here is a name the launcher can start.
   job_definitions = {
-    anchors      = module.anchors.name
-    game_control = module.game_control.name
-    optimize     = module.optimize.name
-    evaluate     = module.evaluate.name
-    publish      = module.publish.name
+    anchors  = module.anchors.name
+    optimize = module.optimize.name
+    evaluate = module.evaluate.name
+    publish  = module.publish.name
   }
 }
 
@@ -143,11 +145,16 @@ module "anchors" {
   ]
 }
 
-# Sweeps stored play-by-play into the per-game control index the
-# `glicko_control` models blend into their updates. A sibling of `anchors`
-# rather than a step before or after it: the anchor decides the scale a rating
-# sits on, control decides what it learned from each game, and neither reads
-# the other.
+# Declared, and nothing submits it. This sweeps stored play-by-play into the
+# per-game control index the `glicko_control` models blended into their
+# updates; both leagues' searches then put that blend weight at zero, so the
+# models are gone and the launcher no longer has a node pointing here. See
+# `cassandra.predictor.control` for the measurements.
+#
+# It stays because the next look at the play-by-play should start from a job
+# that exists rather than from a terraform change, and an unsubmitted
+# definition costs nothing to hold. `jobs.py game-control --league nfl` still
+# runs the sweep, here or on a laptop.
 #
 # Sized for what it holds rather than for how long it runs: a handful of
 # NCAAFB weeks are decoded at once, ~20,000 plays each, plus the Arrow buffers
@@ -243,7 +250,7 @@ module "launcher" {
 
   environment_variables = [
     # The only stage that calls an AWS API needing a region to resolve an
-    # endpoint. The other four talk to s3, which botocore will resolve
+    # endpoint. The others talk to s3, which botocore will resolve
     # without one, so this is the single job definition that has to say it --
     # and until it did, both schedules died on `NoRegionError` before
     # submitting anything, which reads as "no run happened" rather than as a
@@ -251,7 +258,6 @@ module "launcher" {
     { name = "AWS_DEFAULT_REGION", value = var.aws_region },
     { name = "CASSANDRA_JOB_QUEUE", value = local.shared.job_queue_name },
     { name = "CASSANDRA_ANCHORS_JOB_DEFINITION", value = local.job_definitions.anchors },
-    { name = "CASSANDRA_GAME_CONTROL_JOB_DEFINITION", value = local.job_definitions.game_control },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
     { name = "CASSANDRA_EVALUATE_JOB_DEFINITION", value = local.job_definitions.evaluate },
     { name = "CASSANDRA_PUBLISH_JOB_DEFINITION", value = local.job_definitions.publish },

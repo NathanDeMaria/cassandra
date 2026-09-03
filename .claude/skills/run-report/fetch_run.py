@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Pull one Batch run out of AWS and cache it on disk for `summarize_run.py`.
 
-A "run" is one `jobs.py submit`: an anchors array, a game-control array, an
-optimize array, an evaluate job and a publish array, submitted back-to-back by
-the launcher. They
+A "run" is one `jobs.py submit`: an anchors array, an optimize array, an
+evaluate job and a publish array, submitted back-to-back by the launcher. They
 carry no shared identifier -- Batch has no notion of a workflow, and
 `dag.py:_job_name` stamps each stage from its own `datetime.now()` -- so the
 grouping here is by submission time, which is the only thing they share. See
@@ -73,9 +72,12 @@ _TERMINAL = {"SUCCEEDED", "FAILED"}
 # `cassandra-game-control`.
 _JOB_NAME = re.compile(r"^cassandra-(?P<stage>[a-z-]+)-(?P<stamp>\d{8}-\d{6})$")
 
-# The stages, in DAG order. Anything else on the queue isn't ours. anchors and
-# game_control are siblings -- neither reads the other -- and are listed in the
-# order `dag.submit` sends them.
+# The stages, in DAG order. Anything else on the queue isn't ours.
+#
+# `game-control` is kept because this reads history: nothing has submitted one
+# since it left the DAG, but runs from before that are still in the cache and
+# still worth summarizing, and a stage this doesn't know about is one whose
+# jobs vanish from the report rather than showing up as an extra row.
 STAGES = ("anchors", "game-control", "optimize", "evaluate", "publish")
 
 # The launcher pins each array's fan-out list into the parent's environment, so
