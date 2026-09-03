@@ -8,7 +8,7 @@
         ],
         "initial_rd": [
             80,
-            350
+            620
         ],
         "weekly_rd_increase": [
             0,
@@ -18,15 +18,13 @@
             0,
             250
         ],
-        "scoring_method": [
-            "binary",
-            "pythagorean",
-            "sigmoid"
-        ],
         "season_regression": [
             0,
             0.75
         ]
     },
-    "n_iter": 300
+    "fixed": {
+        "scoring_method": "sigmoid"
+    },
+    "n_iter": 400
 }
