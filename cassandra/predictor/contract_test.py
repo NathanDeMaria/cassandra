@@ -23,13 +23,19 @@ from .elo import EloPredictor
 from .elo538 import Elo538Predictor
 from .flat import FlatPredictor
 from .glicko import GlickoPredictor, _Rating
+from .margin_elo import MarginEloPredictor
 
 # Spelled as a union of concrete classes rather than `type[Predictor]` so the
 # keyword arguments the contract passes -- `anchors`, `season_regression` --
 # are checked against the constructors that actually declare them. See
 # `validated_regression` for why they aren't in the base signature.
-RatedModel = type[EloPredictor] | type[Elo538Predictor] | type[GlickoPredictor]
-Rated = EloPredictor | Elo538Predictor | GlickoPredictor
+RatedModel = (
+    type[EloPredictor]
+    | type[Elo538Predictor]
+    | type[GlickoPredictor]
+    | type[MarginEloPredictor]
+)
+Rated = EloPredictor | Elo538Predictor | GlickoPredictor | MarginEloPredictor
 Model = RatedModel | type[FlatPredictor]
 
 # The control model is here rather than only in `control_test.py` because what
@@ -43,6 +49,7 @@ RATED_MODELS: list[RatedModel] = [
     Elo538Predictor,
     GlickoPredictor,
     ControlGlickoPredictor,
+    MarginEloPredictor,
 ]
 MODELS: list[Model] = [*RATED_MODELS, FlatPredictor]
 

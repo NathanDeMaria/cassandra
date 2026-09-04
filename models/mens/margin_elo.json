@@ -1,0 +1,27 @@
+{
+    "predictor_class": "MarginEloPredictor",
+    "league": "mens",
+    "parameters": {
+        "home_advantage": [
+            0,
+            8
+        ],
+        "k": [
+            0.005,
+            0.4
+        ],
+        "mov_cap": [
+            5,
+            60
+        ],
+        "season_regression": [
+            0,
+            0.5
+        ]
+    },
+    "fixed": {
+        "margin_scale": 7
+    },
+    "n_iter": 150,
+    "objective": "margin_mae"
+}
