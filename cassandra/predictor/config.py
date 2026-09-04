@@ -1,7 +1,9 @@
 import importlib
 from pathlib import Path
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
+
+from cassandra.objective import DEFAULT_OBJECTIVE, get_objective
 
 from .base_predictor import Predictor
 
@@ -51,6 +53,22 @@ class OptimizationConfig(BaseModel):
     # search dimension with one value costs a probe budget it can't spend.
     fixed: dict[str, float | str] = {}
     n_iter: int = 100
+    # Which number the search maximizes; see `cassandra.objective`. Defaulted
+    # to brier so every config written before this existed keeps searching
+    # for exactly what it used to.
+    objective: str = DEFAULT_OBJECTIVE
+
+    @field_validator("objective")
+    @classmethod
+    def _known_objective(cls, name: str) -> str:
+        """Reject a name nothing can score, while a config is being read.
+
+        The batch manifest loads every checked-in config before it launches
+        anything, so a typo here fails the launcher rather than one array
+        child an hour in.
+        """
+        get_objective(name)
+        return name
 
     @model_validator(mode="after")
     def _no_parameter_is_both(self) -> "OptimizationConfig":
@@ -76,6 +94,12 @@ class PredictorConfig(BaseModel):
     league: str
     target: float
     params: dict[str, float | str]
+    # Which objective `target` is a score on, so two results are only
+    # compared when they mean the same thing -- a brier target and a margin
+    # target are both "higher is better" and are otherwise unrelated
+    # numbers. Defaulted for the releases published before objectives
+    # existed, all of which were brier.
+    objective: str = DEFAULT_OBJECTIVE
 
 
 def load_predictor(config_path: Path | str) -> Predictor:

@@ -6,8 +6,8 @@ from pathlib import Path
 import fire
 import pandas as pd
 
-from cassandra.brier import brier_score_df
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.objective import Objective, get_objective
 from cassandra.optimize import optimize
 from cassandra.predictor import (
     OptimizationConfig,
@@ -24,19 +24,27 @@ from cassandra.save_predictions import (
 )
 
 
-def _negative_brier_score(
+def _score_probe(
     league: str,
     seasons: list[Season],
     odds_db: OddsDatabase,
     predictor_class: type[Predictor],
+    objective: Objective,
     **kwargs,
 ) -> float:
+    """Replay the league with one set of parameters and score the result.
+
+    The replay is the whole cost of a probe; the objective on top of it is a
+    fit and a mean. So which number the search maximizes is a choice that
+    costs nothing to make -- see `cassandra.objective` for what the choices
+    mean.
+    """
     predictor = predictor_class(league, **kwargs)  # type: ignore[call-arg]
     prediction_results = join_with_odds(
         predictor, seasons, odds_db, post_callbacks=False
     )
     df = pd.DataFrame([asdict(result) for result in prediction_results])
-    return -brier_score_df(df)
+    return objective(df)
 
 
 def _pinned_notice(fixed: dict[str, float | str], config_name: str) -> str | None:
@@ -75,7 +83,7 @@ async def _run_optimization(config_file: str) -> None:
     seasons = [s async for s in read_all_seasons(league, aws_config.bucket)]
     if not seasons:
         # Otherwise every probe scores an empty set of games and the search
-        # dies inside brier_score_df, well away from the actual problem.
+        # dies inside the objective, well away from the actual problem.
         raise ValueError(
             f"No seasons for league {league!r} in s3://{aws_config.bucket}/seasons/; "
             "the league's data has to be uploaded before it can be optimized"
@@ -91,12 +99,15 @@ async def _run_optimization(config_file: str) -> None:
     if notice is not None:
         print(notice)
 
+    print(f"[optimize] maximizing objective {config_model.objective!r}")
+
     target_function = partial(
-        _negative_brier_score,
+        _score_probe,
         league=league,
         seasons=seasons,
         odds_db=odds_db,
         predictor_class=predictor_class,
+        objective=get_objective(config_model.objective),
         # The pinned arguments reach the constructor the same way a searched
         # one does; the optimizer simply never varies them. It is not told
         # about them at all, so they cost no dimension and appear in no probe.
@@ -110,6 +121,10 @@ async def _run_optimization(config_file: str) -> None:
         predictor_class=config_model.predictor_class,
         league=config_model.league,
         target=target,
+        # Recorded beside the number it scores: `target` alone doesn't say
+        # whether -0.19 is a brier score or an average margin miss, and the
+        # two results sit in the same directory under the same name.
+        objective=config_model.objective,
         # Merged, not just recorded: `load_predictor` rebuilds from `params`
         # alone, so a pinned argument left out here is one the published
         # model silently takes the constructor default for -- which for

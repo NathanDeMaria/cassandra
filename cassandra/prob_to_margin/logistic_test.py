@@ -5,7 +5,11 @@ import pytest
 
 from .base_fit import BaseProbToMarginPredictor
 from .isotonic import IsotonicProbToMarginFitter
-from .logistic import LogisticProbToMarginFitter, _logit
+from .logistic import (
+    LogisticProbToMarginFitter,
+    MaeLogisticProbToMarginFitter,
+    _logit,
+)
 
 
 def test_pick_em_maps_to_zero_margin() -> None:
@@ -110,3 +114,87 @@ def test_extrapolates_past_observed_range_unlike_isotonic() -> None:
     # fit keeps extrapolating a bigger margin.
     assert isotonic_margin == pytest.approx(2.0)
     assert logistic_margin > 10.0
+
+
+def test_mae_fit_beats_the_least_squares_one_on_absolute_error() -> None:
+    """The reason the MAE fitter exists, on the shape of data that produces it.
+
+    Margins are right-skewed: a game can be won by 40 and can't be lost by
+    less than 1. The mean margin at a given win probability therefore sits
+    above the median, so a least-squares scale predicts wider than the number
+    that minimizes absolute error. `publish._best_fit` and the `margin_mae`
+    objective both judge on absolute error, so this is the fit they should be
+    choosing.
+    """
+    rng = np.random.default_rng(11)
+    win_probs = rng.uniform(0.55, 0.95, 2000)
+    logits = _logit(win_probs)
+    # Skewed noise: mostly close games, occasionally a blowout.
+    margins = 10 * logits + rng.exponential(8, win_probs.size) - 8
+
+    least_squares = LogisticProbToMarginFitter().fit(win_probs, margins)
+    mae_fit = MaeLogisticProbToMarginFitter().fit(win_probs, margins)
+
+    def mae(predictor: BaseProbToMarginPredictor) -> float:
+        return float(np.abs(predictor.predict_margins(win_probs) - margins).mean())
+
+    assert mae(mae_fit) < mae(least_squares)
+
+
+def test_mae_fit_recovers_a_known_scale() -> None:
+    true_scale = 9.0
+    win_probs = np.array([0.55, 0.6, 0.7, 0.8, 0.9, 0.95])
+    margins = true_scale * _logit(win_probs)
+
+    predictor = MaeLogisticProbToMarginFitter().fit(win_probs, margins)
+
+    assert predictor.predict_margins(win_probs) == pytest.approx(margins)
+
+
+def test_mae_fit_ignores_a_blowout_the_least_squares_fit_chases() -> None:
+    """A weighted median moves with the middle game, not the extreme one."""
+    win_probs = np.array([0.7, 0.7, 0.7, 0.7, 0.7])
+    margins = np.array([7.0, 7.0, 7.0, 7.0, 70.0])
+
+    mae_fit = MaeLogisticProbToMarginFitter().fit(win_probs, margins)
+    least_squares = LogisticProbToMarginFitter().fit(win_probs, margins)
+
+    assert mae_fit.predict_margins(np.array([0.7])) == pytest.approx([7.0])
+    assert least_squares.predict_margins(np.array([0.7]))[0] > 7.0
+
+
+def test_mae_fit_still_maps_a_pick_em_to_a_level_game() -> None:
+    predictor = MaeLogisticProbToMarginFitter().fit(
+        win_probs=np.array([0.4, 0.6, 0.8]), margins=np.array([-5.0, 5.0, 12.0])
+    )
+
+    assert predictor.predict_margins(np.array([0.5])) == pytest.approx(0.0)
+
+
+def test_mae_fit_of_an_all_pick_em_model_is_a_flat_zero() -> None:
+    """The flat baseline again: every logit is 0, so no slope is identifiable.
+
+    The least-squares fitter answers 0 here, and this one has to agree --
+    `publish._best_fit` compares them, and a nan scale would sort ahead of a
+    real one rather than out of contention.
+    """
+    predictor = MaeLogisticProbToMarginFitter().fit(
+        win_probs=np.full(4, 0.5), margins=np.array([3.0, -3.0, 10.0, -1.0])
+    )
+
+    assert predictor.predict_margins(np.array([0.5, 0.9])) == pytest.approx([0.0, 0.0])
+
+
+def test_mae_fit_serializes_as_an_ordinary_logistic_calibration() -> None:
+    """Same `kind` on the wire, so nothing at serving time has to learn about it."""
+    predictor = MaeLogisticProbToMarginFitter().fit(
+        win_probs=np.array([0.6, 0.8]), margins=np.array([4.0, 11.0])
+    )
+
+    data = json.loads(json.dumps(predictor.to_dict()))
+    rehydrated = BaseProbToMarginPredictor.from_dict(data)
+
+    assert data["kind"] == "logistic"
+    assert rehydrated.predict_margins(np.array([0.75])) == pytest.approx(
+        predictor.predict_margins(np.array([0.75]))
+    )

@@ -70,3 +70,40 @@ def test_every_checked_in_config_pins_arguments_its_predictor_takes(
     config = OptimizationConfig.model_validate_json(config_path.read_text())
 
     load_predictor_class(config.predictor_class)(config.league, **config.fixed)
+
+
+def test_a_config_that_names_no_objective_searches_brier() -> None:
+    """Every checked-in config was written before objectives existed."""
+    config = OptimizationConfig(
+        predictor_class="EloPredictor", league="mens", parameters={"k": (1.0, 40.0)}
+    )
+
+    assert config.objective == "brier"
+
+
+def test_a_misspelled_objective_is_caught_when_the_config_is_read() -> None:
+    """The batch launcher reads every config before it submits anything, so
+    a typo fails there rather than in one array child an hour into a run.
+    """
+    with pytest.raises(ValidationError, match="unknown objective"):
+        OptimizationConfig(
+            predictor_class="EloPredictor",
+            league="mens",
+            parameters={"k": (1.0, 40.0)},
+            objective="margin-mae",
+        )
+
+
+def test_a_result_records_which_objective_its_target_scores() -> None:
+    """`target` is otherwise an unlabeled number: -0.19 is a good brier score
+    and an impossible margin error, and the two land in the same directory.
+    """
+    result = PredictorConfig(
+        predictor_class="EloPredictor",
+        league="mens",
+        target=-9.8,
+        params={"k": 20.0},
+        objective="margin_mae",
+    )
+
+    assert json.loads(result.model_dump_json())["objective"] == "margin_mae"

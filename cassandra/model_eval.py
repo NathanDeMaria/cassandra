@@ -11,12 +11,19 @@ from .prob_to_margin import (
     BaseProbToMarginPredictor,
     IsotonicProbToMarginFitter,
     LogisticProbToMarginFitter,
+    MaeLogisticProbToMarginFitter,
 )
 from .save_predictions import build_predictions_df
 
 DEFAULT_FITTERS: dict[str, BaseProbToMarginFitter] = {
     "isotonic": IsotonicProbToMarginFitter(),
     "logistic": LogisticProbToMarginFitter(),
+    # The least-squares logistic's sibling, fit on the loss `_best_fit` and
+    # the `margin_mae` objective actually judge by. Added rather than
+    # replacing "logistic": the two answer different questions -- expected
+    # margin vs. the margin to bet -- and a release that wants the mean can
+    # still be pointed at the fit that estimates it.
+    "logistic_mae": MaeLogisticProbToMarginFitter(),
 }
 
 
