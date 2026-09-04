@@ -9,11 +9,10 @@
         "k": [
             1,
             40
-        ],
-        "season_regression": [
-            0,
-            0.75
         ]
+    },
+    "fixed": {
+        "season_regression": 0
     },
     "n_iter": 120
 }
