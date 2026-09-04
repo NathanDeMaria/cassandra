@@ -58,9 +58,11 @@ behind it are noise. Anchors failing takes the whole run with it.
 submission died — check that job, not the queue.
 
 **Targets.** The target is the optimizer's objective, negative, higher is better. It is
-comparable between models *inside* one league and meaningless across leagues (different
-games, different sample). Rank within league; never say a model "beats" one in another
-league.
+comparable between models *inside* one league **and only between models that searched the
+same objective** -- a brier target sits near -0.17 and a `margin_mae` one near -9.5, so
+the two rank against each other only by accident. It is meaningless across leagues
+(different games, different sample). Rank within league and within objective; never say a
+model "beats" one in another league.
 
 **`gain`** is best-minus-first-probe. A gain under ~1e-4 means the search never found
 anything: more iterations won't help, and the reported params are barely better than a
@@ -101,8 +103,8 @@ container's lifetime. The evaluate *log* only lists model names — the numbers 
 the csv. Four different questions:
 
 - `brier_score` — win-probability accuracy, lower better, over *every* game. It does not
-  depend on the fitter, so it is identical across a model's `isotonic` and `logistic`
-  rows; that is expected, not a bug.
+  depend on the fitter, so it is identical across a model's `isotonic`, `logistic` and
+  `logistic_mae` rows; that is expected, not a bug.
 - `margin_mae` — average points of error on predicted margin, over *every* game. No
   predictor emits a score, so this is margin, never per-team score. The absolute value is
   mostly a property of the sport (the game-to-game noise floor is high), so read it
@@ -116,8 +118,17 @@ the csv. Four different questions:
   plainly instead of ranking models by it. Note the denominators differ: brier and
   `margin_mae` are over `n_games`, the betting metrics over `n_spread_games`.
 
-`isotonic` and `logistic` are two fitters over the same predictions, so a split between
-them on the margin metrics says more about the fitter than the model.
+`isotonic`, `logistic` and `logistic_mae` are three fitters over the same predictions, so
+a split between them on the margin metrics says more about the fitter than the model.
+`logistic_mae` fits the same curve as `logistic` against absolute rather than squared
+error, so it should win the margin metrics by a little and lose nothing; a model where it
+doesn't is worth a look.
+
+A config may also name an `objective` (`cassandra/objective.py`): `brier` is the default
+and what every model searched before it existed, `margin_mae` searches the margin error
+instead. A result config records which one its `target` scores, so a `target` of -9.8 and
+one of -0.17 are not two models to rank against each other -- check the `objective` field
+before comparing targets.
 
 ## 3. Dig only where it pays
 
