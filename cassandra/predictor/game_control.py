@@ -10,13 +10,11 @@ them.
 Specifically `luck_adjusted_game_control`, not `game_control` -- the same
 average taken over a curve redrawn with the fumbles and the tipped balls
 split evenly rather than credited to whoever they fell to. The realized
-number is what this index used to hold, and what it holds now is the reason
-it is worth holding at all: measured against the scoreboard it summarised,
-realized control bought nothing (`cassandra.predictor.control` has the
-numbers), and the one thing that did help was the signal that stopped
-summarising the scoreboard. Splitting the coin flips is a move in that
-direction; whether it is far enough is the open question the index exists to
-answer.
+number is what this index used to hold, and the swap is measured rather than
+assumed: splitting the coin flips is worth about half again what realized
+control was worth, which is still not enough to matter.
+`cassandra.predictor.control` has both sets of numbers, and the reason the
+reading is still the adjusted one despite that.
 
 Which is the same shape as the thing a rating model already asks of a game:
 `cassandra.scoring` turns a final score into a number between 0 and 1 for the
