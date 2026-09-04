@@ -39,6 +39,29 @@ def _negative_brier_score(
     return -brier_score_df(df)
 
 
+def _pinned_notice(fixed: dict[str, float | str], config_name: str) -> str | None:
+    """The run report line that keeps a pinned parameter from going quiet.
+
+    A pin is a decision made from one run's diagnostics, and the evidence for
+    it decays: a parameter held at 0 because the search wanted it off may be
+    worth searching again once the model around it changes. Nothing else would
+    ever raise the question -- a pinned parameter produces no probes, so it
+    produces no bound-hit diagnostic either, which is exactly how a decision
+    becomes permanent by accident.
+
+    Carries the `[optimize]` prefix the run report already collects into its
+    tuning diagnostics, so every weekly report restates the open question
+    against the config that has to change to answer it.
+    """
+    if not fixed:
+        return None
+    pinned = ", ".join(f"{name}={value}" for name, value in sorted(fixed.items()))
+    return (
+        f"[optimize] pinned, not searched: {pinned} -- re-open in "
+        f"{config_name} if a change could make one of them matter again"
+    )
+
+
 async def _run_optimization(config_file: str) -> None:
     config_path = Path(config_file)
     with open(config_path, "r") as f:
@@ -63,6 +86,10 @@ async def _run_optimization(config_file: str) -> None:
     predictor = predictor_class(league, **config_model.fixed)
     for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
         pass
+
+    notice = _pinned_notice(config_model.fixed, config_path.name)
+    if notice is not None:
+        print(notice)
 
     target_function = partial(
         _negative_brier_score,
