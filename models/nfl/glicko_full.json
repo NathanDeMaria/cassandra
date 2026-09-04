@@ -26,5 +26,5 @@
     "fixed": {
         "scoring_method": "sigmoid"
     },
-    "n_iter": 200
+    "n_iter": 400
 }
