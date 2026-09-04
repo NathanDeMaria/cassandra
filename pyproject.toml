@@ -65,6 +65,16 @@ endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "2664
 # rev pins the model: which win probability curve a rating was built against
 # has one answer, the way `call-it-what-you-want` pins team identity.
 #
+# This rev adds `luck_adjusted_game_control` and `lucky_wp` -- the same share
+# of a game with the fumbles and tipped balls split evenly, and the size of
+# the breaks -- which is the signal `cassandra.predictor.control` says is
+# worth measuring against its law. `lucky_ones/releases/` is byte-identical
+# to the previous rev, so `run_id` is unchanged and the curve is the same
+# curve; the bump moves only what can be read off it. `ControlFit` keys
+# idempotency on this commit rather than on `run_id`, so a sweep will still
+# rebuild an existing index from scratch, which is the conservative side of
+# that trade to be on.
+#
 # `data` is pyarrow, for `lucky_ones.arrow` -- the adapter from endgame's
 # stored parquet, and the only part of the package cassandra imports that
 # needs it. Declared rather than left to endgame_aws's pyarrow, so the import
@@ -75,7 +85,7 @@ endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "2664
 # scikit-learn that produces a win probability fit, and cassandra produces
 # none -- it reads the one that ships inside the package. The scikit-learn
 # above is cassandra's own, for the prob-to-margin calibration.
-lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "d253c4b9ef266aab50afce435bf3d2b3ae50eb96", extras = ["data"]}
+lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "e12179e2f1d33b2f90293be7e4df4150ed381eb7", extras = ["data"]}
 
 
 [tool.poetry.group.dev.dependencies]

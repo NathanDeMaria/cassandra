@@ -8,6 +8,10 @@ winning it, measured from the plays rather than from the final score -- so
 exactly; at 1 the scoreboard only decides how many points were scored, not
 what the game was worth.
 
+Which control, of the two `lucky_ones` will report, is the index's business
+rather than this class's: it blends whatever `{league}_game_control.json`
+holds, and the file's header says which reading that is.
+
 A searched parameter rather than a constant, because how much of a result is
 signal and how much is the bounces is a question about a league, not a thing
 to assert -- and the search recovering 0 is a real answer, not a failed run.
@@ -32,6 +36,16 @@ to throw the seam away.
 
 What this is measured to be worth, so nobody has to find out twice
 ------------------------------------------------------------------
+
+Everything below was measured against *realized* control -- the average of
+the win probability curve as the game actually bounced. The index no longer
+holds that number: `cassandra.game_control_build` now writes
+`luck_adjusted_game_control`, the same average over a curve redrawn with the
+fumbles and the tipped balls split evenly (see
+`cassandra.predictor.game_control`). So this is a record of what one reading
+was worth, not a verdict on the seam, and the law at the end of it is the
+cheap way to find out whether the new reading is any different: it is a
+Spearman correlation and a blend sweep at fitted parameters, not a search.
 
 It does not help. Against ncaafb's 25,307 games with play-by-play, holding
 `glicko_full`'s fitted parameters and varying only the blend, the best weight

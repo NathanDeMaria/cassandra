@@ -119,6 +119,10 @@ def test_a_saved_sweep_reads_back_as_control(
     stored = read_game_control_file("ncaafb")
     assert stored is not None
     assert stored.fit.run_id == "20260901-005010"
+    # Written before `reading` existed, so it says what it actually holds:
+    # the realized average, which is what makes it compare unequal to a fit
+    # built now and get swept again rather than merged into.
+    assert stored.fit.reading == "realized"
 
 
 def test_the_path_names_the_league() -> None:
