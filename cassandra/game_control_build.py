@@ -6,8 +6,9 @@ and pyarrow and moves ~190MB of parquet, and lives in the `fit` group with
 the rest of the fitting stack. The artifact is the seam between them.
 
 What the sweep does, a week at a time: read the week's processed plays, group
-them into games, score each game's win probability curve, keep the one float
-the curve averages to, and drop the plays. Peak memory is a handful of weeks
+them into games, score each game's win probability curve, redraw it with the
+fifty-fifty balls split, keep the one float that curve averages to, and drop
+the plays. Peak memory is a handful of weeks
 rather than a league's history -- ncaafb is about seven million plays and
 sixteen thousand floats, and only the second number is worth holding.
 
@@ -42,6 +43,7 @@ from lucky_ones import MODELS, group_by_game
 from lucky_ones.plays import Play, PlaySource
 
 from cassandra.predictor.game_control import (
+    CONTROL_READING,
     ControlFit,
     GameControlFile,
     game_control_path,
@@ -96,7 +98,26 @@ def current_fit(league: str) -> ControlFit:
     Raises `KeyError` for a league `lucky_ones` ships no fit for, which is
     every league that isn't football -- see `CONTROL_LEAGUES`.
     """
-    return ControlFit(lucky_ones=_lucky_ones_revision(), run_id=MODELS[league].run_id)
+    return ControlFit(
+        lucky_ones=_lucky_ones_revision(),
+        run_id=MODELS[league].run_id,
+        reading=CONTROL_READING,
+    )
+
+
+def _differences(stored: ControlFit, current: ControlFit) -> str:
+    """Which fields of the fit moved, for the line a full sweep prints.
+
+    Named rather than counted, and `run_id` on its own would have been the
+    wrong thing to print: the rev that added the luck-adjusted reading left
+    the fits inside the package byte-identical, so it moves `lucky_ones` and
+    `reading` while the run id stays exactly where it was.
+    """
+    return ", ".join(
+        name
+        for name in ControlFit.model_fields
+        if getattr(stored, name) != getattr(current, name)
+    )
 
 
 class SweepStats(NamedTuple):
@@ -342,7 +363,11 @@ async def _sweep_week(
         if not _covers(final, result):
             incomplete += 1
             continue
-        scored = model.game_control(game)
+        # The luck-adjusted reading, not the realized one: the curve redrawn
+        # with the fumbles and the tipped balls split evenly rather than
+        # credited to whoever they fell to. It is None on exactly the games
+        # `game_control` is None on, so `no_clock` still counts what it says.
+        scored = model.luck_adjusted_game_control(game)
         if scored is None:
             no_clock += 1
             continue
@@ -431,7 +456,7 @@ async def build(
             if stored is not None and not stale
             else "no index yet"
             if stored is None
-            else f"built by a different fit ({stored.fit.run_id})"
+            else f"built by a different fit ({_differences(stored.fit, fit)})"
         )
         print(f"{league}: full sweep -- {reason}")
         scope = list(seasons)

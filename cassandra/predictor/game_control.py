@@ -1,4 +1,4 @@
-"""Game control: how much of a game a team spent winning it.
+"""Game control: how much of a game a team spent winning it, on purpose.
 
 The number comes from `the-lucky-ones`, which fits an in-game win probability
 model on play-by-play and averages the curve over the game, weighted by how
@@ -6,6 +6,17 @@ long each snap's situation stood. Read it as a share of the game controlled
 rather than as a win probability: 0.80 doesn't say the home team was ever 80%
 to win, it says that averaged over sixty minutes that's where the model had
 them.
+
+Specifically `luck_adjusted_game_control`, not `game_control` -- the same
+average taken over a curve redrawn with the fumbles and the tipped balls
+split evenly rather than credited to whoever they fell to. The realized
+number is what this index used to hold, and what it holds now is the reason
+it is worth holding at all: measured against the scoreboard it summarised,
+realized control bought nothing (`cassandra.predictor.control` has the
+numbers), and the one thing that did help was the signal that stopped
+summarising the scoreboard. Splitting the coin flips is a move in that
+direction; whether it is far enough is the open question the index exists to
+answer.
 
 Which is the same shape as the thing a rating model already asks of a game:
 `cassandra.scoring` turns a final score into a number between 0 and 1 for the
@@ -69,24 +80,40 @@ def game_control_path(league: str) -> Path:
     return _PREDICTOR_DATA_DIR / f"{league}_game_control.json"
 
 
-class ControlFit(BaseModel):
-    """Which win probability model produced an index.
+# Which reading of the win probability curve `game_control_build` takes. A
+# constant rather than a literal in the build, because it is half of a
+# comparison: `ControlFit.reading` is what a stored index was built with, and
+# this is what one built now would be.
+CONTROL_READING = "luck_adjusted"
 
-    Two fields because two different things move the numbers, and only one of
-    them is visible in the other. `run_id` is the training run behind the
+
+class ControlFit(BaseModel):
+    """Which win probability model produced an index, and what was read off it.
+
+    Three fields because three different things move the numbers, and none of
+    them is visible in the others. `run_id` is the training run behind the
     league's shipped fit, so it changes when the coefficients are refit.
     `lucky_ones` is the pinned commit of the package, so it changes when the
     code that turns plays into a curve changes -- new features, a different
     clock weighting -- which moves every control number without touching a
-    coefficient.
+    coefficient. `reading` is which number cassandra takes off that curve,
+    which is a choice made here rather than there: the package offers the
+    realized average and the luck-adjusted one, and swapping between them
+    changes every entry while the model behind them is identical.
 
     Together they are what makes the sweep idempotent: a stage that finds its
     own fit already stored has nothing to do, and one that finds a different
     one has to rebuild rather than merge into numbers from another model.
+
+    `reading` defaults to `"realized"` rather than to `CONTROL_READING`, so
+    an index written before the field existed says what it actually holds and
+    is correctly found stale. A default naming the current reading would make
+    every one of those files claim to be something it isn't.
     """
 
     lucky_ones: str
     run_id: str
+    reading: str = "realized"
 
 
 class GameControlFile(BaseModel):

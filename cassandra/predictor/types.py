@@ -45,6 +45,12 @@ class Rating(NamedTuple):
 class GameControl(NamedTuple):
     """One game's control: the home team's time-weighted share of winning it.
 
+    The luck-adjusted share, since that is what the sweep writes -- the game
+    with its fifty-fifty balls split rather than the one the bounces decided.
+    Unnamed in the field, because which reading an index holds is a property
+    of the whole file and lives in its `ControlFit` header, not repeated on
+    sixteen thousand rows.
+
     Only the home side, because the away side is `1 - home` by construction
     and carrying both in an artifact is how a `1 -` in the wrong place gets
     shipped. `seconds` is how much regulation clock the average covers, which
