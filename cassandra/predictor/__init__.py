@@ -23,5 +23,6 @@ from .game_control import (
     load_game_control,
 )
 from .glicko import GlickoPredictor
+from .margin_elo import MarginEloPredictor
 from .matchup import predict_matchup
 from .types import GameControl, GameResult, Matchup, Prediction, Rating
