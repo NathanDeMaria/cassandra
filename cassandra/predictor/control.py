@@ -37,15 +37,11 @@ to throw the seam away.
 What this is measured to be worth, so nobody has to find out twice
 ------------------------------------------------------------------
 
-Everything below was measured against *realized* control -- the average of
-the win probability curve as the game actually bounced. The index no longer
-holds that number: `cassandra.game_control_build` now writes
-`luck_adjusted_game_control`, the same average over a curve redrawn with the
-fumbles and the tipped balls split evenly (see
-`cassandra.predictor.game_control`). So this is a record of what one reading
-was worth, not a verdict on the seam, and the law at the end of it is the
-cheap way to find out whether the new reading is any different: it is a
-Spearman correlation and a blend sweep at fitted parameters, not a search.
+Two readings have been through this seam, and neither one helps. Everything
+in this section is about *realized* control -- the average of the win
+probability curve as the game actually bounced -- which is what the index
+held until the luck-adjusted number replaced it; the section after has what
+the swap was worth.
 
 It does not help. Against ncaafb's 25,307 games with play-by-play, holding
 `glicko_full`'s fitted parameters and varying only the blend, the best weight
@@ -92,6 +88,48 @@ is a *worse* replacement for the final score (it sits on the law) and a
 what control manages, with a smooth unimodal weight curve and a shuffle null
 0.0014 away. It is the crude binary form of EPA, which is the signal worth
 building next and which would arrive through this exact seam.
+
+Splitting the coin flips, which is what the index holds now
+-----------------------------------------------------------
+
+`the-lucky-ones` grew a second reading -- `luck_adjusted_game_control`, the
+same average over a curve redrawn with the fumbles and the tipped balls
+split evenly rather than credited to whoever they fell to -- and
+`cassandra.game_control_build` now writes that one. Measured the same way as
+everything above, holding `glicko_full`'s fitted parameters and varying only
+the blend:
+
+    league  rank corr  best weight  d brier  realized control was
+    ncaafb     0.8864    0.15-0.20  -0.00008  +0.00005 at ~0.25
+    nfl        0.7999         0.10  -0.00004  negative at every weight
+
+So it is better than the realized number in both leagues, and it is the
+first version of this signal that helps the NFL at all -- a real interior
+optimum with the smooth unimodal shape that says a fit would find it, rather
+than a curve that only ever goes the wrong way. It is also still about a
+quarter of what success rate differential manages and about 1/100th of the
+0.0088 that separates ncaafb's two best models, which is the number that
+decides whether any of this is worth a dimension in a search.
+
+The law is what says why, and it says it precisely. Replacing the scoreboard
+entirely (weight 1.0) costs ncaafb 0.00142 against the 0.00141 the law
+predicts from a rank correlation of 0.8864 -- on the line to 1e-5, which is
+inside the 6e-5 the original eleven signals held to. Splitting the coin
+flips genuinely did decorrelate control from the final score, well clear of
+the 0.940 that sank the min-remaining-WP signal. It bought no information
+the final score lacks. A twelfth point on the same line is the strongest
+version of what this section has been saying: the axis is the problem, not
+the noise on it.
+
+nfl comes in *above* the line -- 0.00319 against a predicted 0.00248 -- but
+the law was fit on ncaafb, so that is out of sample and worth no more than
+the direction it points.
+
+The reading stays adjusted anyway. Nothing scheduled reads this index, so
+the choice costs nothing either way, and between two numbers that both fail
+the same test the one to keep on disk is the one that is better on both
+leagues and better motivated. What it is not is a reason to restore a
+`glicko_control` config.
 """
 
 from collections.abc import Mapping
