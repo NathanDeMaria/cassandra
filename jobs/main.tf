@@ -210,7 +210,16 @@ module "optimize" {
   # three hours in has produced nothing -- there's no checkpointing to resume
   # from. Only host failures retry; a config that genuinely fails still fails
   # once.
-  retry_attempts = 3
+  #
+  # Six rather than three because three was measured to be too close: in the
+  # 20260903-230628 run, six of twenty-four children were reclaimed and four
+  # of those spent all three attempts, so the array came within one
+  # interruption of failing and taking evaluate and publish with it. The
+  # exposure is a product of wall time, and the longest searches are the ones
+  # that keep getting hit -- so this is not a number that gets safer as more
+  # `n_iter` goes in. Retries on a reclaim are nearly free: the attempt that
+  # died produced nothing to pay for.
+  retry_attempts = 6
 
   environment_variables = local.job_environment
 }
