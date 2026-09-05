@@ -20,7 +20,7 @@
         "initial_rd": 531.7962683831678,
         "weekly_rd_increase": 0.0,
         "season_rd_increase": 250.0,
-        "season_regression": 0,
+        "season_regression": 0.0,
         "mov_scale": 10.0,
         "control_temp": 1.0,
         "epa_margin_scale": 10.0
