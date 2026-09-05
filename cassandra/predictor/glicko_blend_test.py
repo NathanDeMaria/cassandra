@@ -419,3 +419,44 @@ def test_a_release_from_before_mov_scale_still_loads() -> None:
     assert state["epa_residual_beta"] == DEFAULT_EPA_RESIDUAL_BETA
     assert state["play_weight"] == pytest.approx(0.17)
     assert "scoring_method" not in state
+
+
+def test_no_play_weight_at_the_configs_pins_is_exactly_glicko_full(
+    game: GameFactory,
+) -> None:
+    """The property the checked-in configs are built to have.
+
+    `models/{nfl,ncaafb}/glicko_blend.json` pins the Glicko machinery at
+    `glicko_full`'s fitted values, so the search's own `play_weight` 0 is the
+    baseline's score rather than a number from another run -- but only if
+    this class at those pins really is that class. The pins live in the
+    configs; what is asserted here is the equivalence they rely on.
+    """
+    # ncaafb's, spelled out rather than splatted: a `**kwargs` of floats is
+    # one typo away from landing on a parameter that takes something else.
+    blended = BlendedGlickoPredictor(
+        "test_league",
+        home_advantage=46.15485975637294,
+        initial_rd=531.7962683831678,
+        weekly_rd_increase=0.0,
+        season_rd_increase=250.0,
+        season_regression=0,
+        play_weight=0.0,
+        mov_scale=DEFAULT_MOV_SCALE,
+    )
+    plain = GlickoPredictor(
+        "test_league",
+        home_advantage=46.15485975637294,
+        initial_rd=531.7962683831678,
+        weekly_rd_increase=0.0,
+        season_rd_increase=250.0,
+        season_regression=0,
+        scoring_method="sigmoid",
+    )
+
+    for index, (home, away) in enumerate([(27, 13), (3, 31), (17, 17), (45, 0)]):
+        played = game("A", "B", home, away, game_id=str(index))
+        blended.update_game(played)
+        plain.update_game(played)
+        assert blended.get_rating("A") == plain.get_rating("A")
+        assert blended.get_rating("B") == plain.get_rating("B")
