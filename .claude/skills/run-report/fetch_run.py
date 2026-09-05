@@ -78,7 +78,7 @@ _JOB_NAME = re.compile(r"^cassandra-(?P<stage>[a-z-]+)-(?P<stamp>\d{8}-\d{6})$")
 # since it left the DAG, but runs from before that are still in the cache and
 # still worth summarizing, and a stage this doesn't know about is one whose
 # jobs vanish from the report rather than showing up as an extra row.
-STAGES = ("anchors", "game-control", "optimize", "evaluate", "publish")
+STAGES = ("anchors", "game-control", "epa", "optimize", "evaluate", "publish")
 
 # The launcher pins each array's fan-out list into the parent's environment, so
 # an index can be turned back into a name without recomputing anything locally.
@@ -89,6 +89,7 @@ _MANIFEST_VARS = {
     "publish": ("CASSANDRA_PUBLISH_LEAGUES", "csv"),
     "anchors": ("CASSANDRA_ANCHOR_LEAGUES", "csv"),
     "game-control": ("CASSANDRA_CONTROL_LEAGUES", "csv"),
+    "epa": ("CASSANDRA_EPA_LEAGUES", "csv"),
 }
 
 # Two jobs are the same run if they were submitted within this of each other.

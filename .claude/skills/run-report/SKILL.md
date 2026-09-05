@@ -5,10 +5,12 @@ description: Review an AWS Batch pipeline run (anchors, optimize, evaluate, publ
 
 # Reviewing a Batch run
 
-`make submit` puts a four-stage DAG on the queue — anchors, then an optimize array
-(one child per `models/<league>/*.json`), then evaluate and publish as siblings. Runs
-from before game control left the DAG have a fifth, `game-control`, alongside anchors;
-they still summarize. Each container's stdout goes to CloudWatch under
+`make submit` puts a DAG on the queue — anchors, `game-control` and `epa` in parallel,
+then an optimize array (one child per `models/<league>/*.json`), then evaluate and
+publish as siblings. The two sweeps are football-only, so a run scoped to a basketball
+league has neither. Runs from the window where `game-control` was out of the DAG have
+neither sweep, and runs from before `epa` existed have only `game-control`; both still
+summarize. Each container's stdout goes to CloudWatch under
 `/aws/batch/job`, and it is mostly bayes_opt probe tables — hundreds of KB of numbers
 per child. **Never read a raw stream top-to-bottom.** Condense first.
 
