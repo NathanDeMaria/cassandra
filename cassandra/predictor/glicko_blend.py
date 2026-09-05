@@ -56,10 +56,65 @@ So the thing to read off a fitted run is not the target alone but where
 signal working and control still not; both up together would be the first
 evidence that control helps once it has company.
 
-**Nothing here is fitted.** The defaults are legible starting points, not
-numbers a search found, and `models/{nfl,ncaafb}/glicko_blend.json` is the
-run that would replace them -- after a `jobs.py epa` sweep, since the index
-this reads does not exist until one runs.
+What it was measured to be worth: real, and very small
+------------------------------------------------------
+
+Run 2026-09-05, 400 probes per league, against the first full EPA sweep
+(4,984 NFL games with play-by-play, 25,315 NCAAFB).
+
+Measured against the same fitted parameters with `play_weight = 0` rather
+than against `glicko_full`, because that isolates the blend and nothing else.
+Comparing to `glicko_full` instead understates it -- differently fitted
+model, and a stored `target` written against whatever seasons existed on the
+day of *its* search, which is not comparable across runs. `glicko_full`'s
+stored target said 0.15748 and its replay on the day said 0.15800; always
+compare through a replay.
+
+    league  signals off  blended     d brier   play_weight  control    epa
+    ncaafb     0.157990  0.157890  -0.000101       0.1728   0.1228  0.0500
+    nfl        0.221255  0.221140  -0.000116       0.1771   0.0710  0.1061
+
+**The signal is real.** Permute which game each (control, EPA) pair belongs
+to -- preserving both marginal distributions exactly, keeping the two paired
+with each other, destroying only the correspondence to the game played -- and
+the gain does not survive:
+
+    league  shuffles  null mean   vs off   real is
+    ncaafb        15   0.158713  +0.00072  20.9 sd better, 0/15 matched it
+    nfl            4   0.222109  +0.00085   8.1 sd better, 0/4 matched it
+
+Note the sign on the null. A shuffled index is *worse than no index at all*,
+by seven to eight times what the real one is better by. So this is not a flat
+direction where any plausibly-shaped number would do: it is a narrow well
+that misassignment falls straight out of. That also makes it an operational
+guarantee worth having -- an index that ever went misaligned would show up as
+degradation rather than as nothing.
+
+**And it is far too small to matter.** 0.0001 against the 0.00906 that
+separates ncaafb's two best models -- `glicko_full` to `glicko_binary`, the
+resolution at which model choice actually matters here -- is about 1.1%. For
+company through this same seam: luck-adjusted control managed 0.00008 and
+success rate differential 0.00030. EPA and control together land between the
+two signals `cassandra.predictor.control` already measured.
+
+Real and negligible are both true, and neither one is the interesting half
+without the other. `cassandra.predictor.control`'s law is not refuted -- EPA
+still comes in on the line rather than below it, and the gain is a rounding
+error against model choice. What the null adds is that the failure is one of
+*magnitude* rather than of content, which is a different finding from
+control's: those searches drove their weight to zero exactly, with the top
+decile crowded against the bound, because the objective disliked the signal.
+This one is kept, at 0.17 in both leagues, because it genuinely helps -- by
+an amount nobody should ship a model over.
+
+What is not established: that 0.17 is the optimum. No weight sweep was run,
+only the fitted point and the null around it. The split between `control` and
+`epa` reverses across the two leagues and no measurement here separates them,
+so read the pair as one signal until something does.
+
+`glicko_blend` is nominally ncaafb's best model on brier and on margin MAE
+(13.0011 against `glicko_full`'s 13.0077) as of this run.
+`cassandra.predictor.margin_blend` has the sibling result on the other scale.
 """
 
 import math
