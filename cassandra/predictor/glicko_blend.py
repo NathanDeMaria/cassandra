@@ -122,29 +122,18 @@ score on the same games in the same process, and "did the blend beat
 different sets of games -- which is the confound that made the first
 measurement here understate itself threefold.
 
-**Measured before the temperatures existed.** Everything below is the
-2026-09-05 run, which searched six parameters with `mov_scale` frozen at
-`sigmoid_score`'s 10, `epa_margin_scale` pinned at 10 and control passed
-through untransformed. The fitted weights in the table are therefore the
-best available under a constraint this class no longer has, and the next run
-should replace them. What does not depend on the parameterization is the
-shuffle null, which is about whether the index carries per-game information
-at all.
+The measurement, from the three-parameter run of 2026-09-05. Its
+`play_weight` 0 is `glicko_full` exactly, in the same process on the same
+games, so the baseline column below is not a number from another run:
 
-Run 2026-09-05, 400 probes per league, against the first full EPA sweep
-(4,984 NFL games with play-by-play, 25,315 NCAAFB).
+    league  play_weight 0  blended     d brier   play_weight  control    epa
+    ncaafb       0.157983  0.157850  -0.000133       0.2978   0.1516  0.1462
+    nfl          0.221223  0.221181  -0.000042       0.1337   0.0098  0.1239
 
-Measured against the same fitted parameters with `play_weight = 0` rather
-than against `glicko_full`, because that isolates the blend and nothing else.
-Comparing to `glicko_full` instead understates it -- differently fitted
-model, and a stored `target` written against whatever seasons existed on the
-day of *its* search, which is not comparable across runs. `glicko_full`'s
-stored target said 0.15748 and its replay on the day said 0.15800; always
-compare through a replay.
-
-    league  signals off  blended     d brier   play_weight  control    epa
-    ncaafb     0.157990  0.157890  -0.000101       0.1728   0.1228  0.0500
-    nfl        0.221255  0.221140  -0.000116       0.1771   0.0710  0.1061
+Always compare through a replay, never through a stored `target`. A result
+file records what a search scored against whatever seasons existed on the day
+it ran: `glicko_full`'s said 0.15748 while its replay said 0.15800, and the
+0.0005 between those is ten times the effect being measured.
 
 **The signal is real.** Permute which game each (control, EPA) pair belongs
 to -- preserving both marginal distributions exactly, keeping the two paired
@@ -196,20 +185,34 @@ Averaging a second noisy measurement of the same quantity reduces variance,
 so the gain is real and the shuffle null finds it. It carries little the
 final score lacks, so the gain is tiny. Both halves follow from one number.
 
-If there is more here, it is in the part of EPA the scoreboard does *not*
-explain, which is what `epa_residual_beta` is: subtract the fitted share of
-the final margin and what is left is "this team moved the ball better than it
-scored", the only sentence in any of this the scoreboard cannot say for
-itself. At the OLS slope the residual keeps a standard deviation of 6.3 (nfl)
-and 7.7 (ncaafb) -- about half the raw EPA margin -- so it is a real
-quantity rather than rounding, and it is orthogonal to the scoreboard by
-construction rather than 0.85 correlated with it.
+The residual was the obvious place to look for more, and it is empty. Take
+the fitted share of the final margin back out of EPA -- `epa_residual_beta`
+-- and what is left is "this team moved the ball better than it scored", the
+one sentence in any of this the scoreboard cannot say for itself. It keeps
+half the raw margin's spread (6.3 nfl, 7.7 ncaafb), so it is a real quantity,
+and it is orthogonal to the scoreboard by construction rather than 0.85
+correlated with it. Every reason to expect something.
 
-Whether that half is signal or noise is the open question, and it is the
-reason the parameter defaults to 0: this model has never been run with it on.
-Set against the hope, one caution -- EPA and control correlate 0.72 (nfl) and
-0.83 (ncaafb) with each other, so the two are not independent looks, and a
-residual that helps may be helping in a direction control already covers.
+    league  beta fitted   at beta = 0    at the OLS beta
+    ncaafb       0.0000      0.157850   0.158533  (+0.00068)
+    nfl          0.0000      0.221181   0.221627  (+0.00045)
+
+Both leagues put it at zero unprompted, and forcing it to the slope that
+makes the residual orthogonal costs four to seven times what the whole blend
+gains. So the residual is not neutral, it is *worse* -- which says the half
+of EPA the scoreboard does not explain is noise, and the half it does explain
+is the entire value.
+
+Which inverts the reading of the rank correlation above. EPA being 0.85 to
+0.91 redundant with the final score looked like the reason it helps so little.
+It is the reason it helps at all: this is a second noisy measurement of the
+same quantity, worth the small variance reduction that averaging two
+measurements buys and nothing beyond it. A signal that agreed with the
+scoreboard less would not do better here; it would do worse.
+
+The other caution stands and is now moot: EPA and control correlate 0.72
+(nfl) and 0.83 (ncaafb) with each other, so they were never two independent
+looks either.
 
 Real and negligible are both true, and neither one is the interesting half
 without the other. `cassandra.predictor.control`'s law is not refuted -- EPA
