@@ -1,20 +1,33 @@
-"""The sweep, against plays built here rather than against a bucket.
+"""The control sweep, against plays built here rather than against a bucket.
 
-The fixtures are deliberately crude -- a snap every thirty seconds, one team
-ahead the whole way -- because what these check is the bookkeeping around the
-win probability model, not the model. Whether a curve is any good is
-`lucky_ones`' own test suite's problem; whether a week's worth of games ends
-up in the right file with the right header is this one's.
+Which number comes off a game is what this checks; that the sweep walks the
+weeks and drops the games it should is `pbp_sweep`'s half and is checked
+through here too, since this is the build that has been run for real. The
+plays come from `cassandra.conftest` -- see there for why they look the way
+they do.
 """
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Iterable, NamedTuple, Sequence
 
 import pytest
-from endgame.types import Game, Season, Week
+from endgame.types import Season, Week
 from lucky_ones import MODELS, group_by_game
 
+from cassandra.conftest import (
+    LEAGUE as _LEAGUE,
+)
+from cassandra.conftest import (
+    FakeSource as _Source,
+)
+from cassandra.conftest import (
+    game_for as _game,
+)
+from cassandra.conftest import (
+    plays_for as _plays,
+)
+from cassandra.conftest import (
+    season_for as _season,
+)
 from cassandra.game_control_build import (
     build,
     current_fit,
@@ -30,149 +43,6 @@ from cassandra.predictor.game_control import (
 
 _LEAGUE = "nfl"
 _HOME_ID, _AWAY_ID = "100", "200"
-
-
-class _Play(NamedTuple):
-    """A row of endgame's play schema, in the columns `Play` reads."""
-
-    league: str
-    season: int
-    week: int
-    game_id: str
-    play_id: str
-    play_number: int
-    period: int | None
-    clock_seconds: int | None
-    wallclock: datetime | None
-    home_score: int | None
-    away_score: int | None
-    offense_team_id: str | None
-    defense_team_id: str | None
-    down: int | None
-    distance: int | None
-    yardline: int | None
-    play_type: str | None
-    text: str | None
-    scoring_play: bool | None
-    is_penalty: bool | None
-    is_turnover: bool | None
-    drive_id: str | None
-    drive_number: int
-    drive_team_id: str | None
-    drive_result: str | None
-    drive_is_score: bool | None
-
-
-def _plays(
-    game_id: str,
-    season: int = 2025,
-    week: int = 1,
-    periods: Iterable[int] = (1, 2, 3, 4),
-    home_leads: bool = True,
-    fumble_on: int | None = None,
-) -> list[_Play]:
-    """A game as a snap every thirty seconds, with one side scoring first.
-
-    The scoring plays are what `infer_home_team_id` votes on, so the game has
-    to have some for `group_by_game` to keep it at all.
-    """
-    plays: list[_Play] = []
-    home_score = away_score = 0
-    number = 0
-    leader, trailer = (
-        (_HOME_ID, _AWAY_ID) if home_leads else (_AWAY_ID, _HOME_ID)
-    )
-    for period in periods:
-        for clock in range(900, 0, -30):
-            number += 1
-            # One touchdown for the leader early in each period, so the
-            # scoring-drive vote has something to count and the leader is
-            # ahead for essentially the whole game.
-            scored = clock == 870
-            if scored:
-                if home_leads:
-                    home_score += 7
-                else:
-                    away_score += 7
-            plays.append(
-                _Play(
-                    league=_LEAGUE,
-                    season=season,
-                    week=week,
-                    game_id=game_id,
-                    play_id=f"{game_id}-{number}",
-                    play_number=number,
-                    period=period,
-                    clock_seconds=clock,
-                    wallclock=None,
-                    home_score=home_score,
-                    away_score=away_score,
-                    offense_team_id=leader if period % 2 else trailer,
-                    defense_team_id=trailer if period % 2 else leader,
-                    down=1,
-                    distance=10,
-                    yardline=50,
-                    play_type="Rush",
-                    # `lucky_ones.luck` classifies off this sentence and
-                    # nothing else, so a game with no text has no bounces in
-                    # it and its adjusted control is its realized control.
-                    text=(
-                        "Smith rushes for 3 yards, FUMBLES, RECOVERED by Jones"
-                        if number == fumble_on
-                        else None
-                    ),
-                    scoring_play=scored,
-                    is_penalty=False,
-                    is_turnover=number == fumble_on,
-                    drive_id=f"{game_id}-d{period}",
-                    drive_number=period,
-                    drive_team_id=leader,
-                    drive_result="TD" if scored else None,
-                    drive_is_score=scored,
-                )
-            )
-    return plays
-
-
-class _Source:
-    """A `PlaySource` over plays held in a dict, keyed by (year, week)."""
-
-    def __init__(self, weeks: dict[tuple[int, int], Sequence[_Play]]) -> None:
-        self._weeks = weeks
-        self.loaded: list[tuple[int, int]] = []
-
-    async def load_game(self, league, season, week, game_id):
-        return [p for p in await self.load_week(league, season, week) if p.game_id == game_id]
-
-    async def load_week(self, league: str, season: int, week: int):
-        self.loaded.append((season, week))
-        return list(self._weeks.get((season, week), []))
-
-    async def load_weeks(self, league, season, weeks):
-        out = []
-        for week in weeks:
-            out.extend(await self.load_week(league, season, week))
-        return out
-
-
-def _game(game_id: str, home_score: int = 28, away_score: int = 0) -> Game:
-    return Game(
-        home="Home",
-        away="Away",
-        home_score=home_score,
-        away_score=away_score,
-        neutral_site=False,
-        completed=True,
-        date=datetime(2025, 9, 7, tzinfo=timezone.utc),
-        game_id=game_id,
-        status="STATUS_FINAL",
-    )
-
-
-def _season(year: int, *game_ids: str, week: int = 1) -> Season:
-    return Season(
-        year=year, weeks=[Week(games=[_game(g) for g in game_ids], number=week)]
-    )
 
 
 @pytest.fixture(autouse=True)
