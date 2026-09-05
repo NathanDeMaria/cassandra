@@ -59,6 +59,15 @@ evidence that control helps once it has company.
 What it was measured to be worth: real, and very small
 ------------------------------------------------------
 
+**Measured before the temperatures existed.** Everything below is the
+2026-09-05 run, which searched six parameters with `mov_scale` frozen at
+`sigmoid_score`'s 10, `epa_margin_scale` pinned at 10 and control passed
+through untransformed. The fitted weights in the table are therefore the
+best available under a constraint this class no longer has, and the next run
+should replace them. What does not depend on the parameterization is the
+shuffle null, which is about whether the index carries per-game information
+at all.
+
 Run 2026-09-05, 400 probes per league, against the first full EPA sweep
 (4,984 NFL games with play-by-play, 25,315 NCAAFB).
 
@@ -135,19 +144,31 @@ from .game_control import GameControlIndex
 from .glicko import GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
 
-# Points of margin per unit of logit, for turning EPA's implied margin into
-# the share of a game it corresponds to.
+# Points of margin per unit of logit, for the two sources that arrive in
+# points: the final score and EPA's implied margin.
 #
-# 10.0 because that is `sigmoid_score`'s own divisor, which makes this the
-# exact function the scoring path already applies to a real margin. That is
-# the whole argument for it: EPA's claim is "these teams played like a
-# seven-point game", and scoring that claim the way a seven-point game is
-# scored means the blend is combining two numbers that mean the same thing.
-#
-# It stops being free when `scoring_method` isn't sigmoid -- against
-# `binary_score`'s hard 0/1 there is nothing for it to agree with -- which is
-# one more reason the configs leave the scoring method pinned at sigmoid.
+# 10.0 for both because that is `sigmoid_score`'s divisor, so the defaults
+# reproduce what this class did before it had temperatures of its own -- the
+# scoreboard scored exactly as `scoring_method="sigmoid"` scored it, and EPA
+# scored the way a real margin of the same size is. That was the argument for
+# pinning them and it is still the argument for defaulting to them. It is not
+# an argument for leaving them unsearched: 10 was never fitted to anything.
+# `cassandra/scoring/sigmoid.py` carries a `# TODO: fiddle with k` and the
+# same 10 is used for hockey goals and college football touchdowns alike.
+DEFAULT_MOV_SCALE = 10.0
 DEFAULT_EPA_MARGIN_SCALE = 10.0
+
+# Temperature on control, which is the one source that does not arrive in
+# points. 1.0 leaves it exactly as the index stores it, which is what this
+# class did before.
+DEFAULT_CONTROL_TEMP = 1.0
+
+# How far a control share is allowed toward the ends before the logit that
+# reshapes it stops being finite. Control lives well inside this by
+# construction -- it is pulled toward 0.5 because every game starts 0-0 at
+# even odds -- so the clamp is a guard against a future index, not a shaping
+# choice with any effect on the ones that exist.
+_CONTROL_EPS = 1e-6
 
 
 class BlendedGlickoPredictor(GlickoPredictor):
@@ -160,19 +181,34 @@ class BlendedGlickoPredictor(GlickoPredictor):
     blend in one `state_dict`. Every release published so far replays through
     code this never touches.
 
-    Scoring defaults to sigmoid rather than Glicko's binary, and the configs
-    leave it out of the search rather than paying a dimension to rediscover
-    it: the 2026-08-30 run put `glicko_full` on sigmoid in both football
-    leagues, and in four of the other six besides. `scoring_method` is still a
-    constructor argument, so trying another one is a keyword, not a subclass.
+    **Three sources, three temperatures, then the weights.** Each source is
+    squashed to [0, 1] with a scale of its own before anything is combined:
+    `mov_scale` on the final margin, `epa_margin_scale` on the margin EPA
+    implies, `control_temp` on the logit of a share that is already in [0, 1].
+    Then `play_weight` and `epa_share` mix them, renormalizing over whichever
+    a game actually has.
+
+    Temperature and weight do different jobs and the difference is worth
+    holding: the temperature decides how much a 3-point game differs from a
+    30-point one, the weight decides how loudly that source speaks. They are
+    partly redundant near the middle -- for small margins
+    `sigmoid(x/T) ~= 0.5 + x/4T`, so only `weight/T` is visible there -- and
+    separate in the tails, where a small temperature saturates and a large one
+    does not. A search will feel that ridge; the crowding diagnostics in the
+    run report are what would show it.
+
+    `scoring_method` is gone from this class. The parent's scorer hardcodes a
+    divisor of 10 and shares it with every Glicko model in every sport, and a
+    class whose whole subject is putting three sources on one scale should not
+    take the most important of the three on faith. `binary_score` is the limit
+    of `mov_scale` going to 0 and `sigmoid_score` is the point at 10, so the
+    temperature spans the family rather than dropping a choice.
 
     One thing to hold while reading a fitted `play_weight`: control is pulled
     toward 0.5 by construction -- every game starts 0-0 at even odds, and
     those early snaps carry full clock weight -- so a wire-to-wire blowout
-    tops out nearer 0.9 than 1.0. Against `binary_score`'s 1.0 that makes even
-    a heavily weighted blend read as a slightly softer win; against
-    `sigmoid_score`, whose output is compressed by the same divisor this
-    module puts EPA through, all three are on comparable footing.
+    tops out nearer 0.9 than 1.0. `control_temp` below 1 is the search saying
+    it wants that stretched back out.
     """
 
     def __init__(
@@ -183,11 +219,11 @@ class BlendedGlickoPredictor(GlickoPredictor):
         weekly_rd_increase: float = 1,
         season_rd_increase: float = 120,
         initial_rd: float = 216,
-        # Not Glicko's "binary" -- see the class docstring.
-        scoring_method: str = "sigmoid",
         season_regression: float = 0.0,
         play_weight: float = DEFAULT_PLAY_WEIGHT,
         epa_share: float = DEFAULT_EPA_SHARE,
+        mov_scale: float = DEFAULT_MOV_SCALE,
+        control_temp: float = DEFAULT_CONTROL_TEMP,
         epa_margin_scale: float = DEFAULT_EPA_MARGIN_SCALE,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -195,6 +231,10 @@ class BlendedGlickoPredictor(GlickoPredictor):
         game_control: GameControlIndex | None = None,
         game_epa: EpaIndex | None = None,
     ) -> None:
+        # `scoring_method` is deliberately not passed through and not accepted:
+        # `_actual` never calls the parent's scorer, so the parent keeps its
+        # own default and this class's `mov_scale` is the only thing that
+        # decides what a final score is worth. See `_mov_share_of_game`.
         super().__init__(
             league,
             home_advantage=home_advantage,
@@ -202,13 +242,14 @@ class BlendedGlickoPredictor(GlickoPredictor):
             weekly_rd_increase=weekly_rd_increase,
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
-            scoring_method=scoring_method,
             season_regression=season_regression,
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
             anchors=anchors,
         )
         self._blend = PlayBlend.validated(play_weight, epa_share)
+        self._mov_scale = validated_scale("mov_scale", mov_scale)
+        self._control_temp = validated_scale("control_temp", control_temp)
         self._epa_margin_scale = validated_scale("epa_margin_scale", epa_margin_scale)
         # Defaulted rather than required, like `opponent_prior_manager`: every
         # caller wants the league's saved indexes, and a test that wants none
@@ -226,29 +267,75 @@ class BlendedGlickoPredictor(GlickoPredictor):
         """The same for EPA."""
         return self._blend.epa_weight
 
+    @staticmethod
+    def _squash(margin: float, scale: float) -> float:
+        """A margin in points, as the share of a game it stands for.
+
+        One function for the two sources that arrive in points, because that
+        is the claim being made about both: "these teams played like an
+        n-point game". Same logistic `sigmoid_score` applies to a real
+        margin, with the divisor exposed instead of frozen at 10.
+        """
+        return 1 / (1 + math.exp(-margin / scale))
+
+    def _mov_share_of_game(self, game: Game) -> float:
+        """What the scoreboard says, at this model's own temperature.
+
+        Not `super()._actual`, which is the parent's `scoring_method`. Three
+        sources meeting on one scale should get the same treatment, and the
+        parent's scorer has no temperature to give: `sigmoid_score` hardcodes
+        a divisor of 10 and shares it with every Glicko model in every sport.
+
+        The temperature subsumes the choice this replaces. `binary_score` is
+        the limit as `mov_scale` goes to 0 -- a step at the tie -- and a large
+        scale is a game that barely counts, so the family spans from "only who
+        won" to "the margin, softly" without a categorical to search.
+        """
+        return self._squash(game.home_score - game.away_score, self._mov_scale)
+
     def _epa_share_of_game(self, game_id: str) -> float | None:
         """What EPA says this game was worth to the home team, in [0, 1].
 
-        The implied margin through the scoring function's own logistic, so a
-        game EPA prices as a ten-point home win reads as the same 0.73 a
-        ten-point home win reads as. Nothing is refit and no new opinion is
-        introduced by the conversion -- it is the scoreboard's own exchange
-        rate applied to a different set of points.
+        The implied margin through the same logistic the scoreboard gets, so a
+        game EPA prices as a ten-point home win reads the way a ten-point home
+        win reads -- at `epa_margin_scale == mov_scale`. Letting the two
+        differ is the point of searching them separately: EPA's points are
+        bounded at the clip and systematically understate a blowout, so the
+        margin it claims may deserve a different exchange rate than the one
+        the scoreboard actually produced.
         """
         margin = self._game_epa.margin(game_id)
         if margin is None:
             return None
-        return 1 / (1 + math.exp(-margin / self._epa_margin_scale))
+        return self._squash(margin, self._epa_margin_scale)
 
     def _control_share_of_game(self, game_id: str) -> float | None:
-        """What control says, which needs no conversion at all.
+        """What control says, reshaped by its own temperature.
 
-        The one signal on either side of this experiment that arrives already
-        on the target's scale: `cassandra.scoring` produces the home team's
-        share of a game and so does the win probability curve.
+        Control is the one source that does not arrive in points -- it is
+        already a share of a game -- so a temperature on it cannot be a
+        divisor on a margin. It is a divisor on the *logit* instead, which is
+        the same operation the other two get: below 1 sharpens the share away
+        from 0.5, above 1 flattens it toward 0.5, and exactly 1 is the number
+        the index stores.
+
+        Worth knowing before reading a fitted `control_temp`: this is a
+        monotone transform, and `cassandra.predictor.control` measured that
+        monotone transforms do not rescue control. Rank-matching it onto the
+        scoring function's exact distribution -- the strongest monotone
+        reshaping there is -- recovered *none* of the loss when control
+        replaced the scoreboard. That was measured at full weight rather than
+        in a blend, where sharpening also changes how far the target moves,
+        so it is not the same question. But a `control_temp` that fits near
+        1.0 is the answer that experiment predicts.
         """
         control = self._game_control.get(game_id)
-        return None if control is None else control.home
+        if control is None:
+            return None
+        share = min(1 - _CONTROL_EPS, max(_CONTROL_EPS, control.home))
+        if self._control_temp == 1.0:
+            return share
+        return self._squash(math.log(share / (1 - share)), self._control_temp)
 
     def _actual(self, game: Game) -> float:
         """Glicko's own answer, moved toward what the plays say.
@@ -263,7 +350,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         there is nothing to clamp, which is the one way this side is simpler
         than the margin side.
         """
-        scoreboard = super()._actual(game)
+        scoreboard = self._mov_share_of_game(game)
         if not self._blend.uses_plays:
             return scoreboard
         return self._blend.combine(
@@ -283,9 +370,18 @@ class BlendedGlickoPredictor(GlickoPredictor):
         picks up whatever sweep is on disk rather than the one the fit ran
         against.
         """
+        state = super().state_dict()
+        # The parent's scorer is unused -- `_actual` replaces it with
+        # `_mov_share_of_game` -- so recording which one it would have been
+        # would put a parameter in a release that nothing reads and that
+        # `from_state_dict` would hand back to a constructor that no longer
+        # takes it.
+        state.pop("scoring_method", None)
         return {
-            **super().state_dict(),
+            **state,
             "play_weight": self._blend.play_weight,
             "epa_share": self._blend.epa_share,
+            "mov_scale": self._mov_scale,
+            "control_temp": self._control_temp,
             "epa_margin_scale": self._epa_margin_scale,
         }
