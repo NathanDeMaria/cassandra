@@ -106,6 +106,40 @@ company through this same seam: luck-adjusted control managed 0.00008 and
 success rate differential 0.00030. EPA and control together land between the
 two signals `cassandra.predictor.control` already measured.
 
+Why it is small, which the distributions above answer
+-----------------------------------------------------
+
+EPA is not a second look at the game. It is a second *measurement of the
+same thing the scoreboard measures*, and the rank correlation says so --
+computed on the axis `cassandra.predictor.control` fits its law on:
+
+        signal        vs final score, rank    law's replacement cost
+        nfl    EPA                  0.8502                   0.00186
+        nfl    control              0.8020                   0.00245
+        ncaafb EPA                  0.9131                   0.00108
+        ncaafb control              0.8865                   0.00141
+
+    (control reproduces that module's own 0.7999 and 0.8864, which is what
+     says this is the same measurement and not a differently-defined one.)
+
+**EPA is a closer copy of the final score than control is**, in both leagues.
+That is the opposite of the property wanted from a signal meant to add
+something: the module next door warns that a signal at 0.940 is "closer to a
+noisy copy of the scoreboard than to a second look at the game", and ncaafb's
+EPA is at 0.913.
+
+Which makes the shape of the result coherent rather than mysterious.
+Averaging a second noisy measurement of the same quantity reduces variance,
+so the gain is real and the shuffle null finds it. It carries little the
+final score lacks, so the gain is tiny. Both halves follow from one number.
+
+If there is more here, it is in the part of EPA the scoreboard does *not*
+explain -- the residual after regressing the EPA margin on the final margin,
+which is what "this team moved the ball better than it scored" actually
+means. That is a different signal from this one and has not been built. EPA
+and control correlate 0.72 (nfl) and 0.83 (ncaafb) with each other, so they
+are not two independent looks either.
+
 Real and negligible are both true, and neither one is the interesting half
 without the other. `cassandra.predictor.control`'s law is not refuted -- EPA
 still comes in on the line rather than below it, and the gain is a rounding
@@ -164,10 +198,11 @@ DEFAULT_EPA_MARGIN_SCALE = 10.0
 DEFAULT_CONTROL_TEMP = 1.0
 
 # How far a control share is allowed toward the ends before the logit that
-# reshapes it stops being finite. Control lives well inside this by
-# construction -- it is pulled toward 0.5 because every game starts 0-0 at
-# even odds -- so the clamp is a guard against a future index, not a shaping
-# choice with any effect on the ones that exist.
+# reshapes it stops being finite. Measured against the indexes that exist, it
+# never binds: nfl runs 0.049 to 0.963 and ncaafb 0.012 to 0.99997, with four
+# ncaafb games above 0.999 and none at either end exactly. So this is a guard
+# on the tail rather than a shaping choice, and a fitted `control_temp` is
+# describing the real distribution rather than this constant.
 _CONTROL_EPS = 1e-6
 
 
@@ -206,9 +241,33 @@ class BlendedGlickoPredictor(GlickoPredictor):
 
     One thing to hold while reading a fitted `play_weight`: control is pulled
     toward 0.5 by construction -- every game starts 0-0 at even odds, and
-    those early snaps carry full clock weight -- so a wire-to-wire blowout
-    tops out nearer 0.9 than 1.0. `control_temp` below 1 is the search saying
-    it wants that stretched back out.
+    those early snaps carry full clock weight. Measured, its tenth-to-ninetieth
+    range is 0.26-0.84 in nfl and 0.21-0.93 in ncaafb, against a scoreboard
+    that reaches 0 and 1 outright. `control_temp` below 1 is the search saying
+    it wants that compression stretched back out.
+
+    What the three sources actually look like
+    -----------------------------------------
+
+    Measured over the games that have all three, which is what the ranges in
+    `models/{nfl,ncaafb}/glicko_blend.json` are set from rather than guessed:
+
+        source                    nfl sd   ncaafb sd   p10..p90 (ncaafb)
+        final margin (points)      14.61       22.34   -21 .. +36
+        EPA margin (points)        12.53       19.09   -17.4 .. +30.3
+        control (share)            0.215       0.267   0.21 .. 0.93
+        net EPA *per play*         0.184       0.260   -0.23 .. +0.41
+
+    The row that surprises people is the second against the fourth. EPA per
+    play is a tenth of a point and looks nothing like a scoreboard, but
+    `EpaIndex.margin` multiplies it back through the play counts, so what
+    reaches the squash is a total in points at 0.86 of the final margin's
+    spread -- in both leagues, to two digits. That is why `mov_scale` and
+    `epa_margin_scale` share a range: they are divisors on two quantities of
+    nearly the same size, and a search wanting equal sharpness would put EPA's
+    slightly below the scoreboard's. [1, 40] spans a hard step at the tie
+    (a divisor well under one standard deviation) to a game that barely
+    counts (0.4 to 0.6 of a share, either way).
     """
 
     def __init__(
