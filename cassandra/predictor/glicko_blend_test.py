@@ -17,6 +17,7 @@ from .glicko import GlickoPredictor
 from .glicko_blend import (
     DEFAULT_CONTROL_TEMP,
     DEFAULT_EPA_MARGIN_SCALE,
+    DEFAULT_EPA_RESIDUAL_BETA,
     DEFAULT_MOV_SCALE,
     BlendedGlickoPredictor,
 )
@@ -32,6 +33,7 @@ def _predictor(
     epa_margin_scale: float = DEFAULT_EPA_MARGIN_SCALE,
     mov_scale: float = DEFAULT_MOV_SCALE,
     control_temp: float = DEFAULT_CONTROL_TEMP,
+    epa_residual_beta: float = DEFAULT_EPA_RESIDUAL_BETA,
 ) -> BlendedGlickoPredictor:
     return BlendedGlickoPredictor(
         "test_league",
@@ -42,6 +44,7 @@ def _predictor(
         epa_margin_scale=epa_margin_scale,
         mov_scale=mov_scale,
         control_temp=control_temp,
+        epa_residual_beta=epa_residual_beta,
     )
 
 
@@ -302,3 +305,83 @@ def test_the_temperatures_round_trip_through_a_release() -> None:
     assert restored.state_dict() == state
     # The parent's scorer is not part of this model any more.
     assert "scoring_method" not in state
+
+
+def test_the_residual_is_off_by_default(game: GameFactory) -> None:
+    """`epa_residual_beta` at 0 is the EPA margin whole, which is what this
+    class did before it could subtract anything."""
+    epa = {"g1": GameEpa(home=0.15, away=0.05, home_plays=70, away_plays=70)}
+    played = game("Home", "Away", 31, 10, game_id="g1")
+
+    predictor = _predictor(epa=epa, play_weight=1.0, epa_share=1.0)
+
+    assert predictor._epa_share_of_game(played) == pytest.approx(
+        1 / (1 + math.exp(-7.0 / 10.0))
+    )
+
+
+def test_the_residual_subtracts_the_scoreboard(game: GameFactory) -> None:
+    """7 points of EPA margin in a game won by 21, at beta 0.75, is a team
+    that moved the ball 8.75 points *worse* than it scored."""
+    epa = {"g1": GameEpa(home=0.15, away=0.05, home_plays=70, away_plays=70)}
+    played = game("Home", "Away", 31, 10, game_id="g1")
+
+    predictor = _predictor(
+        epa=epa, play_weight=1.0, epa_share=1.0, epa_residual_beta=0.75
+    )
+
+    assert predictor._epa_share_of_game(played) == pytest.approx(
+        1 / (1 + math.exp(-(7.0 - 0.75 * 21) / 10.0))
+    )
+
+
+def test_two_teams_that_won_by_the_same_split_on_the_residual(
+    game: GameFactory,
+) -> None:
+    """The sentence the residual exists to say.
+
+    Same scoreline, same EPA per play -- but one offense was on the field
+    long enough to earn it and the other was not. Without the residual the
+    scoreboard drowns that; with it, the two games are different evidence.
+    """
+    epa = {
+        "earned": GameEpa(home=0.30, away=0.00, home_plays=75, away_plays=60),
+        "lucky": GameEpa(home=0.02, away=0.10, home_plays=55, away_plays=75),
+    }
+    predictor = _predictor(
+        epa=epa, play_weight=1.0, epa_share=1.0, epa_residual_beta=0.75
+    )
+
+    earned = predictor._epa_share_of_game(game("H", "A", 24, 14, game_id="earned"))
+    lucky = predictor._epa_share_of_game(game("H", "A", 24, 14, game_id="lucky"))
+
+    assert earned is not None and lucky is not None
+    assert earned > lucky
+
+
+def test_a_negative_residual_beta_adds_the_scoreboard_back() -> None:
+    """Which is the one thing this parameter must not be allowed to do."""
+    with pytest.raises(ValueError, match="epa_residual_beta"):
+        _predictor(epa_residual_beta=-0.1)
+
+
+def test_the_residual_is_not_reachable_by_the_weights(game: GameFactory) -> None:
+    """Why this is a parameter rather than something the blend already spans.
+
+    The blend is convex, so it can average its sources and never difference
+    them. A residual model and a no-residual model are therefore different
+    functions of the same two inputs -- if they weren't, this parameter would
+    be redundant with `epa_share`.
+    """
+    epa = {"g1": GameEpa(home=0.30, away=0.00, home_plays=70, away_plays=70)}
+    played = game("Home", "Away", 35, 7, game_id="g1")
+
+    with_residual = _predictor(
+        epa=epa, play_weight=0.5, epa_share=1.0, epa_residual_beta=0.75
+    )._actual(played)
+    without = _predictor(epa=epa, play_weight=0.5, epa_share=1.0)._actual(played)
+
+    assert with_residual != pytest.approx(without)
+    # And the residual reads a dominant scoreline as the underperformance it
+    # was, so it pulls the target *below* the plain blend.
+    assert with_residual < without

@@ -134,11 +134,19 @@ so the gain is real and the shuffle null finds it. It carries little the
 final score lacks, so the gain is tiny. Both halves follow from one number.
 
 If there is more here, it is in the part of EPA the scoreboard does *not*
-explain -- the residual after regressing the EPA margin on the final margin,
-which is what "this team moved the ball better than it scored" actually
-means. That is a different signal from this one and has not been built. EPA
-and control correlate 0.72 (nfl) and 0.83 (ncaafb) with each other, so they
-are not two independent looks either.
+explain, which is what `epa_residual_beta` is: subtract the fitted share of
+the final margin and what is left is "this team moved the ball better than it
+scored", the only sentence in any of this the scoreboard cannot say for
+itself. At the OLS slope the residual keeps a standard deviation of 6.3 (nfl)
+and 7.7 (ncaafb) -- about half the raw EPA margin -- so it is a real
+quantity rather than rounding, and it is orthogonal to the scoreboard by
+construction rather than 0.85 correlated with it.
+
+Whether that half is signal or noise is the open question, and it is the
+reason the parameter defaults to 0: this model has never been run with it on.
+Set against the hope, one caution -- EPA and control correlate 0.72 (nfl) and
+0.83 (ncaafb) with each other, so the two are not independent looks, and a
+residual that helps may be helping in a direction control already covers.
 
 Real and negligible are both true, and neither one is the interesting half
 without the other. `cassandra.predictor.control`'s law is not refuted -- EPA
@@ -196,6 +204,18 @@ DEFAULT_EPA_MARGIN_SCALE = 10.0
 # points. 1.0 leaves it exactly as the index stores it, which is what this
 # class did before.
 DEFAULT_CONTROL_TEMP = 1.0
+
+# How much of the final margin to take *out* of EPA before reading it. 0
+# leaves EPA as the index reports it, which is what this class did before it
+# could subtract anything.
+#
+# The number to beat is the ordinary least squares slope of the EPA margin on
+# the final margin, which is 0.743 in nfl and 0.781 in ncaafb -- at which the
+# residual is centred (intercepts of +0.23 and +0.16 points, against a
+# residual standard deviation of 6.3 and 7.7) and carries none of the
+# scoreboard by construction. That is why there is no intercept parameter
+# here: measured, it would be worth two percent of a standard deviation.
+DEFAULT_EPA_RESIDUAL_BETA = 0.0
 
 # How far a control share is allowed toward the ends before the logit that
 # reshapes it stops being finite. Measured against the indexes that exist, it
@@ -284,6 +304,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         mov_scale: float = DEFAULT_MOV_SCALE,
         control_temp: float = DEFAULT_CONTROL_TEMP,
         epa_margin_scale: float = DEFAULT_EPA_MARGIN_SCALE,
+        epa_residual_beta: float = DEFAULT_EPA_RESIDUAL_BETA,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
@@ -310,6 +331,15 @@ class BlendedGlickoPredictor(GlickoPredictor):
         self._mov_scale = validated_scale("mov_scale", mov_scale)
         self._control_temp = validated_scale("control_temp", control_temp)
         self._epa_margin_scale = validated_scale("epa_margin_scale", epa_margin_scale)
+        if epa_residual_beta < 0:
+            # Zero is a real setting -- it is EPA as the index reports it --
+            # so this is the one knob here that is checked for negative
+            # rather than for non-positive. Below zero *adds* the scoreboard
+            # back into a signal whose whole purpose is to have it removed.
+            raise ValueError(
+                f"epa_residual_beta must be non-negative, got {epa_residual_beta}"
+            )
+        self._epa_residual_beta = epa_residual_beta
         # Defaulted rather than required, like `opponent_prior_manager`: every
         # caller wants the league's saved indexes, and a test that wants none
         # passes empty ones. Not carried in `state_dict` -- see below.
@@ -352,7 +382,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         """
         return self._squash(game.home_score - game.away_score, self._mov_scale)
 
-    def _epa_share_of_game(self, game_id: str) -> float | None:
+    def _epa_share_of_game(self, game: Game) -> float | None:
         """What EPA says this game was worth to the home team, in [0, 1].
 
         The implied margin through the same logistic the scoreboard gets, so a
@@ -362,10 +392,31 @@ class BlendedGlickoPredictor(GlickoPredictor):
         bounded at the clip and systematically understate a blowout, so the
         margin it claims may deserve a different exchange rate than the one
         the scoreboard actually produced.
+
+        `epa_residual_beta` takes the scoreboard back out first. At 0 this is
+        the EPA margin whole; at the fitted slope it is the part of it the
+        final score does not explain -- "this team moved the ball better than
+        it scored", which is the only sentence in any of this that the
+        scoreboard cannot say for itself.
+
+        **Why that is not something the weights could already do.** The blend
+        is convex: three non-negative weights summing to one, so it can
+        average its sources and can never difference them. A residual is a
+        difference, `epa - beta * mov`, so no setting of `play_weight` and
+        `epa_share` reaches it. The subtraction has to happen here, before the
+        squash, or not at all.
+
+        Using the game's own final margin is not leakage. `_actual` is the
+        model's answer to "what was this game evidence of", and it is allowed
+        to look at the game -- what it must not touch is the prediction, which
+        was made before `update_game` and is scored off the real score. See
+        the module docstring in `cassandra.predictor.game_control`.
         """
-        margin = self._game_epa.margin(game_id)
+        margin = self._game_epa.margin(game.game_id)
         if margin is None:
             return None
+        if self._epa_residual_beta:
+            margin -= self._epa_residual_beta * (game.home_score - game.away_score)
         return self._squash(margin, self._epa_margin_scale)
 
     def _control_share_of_game(self, game_id: str) -> float | None:
@@ -415,7 +466,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         return self._blend.combine(
             scoreboard,
             self._control_share_of_game(game.game_id),
-            self._epa_share_of_game(game.game_id),
+            self._epa_share_of_game(game),
         )
 
     def state_dict(self) -> dict[str, Any]:
@@ -443,4 +494,5 @@ class BlendedGlickoPredictor(GlickoPredictor):
             "mov_scale": self._mov_scale,
             "control_temp": self._control_temp,
             "epa_margin_scale": self._epa_margin_scale,
+            "epa_residual_beta": self._epa_residual_beta,
         }
