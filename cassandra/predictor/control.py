@@ -99,6 +99,22 @@ once more on a scale where it has company. Nothing about the law above
 predicts a different answer for control itself; what is new is the signal
 next to it.
 
+Both ran on 2026-09-05 and the law held, but not in the shape this section
+would predict. Against its own signals-off control the blend improves ncaafb
+brier by 0.000101 and nfl by 0.000116 -- between luck-adjusted control's
+0.00008 and success rate differential's 0.00030, and about 1.1% of the
+0.00906 that separates ncaafb's two best models. Negligible, as everything
+here has been.
+
+What is different is that it is *real*. A shuffle null -- the same numbers
+repointed at the wrong games -- separates at 21 sd in ncaafb and 8 in nfl,
+and a shuffled index is worse than no index at all by seven times what the
+real one is better by. So the searches leaving `play_weight` near 0.17 rather
+than driving it to the bound is the objective preferring the signal, not
+tolerating it. That is a failure of magnitude rather than of content, which
+is not the failure measured in this file. `cassandra.predictor.glicko_blend`
+has the numbers.
+
 Splitting the coin flips, which is what the index holds now
 -----------------------------------------------------------
 

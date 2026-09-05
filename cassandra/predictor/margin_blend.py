@@ -47,24 +47,54 @@ the final score largely determines, while EPA is scored off an expected points
 model that never learns who won. Whether that is enough to come in under the
 line is a measurement nobody has made yet.
 
-**Nothing here is fitted.** Every default below is a starting point chosen to
-be legible, not a number a search found -- unlike the parameters on
-`MarginEloPredictor` and `ControlGlickoPredictor`, whose docstrings quote runs
-that happened. The measurement this wants is a `margin_mae` search per league
-(`models/nfl/margin_blend.json`, `models/ncaafb/margin_blend.json`), against
-`margin_elo` on the same objective as the baseline it has to beat, and after a
-`jobs.py epa` sweep because the index those configs read does not exist until
-one runs. Until then the honest summary of this model is that it is plumbed,
-tested and unmeasured.
+What it was measured to be worth
+--------------------------------
 
-Two things to expect from that search, so the result is readable. The first
-is that `play_weight` may well come back at 0, the way the control searches
-did -- which is a real answer and recovers `MarginEloPredictor` exactly, not
-approximately, because the blend short-circuits on it. The second is that
-coverage is most of what this can be run against: the index covers the NFL
-from 2006 and about a third of an NCAAFB schedule, so the great majority of
-NCAAFB games fall back to the scoreboard alone and the effective sample behind
-a fitted `play_weight` is much smaller than the game count suggests.
+Run 2026-09-05, 250 probes per league against `margin_elo`'s 150, scored
+through `evaluate` on the same games on the same day:
+
+    league  margin_blend  margin_elo   d MAE   play_weight  control   epa
+    ncaafb       13.0383     13.0944  -0.0562       0.1317   0.0823  0.0494
+    nfl          10.4372     10.4543  -0.0171       0.2940   0.1032  0.1908
+
+Better in both, and by more than the brier side manages -- `margin_scale`
+from 6 to 15 moves mens' margin MAE by 0.025, which `MarginEloPredictor`
+calls barely worth a search dimension, so ncaafb's 0.056 is about twice a
+gap that model already treats as negligible. Modest, then, rather than
+nothing, which is the most that can be claimed for it.
+
+**Two confounds, both of them mine.** `margin_blend` searched 250 probes to
+`margin_elo`'s 150, in a space with three more dimensions, so some of the gap
+is budget rather than signal. And `margin_elo` had no football config before
+this run, so this comparison is between two models that are both new here --
+unlike `glicko_blend`, which had a converged champion to beat. A fair version
+would give both the same probe count.
+
+Do not read the weights as importances. `control_scale` fitted to 57.2 in
+ncaafb and 32.6 in nfl while `epa_scale` stays pinned at 1.0, so what reaches
+the target is weight times scale and the two are not on comparable footing --
+which is the near-degeneracy this module pins `epa_scale` to avoid, showing
+up exactly where it was expected to. On a game controlled 0.8, ncaafb's
+control term contributes ~2.8 points against EPA's ~0.3.
+
+`play_weight` did not come back at 0, the way every control search did, and
+the sibling model says why that is not just the search being polite: a
+shuffle null on `glicko_blend` separates at 21 sd in ncaafb and 8 in nfl, so
+the play-by-play signals carry genuine per-game information rather than a
+usefully-shaped distribution. No null was run on this side -- the margin
+objective needs its own, since a prob->margin fit sits between the ratings
+and the score -- so the strongest statement available here is that the signal
+is real where it was tested and the sign agrees on both objectives.
+
+What the null does not rescue is the magnitude. On brier the same signal is
+worth 0.0001 against a 0.00906 resolution, which is 1.1%; these margin gains
+are larger relative to what moves margin MAE, but they are one search per
+league against a baseline with fewer probes.
+
+Coverage is the standing limit on all of it: the index covers the NFL from
+2006 and about a third of an NCAAFB schedule, so the great majority of NCAAFB
+games fall back to the scoreboard alone and the effective sample behind a
+fitted `play_weight` is much smaller than 74,540 suggests.
 
 Four knobs, three of them searchable
 ------------------------------------
