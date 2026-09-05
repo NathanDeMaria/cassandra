@@ -385,3 +385,37 @@ def test_the_residual_is_not_reachable_by_the_weights(game: GameFactory) -> None
     # And the residual reads a dominant scoreline as the underperformance it
     # was, so it pulls the target *below* the plain blend.
     assert with_residual < without
+
+
+def test_a_release_from_before_mov_scale_still_loads() -> None:
+    """`scoring_method` was in this class's state until `mov_scale` replaced
+    the parent's scorer, and releases carrying it have to stay readable.
+
+    Safe at the defaults and only there: every such release was published on
+    sigmoid, which is `mov_scale` at 10, which is the default a missing one
+    gets.
+    """
+    legacy = {
+        "league": "test_league",
+        "home_advantage": 95,
+        "k": 65,
+        "weekly_rd_increase": 1,
+        "season_rd_increase": 120,
+        "initial_rd": 216,
+        "scoring_method": "sigmoid",
+        "season_regression": 0.0,
+        "play_weight": 0.17,
+        "epa_share": 0.29,
+        "epa_margin_scale": 10.0,
+        "ratings": {},
+        "anchors": {},
+    }
+
+    restored = BlendedGlickoPredictor.from_state_dict(legacy)
+
+    state = restored.state_dict()
+    assert state["mov_scale"] == DEFAULT_MOV_SCALE
+    assert state["control_temp"] == DEFAULT_CONTROL_TEMP
+    assert state["epa_residual_beta"] == DEFAULT_EPA_RESIDUAL_BETA
+    assert state["play_weight"] == pytest.approx(0.17)
+    assert "scoring_method" not in state
