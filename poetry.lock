@@ -1414,8 +1414,8 @@ fit = ["scikit-learn (>=1.8.0)"]
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/the-lucky-ones.git"
-reference = "e12179e2f1d33b2f90293be7e4df4150ed381eb7"
-resolved_reference = "e12179e2f1d33b2f90293be7e4df4150ed381eb7"
+reference = "87073d1f9e8d0a72c36a98efb66f9ca7ee3d590b"
+resolved_reference = "87073d1f9e8d0a72c36a98efb66f9ca7ee3d590b"
 
 [[package]]
 name = "marshmallow"
@@ -3469,4 +3469,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "b45d67af7a304eda8190c2cd83be1712d34735422439690293cc009ea37bc534"
+content-hash = "3986906ffe22414c1585f82cd3d53d9d9818594175a3554d56d5e43bc64209a0"
