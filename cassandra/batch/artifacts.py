@@ -22,8 +22,10 @@ from aiobotocore.session import get_session
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.predictor import (
     anchor_path,
+    epa_path,
     game_control_path,
     load_anchors,
+    load_epa,
     load_game_control,
 )
 
@@ -126,20 +128,21 @@ async def _list_keys(client, bucket: str, prefix: str) -> AsyncIterator[str]:
 async def download_predictor_data(bucket: str) -> list[Path]:
     """Pull what the predictors read off disk, and drop the cached reads.
 
-    Two things today: the division anchors, and the per-game control a
-    `ControlGlickoPredictor` blends into its update.
+    Three things today: the division anchors, the per-game control a
+    `ControlGlickoPredictor` blends into its update, and the per-game EPA a
+    `BlendedMarginEloPredictor` reads alongside it.
 
     Dropping the caches is the whole reason this isn't just
-    `download(bucket, PREDICTOR_DATA_PREFIX)`. Both `load_anchors` and
-    `load_game_control` are cached, because an optimization builds a predictor
-    per probe and they would all re-read the same file -- and `load_manifest`
-    constructs one predictor per config to find its priors path, which
-    populates both caches with empty reads before this ever runs. Downloading
-    after that leaves the job regressing toward MEAN_RATING and blending
-    against no control, with both files sitting unread on disk. A silently
-    different fit, not a failure.
+    `download(bucket, PREDICTOR_DATA_PREFIX)`. `load_anchors`,
+    `load_game_control` and `load_epa` are all cached, because an
+    optimization builds a predictor per probe and they would all re-read the
+    same file -- and `load_manifest` constructs one predictor per config to
+    find its priors path, which populates every cache with empty reads before
+    this ever runs. Downloading after that leaves the job regressing toward
+    MEAN_RATING and blending against nothing, with the files sitting unread
+    on disk. A silently different fit, not a failure.
 
-    Both caches are cleared unconditionally rather than per file downloaded:
+    The caches are cleared unconditionally rather than per file downloaded:
     the empty read is cached whether or not the bucket has anything, so
     keying the clear off what came back would skip it in exactly the case
     that needs it.
@@ -150,6 +153,7 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     paths = await download(bucket, PREDICTOR_DATA_PREFIX)
     load_anchors.cache_clear()
     load_game_control.cache_clear()
+    load_epa.cache_clear()
     return paths
 
 
@@ -161,6 +165,11 @@ def anchors_for(league: str) -> list[Path]:
 def game_control_for(league: str) -> list[Path]:
     """The file one game control sweep produces, whether or not it exists."""
     return [game_control_path(league)]
+
+
+def epa_for(league: str) -> list[Path]:
+    """The file one EPA sweep produces, whether or not it exists."""
+    return [epa_path(league)]
 
 
 def results_for(league: str, model: str) -> list[Path]:

@@ -142,14 +142,7 @@ class MarginEloPredictor(Predictor):
         # times.
         expected = self.expected_margin(game)
         prediction = self._prediction(expected)
-        # Capped, because the tail of a basketball scoreline is about how
-        # long the starters stayed in. A 50-point win says the same thing
-        # about a team as a 40-point one and carries several times the
-        # rating move, so past the cap the extra points are noise the model
-        # would otherwise chase.
-        actual = max(
-            -self._mov_cap, min(self._mov_cap, game.home_score - game.away_score)
-        )
+        actual = self._actual_margin(game)
         # The surprise, converted back to the rating scale so `k` is a plain
         # fraction: at k = 0.1 a team that beats its number by 10 gains a
         # point of expected margin.
@@ -157,6 +150,34 @@ class MarginEloPredictor(Predictor):
         self._ratings[game.home] = self.get_rating(game.home) + delta
         self._ratings[game.away] = self.get_rating(game.away) - delta
         return prediction
+
+    def _cap(self, margin: float) -> float:
+        """`margin`, held inside `mov_cap`.
+
+        Capped, because the tail of a basketball scoreline is about how long
+        the starters stayed in. A 50-point win says the same thing about a
+        team as a 40-point one and carries several times the rating move, so
+        past the cap the extra points are noise the model would otherwise
+        chase.
+
+        Its own method because the cap is a statement about what a margin is
+        allowed to be worth, not about where the margin came from --
+        `BlendedMarginEloPredictor` has three sources for one and applies
+        this to all of them.
+        """
+        return max(-self._mov_cap, min(self._mov_cap, margin))
+
+    def _actual_margin(self, game: Game) -> float:
+        """The margin the update chases: what the home team actually won by.
+
+        The seam, and it is one line here on purpose. `update_game` is about
+        the ratings -- expect a margin, compare, move both sides -- and this
+        is the only part of it that is about the game. A subclass that rates
+        a team on something other than the final score replaces this and
+        touches nothing else, which is the same arrangement `GlickoPredictor`
+        has in `_actual` and `ControlGlickoPredictor` uses.
+        """
+        return self._cap(game.home_score - game.away_score)
 
     def get_rating(self, team: str) -> float:
         # See EloPredictor.get_rating: a team nobody has seen play starts at

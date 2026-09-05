@@ -62,6 +62,43 @@ class GameControl(NamedTuple):
     seconds: int
 
 
+class GameEpa(NamedTuple):
+    """One game's EPA per play, one number per offense.
+
+    Expected points added per snap: what each offense moved the ball's value
+    by, averaged over the snaps it ran. Unlike `GameControl` these are not
+    shares of anything and do not sum to 1 -- they are points, on the
+    scoreboard's own scale, and both sides can be positive in a game where
+    everybody moved the ball. `home` is what the home offense averaged and
+    `away` what the away offense did, each signed for the team with the ball,
+    so a home defense that kept forcing punts shows up as a low `away`.
+
+    The *unweighted* reading, since that is what the sweep writes -- every
+    snap counted once, garbage time included. `lucky_ones` reports it
+    alongside a competitiveness-weighted one and is explicit about which is
+    for which job: weighted is the better description of a single game, and
+    unweighted "is the one to rank on and the one to add up across a season",
+    because the weighting removes noise a season averages away anyway at a
+    price in sample that doesn't come back. A rating model is the second job.
+    Unnamed in the fields for the reason `GameControl` doesn't name its
+    reading either: it is a property of the whole file and lives in the
+    `EpaFit` header, not repeated on sixteen thousand rows.
+
+    Both sides, unlike `GameControl` -- there is no `1 -` to recover the away
+    number from the home one, and the two denominators genuinely differ.
+    `home_plays` and `away_plays` are those denominators, and they are the
+    part that says whether to trust the numbers: a per-play average over
+    twelve snaps of a weather-shortened game is not the same measurement as
+    one over seventy. They are also what turns these averages back into the
+    points they came from, which is what a margin-native model wants.
+    """
+
+    home: float
+    away: float
+    home_plays: int
+    away_plays: int
+
+
 class Prediction(NamedTuple):
     team1_win_prob: float
 

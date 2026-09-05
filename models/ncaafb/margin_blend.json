@@ -1,0 +1,40 @@
+{
+    "predictor_class": "BlendedMarginEloPredictor",
+    "league": "ncaafb",
+    "parameters": {
+        "home_advantage": [
+            0,
+            8
+        ],
+        "k": [
+            0.005,
+            0.4
+        ],
+        "mov_cap": [
+            7,
+            60
+        ],
+        "season_regression": [
+            0,
+            0.75
+        ],
+        "play_weight": [
+            0,
+            1
+        ],
+        "epa_share": [
+            0,
+            1
+        ],
+        "control_scale": [
+            10,
+            80
+        ]
+    },
+    "fixed": {
+        "margin_scale": 13,
+        "epa_scale": 1.0
+    },
+    "n_iter": 250,
+    "objective": "margin_mae"
+}
