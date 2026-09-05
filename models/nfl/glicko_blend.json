@@ -2,22 +2,6 @@
     "predictor_class": "BlendedGlickoPredictor",
     "league": "nfl",
     "parameters": {
-        "home_advantage": [
-            0,
-            200
-        ],
-        "initial_rd": [
-            80,
-            620
-        ],
-        "weekly_rd_increase": [
-            0,
-            120
-        ],
-        "season_rd_increase": [
-            0,
-            500
-        ],
         "play_weight": [
             0,
             1
@@ -32,10 +16,14 @@
         ]
     },
     "fixed": {
+        "home_advantage": 40.64639257174925,
+        "initial_rd": 332.3618983979494,
+        "weekly_rd_increase": 32.72532572250293,
+        "season_rd_increase": 95.97246906905978,
         "season_regression": 0,
         "mov_scale": 10.0,
         "control_temp": 1.0,
         "epa_margin_scale": 10.0
     },
-    "n_iter": 500
+    "n_iter": 250
 }

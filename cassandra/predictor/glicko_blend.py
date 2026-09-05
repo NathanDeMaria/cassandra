@@ -94,8 +94,33 @@ in `cassandra.predictor.control`: the shuffle null below separates at 8 and
 21 sd on these same leagues, so the signal is real and this zero is the
 optimizer giving up in a space too large to explore.
 
-Hence the configs now pin `mov_scale`, `control_temp` and `epa_margin_scale`
-and search seven, adding only `epa_residual_beta` to the six that worked.
+So the configs stopped searching the Glicko machinery at all. Those four
+parameters are nuisance: nobody is asking what they are, they only have to be
+near-optimal so they don't confound what is being asked. And the blend barely
+moves them -- across `glicko_full` and the six-parameter blend they agree to
+within a few percent in both leagues, with `weekly_rd_increase` the only one
+that wanders and the objective nearly flat in it:
+
+    param               nfl full  nfl blend   ncaafb full  ncaafb blend
+    home_advantage         40.65      39.46         46.15         46.22
+    initial_rd            332.36     356.40        531.80        570.28
+    weekly_rd_increase     32.73      42.18          0.00          0.63
+    season_rd_increase     95.97      78.94        250.00        245.69
+
+They are pinned at `glicko_full`'s fitted values, to full precision rather
+than rounded, and three parameters are searched: `play_weight`, `epa_share`
+and `epa_residual_beta`. Which is the method
+`cassandra.predictor.control` used for every measurement in it -- holding
+`glicko_full`'s parameters and varying only the blend -- arrived at here by
+watching a wider search fail rather than by reading it there first.
+
+The pinning buys an exactness worth more than the probes it saves. At
+`play_weight` 0 this model is now `glicko_full` *itself*, identically, and a
+test asserts it game by game. So the search's own zero is the baseline's
+score on the same games in the same process, and "did the blend beat
+`glicko_full`" stops being a comparison across two runs against two slightly
+different sets of games -- which is the confound that made the first
+measurement here understate itself threefold.
 
 **Measured before the temperatures existed.** Everything below is the
 2026-09-05 run, which searched six parameters with `mov_scale` frozen at
