@@ -52,6 +52,12 @@ variable "game_control_memory" {
   default     = 4096
 }
 
+variable "epa_memory" {
+  description = "MiB for an epa child. Same shape of work as game_control -- a few weeks of decoded play-by-play at once -- but it holds every regulation snap's EPA for a week rather than one float per game, so it gets its own knob rather than sharing that one."
+  type        = number
+  default     = 6144
+}
+
 variable "publish_memory" {
   description = "MiB for a publish child. Higher than optimize: publish holds a league's seasons and the odds database at once."
   type        = number

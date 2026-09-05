@@ -19,11 +19,13 @@ and writes only to `~/.cassandra`. There is deliberately no local "run
 everything" driver -- `submit` is the only thing that knows the whole DAG, and
 a second copy of that ordering is a second thing to keep in step.
 
-`game_control` is the exception to the first line: a subcommand with no node
-behind it any more. It is kept runnable -- `python jobs.py game-control
---league nfl` still sweeps play-by-play into the index -- because the signal
-it feeds is one worth measuring again, and a stage nobody can run is a stage
-nobody will revive. See `cassandra.predictor.control`.
+`game_control` and `epa` are the exceptions to the first line: subcommands
+with no node behind them. They are kept runnable -- `python jobs.py
+game-control --league nfl`, `python jobs.py epa --league nfl` -- because the
+signals they feed are ones worth measuring, and a stage nobody can run is a
+stage nobody will revive. Control has been measured and didn't help (see
+`cassandra.predictor.control`); EPA is the sweep that hasn't been run yet, and
+`models/*/margin_blend.json` is what would read it.
 """
 
 import asyncio
@@ -40,6 +42,7 @@ from cassandra.constants import CASSANDRA_HOME
 from cassandra.predictor import (
     ANCHOR_LEAGUES,
     CONTROL_LEAGUES,
+    EPA_LEAGUES,
     anchor_path,
 )
 
@@ -107,6 +110,7 @@ async def _anchors(
 
 async def _game_control(
     leagues: list[str] | None,
+    index: int | None,
     rebuild: bool,
     upload: bool,
 ) -> None:
@@ -119,8 +123,14 @@ async def _game_control(
     from cassandra.game_control_build import build
     from cassandra.save_predictions import read_all_seasons
 
+    # An array child gets its league from the list the launcher pinned, by the
+    # index Batch set on it. A hand-run job gets it from --league, and one
+    # given neither sweeps every football league.
     if leagues is None:
-        leagues = list(CONTROL_LEAGUES)
+        child = manifest.array_index(index)
+        leagues = (
+            [dag.control_league(child)] if child is not None else list(CONTROL_LEAGUES)
+        )
 
     bucket = _bucket()
     # Whether there is anything to do is a question about the *stored* index,
@@ -137,6 +147,46 @@ async def _game_control(
 
         if upload:
             keys = await artifacts.upload(bucket, artifacts.game_control_for(league))
+            for key in keys:
+                print(f"  uploaded s3://{bucket}/{key}")
+
+
+async def _epa(
+    leagues: list[str] | None,
+    index: int | None,
+    rebuild: bool,
+    upload: bool,
+) -> None:
+    # Late, for the reason `_game_control` says: this pulls pyarrow and
+    # `lucky_ones`, and `jobs.py submit` has no reason to import a fitting
+    # stack to send a SubmitJob.
+    from endgame_aws.pbp_parquet import get_processed_plays_store
+    from lucky_ones.arrow import StorePlaySource
+
+    from cassandra.epa_build import build
+    from cassandra.save_predictions import read_all_seasons
+
+    # Same as `_game_control` above: the launcher pins the league list it
+    # sized the array against, and this child reads its own out by index.
+    if leagues is None:
+        child = manifest.array_index(index)
+        leagues = [dag.epa_league(child)] if child is not None else list(EPA_LEAGUES)
+
+    bucket = _bucket()
+    # Whether there is anything to do is a question about the *stored* index,
+    # and a fresh container has no files at all -- so the decision can only be
+    # made after this. It also drops the cached reads that resolving anything
+    # above may have populated.
+    await artifacts.download_predictor_data(bucket)
+
+    source = StorePlaySource(get_processed_plays_store())
+    for league in leagues:
+        print(f"=== {league} / epa ===")
+        seasons = [s async for s in read_all_seasons(league, bucket)]
+        await build(league, seasons, source, rebuild=rebuild)
+
+        if upload:
+            keys = await artifacts.upload(bucket, artifacts.epa_for(league))
             for key in keys:
                 print(f"  uploaded s3://{bucket}/{key}")
 
@@ -291,6 +341,7 @@ class Jobs:
     def game_control(
         self,
         league: list[str] | str | None = None,
+        index: int | None = None,
         rebuild: bool = False,
         upload: bool = True,
     ) -> None:
@@ -313,7 +364,38 @@ class Jobs:
         anything on its own: the same fit over the same plays produces the
         same numbers, so this costs queue time rather than changing results.
         """
-        asyncio.run(_game_control(_as_list(league), rebuild, upload))
+        asyncio.run(_game_control(_as_list(league), index, rebuild, upload))
+
+    def epa(
+        self,
+        league: list[str] | str | None = None,
+        index: int | None = None,
+        rebuild: bool = False,
+        upload: bool = True,
+    ) -> None:
+        """Sweep play-by-play into a league's EPA index, by hand.
+
+        Not a stage of the submitted DAG, for the same reason `game_control`
+        isn't: a sweep is an hour of reads, and it earns a node once a
+        scheduled model reads what it writes. `models/*/margin_blend.json` is
+        the config that would, and it needs this to have run at least once --
+        until then `BlendedMarginEloPredictor` holds an empty index and rates
+        every game on its final margin alone.
+
+        Idempotent on the two fits rather than on the file: a league whose
+        stored index was built by the win probability and expected points
+        models this image has re-sweeps only the season still being played,
+        which is the weekly case. A league whose index came from a different
+        fit -- a retrain of either, or a bumped pin -- is rebuilt from
+        scratch, because an index holding two models' numbers is one nobody
+        can reproduce.
+
+        `--rebuild` forces the full sweep for a league that is already
+        current. Like `game_control`, that is not a decision that re-rates
+        anything on its own: the same fits over the same plays produce the
+        same numbers, so it costs queue time rather than changing results.
+        """
+        asyncio.run(_epa(_as_list(league), index, rebuild, upload))
 
     def optimize(
         self,
@@ -357,6 +439,8 @@ class Jobs:
         model: list[str] | str | None = None,
         skip_anchors: bool = False,
         rebuild_anchors: bool = False,
+        skip_sweeps: bool = False,
+        rebuild_sweeps: bool = False,
         skip_optimize: bool = False,
         skip_evaluate: bool = False,
         skip_publish: bool = False,
@@ -364,6 +448,8 @@ class Jobs:
         wait: bool = False,
         job_queue: str | None = None,
         anchors_job_definition: str | None = None,
+        game_control_job_definition: str | None = None,
+        epa_job_definition: str | None = None,
         optimize_job_definition: str | None = None,
         evaluate_job_definition: str | None = None,
         publish_job_definition: str | None = None,
@@ -374,6 +460,11 @@ class Jobs:
         already has some, and overwrites them. That re-rates every model in
         the league against a new scale, so it is deliberately not what a
         scheduled run does -- see `Jobs.anchors`.
+
+        `--skip-sweeps` drops the two play-by-play jobs for a run whose
+        indexes are already current, and `--rebuild-sweeps` forces the full
+        historical sweep rather than a refresh of the season in progress.
+        Neither changes what a rating means on its own; see `dag.submit`.
         """
         queue = job_queue or _default_queue()
         submitted = asyncio.run(
@@ -381,6 +472,10 @@ class Jobs:
                 anchors_job_definition=_job_definition(
                     "ANCHORS", anchors_job_definition
                 ),
+                game_control_job_definition=_job_definition(
+                    "GAME_CONTROL", game_control_job_definition
+                ),
+                epa_job_definition=_job_definition("EPA", epa_job_definition),
                 optimize_job_definition=_job_definition(
                     "OPTIMIZE", optimize_job_definition
                 ),
@@ -395,6 +490,8 @@ class Jobs:
                 models=_as_list(model),
                 skip_anchors=skip_anchors,
                 rebuild_anchors=rebuild_anchors,
+                skip_sweeps=skip_sweeps,
+                rebuild_sweeps=rebuild_sweeps,
                 skip_optimize=skip_optimize,
                 skip_evaluate=skip_evaluate,
                 skip_publish=skip_publish,
@@ -432,10 +529,11 @@ def _job_definition(stage: str, override: str | None) -> str:
     environment, so renaming a definition doesn't need a matching change here.
     The literal fallback is for running the launcher from a laptop against the
     conventional names. Underscores become hyphens on the way because the two
-    conventions differ: an environment variable is `CASSANDRA_GAME_CONTROL`
-    and a job definition is `cassandra-game-control`. No stage left has a
-    two-word name, so the conversion currently does nothing -- it stays
-    because the next one to get one shouldn't have to notice.
+    conventions differ: an environment variable is
+    `CASSANDRA_GAME_CONTROL_JOB_DEFINITION` and a job definition is
+    `cassandra-game-control`. `game_control` is back in the DAG, so the
+    conversion is load-bearing again rather than waiting for the next stage
+    with a two-word name.
     """
     if override is not None:
         return override
