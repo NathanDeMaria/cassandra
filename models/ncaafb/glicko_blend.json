@@ -26,25 +26,16 @@
             0,
             1
         ],
-        "mov_scale": [
-            1,
-            40
-        ],
-        "control_temp": [
-            0.15,
-            5
-        ],
-        "epa_margin_scale": [
-            1,
-            40
-        ],
         "epa_residual_beta": [
             0,
             1.5
         ]
     },
     "fixed": {
-        "season_regression": 0
+        "season_regression": 0,
+        "mov_scale": 10.0,
+        "control_temp": 1.0,
+        "epa_margin_scale": 10.0
     },
-    "n_iter": 1000
+    "n_iter": 500
 }

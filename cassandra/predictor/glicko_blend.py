@@ -59,6 +59,44 @@ evidence that control helps once it has company.
 What it was measured to be worth: real, and very small
 ------------------------------------------------------
 
+What ten dimensions cost, which is why four of them are pinned
+---------------------------------------------------------------
+
+The temperatures and the residual were searched together first, 1000 probes
+against the previous 400, and **both leagues came back worse**:
+
+    league   6 searched, 400   10 searched, 1000   play_weight
+    ncaafb          0.157473            0.157690        0.0000
+    nfl             0.221128            0.221544        0.0000
+
+That is a search failure and not a result about the signal, and the reason it
+can be called that with confidence is that the larger space *contains* the
+smaller one: `mov_scale` 10, `control_temp` 1, `epa_margin_scale` 10 and
+`epa_residual_beta` 0 reproduce the six-parameter model exactly. A converged
+search cannot return worse than a point it can reach.
+
+The fitted values say the same thing more loudly. Once `play_weight` reaches
+0 the four new parameters are multiplied by zero and stop reaching the
+objective at all, so the optimizer reports wherever it last sampled: ncaafb
+came back with `epa_margin_scale` on its lower bound, `epa_residual_beta` on
+its upper bound and `control_temp` on its lower bound, three of four pinned
+against an edge by nothing. **The residual was never tested** -- EPA did not
+enter either model -- so its 1.5 is a coordinate the objective could not see
+rather than an answer.
+
+Two things survive it. `mov_scale` *is* identified at `play_weight` 0, since
+with the plays off it is the only thing shaping the target, and both leagues
+put it at 10-11 (10.24 nfl, 11.30 ncaafb) -- so `sigmoid_score`'s hardcoded
+10 and its standing `# TODO: fiddle with k` were right for football, which
+is worth pinning rather than re-searching. And `play_weight` reaching 0
+exactly is *not* the objective rejecting the signal here, whatever it meant
+in `cassandra.predictor.control`: the shuffle null below separates at 8 and
+21 sd on these same leagues, so the signal is real and this zero is the
+optimizer giving up in a space too large to explore.
+
+Hence the configs now pin `mov_scale`, `control_temp` and `epa_margin_scale`
+and search seven, adding only `epa_residual_beta` to the six that worked.
+
 **Measured before the temperatures existed.** Everything below is the
 2026-09-05 run, which searched six parameters with `mov_scale` frozen at
 `sigmoid_score`'s 10, `epa_margin_scale` pinned at 10 and control passed
@@ -170,7 +208,7 @@ so read the pair as one signal until something does.
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Self
 
 from endgame.types import Game
 
@@ -468,6 +506,27 @@ class BlendedGlickoPredictor(GlickoPredictor):
             self._control_share_of_game(game.game_id),
             self._epa_share_of_game(game),
         )
+
+    @classmethod
+    def from_state_dict(cls, data: dict[str, Any]) -> Self:
+        """The parent's reconstruction, minus a key this class stopped taking.
+
+        Releases published before `mov_scale` existed carry the parent's
+        `scoring_method`, because this class had not yet replaced the scorer
+        and its `state_dict` passed the parent's entry straight through.
+        Dropping it here rather than accepting it in `__init__` keeps the
+        constructor honest -- there is no scoring method to set any more --
+        while leaving those releases loadable.
+
+        Safe because the two are the same model at the defaults: every such
+        release was published with `scoring_method="sigmoid"`, which is
+        `mov_scale` at 10, which is what a missing `mov_scale` defaults to.
+        A release written with any other scoring method would be silently
+        reinterpreted, and none was ever published.
+        """
+        params = dict(data)
+        params.pop("scoring_method", None)
+        return super().from_state_dict(params)
 
     def state_dict(self) -> dict[str, Any]:
         """The parent's state, plus the three parameters this class adds.
