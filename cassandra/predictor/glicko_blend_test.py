@@ -14,7 +14,12 @@ from .conftest import GameFactory
 from .epa import EpaIndex
 from .game_control import GameControlIndex
 from .glicko import GlickoPredictor
-from .glicko_blend import DEFAULT_EPA_MARGIN_SCALE, BlendedGlickoPredictor
+from .glicko_blend import (
+    DEFAULT_CONTROL_TEMP,
+    DEFAULT_EPA_MARGIN_SCALE,
+    DEFAULT_MOV_SCALE,
+    BlendedGlickoPredictor,
+)
 from .types import GameControl, GameEpa
 
 
@@ -25,6 +30,8 @@ def _predictor(
     play_weight: float = 0.5,
     epa_share: float = 0.5,
     epa_margin_scale: float = DEFAULT_EPA_MARGIN_SCALE,
+    mov_scale: float = DEFAULT_MOV_SCALE,
+    control_temp: float = DEFAULT_CONTROL_TEMP,
 ) -> BlendedGlickoPredictor:
     return BlendedGlickoPredictor(
         "test_league",
@@ -33,14 +40,16 @@ def _predictor(
         play_weight=play_weight,
         epa_share=epa_share,
         epa_margin_scale=epa_margin_scale,
+        mov_scale=mov_scale,
+        control_temp=control_temp,
     )
 
 
-def test_control_goes_in_without_conversion(game: GameFactory) -> None:
-    """The one signal already on the target's scale.
+def test_control_at_temperature_one_is_untouched(game: GameFactory) -> None:
+    """The default leaves the index's own number alone, so 0.8 means 0.8.
 
-    `cassandra.scoring` produces the home team's share of a game and so does
-    the win probability curve, so 0.8 means 0.8.
+    Control is the one source already on the target's scale, so its identity
+    temperature is a passthrough rather than a divisor that happens to cancel.
     """
     predictor = _predictor(
         {"g1": GameControl(home=0.8, seconds=3600)}, play_weight=1.0, epa_share=0.0
@@ -191,3 +200,105 @@ def test_the_indexes_stay_out_of_the_state_dict() -> None:
     assert predictor.epa_weight == pytest.approx(0.12)
     assert "game_control" not in state
     assert "game_epa" not in state
+
+
+def test_the_defaults_reproduce_the_scoring_function_they_replaced(
+    game: GameFactory,
+) -> None:
+    """`mov_scale` at 10 is `sigmoid_score` exactly.
+
+    The parent's scorer is gone from this class, so this is what keeps the
+    replacement honest: every release published by the version that used
+    `scoring_method="sigmoid"` replays through the new path unchanged.
+    """
+    played = game("Home", "Away", 27, 13, game_id="g1")
+
+    blended = _predictor(play_weight=0.0)
+    plain = GlickoPredictor("test_league", scoring_method="sigmoid")
+
+    assert blended._actual(played) == pytest.approx(plain._actual(played))
+
+
+@pytest.mark.parametrize("scale", [1.0, 10.0, 30.0])
+def test_the_mov_temperature_decides_how_much_a_blowout_counts(
+    scale: float, game: GameFactory
+) -> None:
+    """What the temperature is for, in one comparison.
+
+    A close win and a blowout are the same event to a hard scorer and
+    different events to a soft one, so the gap between them has to shrink as
+    the scale widens.
+    """
+    close = _predictor(play_weight=0.0, mov_scale=scale)._actual(
+        game("Home", "Away", 20, 17, game_id="g1")
+    )
+    blowout = _predictor(play_weight=0.0, mov_scale=scale)._actual(
+        game("Home", "Away", 49, 3, game_id="g2")
+    )
+
+    assert 0.5 < close < blowout <= 1.0
+
+
+def test_a_small_mov_scale_approaches_binary_scoring(game: GameFactory) -> None:
+    """`binary_score` is the limit, which is why dropping `scoring_method`
+    loses nothing: a categorical became an end of a continuum."""
+    predictor = _predictor(play_weight=0.0, mov_scale=0.01)
+
+    assert predictor._actual(game("Home", "Away", 20, 17, game_id="g1")) == pytest.approx(
+        1.0
+    )
+    assert predictor._actual(game("Home", "Away", 17, 20, game_id="g2")) == pytest.approx(
+        0.0
+    )
+
+
+def test_the_control_temperature_sharpens_and_flattens_around_a_half() -> None:
+    """Below 1 stretches control away from 0.5, above 1 pushes it back.
+
+    Control is compressed toward 0.5 by construction -- every game starts at
+    even odds -- so this is the knob that says whether that compression is
+    information or an artefact.
+    """
+    control = {"g1": GameControl(home=0.8, seconds=3600)}
+
+    sharp = _predictor(control, control_temp=0.5)._control_share_of_game("g1")
+    flat = _predictor(control, control_temp=2.0)._control_share_of_game("g1")
+    plain = _predictor(control, control_temp=1.0)._control_share_of_game("g1")
+
+    assert sharp is not None and flat is not None and plain is not None
+    assert sharp > plain > flat > 0.5
+
+
+def test_the_control_temperature_leaves_an_even_game_even() -> None:
+    """0.5 is the fixed point of the transform, at every temperature: a game
+    nobody controlled says nothing however hard you listen."""
+    control = {"g1": GameControl(home=0.5, seconds=3600)}
+
+    for temp in (0.2, 1.0, 5.0):
+        assert _predictor(control, control_temp=temp)._control_share_of_game(
+            "g1"
+        ) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("name", ["mov_scale", "control_temp"])
+def test_a_temperature_has_to_be_positive(name: str, game: GameFactory) -> None:
+    """0 is not the binary limit, it is a division by zero, and negative
+    reads every game backwards."""
+    with pytest.raises(ValueError, match=name):
+        _predictor(**{name: 0.0})  # ty: ignore[invalid-argument-type]
+
+
+def test_the_temperatures_round_trip_through_a_release() -> None:
+    """They decide what every game was worth, so a release without them
+    replays as a different model."""
+    predictor = _predictor(mov_scale=7.5, control_temp=0.4, epa_margin_scale=21.0)
+
+    state = predictor.state_dict()
+    restored = BlendedGlickoPredictor.from_state_dict(state)
+
+    assert state["mov_scale"] == 7.5
+    assert state["control_temp"] == 0.4
+    assert state["epa_margin_scale"] == 21.0
+    assert restored.state_dict() == state
+    # The parent's scorer is not part of this model any more.
+    assert "scoring_method" not in state
