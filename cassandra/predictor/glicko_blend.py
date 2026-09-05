@@ -130,6 +130,12 @@ games, so the baseline column below is not a number from another run:
     ncaafb       0.157983  0.157850  -0.000133       0.2978   0.1516  0.1462
     nfl          0.221223  0.221181  -0.000042       0.1337   0.0098  0.1239
 
+nfl's row is against a baseline pinned at `season_regression` 0, which is not
+what `glicko_full` uses there -- so the -0.000042 is what the blend adds to
+*that* model, and the nfl config has since been corrected to copy 0.1018. The
+number to replace it is one three-parameter run away. ncaafb's row is
+unaffected: its `glicko_full` pins the parameter at 0 and so did the config.
+
 Always compare through a replay, never through a stored `target`. A result
 file records what a search scored against whatever seasons existed on the day
 it ran: `glicko_full`'s said 0.15748 while its replay said 0.15800, and the
