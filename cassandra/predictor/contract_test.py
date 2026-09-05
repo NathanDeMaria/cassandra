@@ -23,6 +23,8 @@ from .elo import EloPredictor
 from .elo538 import Elo538Predictor
 from .flat import FlatPredictor
 from .glicko import GlickoPredictor, _Rating
+from .glicko_blend import BlendedGlickoPredictor
+from .margin_blend import BlendedMarginEloPredictor
 from .margin_elo import MarginEloPredictor
 
 # Spelled as a union of concrete classes rather than `type[Predictor]` so the
@@ -38,18 +40,20 @@ RatedModel = (
 Rated = EloPredictor | Elo538Predictor | GlickoPredictor | MarginEloPredictor
 Model = RatedModel | type[FlatPredictor]
 
-# The control model is here rather than only in `control_test.py` because what
-# it changes is the update, not the contract: it still has to save, load,
-# regress and anchor like anything else. Built for a league with no sweep it
-# holds an empty index and leaves every game at its real score, so every
-# assertion below reads the same for it as for the Glicko it subclasses --
-# which is the point.
+# The three play-by-play models are here rather than only in their own test
+# files because what they change is the update, not the contract: they still
+# have to save, load, regress and anchor like anything else. Built for a
+# league with no sweep they hold empty indexes and leave every game at its
+# real score, so every assertion below reads the same for them as for the
+# models they subclass -- which is the point.
 RATED_MODELS: list[RatedModel] = [
     EloPredictor,
     Elo538Predictor,
     GlickoPredictor,
     ControlGlickoPredictor,
+    BlendedGlickoPredictor,
     MarginEloPredictor,
+    BlendedMarginEloPredictor,
 ]
 MODELS: list[Model] = [*RATED_MODELS, FlatPredictor]
 

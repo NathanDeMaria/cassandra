@@ -87,7 +87,17 @@ is a *worse* replacement for the final score (it sits on the law) and a
 *better* supplement: blended at ~0.2 it improves brier by 0.00030, ten times
 what control manages, with a smooth unimodal weight curve and a shuffle null
 0.0014 away. It is the crude binary form of EPA, which is the signal worth
-building next and which would arrive through this exact seam.
+building next.
+
+That is built, and it did not arrive through this seam. EPA is in points and
+this one takes a number between 0 and 1, so the model that reads it is
+`cassandra.predictor.margin_blend` -- Elo rated on the margin, whose target
+the final score, control and EPA all fit on because all three are margins.
+Control goes in there too, converted through a scale rather than blended as a
+share, which means the question this module answered negatively gets asked
+once more on a scale where it has company. Nothing about the law above
+predicts a different answer for control itself; what is new is the signal
+next to it.
 
 Splitting the coin flips, which is what the index holds now
 -----------------------------------------------------------

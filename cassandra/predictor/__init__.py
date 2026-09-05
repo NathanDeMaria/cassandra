@@ -15,6 +15,7 @@ from .config import (
 from .control import ControlGlickoPredictor
 from .elo import EloPredictor
 from .elo538 import Elo538Predictor
+from .epa import EPA_LEAGUES, EpaIndex, epa_path, load_epa
 from .flat import FlatPredictor
 from .game_control import (
     CONTROL_LEAGUES,
@@ -23,6 +24,8 @@ from .game_control import (
     load_game_control,
 )
 from .glicko import GlickoPredictor
+from .glicko_blend import BlendedGlickoPredictor
+from .margin_blend import BlendedMarginEloPredictor
 from .margin_elo import MarginEloPredictor
 from .matchup import predict_matchup
-from .types import GameControl, GameResult, Matchup, Prediction, Rating
+from .types import GameControl, GameEpa, GameResult, Matchup, Prediction, Rating
