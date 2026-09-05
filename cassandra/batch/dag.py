@@ -5,25 +5,31 @@ so terraform can declare the nodes but not the edges. This is the edges.
 
 The shape:
 
-    anchors (array, one child per league with division anchors)
-                                    |
-                                    v
-                        optimize (array, per model)
-                                    |
-                     +--------------+
-                     |              |
-                     v              v
-         evaluate (one job)    publish (array)
+    anchors        game_control        epa       (arrays, one child per league)
+       |                |               |
+       +----------------+---------------+
+                        |
+                        v
+              optimize (array, per model)
+                        |
+         +--------------+
+         |              |
+         v              v
+    evaluate       publish (array)
 
-anchors comes before optimize because it decides what a search is fit
-against: the anchor sets the scale a rating sits on, and a search run before
-it is fit against a different scale than the one the run publishes on.
+Three independent inputs, all of which decide what a search is fit against, so
+all three run before optimize and none of them waits on the others. anchors
+sets the scale a rating sits on. `game_control` and `epa` sweep stored
+play-by-play into the two per-game indexes the blended models read: a search
+that runs before them fits `play_weight` against an empty index and reports
+that the plays are worthless, which is a real answer to a question nobody
+asked.
 
-There was a `game_control` sibling here, sweeping play-by-play into the index
-`ControlGlickoPredictor` blends. Nothing in the run reads that index any more
--- see `cassandra.predictor.control` for what the searches found -- so the
-node is gone and the sweep is a `jobs.py game_control` someone runs by hand
-when there is a signal worth measuring again.
+`game_control` was a node here once, then wasn't -- nothing in the run read
+what it wrote once the `glicko_control` configs were deleted (see
+`cassandra.predictor.control`). It comes back with `epa` beside it because
+`BlendedGlickoPredictor` and `BlendedMarginEloPredictor` read both, which is
+the condition the sweep was always going to earn a node back on.
 
 evaluate and publish are siblings, not a chain: `publish.py` reads
 `<model>_result.json` and fits its own prob->margin mapping via `_best_fit`,
@@ -45,7 +51,7 @@ from aiobotocore.session import get_session
 
 from cassandra.batch import manifest
 from cassandra.batch.manifest import Work
-from cassandra.predictor import ANCHOR_LEAGUES
+from cassandra.predictor import ANCHOR_LEAGUES, CONTROL_LEAGUES, EPA_LEAGUES
 
 # AWS Batch rejects an array job of size 1 -- `arrayProperties.size` has to be
 # at least 2. A single-model run is the normal way to test a change, so it
@@ -71,6 +77,8 @@ def _job_name(stem: str) -> str:
 async def submit(
     *,
     anchors_job_definition: str,
+    game_control_job_definition: str,
+    epa_job_definition: str,
     optimize_job_definition: str,
     evaluate_job_definition: str,
     publish_job_definition: str,
@@ -79,6 +87,8 @@ async def submit(
     models: list[str] | None = None,
     skip_anchors: bool = False,
     rebuild_anchors: bool = False,
+    skip_sweeps: bool = False,
+    rebuild_sweeps: bool = False,
     skip_optimize: bool = False,
     skip_evaluate: bool = False,
     skip_publish: bool = False,
@@ -104,6 +114,22 @@ async def submit(
     than quietly doing nothing: the two readings of `--rebuild-anchors
     --skip-optimize` are "rebuild them" and "don't", and a run that re-rates
     a league is not one to guess about.
+
+    `skip_sweeps` drops the two play-by-play jobs, for the run whose indexes
+    are known to be current and doesn't want to pay two containers to confirm
+    it. Unlike the anchors they are cheap to be wrong about in one direction
+    only: a sweep that didn't need to run costs queue time, and one that
+    needed to run and didn't leaves the blended models fitting `play_weight`
+    against an empty index. It is implied by `skip_optimize` for the reason
+    `skip_anchors` is -- a republish reads its indexes back out of s3 rather
+    than deciding them.
+
+    `rebuild_sweeps` forces the full historical sweep instead of refreshing
+    the season in progress. It does *not* re-rate anything on its own: the
+    same fits over the same plays produce the same numbers, so unlike
+    `rebuild_anchors` this costs queue time and changes nothing, and it is
+    here for the run that suspects a partial index rather than for one that
+    wants different numbers.
     """
     if rebuild_anchors and (skip_anchors or skip_optimize):
         dropped = "skip_anchors" if skip_anchors else "skip_optimize"
@@ -129,6 +155,15 @@ async def submit(
     # Only the leagues that have anchors to fit. `nfl` never does, and a run
     # scoped to it should not submit an array of zero.
     anchor_leagues = [league for league in ANCHOR_LEAGUES if league in scope_leagues]
+
+    # Same for the two sweeps, which are football-only: a basketball run
+    # submits neither. Kept as separate lists rather than one, because the
+    # two indexes have separate league tuples on purpose -- control needs a
+    # league's win probability fit and EPA needs that plus an expected points
+    # fit, so a league can be in one and not the other.
+    control_leagues = [league for league in CONTROL_LEAGUES if league in scope_leagues]
+    epa_leagues = [league for league in EPA_LEAGUES if league in scope_leagues]
+    run_sweeps = not (skip_sweeps or skip_optimize)
 
     # A dry run builds every request and sends none, so it must not need a
     # client -- creating one costs a region and credentials, which is exactly
@@ -157,6 +192,33 @@ async def submit(
             )
             submitted.append(anchors_job)
 
+        # Both sweeps, submitted alongside anchors rather than after it: an
+        # index has nothing to do with the scale a rating sits on, so making
+        # either wait would serialize two independent hours.
+        sweep_jobs: list[Submitted] = []
+        for stem, definition, command, sweep_leagues, env_var in (
+            (
+                "game-control",
+                game_control_job_definition,
+                "game_control",
+                control_leagues,
+                _CONTROL_LEAGUES_ENV_VAR,
+            ),
+            ("epa", epa_job_definition, "epa", epa_leagues, _EPA_LEAGUES_ENV_VAR),
+        ):
+            if not (sweep_leagues and run_sweeps):
+                continue
+            sweep_jobs.append(
+                await submitter.run(
+                    name=_job_name(stem),
+                    job_definition=definition,
+                    command=[command] + (["--rebuild"] if rebuild_sweeps else []),
+                    size=len(sweep_leagues),
+                    environment={env_var: ",".join(sweep_leagues)},
+                )
+            )
+        submitted.extend(sweep_jobs)
+
         optimize_job = None
         if not skip_optimize:
             optimize_job = await submitter.run(
@@ -168,17 +230,22 @@ async def submit(
                 # than rebuilding it, so a launcher and an image on different
                 # commits fail loudly instead of quietly disagreeing.
                 environment={manifest.MANIFEST_ENV_VAR: manifest.encode(work)},
-                # Every child is fit against the scale the anchors set.
-                # Waiting on an array's parent waits for all of it, so no
-                # child starts searching against a scale still being fit.
-                depends_on=[anchors_job.job_id] if anchors_job else [],
+                # Every child is fit against the scale the anchors set and
+                # against whatever the sweeps wrote. Waiting on an array's
+                # parent waits for all of it, so no child starts searching
+                # against a scale still being fit or an index still being
+                # written. Three edges against Batch's limit of 20.
+                depends_on=[
+                    job.job_id
+                    for job in ([anchors_job] if anchors_job else []) + sweep_jobs
+                ],
             )
             submitted.append(optimize_job)
 
         # Both downstream stages wait on the optimize array, and through it on
-        # anchors -- there is no anchors job without an optimize job to feed,
-        # so naming it here as well would be an edge that can never be the
-        # only one. A --skip-optimize republish has nothing upstream left to
+        # anchors and the sweeps -- none of those runs without an optimize job
+        # to feed, so naming them here as well would be edges that can never
+        # be the only one. A --skip-optimize republish has nothing upstream left to
         # wait for, and starts immediately.
         depends_on = [optimize_job.job_id] if optimize_job else []
 
@@ -212,6 +279,8 @@ async def submit(
 # index, the same trick the optimize array uses for its work list.
 _PUBLISH_LEAGUES_ENV_VAR = "CASSANDRA_PUBLISH_LEAGUES"
 _ANCHOR_LEAGUES_ENV_VAR = "CASSANDRA_ANCHOR_LEAGUES"
+_CONTROL_LEAGUES_ENV_VAR = "CASSANDRA_CONTROL_LEAGUES"
+_EPA_LEAGUES_ENV_VAR = "CASSANDRA_EPA_LEAGUES"
 
 
 def _league_args(leagues: list[str] | None) -> list[str]:
@@ -313,6 +382,16 @@ def publish_league(index: int) -> str:
 def anchor_league(index: int) -> str:
     """Which league this anchors array child owns."""
     return _league_at(_ANCHOR_LEAGUES_ENV_VAR, index)
+
+
+def control_league(index: int) -> str:
+    """Which league this game control array child owns."""
+    return _league_at(_CONTROL_LEAGUES_ENV_VAR, index)
+
+
+def epa_league(index: int) -> str:
+    """Which league this EPA array child owns."""
+    return _league_at(_EPA_LEAGUES_ENV_VAR, index)
 
 
 def _league_at(env_var: str, index: int) -> str:

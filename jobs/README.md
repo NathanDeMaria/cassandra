@@ -12,7 +12,7 @@ moves when cassandra deploys lives here.**
 
 | Shared (`aws-batch-optimization`) | Here (`cassandra/jobs`) |
 | --- | --- |
-| Job queue, compute environment, network | The six job definitions |
+| Job queue, compute environment, network | The seven job definitions |
 | ECR repo `cassandra` + its push user | Both schedules |
 | `batch-execution-role` (pulls images) | `cassandra-batch-job-role` (what the code touches) |
 | `batch-scheduler-role` (submits jobs) | |
@@ -32,15 +32,21 @@ the `?ref=` in `main.tf` — there's deliberately no variable for it.
 ## The DAG
 
 ```
-anchors  (array job, one child per league with division anchors — 3 today)
+anchors       (array job, one per league with division anchors — 3 today)
+game-control  (array job, one per football league — 2)
+epa           (array job, one per football league — 2)
     |
-    v
-optimize  (array job, one child per league/model — 24 today)
+    +--------------+
+                   v
+optimize  (array job, one child per league/model — 31 today)
     |
     +--> evaluate  (one job, scores everything, writes the metrics csv)
     |
     +--> publish   (array job, one child per league)
 ```
+
+Three independent inputs, none waiting on the others, all of them ahead of
+optimize because all three decide what a search is fit against.
 
 `anchors` runs first because it decides the scale everything downstream is on.
 A team's anchor is the rating it starts at and regresses toward between
@@ -58,18 +64,26 @@ something you ask for — `jobs.py anchors --league ncaafb --if-missing=False`,
 or deleting the object — not something the weekly run does to itself. `nfl` never
 gets a child: 32 teams who all play each other have no tier gap to fit.
 
-There was a `game-control` sibling here, sweeping stored play-by-play into
-`{league}_game_control.json` for the `glicko_control` models to blend into
-their updates. Both leagues' searches then put the blend weight at zero, so
-the models are gone from `models/` and the node is gone from the DAG — the
-sweep was writing an index nothing read. `cassandra.predictor.control` has the
-measurements.
+`game-control` and `epa` sweep stored play-by-play into the two per-game
+indexes the blended models read — `{league}_game_control.json` is the share of
+a game a team controlled, `{league}_epa.json` is what its offense added per
+snap. Football only, so a basketball run submits neither.
 
-The `cassandra-game-control` job definition is still declared in `main.tf`, and
-`jobs.py game-control --league nfl` still runs the sweep. Nothing submits it.
-That's on purpose: the play-by-play is worth another look (success rate
-differential is measurably better than control was), and the next one should
-start from a job that exists rather than from a terraform change.
+`game-control` has been a node here before. It fed the `glicko_control`
+models, both leagues' searches put its blend weight at zero, the models were
+deleted and the node went with them — the sweep was writing an index nothing
+read (`cassandra.predictor.control` has the measurements). It is back, with
+`epa` beside it, because `BlendedGlickoPredictor` and
+`BlendedMarginEloPredictor` read both. That was always the condition: a sweep
+earns a node when a scheduled model reads what it writes.
+
+Both are idempotent on the fits behind them rather than on the file, so the
+weekly case re-reads the season in progress — about twenty weeks rather than
+four hundred. A retrain of either model in `lucky-ones`, or a bumped pin,
+rebuilds the league from scratch instead, because an index holding two models'
+numbers is one nobody can reproduce. `--skip-sweeps` drops both for a run
+that knows its indexes are current; `--rebuild-sweeps` forces the full
+history and changes no number, only the time spent producing it.
 
 `evaluate` and `publish` are siblings, not a chain: `publish.py` reads
 `<model>_result.json` and fits its own prob→margin mapping, so it needs the
@@ -77,7 +91,7 @@ optimizer's output but nothing evaluate produces.
 
 **The edges are not in this terraform, and can't be.** Batch takes `dependsOn`
 on `SubmitJob`, not on a job definition — so terraform declares the nodes and
-`cassandra/batch/dag.py` declares the edges. That's what the sixth job
+`cassandra/batch/dag.py` declares the edges. That's what the seventh job
 definition, `cassandra-launcher`, runs. It's a Batch job rather than a Lambda
 so it runs the same image as the work it submits: the manifest it sizes the
 array against has to be the one the children resolve their indices in, which is

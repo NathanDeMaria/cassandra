@@ -61,14 +61,18 @@ locals {
     { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
   ]
 
-  # What the launcher submits. `game_control` is deliberately absent: its
-  # definition below still exists to be submitted by hand, but no node in the
-  # DAG points at it, and a name in here is a name the launcher can start.
+  # What the launcher submits. `game_control` used to be deliberately absent
+  # -- its definition existed to be run by hand, and nothing in the DAG
+  # pointed at it. Both sweeps are nodes again now that the blended models
+  # read what they write, so both are here: a name in this map is a name the
+  # launcher can start.
   job_definitions = {
-    anchors  = module.anchors.name
-    optimize = module.optimize.name
-    evaluate = module.evaluate.name
-    publish  = module.publish.name
+    anchors      = module.anchors.name
+    game_control = module.game_control.name
+    epa          = module.epa.name
+    optimize     = module.optimize.name
+    evaluate     = module.evaluate.name
+    publish      = module.publish.name
   }
 }
 
@@ -143,9 +147,10 @@ resource "aws_iam_role_policy" "job" {
 # ------------------------------------------------------------------------------
 # The DAG's nodes
 # ------------------------------------------------------------------------------
-# Nodes only. The edges -- optimize fans out, evaluate and publish both wait on
-# all of it -- are `dependsOn` arguments to SubmitJob, which a job definition
-# has no field for. `cassandra/batch/submit.py` is where the DAG actually is.
+# Nodes only. The edges -- anchors and the two sweeps feed optimize, which
+# fans out, and evaluate and publish both wait on all of it -- are `dependsOn`
+# arguments to SubmitJob, which a job definition has no field for.
+# `cassandra/batch/dag.py` is where the DAG actually is.
 
 # Fits the per-team regression anchors the search is scored against. Ahead of
 # optimize in the DAG, and normally a no-op: `--if-missing` is on by default,
@@ -166,16 +171,17 @@ module "anchors" {
   environment_variables = local.job_environment
 }
 
-# Declared, and nothing submits it. This sweeps stored play-by-play into the
-# per-game control index the `glicko_control` models blended into their
-# updates; both leagues' searches then put that blend weight at zero, so the
-# models are gone and the launcher no longer has a node pointing here. See
-# `cassandra.predictor.control` for the measurements.
+# Sweeps stored play-by-play into the per-game control index. Declared and
+# unsubmitted for a while -- the `glicko_control` searches put its blend
+# weight at zero in both leagues, so the models were deleted and no node
+# pointed here (see `cassandra.predictor.control`). It is back in the DAG
+# because `BlendedGlickoPredictor` and `BlendedMarginEloPredictor` read the
+# index alongside the EPA one, which is the condition it was always going to
+# earn a node back on.
 #
-# It stays because the next look at the play-by-play should start from a job
-# that exists rather than from a terraform change, and an unsubmitted
-# definition costs nothing to hold. `jobs.py game-control --league nfl` still
-# runs the sweep, here or on a laptop.
+# An array job now, one child per football league, where it used to be a
+# single container doing both. The two are independent and each is an hour of
+# s3 reads.
 #
 # Sized for what it holds rather than for how long it runs: a handful of
 # NCAAFB weeks are decoded at once, ~20,000 plays each, plus the Arrow buffers
@@ -190,6 +196,30 @@ module "game_control" {
   execution_role_arn = local.shared.batch_execution_role_arn
   job_role_arn       = aws_iam_role.job.arn
   memory             = var.game_control_memory
+  retry_attempts     = 3
+
+  environment_variables = local.job_environment
+}
+
+# The other sweep: the same weekly parquet, read for what each offense added
+# per snap rather than for the shape of the win probability curve. Its own
+# definition rather than a flag on `game_control` because the two are
+# idempotent on different things -- control on the win probability fit, EPA on
+# that plus the expected points fit -- so a retrain of one should re-sweep one.
+#
+# More memory than `game_control` for a concrete reason: that one reduces a
+# game to a single float as it goes, while `epa_per_play` returns a `PlayEPA`
+# per regulation snap, so a week's worth of NCAAFB is ~20,000 of those alive
+# at once on top of the plays they came from.
+module "epa" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
+
+  job_name           = "cassandra-epa"
+  image              = local.image
+  command            = ["epa"]
+  execution_role_arn = local.shared.batch_execution_role_arn
+  job_role_arn       = aws_iam_role.job.arn
+  memory             = var.epa_memory
   retry_attempts     = 3
 
   environment_variables = local.job_environment
@@ -278,6 +308,8 @@ module "launcher" {
   environment_variables = concat(local.job_environment, [
     { name = "CASSANDRA_JOB_QUEUE", value = local.shared.job_queue_name },
     { name = "CASSANDRA_ANCHORS_JOB_DEFINITION", value = local.job_definitions.anchors },
+    { name = "CASSANDRA_GAME_CONTROL_JOB_DEFINITION", value = local.job_definitions.game_control },
+    { name = "CASSANDRA_EPA_JOB_DEFINITION", value = local.job_definitions.epa },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
     { name = "CASSANDRA_EVALUATE_JOB_DEFINITION", value = local.job_definitions.evaluate },
     { name = "CASSANDRA_PUBLISH_JOB_DEFINITION", value = local.job_definitions.publish },

@@ -125,6 +125,8 @@ def _submit(monkeypatch: pytest.MonkeyPatch, **kwargs) -> list[dag.Submitted]:
     return asyncio.run(
         dag.submit(
             anchors_job_definition="a",
+            game_control_job_definition="gc",
+            epa_job_definition="epa",
             optimize_job_definition="o",
             evaluate_job_definition="e",
             publish_job_definition="p",
@@ -315,6 +317,8 @@ def _submitted_requests(
     asyncio.run(
         dag.submit(
             anchors_job_definition="a",
+            game_control_job_definition="gc",
+            epa_job_definition="epa",
             optimize_job_definition="o",
             evaluate_job_definition="e",
             publish_job_definition="p",
@@ -403,16 +407,42 @@ def _by_command(requests: list[dict]) -> dict[str, dict]:
     return {r["containerOverrides"]["command"][0]: r for r in requests}
 
 
-def test_a_football_league_gets_no_game_control_job(
+def test_a_football_league_gets_both_sweeps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sweep fed `glicko_control`, and both leagues searched its weight
-    to zero -- so the models are gone from `models/` and the node that fed
-    them is gone from here. `cassandra.predictor.control` has the numbers.
-    """
+    """The sweeps are nodes again because the blended models read what they
+    write -- `cassandra.predictor.control` has why they stopped being nodes,
+    and `cassandra.predictor.glicko_blend` has why they are back."""
     submitted = _submit(monkeypatch, leagues=["ncaafb"])
 
+    assert _stages(submitted) == [
+        "cassandra-anchors",
+        "cassandra-game-control",
+        "cassandra-epa",
+        "cassandra-optimize",
+        "cassandra-evaluate",
+        "cassandra-publish",
+    ]
+
+
+def test_a_basketball_league_gets_neither_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both indexes are football-only, so a mens run submits arrays of zero
+    for neither of them."""
+    submitted = _submit(monkeypatch, leagues=["mens"])
+
     assert "cassandra-game-control" not in _stages(submitted)
+    assert "cassandra-epa" not in _stages(submitted)
+
+
+def test_skipping_the_sweeps_still_optimizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """For the run whose indexes are known current. It does not drop the
+    anchors with them -- the three are independent inputs."""
+    submitted = _submit(monkeypatch, leagues=["ncaafb"], skip_sweeps=True)
+
     assert _stages(submitted) == [
         "cassandra-anchors",
         "cassandra-optimize",
@@ -421,29 +451,72 @@ def test_a_football_league_gets_no_game_control_job(
     ]
 
 
-def test_optimize_waits_for_the_anchors_and_nothing_else(
+def test_the_sweeps_refresh_rather_than_rebuild_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One parent, not two.
+    """A weekly run re-sweeps the season in progress. `--rebuild-sweeps` is
+    what asks for all twenty years, and costs queue time without changing a
+    number."""
+    plain = _submitted_requests(monkeypatch, leagues=["ncaafb"])
+    assert _command(plain, "game_control") == ["game_control"]
+    assert _command(plain, "epa") == ["epa"]
 
-    The anchors set the scale a search is fit against, and are the only
-    upstream stage left that decides anything a child reads. An extra
-    dependency here isn't wrong so much as unpayable: it names a job the
-    launcher no longer submits, and Batch rejects the whole request.
+    rebuilt = _submitted_requests(
+        monkeypatch, leagues=["ncaafb"], rebuild_sweeps=True
+    )
+    assert _command(rebuilt, "game_control") == ["game_control", "--rebuild"]
+    assert _command(rebuilt, "epa") == ["epa", "--rebuild"]
+
+
+def test_each_sweep_child_gets_the_list_its_array_was_sized_against(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The launcher pins the league list; the child reads its own out by
+    index. Separate lists because the two league tuples are separate."""
+    requests = _submitted_requests(monkeypatch, leagues=["ncaafb", "nfl"])
+    by_command = _by_command(requests)
+
+    control = _environment(by_command["game_control"])[dag._CONTROL_LEAGUES_ENV_VAR]
+    epa = _environment(by_command["epa"])[dag._EPA_LEAGUES_ENV_VAR]
+
+    assert control.split(",") == ["nfl", "ncaafb"]
+    assert epa.split(",") == ["nfl", "ncaafb"]
+
+
+def test_optimize_waits_for_the_anchors_and_both_sweeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three parents, and each of them decides something a child reads: the
+    anchors set the scale, and the sweeps write the indexes the blended
+    models fit `play_weight` against. A search that started before them would
+    report that the plays are worthless, which is a real answer to a question
+    nobody asked.
     """
     requests = _submitted_requests(monkeypatch, leagues=["ncaafb"])
     depends = _by_command(requests)["optimize"]["dependsOn"]
 
-    # The fake client numbers jobs in submission order, and anchors is first.
-    assert depends == [{"jobId": "job-1"}]
+    # The fake client numbers jobs in submission order: anchors, control, epa.
+    assert depends == [{"jobId": "job-1"}, {"jobId": "job-2"}, {"jobId": "job-3"}]
+
+
+def test_the_sweeps_do_not_wait_on_the_anchors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An index has nothing to do with the scale a rating sits on, so making
+    either wait would serialize two independent hours."""
+    requests = _submitted_requests(monkeypatch, leagues=["ncaafb"])
+    by_command = _by_command(requests)
+
+    assert "dependsOn" not in by_command["game_control"]
+    assert "dependsOn" not in by_command["epa"]
 
 
 def test_a_football_republish_waits_for_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`--skip-optimize` used to leave the sweep behind for publish to wait
-    on, even for a football league. With the sweep gone there is no upstream
-    stage left at all, and a republish starts immediately.
+    """`--skip-optimize` drops the sweeps with the search, for the reason it
+    drops the anchors: a republish reads its indexes back out of s3 rather
+    than deciding them. With nothing upstream left, it starts immediately.
     """
     requests = _submitted_requests(monkeypatch, leagues=["ncaafb"], skip_optimize=True)
     by_command = _by_command(requests)
