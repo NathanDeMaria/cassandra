@@ -21,6 +21,7 @@ from .glicko_blend import (
     DEFAULT_MOV_SCALE,
     BlendedGlickoPredictor,
 )
+from .opponent_prior import OpponentPriorManager
 from .types import GameControl, GameEpa
 
 
@@ -432,10 +433,17 @@ def test_no_play_weight_at_the_configs_pins_is_exactly_glicko_full(
     this class at those pins really is that class. The pins live in the
     configs; what is asserted here is the equivalence they rely on.
     """
-    # ncaafb's, spelled out rather than splatted: a `**kwargs` of floats is
-    # one typo away from landing on a parameter that takes something else.
+    # The prior manager is shared explicitly, because `GlickoPredictor` keys
+    # its own on `self.__class__.__name__` -- so the two classes read
+    # different `{league}_{class}_priors.json` files and start real leagues
+    # from different ratings. That difference is by design and is worth
+    # ~0.00001 brier in nfl; what is asserted here is that nothing *else*
+    # differs. A test that let each build its own would pass on a league with
+    # no priors file and say nothing about the leagues that have one.
+    priors = OpponentPriorManager("test_league", model="shared")
     blended = BlendedGlickoPredictor(
         "test_league",
+        opponent_prior_manager=priors,
         home_advantage=46.15485975637294,
         initial_rd=531.7962683831678,
         weekly_rd_increase=0.0,
@@ -446,6 +454,7 @@ def test_no_play_weight_at_the_configs_pins_is_exactly_glicko_full(
     )
     plain = GlickoPredictor(
         "test_league",
+        opponent_prior_manager=priors,
         home_advantage=46.15485975637294,
         initial_rd=531.7962683831678,
         weekly_rd_increase=0.0,
