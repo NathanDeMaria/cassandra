@@ -20,6 +20,13 @@ report:
 	poetry run python .claude/skills/run-report/summarize_run.py $(ARGS)
 
 
+# Slice one model's residuals to see where it's wrong, e.g.
+# `make diagnose ARGS="--league nfl --model margin_blend"`. Replays the model
+# once, so it costs about what one `evaluate` child does.
+diagnose:
+	poetry run python diagnose.py $(ARGS)
+
+
 # Build a release for every model in every league, locally. Reads the seasons
 # and odds once for the whole run, so it's minutes rather than the half hour a
 # process per model would spend re-reading s3.
@@ -81,4 +88,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report publish build push _ecr_login submit
+.PHONY: lint check test report diagnose publish build push _ecr_login submit

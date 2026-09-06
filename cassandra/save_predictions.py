@@ -117,6 +117,16 @@ class _Prediction:
     # their positions.
     game_id: str
     date: datetime
+    # Whether the model gave anybody a home advantage in this game. Carried
+    # for `cassandra.residuals`, whose home-field diagnostic has to leave
+    # neutral games out: the model applies no advantage in one, so a neutral
+    # game says nothing about how big the advantage should have been, and
+    # counting it as a home game dilutes the estimate by however much of a
+    # schedule is bowls. `home_team` is still populated for a neutral game --
+    # somebody is nominally the home side -- so this is the only thing that
+    # tells the two apart. Appended for the same reason `game_id` and `date`
+    # were.
+    neutral_site: bool
 
 
 def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
@@ -134,6 +144,7 @@ def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
         away_team=result.game.away,
         game_id=result.game.game_id,
         date=result.game.date,
+        neutral_site=result.game.neutral_site,
     )
 
 
