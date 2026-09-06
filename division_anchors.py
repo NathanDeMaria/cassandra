@@ -46,7 +46,7 @@ import asyncio
 import json
 import math
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from typing import NamedTuple
 
 import fire
@@ -62,10 +62,11 @@ from endgame_aws import Config
 from cassandra.predictor.base_predictor import MEAN_RATING, Anchor, anchor_path
 from cassandra.save_predictions import read_all_seasons
 
-# The Elo scale: a 400-point gap is 10:1 odds. Shared with the predictors by
-# construction rather than by import -- they each write the forward direction
-# inline, and this is the only place that inverts it.
-_SCALE = 400 / math.log(10)
+# The Elo scale: a 400-point gap is 10:1 odds, so a point of rating is this
+# many logits. Written out rather than imported for the same reason the
+# predictors each write it inline -- it is the definition of the scale, not a
+# tunable -- and `DEFAULT_MARGIN_SCALE` turns it into points.
+_LOGIT_PER_ELO = math.log(10) / 400
 
 # A conference needs this many games *against teams outside it* before its
 # own offset is worth fitting; below it, its teams fall back to the bare
@@ -110,14 +111,49 @@ _SPANNED_DIVISIONS = frozenset({"NCAA Division II", "NCAA Division III"})
 # that matter; the rest are conference shuffles nobody reads a log for.
 _REPORTED_MOVES = 15
 
-# Gradient ascent on the log-likelihood, stopped on the gradient rather than
-# at a fixed iteration count. A fixed count is what hides a fit that quietly
+# Points of margin per point of rating gap, through `MarginEloPredictor`'s
+# exchange rate: a 400-point gap is 10:1 odds, which is `margin_scale` points
+# per unit of logit. The ladder is quoted in rating units either way, but
+# *which* gap reproduces a given margin depends on this, so it is a knob and
+# not a constant -- and the default is the scale ncaafb's margin models fit,
+# since ncaafb is the only league whose ladder has more than one rung.
+DEFAULT_MARGIN_SCALE = 13.0
+
+# Margins are capped before they are fit on, the same way the margin models
+# cap theirs. A 70-0 guarantee game is evidence that the gap is large and
+# very weak evidence about how large; without a cap a handful of them set the
+# rung. ncaafb's `margin_blend` fits `mov_cap` at 56, and the ladder moved by
+# 3 rating points between a cap of 56 and one of 100, so this is a guard
+# rather than a parameter worth tuning.
+DEFAULT_MARGIN_CAP = 56.0
+
+# Divisions that span tiers rather than naming one. ESPN filed everything
+# below FCS under "Division II/III" and `resolve_lumped` fills that in from a
+# team's own later seasons -- but 54 teams were classified once, under the
+# spanning label, and never again, so the label survives in every season
+# through 2026 rather than ending in 2010.
+#
+# Those teams still need an anchor, so the tier is still rated. What it is
+# not is a rung: a level fit between D-II and D-III, on games played by a
+# mixture of both, is a constraint that pulls the two together, and it pulled
+# them to within 11 rating points of each other while their own games said
+# 114 to 151. So these divisions read the ladder rather than setting it --
+# see `fit_tiers`.
+_MIXTURE_DIVISIONS = frozenset({_LUMPED_DIVISION})
+
+# Gradient descent on squared error, stopped on the gradient rather than at a
+# fixed iteration count. A fixed count is what hides a fit that quietly
 # stopped early: the numbers it prints look like ratings either way, and the
 # only symptom is a scale that's too narrow -- which is the exact failure
 # this file is here to prevent.
 _TOLERANCE = 1e-4
 _MAX_ITERATIONS = 500_000
-_LEARNING_RATE = 400.0
+
+# The least-squares Hessian for one rating is `n * points_per_rating**2`, so
+# dividing the gradient by that is a Newton step and this is the damping on
+# it. Not a rate to tune: at 1.0 the step is the exact minimiser of the
+# quadratic and overshoots on the coupled parameters.
+_DAMPING = 0.5
 
 
 class Tier(NamedTuple):
@@ -140,11 +176,24 @@ class Tier(NamedTuple):
 
 
 class TierGame(NamedTuple):
-    """One game, reduced to the two tiers that played it."""
+    """One game, reduced to the two tiers that played it.
+
+    `home_margin` rather than the win it used to carry. Win/loss is what
+    saturates: once the favourite always wins, the likelihood stops caring
+    how much it wins by, and the rungs at the bottom of the ladder are
+    exactly the ones where every game is a blowout. Measured on ncaafb, the
+    two estimators agree on FBS/FCS (315 vs 307) and disagree by half the
+    rung below it -- FCS over D-III reads as 238 from the win rate and 347
+    from the margin.
+
+    It is also what the consumer wants. The football models are scored on
+    `margin_mae` now, and a ladder fit to reproduce win *frequency* is not
+    one that reproduces win *margin*.
+    """
 
     home_tier: Tier
     away_tier: Tier
-    home_won: float
+    home_margin: float
     neutral_site: bool
 
 
@@ -179,20 +228,41 @@ class _Aggregated(NamedTuple):
     """
 
     played: Counter[tuple[Tier, Tier, bool]]
-    home_wins: Counter[tuple[Tier, Tier, bool]]
+    home_margin: Counter[tuple[Tier, Tier, bool]]
 
 
-def _aggregate(games: Iterable[TierGame]) -> _Aggregated:
+def _aggregate(
+    games: Iterable[TierGame], cap: float = DEFAULT_MARGIN_CAP
+) -> _Aggregated:
+    """Games collapsed to a count and a summed margin per matchup.
+
+    The sum is all a least-squares gradient reads -- the derivative of
+    `sum((y - yhat)**2)` in a rating is `sum(y - yhat)`, and `yhat` is the
+    same for every game in a matchup -- so the collapse that made the win
+    fit affordable survives the change of loss unchanged.
+    """
     played: Counter[tuple[Tier, Tier, bool]] = Counter()
-    home_wins: Counter[tuple[Tier, Tier, bool]] = Counter()
-    for home, away, home_won, neutral in games:
+    margin: Counter[tuple[Tier, Tier, bool]] = Counter()
+    for home, away, home_margin, neutral in games:
         played[(home, away, neutral)] += 1
-        home_wins[(home, away, neutral)] += home_won
-    return _Aggregated(played, home_wins)
+        margin[(home, away, neutral)] += max(-cap, min(cap, home_margin))
+    return _Aggregated(played, margin)
 
 
-def fit_tiers(games: Iterable[TierGame], mean: float = MEAN_RATING) -> Fit:
-    """Rate each tier from the games played between them.
+def fit_tiers(
+    games: Iterable[TierGame],
+    mean: float = MEAN_RATING,
+    margin_scale: float = DEFAULT_MARGIN_SCALE,
+    margin_cap: float = DEFAULT_MARGIN_CAP,
+    mixture_divisions: Collection[str] = _MIXTURE_DIVISIONS,
+) -> Fit:
+    """Rate each tier from the margins of the games played between them.
+
+    Least squares on the margin a rating gap implies, through
+    `MarginEloPredictor`'s own exchange rate, rather than the win/loss
+    likelihood this used to maximize. `TierGame` has the measurement that
+    motivated the change; what it buys is the bottom of the ladder, where
+    every crossing game is a blowout and a win is the same win at any gap.
 
     A tier's rating is its division's level plus its conference's offset,
     and the offsets are recentred inside each division on every step. The
@@ -207,14 +277,27 @@ def fit_tiers(games: Iterable[TierGame], mean: float = MEAN_RATING) -> Fit:
     would charge the whole home-field effect to the smaller division and
     exaggerate every gap.
 
+    A division in `mixture_divisions` is rated but does not rate anybody
+    else: its games move its own level and leave its opponents' alone. Such
+    a division is a label spanning two real tiers rather than a tier, so a
+    level fit between them is a rung that isn't there, and letting it pull
+    on both is how D-II and D-III ended up 11 rating points apart. It still
+    gets a level, because the teams under the label still need an anchor.
+
     Ratings come back centred so the games-weighted average is `mean`. Any
     constant added to every tier predicts identically, so a centre has to be
     chosen; keeping the existing one leaves teams sitting where they always
     have and only spreads the tiers apart around it.
+
+    `home_advantage` comes back in **points of margin**, not rating units,
+    which is how `MarginEloPredictor` quotes its own. On ncaafb it fits 2.9
+    against that model's independently fitted 2.78.
     """
-    played, home_wins = _aggregate(games)
+    played, home_margin = _aggregate(games, margin_cap)
     if not played:
         return Fit({}, {}, 0.0)
+    points_per_rating = _LOGIT_PER_ELO * margin_scale
+    mixture = frozenset(mixture_divisions)
 
     tiers = {tier for home, away, _ in played for tier in (home, away)}
     divisions = dict.fromkeys({tier.division for tier in tiers}, 0.0)
@@ -235,9 +318,12 @@ def fit_tiers(games: Iterable[TierGame], mean: float = MEAN_RATING) -> Fit:
         n for (home, away, _), n in played.items() if home.division != away.division
     )
     cross_tier = sum(n for (home, away, _), n in played.items() if home != away)
-    division_step = _LEARNING_RATE / max(1, cross_division)
-    offset_step = _LEARNING_RATE / max(1, cross_tier)
-    home_step = _LEARNING_RATE / total
+    # Newton, damped: the second derivative of the squared error in a rating
+    # is `n * points_per_rating**2`, so dividing by it puts the step in
+    # rating units whatever the margin scale is.
+    division_step = _DAMPING / max(1, cross_division) / points_per_rating
+    offset_step = _DAMPING / max(1, cross_tier) / points_per_rating
+    home_step = _DAMPING / total
 
     appearances: Counter[Tier] = Counter()
     for (home, away, _), n in played.items():
@@ -251,14 +337,23 @@ def fit_tiers(games: Iterable[TierGame], mean: float = MEAN_RATING) -> Fit:
         home_gradient = 0.0
         for (home, away, neutral), n in played.items():
             edge = 0.0 if neutral else home_advantage
-            expected = _win_probability(
-                _rating(home, divisions, offsets)
-                + edge
-                - _rating(away, divisions, offsets)
-            )
-            error = home_wins[(home, away, neutral)] - n * expected
-            division_gradient[home.division] += error
-            division_gradient[away.division] -= error
+            expected = (
+                _rating(home, divisions, offsets) - _rating(away, divisions, offsets)
+            ) * points_per_rating + edge
+            error = home_margin[(home, away, neutral)] - n * expected
+            home_mixture = home.division in mixture
+            away_mixture = away.division in mixture
+            if home_mixture or away_mixture:
+                # A spanning label reads the ladder rather than setting a
+                # rung of it, so this game places the mixture and leaves the
+                # real tier it played where the tiers it *is* put it.
+                if home_mixture:
+                    division_gradient[home.division] += error
+                if away_mixture:
+                    division_gradient[away.division] -= error
+            else:
+                division_gradient[home.division] += error
+                division_gradient[away.division] -= error
             if home.conference is not None:
                 offset_gradient[home] += error
             if away.conference is not None:
@@ -313,11 +408,9 @@ def fit_tiers(games: Iterable[TierGame], mean: float = MEAN_RATING) -> Fit:
 def _rating(
     tier: Tier, divisions: Mapping[str, float], offsets: Mapping[Tier, float]
 ) -> float:
-    return divisions[tier.division] + (0.0 if tier.conference is None else offsets[tier])
-
-
-def _win_probability(rating_difference: float) -> float:
-    return 1 / (1 + math.exp(-rating_difference / _SCALE))
+    return divisions[tier.division] + (
+        0.0 if tier.conference is None else offsets[tier]
+    )
 
 
 def _played_games(seasons: Iterable[Season]) -> Iterator[tuple[Season, Game]]:
@@ -417,19 +510,15 @@ def _tier_games(
 ) -> list[TierGame]:
     games = []
     for season, game in _played_games(seasons):
-        if game.home_score == game.away_score:
-            continue
+        # A drawn game used to be dropped, because it was neither the win nor
+        # the loss the likelihood took. A margin of zero is an ordinary
+        # observation, so it stays.
         home = classifier.tier(namer.canonical(game.home), season.year)
         away = classifier.tier(namer.canonical(game.away), season.year)
         if home is None or away is None:
             continue
         games.append(
-            TierGame(
-                home,
-                away,
-                1.0 if game.home_score > game.away_score else 0.0,
-                game.neutral_site,
-            )
+            TierGame(home, away, game.home_score - game.away_score, game.neutral_site)
         )
     return games
 
@@ -506,7 +595,10 @@ def _drop_thin_conferences(
     return _Resolved(
         [
             TierGame(
-                resolve(g.home_tier), resolve(g.away_tier), g.home_won, g.neutral_site
+                resolve(g.home_tier),
+                resolve(g.away_tier),
+                g.home_margin,
+                g.neutral_site,
             )
             for g in games
         ],
@@ -697,7 +789,9 @@ async def _build(league: str, write: bool) -> None:
         for team, anchor in anchors.items()
         if (steps := _steps(anchor)) is not None
     }
-    climbed = sorted(moved.items(), key=lambda kv: _first_step(kv[1]) - _last_step(kv[1]))
+    climbed = sorted(
+        moved.items(), key=lambda kv: _first_step(kv[1]) - _last_step(kv[1])
+    )
     print(
         f"\n  {len(moved)} of {len(anchors)} team(s) changed tier at some point "
         "and carry a history. Biggest climbs:"

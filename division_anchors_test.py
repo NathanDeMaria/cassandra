@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timezone
 
 import pytest
@@ -5,6 +6,7 @@ from call_it_what_you_want import TeamClassification, TeamNamer
 from endgame.types import Game, Season, Week
 
 from division_anchors import (
+    DEFAULT_MARGIN_SCALE,
     Fit,
     Tier,
     TierGame,
@@ -19,18 +21,40 @@ from division_anchors import (
     main,
 )
 
+#: What a "win" is worth in the helper below, and the unit every expected
+#: gap here is quoted in. Any value works -- the fit is linear in it -- so
+#: this is just a round number far enough from zero to be readable.
+MARGIN = 14.0
+
+#: Points of margin per point of rating, the exchange rate `fit_tiers` uses.
+#: Written out so the expectations below are arithmetic a reader can follow
+#: rather than numbers copied off a run.
+PTS = math.log(10) / 400 * DEFAULT_MARGIN_SCALE
+
+
+def _gap(margin: float) -> float:
+    """The rating gap a mean margin of `margin` points implies."""
+    return margin / PTS
+
 
 def _games(
     home: str, away: str, home_wins: int, away_wins: int, neutral: bool = True
 ) -> list[TierGame]:
+    """`home_wins` games won by MARGIN, then `away_wins` lost by it.
+
+    Still counted in wins and losses, because most of what these tests check
+    is thresholds and team counts. What changed with the loss is that the
+    mean margin -- and so the gap -- is the win *share* mapped onto
+    +/-MARGIN: a 75/25 record is a mean of 0.5 * MARGIN.
+    """
     h, a = _tier(home), _tier(away)
-    return [TierGame(h, a, 1.0, neutral)] * home_wins + [
-        TierGame(h, a, 0.0, neutral)
+    return [TierGame(h, a, MARGIN, neutral)] * home_wins + [
+        TierGame(h, a, -MARGIN, neutral)
     ] * away_wins
 
 
 def _tier(name: str) -> Tier:
-    """"fbs" is a bare division; "fbs/SEC" is a conference inside one."""
+    """ "fbs" is a bare division; "fbs/SEC" is a conference inside one."""
     division, _, conference = name.partition("/")
     return Tier(division, conference or None)
 
@@ -41,12 +65,12 @@ def test_a_tier_that_wins_more_rates_higher() -> None:
     assert fit.ratings[_tier("fbs")] > fit.ratings[_tier("fcs")]
 
 
-def test_the_gap_matches_the_win_rate() -> None:
-    """A 3:1 record is 10**(gap/400) = 3, so ~191 points."""
+def test_the_gap_matches_the_margin() -> None:
+    """A 3:1 record at +/-MARGIN averages half of it, and the gap is that."""
     fit = fit_tiers(_games("fbs", "fcs", 75, 25))
 
     gap = fit.ratings[_tier("fbs")] - fit.ratings[_tier("fcs")]
-    assert gap == pytest.approx(191, abs=5)
+    assert gap == pytest.approx(_gap(0.5 * MARGIN), rel=0.02)
 
 
 def test_even_tiers_land_together_at_the_mean() -> None:
@@ -83,11 +107,15 @@ def test_home_advantage_is_not_charged_to_the_smaller_division() -> None:
 
 
 def test_a_transitive_gap_is_recovered_without_direct_games() -> None:
-    """D-III never plays FBS, so its scale has to come through FCS."""
+    """D-III never plays FBS, so its scale has to come through FCS.
+
+    Two rungs of half a MARGIN each, and margins add where win rates don't:
+    this is the property the old likelihood only had approximately.
+    """
     fit = fit_tiers(_games("fbs", "fcs", 75, 25) + _games("fcs", "d3", 75, 25))
 
     gap = fit.ratings[_tier("fbs")] - fit.ratings[_tier("d3")]
-    assert gap == pytest.approx(382, abs=15)
+    assert gap == pytest.approx(_gap(MARGIN), rel=0.02)
 
 
 def test_a_lopsided_gap_is_not_compressed_by_the_games_around_it() -> None:
@@ -104,9 +132,76 @@ def test_a_lopsided_gap_is_not_compressed_by_the_games_around_it() -> None:
     buried = fit_tiers(across + _games("fbs", "fbs", 5000, 5000))
 
     gap = alone.ratings[_tier("fbs")] - alone.ratings[_tier("fcs")]
-    assert gap == pytest.approx(382, abs=10)
+    assert gap == pytest.approx(_gap(0.8 * MARGIN), rel=0.02)
     buried_gap = buried.ratings[_tier("fbs")] - buried.ratings[_tier("fcs")]
     assert buried_gap == pytest.approx(gap, abs=10)
+
+
+def test_two_tiers_with_one_record_and_different_margins_rate_apart() -> None:
+    """The whole point of fitting on margin.
+
+    Both rungs are 90/10, so the likelihood this used to maximize would put
+    them at the same gap however lopsided the games were. One of them is won
+    by three times as much.
+    """
+    close = fit_tiers(_games("fbs", "fcs", 90, 10))
+    blowout = fit_tiers(
+        [
+            TierGame(_tier("fbs"), _tier("fcs"), m * 3, True)
+            for m in (MARGIN,) * 90 + (-MARGIN,) * 10
+        ]
+    )
+
+    close_gap = close.ratings[_tier("fbs")] - close.ratings[_tier("fcs")]
+    blowout_gap = blowout.ratings[_tier("fbs")] - blowout.ratings[_tier("fcs")]
+    assert blowout_gap == pytest.approx(3 * close_gap, rel=0.02)
+
+
+def test_a_blowout_is_capped_before_it_sets_a_rung() -> None:
+    """One 70-0 guarantee game shouldn't outvote the season around it."""
+    lopsided = [TierGame(_tier("fbs"), _tier("fcs"), 200.0, True)] * 10
+
+    fit = fit_tiers(lopsided, margin_cap=50.0)
+
+    gap = fit.ratings[_tier("fbs")] - fit.ratings[_tier("fcs")]
+    assert gap == pytest.approx(_gap(50.0), rel=0.02)
+
+
+def _mixture_pool() -> list[TierGame]:
+    """d2 beats d3 by MARGIN directly; "both" looks close to each of them.
+
+    The real shape. `Division II/III` is a label over teams from both tiers,
+    so it beats D-III narrowly and loses to D-II narrowly, and the chain
+    through it says the two are half as far apart as their own games do --
+    over ten times as many games. That is the constraint that pulled the
+    real rung down to 11 rating points.
+    """
+    return (
+        _games("d2", "d3", 100, 0)
+        + [TierGame(_tier("both"), _tier("d2"), -MARGIN / 4, True)] * 400
+        + [TierGame(_tier("both"), _tier("d3"), MARGIN / 4, True)] * 400
+    )
+
+
+def test_a_mixture_division_is_placed_but_sets_no_rung() -> None:
+    """A label spanning two tiers reads the ladder instead of pulling on it.
+
+    d2 and d3 keep the gap their own games give them, and "both" still lands
+    between them, so the teams under the label have somewhere to anchor.
+    """
+    fit = fit_tiers(_mixture_pool(), mixture_divisions={"both"})
+
+    gap = fit.divisions["d2"] - fit.divisions["d3"]
+    assert gap == pytest.approx(_gap(MARGIN), rel=0.02)
+    assert fit.divisions["d3"] < fit.divisions["both"] < fit.divisions["d2"]
+
+
+def test_without_the_mixture_rule_the_rung_collapses() -> None:
+    """The contrast that makes the test above mean something."""
+    fit = fit_tiers(_mixture_pool(), mixture_divisions=())
+
+    gap = fit.divisions["d2"] - fit.divisions["d3"]
+    assert gap < 0.7 * _gap(MARGIN)
 
 
 def test_a_conference_does_not_float_out_of_its_division() -> None:
@@ -412,7 +507,10 @@ def test_tier_games_reads_each_game_at_the_season_it_was_played() -> None:
     )
     seasons = [_season(2004, _game(2004)), _season(2024, _game(2024))]
 
-    tiers = [(g.home_tier, g.away_tier) for g in _tier_games(seasons, TeamNamer.empty(), classifier)]
+    tiers = [
+        (g.home_tier, g.away_tier)
+        for g in _tier_games(seasons, TeamNamer.empty(), classifier)
+    ]
 
     assert tiers == [(Tier("fcs"), Tier("fcs")), (Tier("fbs"), Tier("fcs"))]
 
@@ -477,7 +575,10 @@ def test_a_team_in_an_unplaceable_division_gets_no_anchor() -> None:
     """The all-star bowls: six squads that only ever play each other."""
     seasons = [_season(2014, _game(2014, home="East", away="West"))]
     classifier = _classifier(
-        {("East", 2014): _found("All-star Bowls"), ("West", 2014): _found("All-star Bowls")}
+        {
+            ("East", 2014): _found("All-star Bowls"),
+            ("West", 2014): _found("All-star Bowls"),
+        }
     )
     fit = Fit({}, {"All-star Bowls": 1500.0}, 0.0)
 
