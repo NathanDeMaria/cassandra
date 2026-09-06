@@ -128,13 +128,20 @@ games, so the baseline column below is not a number from another run:
 
     league  play_weight 0  blended     d brier   play_weight  control    epa
     ncaafb       0.157983  0.157850  -0.000133       0.2978   0.1516  0.1462
-    nfl          0.221223  0.221181  -0.000042       0.1337   0.0098  0.1239
+    nfl          0.221173  0.221152  -0.000021       0.0929   0.0000  0.0929
 
-nfl's row is against a baseline pinned at `season_regression` 0, which is not
-what `glicko_full` uses there -- so the -0.000042 is what the blend adds to
-*that* model, and the nfl config has since been corrected to copy 0.1018. The
-number to replace it is one three-parameter run away. ncaafb's row is
-unaffected: its `glicko_full` pins the parameter at 0 and so did the config.
+nfl's baseline lands on `evaluate`'s own `glicko_full` to a millionth
+(0.221173 against 0.221174), which is the check that the pins are right:
+an earlier config pinned `season_regression` at 0 for both leagues while
+nfl's `glicko_full` searches it and fits 0.1018, and against that wrong
+baseline the blend looked twice as good as it is.
+
+nfl put `epa_share` at 1.0 with every one of its best probes against that
+bound, so control contributes exactly nothing there and EPA carries the whole
+0.093. The bound-hit diagnostic suggests widening to [0, 2], which is the one
+piece of advice in the run report to ignore: `epa_share` is a fraction by
+construction and `PlayBlend.validated` rejects anything past 1. The reading
+is not that the range is too small, it is that control is worthless in nfl.
 
 Always compare through a replay, never through a stored `target`. A result
 file records what a search scored against whatever seasons existed on the day
@@ -201,9 +208,11 @@ correlated with it. Every reason to expect something.
 
     league  beta fitted   at beta = 0    at the OLS beta
     ncaafb       0.0000      0.157850   0.158533  (+0.00068)
-    nfl          0.0000      0.221181   0.221627  (+0.00045)
+    nfl          0.0000      0.221152   0.221519  (+0.00035)
 
-Both leagues put it at zero unprompted, and forcing it to the slope that
+Both leagues put it at zero with *every* one of their best probes against
+that bound -- 100% crowding, which is as flat a rejection as the diagnostic
+can report -- and forcing it to the slope that
 makes the residual orthogonal costs four to seven times what the whole blend
 gains. So the residual is not neutral, it is *worse* -- which says the half
 of EPA the scoreboard does not explain is noise, and the half it does explain
