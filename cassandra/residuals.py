@@ -125,10 +125,12 @@ still worth 1.1% of the gap between two models.
 """
 
 from collections.abc import Mapping, Sequence
+from functools import cache
 from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
+from call_it_what_you_want import TeamNamer, default_classifications, registry_league
 
 from .columns import GameDfColumns
 from .prob_to_margin import (
@@ -742,6 +744,98 @@ def rest_advantage(df: pd.DataFrame, edges: Sequence[float] = (2, 5)) -> pd.Seri
         difference, bins=[-np.inf, *(-e for e in reversed(edges)), *edges, np.inf]
     ).astype(str)
     return bucketed.where(difference.notna(), "unknown")
+
+
+#: What a game gets on a classification axis when nobody filed one of its
+#: teams for that season. Its own bucket rather than a dropped row, so the
+#: reader can see how much of the league it is -- and discount the axis when
+#: it is most of it. Read it the way `rest_advantage`'s `unknown` is read: a
+#: heterogeneous pile that will happily carry sigma of its own.
+UNCLASSIFIED = "unclassified"
+
+
+def classification_axes(df: pd.DataFrame, league: str) -> Mapping[str, pd.Series]:
+    """Division and conference labels, from `call_it_what_you_want`.
+
+    Its own function rather than an entry in `standard_axes` because it needs
+    a second data source and a league name, and `standard_axes` keeps the
+    boundary that everything in it comes off the predictions frame alone.
+    `{}` for a league the registry doesn't classify -- which is every
+    professional one, nfl included -- so a caller can merge it in
+    unconditionally and get the axes wherever they exist.
+
+    Classification is per team *per season*, the same way `division_anchors`
+    reads it: a program that moved up is FCS in the seasons it was FCS and
+    FBS after, rather than being judged for its whole history against the
+    tier it ended in.
+
+    Three axes, and the third is the one that carries the question
+    ------------------------------------------------------------------
+
+    `division` and `conference` label a game by its **home** team, so they
+    sit next to `home_team` and share its weakness: a game's residual is
+    about both sides, and half the label is missing.
+
+    They are also, on their own, close to blind to the failure they look like
+    they would catch. A division that is rated on the wrong scale entirely --
+    which is the ncaafb problem `division_anchors` exists for, where a closed
+    D-III pool has nothing connecting it to FBS -- shows up in neither, because
+    a D-III team's schedule is almost all other D-III teams and both sides of
+    those games are wrong by the same amount. The error cancels inside the
+    slice and the bias comes out near zero.
+
+    `division_matchup` is where it doesn't cancel: the games that cross a
+    tier, labelled by both sides and *directionally*, so "NCAA Division I-A
+    at NCAA Division I-AA" and its reverse are separate slices. A scale error
+    between two tiers has to show up as equal and opposite biases in that
+    pair, which is a signature noise doesn't produce -- and it is the shape
+    to look for before reading anything else on this axis.
+    """
+    registry = registry_league(league)
+    if registry is None:
+        return {}
+    namer = TeamNamer.for_league(league)
+    classifications = default_classifications()
+
+    @cache
+    def tier(team: str, year: int) -> tuple[str, str | None] | None:
+        # Names in a predictions frame are already canonical -- the replay
+        # runs them through the same namer before the predictor sees them --
+        # so this looks up the id directly rather than canonicalizing twice.
+        espn_id = namer.espn_id(team)
+        if espn_id is None:
+            return None
+        found = classifications.classification_in(espn_id, year, registry)
+        return None if found is None else (found.division, found.conference)
+
+    years = df["year"].to_numpy()
+    home = [tier(t, int(y)) for t, y in zip(df["home_team"], years)]
+    away = [tier(t, int(y)) for t, y in zip(df["away_team"], years)]
+
+    def _division(t: tuple[str, str | None] | None) -> str:
+        return UNCLASSIFIED if t is None else t[0]
+
+    def _conference(t: tuple[str, str | None] | None) -> str:
+        # An independent has no conference, and gets its division rather than
+        # a shared "None" bucket that would pool schools with nothing in
+        # common. The same fallback `Tier.__str__` makes.
+        if t is None:
+            return UNCLASSIFIED
+        return t[0] if t[1] is None else f"{t[0]} / {t[1]}"
+
+    return {
+        "division": pd.Series([_division(t) for t in home], index=df.index),
+        "conference": pd.Series([_conference(t) for t in home], index=df.index),
+        "division_matchup": pd.Series(
+            [
+                UNCLASSIFIED
+                if h is None or a is None
+                else f"{_division(h)} at home vs {_division(a)}"
+                for h, a in zip(home, away)
+            ],
+            index=df.index,
+        ),
+    }
 
 
 def standard_axes(df: pd.DataFrame) -> Mapping[str, pd.Series]:

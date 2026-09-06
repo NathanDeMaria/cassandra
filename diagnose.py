@@ -42,6 +42,7 @@ from cassandra.residuals import (
     AxisReport,
     add_residuals,
     axis_report,
+    classification_axes,
     home_field_report,
     standard_axes,
 )
@@ -103,16 +104,25 @@ async def _main(league: str, model: str, permutations: int, top_teams: int) -> N
     margin_mae = scored["margin_residual"].abs().mean()
     print(f"{league}/{model}: {len(scored)} games, margin MAE {margin_mae:.4f}")
 
+    # `classification_axes` is empty for a league nobody has filed divisions
+    # for -- every professional one -- and said so out loud rather than
+    # silently, since a missing axis looks exactly like an axis with nothing
+    # on it once the table is printed.
+    classified = classification_axes(scored, league)
+    if not classified:
+        print(f"  (no division/conference on file for {league}; those axes skipped)")
+    axes = {**standard_axes(scored), **classified}
+
     reports = [
         axis_report(scored, labels, name, permutations=permutations)
-        for name, labels in standard_axes(scored).items()
+        for name, labels in axes.items()
     ]
     reports.append(home_field_report(scored, permutations=permutations))
 
     rows = []
     for report in reports:
         shown = report
-        if report.axis in ("home_team", "home_field"):
+        if report.axis in ("home_team", "home_field", "conference"):
             # A row per team is hundreds of lines and the tails are the only
             # part anybody reads. The csv keeps all of them; the terminal
             # gets the ends, which is where a real effect would show.
