@@ -298,7 +298,17 @@ def add_residuals(
             # spread + mov > 0, so the margin it implies is its negation --
             # the same sign `score_predictions` takes, and the same one that
             # produces a plausible-looking MAE if it's flipped.
-            MARKET_MARGIN: -games[GameDfColumns.SPREAD],
+            #
+            # Coerced first because `spread` is `float | None`, and a league
+            # the odds database has never quoted -- nfl, as of this writing --
+            # arrives as a column of `None` that pandas types as `object`.
+            # Negating that raises `bad operand type for unary -: 'NoneType'`,
+            # which is a crash rather than the empty `market_gap` the reports
+            # already know how to print. Mixed None-and-float columns come
+            # back as float64 with NaN on their own, so this only bites the
+            # all-missing case, which is exactly the one a test frame written
+            # by hand doesn't reproduce.
+            MARKET_MARGIN: -pd.to_numeric(games[GameDfColumns.SPREAD], errors="coerce"),
         }
     )
 

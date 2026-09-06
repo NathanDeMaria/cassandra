@@ -100,6 +100,35 @@ def test_add_residuals_is_actual_minus_implied():
     np.testing.assert_allclose(scored[MARKET_MARGIN], [3.0, -6.0, np.nan, 10.0])
 
 
+def test_add_residuals_survives_a_league_with_no_lines():
+    """nfl, today: every game's spread is None, so the column is `object`.
+
+    The four-row frame above coerces its one None to NaN because the other
+    three are floats, which is why this needs its own test -- an all-missing
+    column is a different dtype and used to raise on the negation.
+    """
+    games = pd.DataFrame(
+        {
+            "home_score": [24, 10, 14, 31],
+            "away_score": [20, 30, 7, 3],
+            "team1_win_prob": [0.7, 0.4, 0.65, 0.85],
+            "team1_win": [True, False, True, True],
+            "spread": [None, None, None, None],
+        }
+    )
+    scored = add_residuals(games)
+    assert scored[MARKET_MARGIN].isna().all()
+    # And the reports downstream say "no lines" rather than falling over.
+    stats = axis_report(
+        scored.assign(**{MARGIN_RESIDUAL: scored[MARGIN_RESIDUAL]}),
+        pd.Series(["a", "a", "b", "b"], index=scored.index),
+        "half",
+        permutations=10,
+        min_games=1,
+    )
+    assert all(np.isnan(s.market_gap) and s.n_lined == 0 for s in stats.slices)
+
+
 def test_add_residuals_rejects_an_empty_frame():
     with pytest.raises(ValueError, match="No games"):
         add_residuals(pd.DataFrame())
