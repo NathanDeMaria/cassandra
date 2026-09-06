@@ -52,6 +52,23 @@ class OptimizationConfig(BaseModel):
     # ("At least two categories are required"), and even where it didn't, a
     # search dimension with one value costs a probe budget it can't spend.
     fixed: dict[str, float | str] = {}
+    # Which model's fit the values in `fixed` were copied from, when they were
+    # copied from one rather than chosen.
+    #
+    # A pin produces no probes, so it produces no diagnostic either, and a
+    # value copied out of another model's result is the kind that goes stale
+    # without anything saying so -- that model gets re-searched every week and
+    # its answer moves. `models/{nfl,ncaafb}/glicko_blend.json` pins the whole
+    # Glicko machinery at `glicko_full`'s fit precisely so that its
+    # `play_weight` 0 reproduces that model, which stops being true the moment
+    # the two disagree.
+    #
+    # Naming the source is what lets the run report check it. Comparing pins
+    # against every model that happens to search the same name does not work:
+    # `home_advantage` is points in `margin_elo` and rating units in the
+    # Glicko family, so the cross-family pairs are noise that buries the one
+    # comparison that means anything.
+    fixed_from: str | None = None
     n_iter: int = 100
     # Which number the search maximizes; see `cassandra.objective`. Defaulted
     # to brier so every config written before this existed keeps searching
@@ -69,6 +86,20 @@ class OptimizationConfig(BaseModel):
         """
         get_objective(name)
         return name
+
+    @model_validator(mode="after")
+    def _fixed_from_needs_fixed(self) -> "OptimizationConfig":
+        """A source for pins that don't exist is a claim about nothing.
+
+        Caught here rather than left to the report, which would silently have
+        nothing to compare and say the pins were fine.
+        """
+        if self.fixed_from and not self.fixed:
+            raise ValueError(
+                f"fixed_from={self.fixed_from!r} names where pins came from, "
+                "but there are no pinned parameters"
+            )
+        return self
 
     @model_validator(mode="after")
     def _no_parameter_is_both(self) -> "OptimizationConfig":
