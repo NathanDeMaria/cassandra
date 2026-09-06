@@ -25,5 +25,6 @@
         "control_temp": 1.0,
         "epa_margin_scale": 10.0
     },
+    "fixed_from": "glicko_full",
     "n_iter": 250
 }

@@ -76,6 +76,28 @@ Well before M means it converged, and a longer run is wasted money. `optimize.py
 prints its own still-improving warning past a threshold, so use these numbers even when
 the diagnostics section is quiet.
 
+**Frozen parameters** is the section for pins, and it answers a question the
+per-search diagnostics cannot: a pinned parameter produces no probes, so it produces
+no bound-hit line either, and a decision made from one run's diagnostics becomes
+permanent by accident.
+
+It is driven off `fixed_from` in the config — the model whose fit the pins were copied
+from — not off matching parameter names. Names don't work: `home_advantage` is points
+in `margin_elo` and rating units in the Glicko family, so comparing every model that
+searches the same word buries the real line under dozens of nonsense ones. Three kinds
+of line come out:
+
+- **a drifted pin** (`pins season_regression=0, but nfl/glicko_full fitted 0.10179`) is
+  the actionable one, and it is a correctness problem rather than a tuning one: the
+  pinned model is being measured against a baseline that is no longer the model it was
+  meant to match. Rank it just below broken data — above any amount of widening or
+  more iterations, because those tune a comparison that is set up wrong.
+- **unchecked this run** just means the source model wasn't re-searched, which is
+  normal in a `--model`-scoped run. Not a problem; say so and move on.
+- **no `fixed_from` recorded** is a standing inventory, not a finding. Most pins are
+  hand-chosen and have no source to check. Only raise it if someone is about to copy a
+  value out of another model's result — that is the pin that needs the field set.
+
 **Tuning diagnostics** are already actionable sentences from `optimize.py`, with the
 widened range to paste. Turn each into a concrete edit to `models/<league>/<model>.json`
 under `"parameters"` — name the file, the key, and the new pair. A *lower*-bound hit at a
@@ -153,6 +175,9 @@ recommendations by payoff, and give each one the exact edit and the command to t
 - Infrastructure (image pull, capacity, repeated reclaims) outranks everything — none of
   it is fixed by touching a model.
 - Broken data blocking a whole league outranks any amount of tuning.
+- A drifted pin (FROZEN PARAMETERS) outranks tuning too: it means a model is being
+  scored against the wrong baseline, so every number for it is answering a question
+  nobody asked until the pin is re-synced.
 - A bound hit with a high crowding share (most best probes at the edge) outranks a low one
   — the search is genuinely pinned, versus one lucky sample near the edge.
 - Widening bounds outranks raising `n_iter`: a wrong box can't be fixed with more probes.

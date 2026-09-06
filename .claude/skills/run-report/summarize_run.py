@@ -18,6 +18,7 @@ from. `fetch_run.py` puts both on disk.
 """
 
 import csv
+import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,12 @@ _SECTION = re.compile(
 )
 # `| 61        | -0.179261 | 106.28371 | 59.809930 |`
 _PROBE = re.compile(r"^\|\s*(\d+)\s*\|\s*(-?[\d.]+(?:e[-+]?\d+)?)\s*\|")
+# The same row, split into every cell, for reading the winning parameters off
+# the best probe. bayes_opt prints its columns in the order the config
+# declares them, so the cells after the target line up with
+# `OptimizationConfig.parameters` -- which is why the values are matched to
+# names from the config rather than from the truncated header row.
+_PROBE_CELLS = re.compile(r"^\|(.+)\|\s*$")
 # The last line a finished optimize child prints: `artifacts.upload` echoing
 # the key it wrote. Its absence in a SUCCEEDED job means --upload=False.
 _UPLOADED = re.compile(r"^\s+uploaded (?P<key>s3://\S+)$")
@@ -75,6 +82,7 @@ class Child:
         self.predictor_class = None
         self.n_iter = None
         self.targets = []
+        self.probe_values = []
         self.diagnostics = []
         self.error = None
         self.uploaded = None
@@ -97,6 +105,22 @@ class Child:
     @property
     def best_iteration(self):
         return self.targets.index(self.best) + 1 if self.targets else None
+
+    def best_params(self, searched_names):
+        """The winning probe's parameters, keyed by the config's own names.
+
+        `searched_names` comes from the checked-in config rather than from the
+        table's header, which truncates them (`home_a...`). The order is the
+        config's declaration order, which is what bayes_opt prints in. Returns
+        None when the row doesn't line up, so a format change degrades to
+        saying nothing rather than to labelling the wrong number.
+        """
+        if self.best is None:
+            return None
+        values = self.probe_values[self.targets.index(self.best)]
+        if len(values) != len(searched_names):
+            return None
+        return dict(zip(searched_names, values))
 
     @property
     def last_improvement(self):
@@ -143,6 +167,16 @@ def _parse_log(child, lines, warnings):
         probe = _PROBE.match(line)
         if probe:
             child.targets.append(float(probe.group(2)))
+            cells = _PROBE_CELLS.match(line)
+            values = []
+            if cells:
+                for cell in cells.group(1).split("|")[2:]:
+                    try:
+                        values.append(float(cell.strip()))
+                    except ValueError:
+                        values = []
+                        break
+            child.probe_values.append(values)
             continue
 
         uploaded = _UPLOADED.match(line)
@@ -399,6 +433,128 @@ def _root_cause(stages):
     return None
 
 
+# Where the checked-in configs live, relative to this skill. Read rather than
+# fetched: a pin is a decision recorded in the repo, and the question this
+# section asks is whether the repo still agrees with itself.
+_MODELS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "models"
+
+# How far a pin may sit from what another model fitted before it is worth a
+# line, as a share of the range that other model searched. Scale-free on
+# purpose: 2% of [0, 200] is four points of home advantage and 2% of
+# [0, 0.75] is 0.015 of regression, and both are about equally interesting.
+_PIN_DRIFT = 0.02
+
+
+def _configs():
+    """Every checked-in optimization config, by league and model."""
+    out = {}
+    if not _MODELS_DIR.is_dir():
+        return out
+    for league_dir in sorted(_MODELS_DIR.iterdir()):
+        if not league_dir.is_dir():
+            continue
+        for path in sorted(league_dir.glob("*.json")):
+            if path.stem.endswith(("_result", "_state")):
+                continue
+            try:
+                config = json.loads(path.read_text())
+            except ValueError:
+                continue
+            if "parameters" in config:
+                out[(league_dir.name, path.stem)] = config
+    return out
+
+
+def _frozen_parameters(stages):
+    """Pins whose source has moved, and pins with no source recorded.
+
+    A pinned parameter produces no probes, so it produces no bound-hit
+    diagnostic either -- which is how a decision made from one run's
+    diagnostics becomes permanent by accident. `optimize.py` already restates
+    every pin each run; what this adds is the one check it cannot do from
+    inside a single search, which is whether a pin *copied from another
+    model's fit* still matches that fit.
+
+    It is driven off `fixed_from` rather than off matching names, because
+    matching names does not work: `home_advantage` is points in `margin_elo`
+    and rating units in the Glicko family, so comparing every model that
+    happens to search the same word produces dozens of lines of nonsense and
+    buries the one that means something.
+
+    The failure it exists for is real. `glicko_blend` pins the Glicko
+    machinery at `glicko_full`'s fit so that its `play_weight` 0 reproduces
+    that model exactly -- and a config that pinned `season_regression` at 0
+    for both football leagues, while nfl's `glicko_full` searches it and fits
+    0.10, measured the blend against a baseline that was not the model it was
+    supposed to be matching.
+    """
+    configs = _configs()
+    if not configs:
+        return ["  none -- no models directory found next to this skill"]
+
+    fitted = {}
+    for entry in stages.get("optimize", {}).get("children", []):
+        model = entry.name.split("/")[-1]
+        config = configs.get((entry.league, model))
+        if config is None:
+            continue
+        params = entry.best_params(list(config["parameters"]))
+        if params:
+            fitted[(entry.league, model)] = params
+
+    drifted, unchecked, unsourced = [], [], []
+    for (league, model), config in sorted(configs.items()):
+        pins = {
+            name: value
+            for name, value in (config.get("fixed") or {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        if not pins:
+            continue
+        source = config.get("fixed_from")
+        if not source:
+            unsourced.append(f"{league}/{model} ({len(pins)})")
+            continue
+
+        source_config = configs.get((league, source))
+        if source_config is None:
+            drifted.append(
+                f"  {league}/{model}: fixed_from names {source!r}, which is not "
+                f"a config in {league} -- nothing can check these pins"
+            )
+            continue
+        measured = fitted.get((league, source))
+        if measured is None:
+            unchecked.append(f"{league}/{model} <- {source}")
+            continue
+
+        for name, pinned in sorted(pins.items()):
+            bounds = source_config["parameters"].get(name)
+            if not bounds or len(bounds) != 2 or name not in measured:
+                continue
+            low, high = bounds
+            if abs(measured[name] - pinned) > _PIN_DRIFT * (high - low):
+                drifted.append(
+                    f"  {league}/{model}: pins {name}={pinned:g}, but "
+                    f"{league}/{source} fitted {measured[name]:g} this run "
+                    f"-- re-pin it in models/{league}/{model}.json, or reopen "
+                    f"it if the pin was never the point"
+                )
+
+    lines = list(drifted)
+    if unchecked:
+        lines.append(
+            "  unchecked this run (source model didn't re-search): "
+            + ", ".join(sorted(unchecked))
+        )
+    if unsourced:
+        lines.append(
+            "  pinned with no `fixed_from` recorded, so nothing can check them: "
+            + ", ".join(sorted(unsourced))
+        )
+    return lines or ["  none -- every recorded pin still matches its source"]
+
+
 def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
     optimize = stages.get("optimize", {}).get("children", [])
     ok = [c for c in optimize if c.status == "SUCCEEDED"]
@@ -503,6 +659,9 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
         for child in entry["children"]
         for message in child.diagnostics
     ]
+    frozen = _frozen_parameters(stages)
+    out += ["", f"FROZEN PARAMETERS ({len(frozen)})", *frozen]
+
     out += ["", f"TUNING DIAGNOSTICS ({len(tuning)})"]
     if tuning:
         for child, message in tuning:
