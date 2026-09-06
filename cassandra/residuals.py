@@ -132,6 +132,7 @@ import numpy as np
 import pandas as pd
 from call_it_what_you_want import TeamNamer, default_classifications, registry_league
 
+from .classification import LUMPED_DIVISION, resolve_spanning_label
 from .columns import GameDfColumns
 from .prob_to_margin import (
     BaseProbToMarginFitter,
@@ -798,15 +799,35 @@ def classification_axes(df: pd.DataFrame, league: str) -> Mapping[str, pd.Series
     classifications = default_classifications()
 
     @cache
-    def tier(team: str, year: int) -> tuple[str, str | None] | None:
+    def recorded(team: str, year: int):
         # Names in a predictions frame are already canonical -- the replay
         # runs them through the same namer before the predictor sees them --
         # so this looks up the id directly rather than canonicalizing twice.
         espn_id = namer.espn_id(team)
         if espn_id is None:
             return None
-        found = classifications.classification_in(espn_id, year, registry)
-        return None if found is None else (found.division, found.conference)
+        return classifications.classification_in(espn_id, year, registry)
+
+    # The spanning label filled in exactly as `division_anchors` fills it,
+    # because a game the fit rates as D-III has to be D-III here too. Read
+    # raw, ncaafb shows 8,247 games under the spanning label against the 866
+    # the fit still sees, so the two would be slicing different leagues.
+    seasons_played: dict[str, list[int]] = {}
+    for team, year in zip(
+        pd.concat([df["home_team"], df["away_team"]]),
+        np.concatenate([df["year"].to_numpy(), df["year"].to_numpy()]),
+    ):
+        seasons_played.setdefault(team, []).append(int(year))
+    resolved = resolve_spanning_label(seasons_played, recorded)
+
+    def tier(team: str, year: int) -> tuple[str, str | None] | None:
+        found = recorded(team, year)
+        if found is None:
+            return None
+        division = found.division
+        if division == LUMPED_DIVISION:
+            division = resolved.get(team, LUMPED_DIVISION)
+        return division, found.conference
 
     years = df["year"].to_numpy()
     home = [tier(t, int(y)) for t, y in zip(df["home_team"], years)]

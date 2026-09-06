@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from .classification import LUMPED_DIVISION
 from .residuals import (
     MARGIN_RESIDUAL,
     MARKET_MARGIN,
@@ -547,3 +548,24 @@ def test_an_independent_falls_back_to_its_division():
     conference = axes["conference"].iloc[0]
     division = axes["division"].iloc[0]
     assert conference == division or conference.startswith(f"{division} / ")
+
+
+def test_the_spanning_label_is_filled_in_like_the_anchors_fill_it() -> None:
+    """The diagnostic and the ladder have to read a game as the same tier.
+
+    Nebraska-Omaha is the real case: ESPN filed it under the spanning label
+    through 2008 and as D-II in the 2011 re-survey, and it has games in
+    ncaafb's history under both. Sliced raw it lands in a bucket the anchor
+    fit doesn't have.
+    """
+    df = pd.DataFrame(
+        {
+            "year": [2008, 2015],
+            "home_team": ["Nebraska-Omaha Mavericks", "Alabama Crimson Tide"],
+            "away_team": ["Alabama Crimson Tide", "Nebraska-Omaha Mavericks"],
+        }
+    )
+    axes = classification_axes(df, "ncaafb")
+
+    assert axes["division"].iloc[0] != LUMPED_DIVISION
+    assert LUMPED_DIVISION not in axes["division_matchup"].iloc[0]

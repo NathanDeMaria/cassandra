@@ -59,6 +59,10 @@ from call_it_what_you_want import (
 from endgame.types import Game, Season, iter_weeks
 from endgame_aws import Config
 
+from cassandra.classification import (
+    LUMPED_DIVISION,
+    resolve_spanning_label,
+)
 from cassandra.predictor.base_predictor import MEAN_RATING, Anchor, anchor_path
 from cassandra.save_predictions import read_all_seasons
 
@@ -100,12 +104,10 @@ _MIN_TIER_TEAMS = 3
 # thing it's here to catch clears nothing, having never played anyone.
 _MIN_CROSS_DIVISION_GAMES = 30
 
-# ESPN filed everything below FCS under one "Division II/III" label through
-# 2008 and split it in two from 2011. So the lumped label isn't a division a
-# team played in, it's a season where nobody recorded which of the two it
-# was -- `_resolved_divisions` fills it in from the team's own later seasons.
-_LUMPED_DIVISION = "Division II/III"
-_SPANNED_DIVISIONS = frozenset({"NCAA Division II", "NCAA Division III"})
+# The spanning label, and what filling it in means, live in
+# `cassandra.classification` because `cassandra.residuals` has to read a game
+# as the same tier this file rates it as.
+_LUMPED_DIVISION = LUMPED_DIVISION
 
 # How many of the moved teams `_build` lists. Enough to see the promotions
 # that matter; the rest are conference shuffles nobody reads a log for.
@@ -468,34 +470,11 @@ class _Classifier:
     def resolve_lumped(self, teams: Mapping[str, list[int]]) -> None:
         """Decide, per team, which division the lumped label meant.
 
-        The label spans D-II and D-III, so it's only ever filled in from a
-        season where ESPN recorded one of those two. A program that appears
-        lumped and is next seen in FCS moved up; backfilling FCS onto its
-        earlier seasons would be inventing a promotion that hadn't happened
-        yet, so those seasons keep the lumped tier and are rated as their
-        own thing.
-
-        The seasons it played are asked first, then the record past them.
-        ESPN re-surveyed everything below FCS in 2011, and a program that
-        had already stopped playing by then is never asked about a year it
-        has no game in -- which is how Colorado College, filed as D-III in
-        2011, kept the spanning label for every season it did play. Five of
-        the fifty-four teams still carrying it are that case.
-
-        A team that moved between its last game and the survey is filled in
-        from where it ended rather than where it was, which is the same
-        trade `_anchors` already makes inside the span and is worth five
-        teams' worth of anchors.
+        The rule and the reasons are in `cassandra.classification`, which
+        `cassandra.residuals` reads too so that a game is the same tier to
+        the diagnostic as it is to this fit.
         """
-        last_recorded = max(
-            (year for years in teams.values() for year in years), default=0
-        )
-        for team, years in teams.items():
-            for year in (*years, last_recorded):
-                found = self._classification(team, year)
-                if found is not None and found.division in _SPANNED_DIVISIONS:
-                    self._resolved[team] = found.division
-                    break
+        self._resolved = resolve_spanning_label(teams, self._classification)
 
     def tier(self, team: str, year: int) -> Tier | None:
         """Where `team` sat in `year`, or None if nobody classified it.
