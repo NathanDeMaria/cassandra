@@ -5,6 +5,7 @@ from call_it_what_you_want import TeamClassification, TeamNamer
 from endgame.types import Game, Season, Week
 
 from division_anchors import (
+    DEFAULT_LADDER_STRETCH,
     Fit,
     Tier,
     TierGame,
@@ -17,6 +18,7 @@ from division_anchors import (
     _unplaceable_divisions,
     fit_tiers,
     main,
+    stretch_divisions,
 )
 
 
@@ -141,6 +143,38 @@ def test_conference_offsets_are_centred_inside_their_division() -> None:
     below = fit.ratings[_tier("fbs/b")] - level
     assert above > 0 > below
     assert above + below == pytest.approx(0, abs=5)
+
+
+def test_a_stretch_widens_the_ladder_and_nothing_else() -> None:
+    """Division levels move; where a conference sits inside one does not."""
+    fit = fit_tiers(
+        _games("fbs", "fcs", 75, 25) + _games("fbs/a", "fbs/b", 75, 25), mean=1500
+    )
+
+    wide = stretch_divisions(fit, 2.0, mean=1500)
+
+    before = fit.divisions["fbs"] - fit.divisions["fcs"]
+    assert wide.divisions["fbs"] - wide.divisions["fcs"] == pytest.approx(2 * before)
+    # The offset each conference sits at inside fbs is untouched.
+    for tier in (_tier("fbs/a"), _tier("fbs/b")):
+        assert wide.ratings[tier] - wide.divisions["fbs"] == pytest.approx(
+            fit.ratings[tier] - fit.divisions["fbs"]
+        )
+
+
+def test_a_stretch_of_one_changes_nothing() -> None:
+    fit = fit_tiers(_games("fbs", "fcs", 75, 25), mean=1500)
+
+    assert stretch_divisions(fit, 1.0, mean=1500) == fit
+
+
+def test_a_stretch_keeps_the_ladder_centred() -> None:
+    """It pushes the levels apart about the mean, it doesn't slide them."""
+    fit = fit_tiers(_games("fbs", "fcs", 75, 25), mean=1500)
+
+    wide = stretch_divisions(fit, 1.5, mean=1500)
+
+    assert sum(wide.divisions.values()) / 2 == pytest.approx(1500, abs=1)
 
 
 def test_no_games_is_not_a_crash() -> None:
@@ -346,17 +380,17 @@ def test_if_missing_builds_when_there_is_no_file(
         "division_anchors.anchor_path", lambda league: tmp_path / "absent.json"
     )
 
-    async def _record(league: str, write: bool) -> None:
-        built.append((league, write))
+    async def _record(league: str, write: bool, stretch: float) -> None:
+        built.append((league, write, stretch))
 
     monkeypatch.setattr("division_anchors._build", _record)
 
     main(league="ncaafb", write=True, if_missing=True)
 
-    assert built == [("ncaafb", True)]
+    assert built == [("ncaafb", True, DEFAULT_LADDER_STRETCH)]
 
 
-async def _never_built(league: str, write: bool) -> None:
+async def _never_built(league: str, write: bool, stretch: float) -> None:
     raise AssertionError(f"rebuilt {league} anchors that already existed")
 
 

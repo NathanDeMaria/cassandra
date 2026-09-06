@@ -147,6 +147,15 @@ class TierGame(NamedTuple):
     neutral_site: bool
 
 
+# How far apart to push the division levels once they are fit, measured
+# about `MEAN_RATING`. Not a fudge factor: an anchor is where a team enters
+# and what it regresses toward, not a prediction, and the trained gap comes
+# out narrower than the anchor gap -- so a ladder that matches the observed
+# tier gap leaves the model under-rating the cross-tier games. See
+# `stretch_divisions` for what was measured.
+DEFAULT_LADDER_STRETCH = 1.15
+
+
 class Fit(NamedTuple):
     """Fitted ratings, the division levels under them, and home advantage."""
 
@@ -306,6 +315,55 @@ def fit_tiers(games: Iterable[TierGame], mean: float = MEAN_RATING) -> Fit:
         {tier: rating + shift for tier, rating in ratings.items()},
         {division: level + shift for division, level in divisions.items()},
         home_advantage,
+    )
+
+
+def stretch_divisions(
+    fit: Fit, stretch: float = DEFAULT_LADDER_STRETCH, mean: float = MEAN_RATING
+) -> Fit:
+    """Push the division levels apart about `mean`, keeping everything else.
+
+    Only the levels move. A conference's offset inside its division and a
+    team's place in its conference come from the games those teams actually
+    play, and nothing measured says they are wrong; the cross-tier residual
+    is what is wrong. Stretching every anchor instead costs 0.046 of overall
+    margin MAE for the same correction.
+
+    Why a stretch at all, when `fit_tiers` already fit the ladder to the
+    games that cross it: because an anchor is not a prediction. It is the
+    rating a team enters at and regresses toward, and by the time the replay
+    reaches a cross-tier game both sides have been moved by thousands of
+    games inside their own tier, which pulls the pools together. A ladder
+    that matches the observed tier gap therefore leaves the model short.
+
+    Measured on ncaafb/margin_blend over 74,801 games, against
+    `cassandra.residuals`' `division_matchup` axis:
+
+        stretch  axis sigma   points   margin MAE   FBS over FCS
+          1.00        20.19    1.063      13.0650          +1.93
+          1.15        16.18    0.894      13.0650          +0.62
+          1.30        15.01    0.847      13.0775          -0.60
+          1.50        17.94    0.970      13.1095          -2.17
+
+    1.15 is free -- overall MAE is unchanged to four decimals -- and takes
+    the largest cross-tier bias most of the way to zero. 1.30 is the axis
+    optimum and costs 0.013 of MAE; past it both big rungs overshoot. The
+    default is the free one.
+
+    What it does not fix is D-II over D-III, which is +13.99 and moves to
+    +13.37: a multiplicative stretch cannot open a rung that the fit left at
+    10 rating points to begin with. That one needs the loss to change, and
+    fitting the ladder on margin rather than on wins does open it -- to 68 --
+    while making every rung with a sample worse. Not this change.
+    """
+    divisions = {d: mean + stretch * (v - mean) for d, v in fit.divisions.items()}
+    return Fit(
+        {
+            tier: divisions[tier.division] + (rating - fit.divisions[tier.division])
+            for tier, rating in fit.ratings.items()
+        },
+        divisions,
+        fit.home_advantage,
     )
 
 
@@ -625,7 +683,9 @@ def _last_step(anchor: Anchor) -> float:
     return float(anchor[-1][1])
 
 
-async def _build(league: str, write: bool) -> None:
+async def _build(
+    league: str, write: bool, stretch: float = DEFAULT_LADDER_STRETCH
+) -> None:
     bucket = Config.init_from_file().bucket
     print(f"Loading {league} seasons from s3://{bucket}")
     seasons = [s async for s in read_all_seasons(league, bucket)]
@@ -658,11 +718,16 @@ async def _build(league: str, write: bool) -> None:
         f"{len(set(t for g in games for t in (g.home_tier, g.away_tier)))} tier(s)"
     )
 
-    fit = fit_tiers(games)
+    fitted = fit_tiers(games)
+    fit = stretch_divisions(fitted, stretch)
     print(f"\nhome advantage {fit.home_advantage:.0f}\n")
-    print("  division ladder:")
+    print(f"  division ladder (stretched {stretch}x):")
     for division, level in sorted(fit.divisions.items(), key=lambda kv: -kv[1]):
-        print(f"  {level:7.0f}  {division}")
+        was = fitted.divisions[division]
+        print(
+            f"  {level:7.0f}  {division}"
+            + (f"  (fit {was:.0f})" if stretch != 1 else "")
+        )
 
     anchors = _anchors(seasons, namer, classifier, fit, folded, unplaceable)
     if not anchors:
@@ -713,12 +778,21 @@ async def _build(league: str, write: bool) -> None:
     print(f"\nWrote {len(anchors)} anchor(s) to {path}")
 
 
-def main(league: str = "ncaafb", write: bool = False, if_missing: bool = False) -> None:
+def main(
+    league: str = "ncaafb",
+    write: bool = False,
+    if_missing: bool = False,
+    stretch: float = DEFAULT_LADDER_STRETCH,
+) -> None:
     """
     Fit per-team regression anchors from each team's division.
 
     Prints the fitted tiers and writes nothing unless `--write` is passed,
     since the file it replaces changes every rating the next run produces.
+
+    `--stretch` pushes the fitted division levels apart before they become
+    anchors; `stretch_divisions` has what each value was measured to be
+    worth. `--stretch 1` is the ladder exactly as fit.
 
     `--if-missing` turns this into a no-op when the league already has an
     anchor file. That's what the anchors job calls, so a first run builds the
@@ -733,7 +807,7 @@ def main(league: str = "ncaafb", write: bool = False, if_missing: bool = False) 
         # minutes of work to reach a file we already know is there.
         print(f"{league}: anchors already at {path}")
         return
-    asyncio.run(_build(league, write))
+    asyncio.run(_build(league, write, stretch))
 
 
 if __name__ == "__main__":
