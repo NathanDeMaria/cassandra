@@ -430,7 +430,7 @@ def axis_report(
         return AxisReport(
             axis=axis,
             slices=tuple(
-                _slice_stats(label, rows)
+                _slice_stats(str(label), rows)
                 for label, rows in labeled.groupby("_axis_label")
             ),
             overall_bias=(
@@ -445,7 +445,7 @@ def axis_report(
     # groupby already yields the labels in sorted order, which is the order
     # a week table wants and the only one a caller can predict.
     slices = tuple(
-        _slice_stats(label, rows) for label, rows in labeled.groupby("_axis_label")
+        _slice_stats(str(label), rows) for label, rows in labeled.groupby("_axis_label")
     )
     codes, _ = pd.factorize(labeled["_axis_label"])
     residual = labeled[MARGIN_RESIDUAL].to_numpy()
@@ -584,8 +584,8 @@ def home_field_report(
     # is the same one `home_field_table` applied. Observed and null then come
     # out of one function, which is what makes the sigma mean anything.
     teams = pd.Index(pd.unique(pd.concat([sided["home_team"], sided["away_team"]])))
-    home_codes = teams.get_indexer(sided["home_team"])
-    away_codes = teams.get_indexer(sided["away_team"])
+    home_codes = teams.get_indexer(pd.Index(sided["home_team"]))
+    away_codes = teams.get_indexer(pd.Index(sided["away_team"]))
     residual = sided[MARGIN_RESIDUAL].to_numpy()
     n_teams = len(teams)
     home_n = np.bincount(home_codes, minlength=n_teams)
