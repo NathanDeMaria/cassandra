@@ -16,8 +16,10 @@ from .residuals import (
     MARGIN_RESIDUAL,
     MARKET_MARGIN,
     PREDICTED_MARGIN,
+    UNCLASSIFIED,
     add_residuals,
     axis_report,
+    classification_axes,
     favorite_size,
     home_field_report,
     home_field_table,
@@ -475,3 +477,73 @@ def test_rest_advantage_survives_a_duplicated_index():
     )
     duplicated = df.set_index(pd.Index([0, 0, 0]))
     assert list(rest_advantage(duplicated)) == list(rest_advantage(df))
+
+
+def test_classification_axes_are_empty_for_an_unclassified_league():
+    """nfl: `call_it_what_you_want` files no divisions for it.
+
+    Empty rather than a frame of "unclassified", so a caller merging these
+    into `standard_axes` gets no axis at all rather than one that reports
+    zeros -- the two look identical in a printed table.
+    """
+    df = pd.DataFrame(
+        {
+            "year": [2020, 2020],
+            "home_team": ["packers", "bears"],
+            "away_team": ["bears", "packers"],
+        }
+    )
+    assert classification_axes(df, "nfl") == {}
+
+
+def test_classification_axes_label_by_division_and_matchup():
+    """A real ncaafb frame, against the classifications that ship with ciwyw.
+
+    Pinned to teams whose tier hasn't moved in the seasons named, and
+    asserted on the *shape* of the labels rather than on the exact division
+    strings, which are ESPN's and are the package's to rename.
+    """
+    df = pd.DataFrame(
+        {
+            "year": [2015, 2015],
+            "home_team": ["Alabama Crimson Tide", "Alabama Crimson Tide"],
+            "away_team": ["Alabama Crimson Tide", "not a team at all"],
+        }
+    )
+    axes = classification_axes(df, "ncaafb")
+    assert set(axes) == {"division", "conference", "division_matchup"}
+    division = axes["division"]
+    # Both rows are the same home team, so both carry the same division, and
+    # it is a real one rather than the fallback.
+    assert division.iloc[0] == division.iloc[1] != UNCLASSIFIED
+    # A conference label carries its division too, so two conferences with
+    # the same name in different tiers stay apart.
+    assert axes["conference"].iloc[0].startswith(division.iloc[0])
+    # The matchup is directional and names both sides...
+    assert axes["division_matchup"].iloc[0] == (
+        f"{division.iloc[0]} at home vs {division.iloc[0]}"
+    )
+    # ...and a game with an unplaceable opponent gets no matchup at all,
+    # rather than one half of a label.
+    assert axes["division_matchup"].iloc[1] == UNCLASSIFIED
+    assert axes["division"].iloc[1] != UNCLASSIFIED
+
+
+def test_an_independent_falls_back_to_its_division():
+    """A team with no conference gets its division, not a shared None bucket.
+
+    Built by hand rather than found in the registry: which schools are
+    independent moves season to season, and a test that pinned one would
+    start failing on a data update that isn't about this code.
+    """
+    df = pd.DataFrame(
+        {
+            "year": [2015],
+            "home_team": ["Notre Dame Fighting Irish"],
+            "away_team": ["Notre Dame Fighting Irish"],
+        }
+    )
+    axes = classification_axes(df, "ncaafb")
+    conference = axes["conference"].iloc[0]
+    division = axes["division"].iloc[0]
+    assert conference == division or conference.startswith(f"{division} / ")
