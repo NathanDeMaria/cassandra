@@ -30,7 +30,7 @@ def _games(
 
 
 def _tier(name: str) -> Tier:
-    """"fbs" is a bare division; "fbs/SEC" is a conference inside one."""
+    """ "fbs" is a bare division; "fbs/SEC" is a conference inside one."""
     division, _, conference = name.partition("/")
     return Tier(division, conference or None)
 
@@ -275,6 +275,25 @@ def test_the_lumped_label_is_filled_in_from_a_later_season() -> None:
     assert classifier.tier("Mount Union", 2002) == Tier("NCAA Division III", "Ohio")
 
 
+def test_the_lumped_label_is_filled_in_from_after_the_last_game() -> None:
+    """A program that folded before the survey still gets placed.
+
+    ESPN re-surveyed everything below FCS in 2011, and the loop over the
+    seasons a team *played* never asks about a year it has no game in. Five
+    real teams kept the spanning label for exactly this reason.
+    """
+    classifier = _classifier(
+        {
+            ("Colorado College", 2007): _found("Division II/III"),
+            ("Colorado College", 2011): _found("NCAA Division III"),
+        }
+    )
+
+    classifier.resolve_lumped({"Colorado College": [2007], "Wabash": [2011]})
+
+    assert classifier.tier("Colorado College", 2007) == Tier("NCAA Division III")
+
+
 def test_a_team_that_moved_up_does_not_backfill_the_promotion() -> None:
     """The lumped label spans D-II and D-III, so only those can fill it.
 
@@ -412,7 +431,10 @@ def test_tier_games_reads_each_game_at_the_season_it_was_played() -> None:
     )
     seasons = [_season(2004, _game(2004)), _season(2024, _game(2024))]
 
-    tiers = [(g.home_tier, g.away_tier) for g in _tier_games(seasons, TeamNamer.empty(), classifier)]
+    tiers = [
+        (g.home_tier, g.away_tier)
+        for g in _tier_games(seasons, TeamNamer.empty(), classifier)
+    ]
 
     assert tiers == [(Tier("fcs"), Tier("fcs")), (Tier("fbs"), Tier("fcs"))]
 
@@ -477,7 +499,10 @@ def test_a_team_in_an_unplaceable_division_gets_no_anchor() -> None:
     """The all-star bowls: six squads that only ever play each other."""
     seasons = [_season(2014, _game(2014, home="East", away="West"))]
     classifier = _classifier(
-        {("East", 2014): _found("All-star Bowls"), ("West", 2014): _found("All-star Bowls")}
+        {
+            ("East", 2014): _found("All-star Bowls"),
+            ("West", 2014): _found("All-star Bowls"),
+        }
     )
     fit = Fit({}, {"All-star Bowls": 1500.0}, 0.0)
 
