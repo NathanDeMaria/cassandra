@@ -474,9 +474,24 @@ class _Classifier:
         earlier seasons would be inventing a promotion that hadn't happened
         yet, so those seasons keep the lumped tier and are rated as their
         own thing.
+
+        The seasons it played are asked first, then the record past them.
+        ESPN re-surveyed everything below FCS in 2011, and a program that
+        had already stopped playing by then is never asked about a year it
+        has no game in -- which is how Colorado College, filed as D-III in
+        2011, kept the spanning label for every season it did play. Five of
+        the fifty-four teams still carrying it are that case.
+
+        A team that moved between its last game and the survey is filled in
+        from where it ended rather than where it was, which is the same
+        trade `_anchors` already makes inside the span and is worth five
+        teams' worth of anchors.
         """
+        last_recorded = max(
+            (year for years in teams.values() for year in years), default=0
+        )
         for team, years in teams.items():
-            for year in years:
+            for year in (*years, last_recorded):
                 found = self._classification(team, year)
                 if found is not None and found.division in _SPANNED_DIVISIONS:
                     self._resolved[team] = found.division

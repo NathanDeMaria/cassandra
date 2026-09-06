@@ -370,6 +370,25 @@ def test_the_lumped_label_is_filled_in_from_a_later_season() -> None:
     assert classifier.tier("Mount Union", 2002) == Tier("NCAA Division III", "Ohio")
 
 
+def test_the_lumped_label_is_filled_in_from_after_the_last_game() -> None:
+    """A program that folded before the survey still gets placed.
+
+    ESPN re-surveyed everything below FCS in 2011, and the loop over the
+    seasons a team *played* never asks about a year it has no game in. Five
+    real teams kept the spanning label for exactly this reason.
+    """
+    classifier = _classifier(
+        {
+            ("Colorado College", 2007): _found("Division II/III"),
+            ("Colorado College", 2011): _found("NCAA Division III"),
+        }
+    )
+
+    classifier.resolve_lumped({"Colorado College": [2007], "Wabash": [2011]})
+
+    assert classifier.tier("Colorado College", 2007) == Tier("NCAA Division III")
+
+
 def test_a_team_that_moved_up_does_not_backfill_the_promotion() -> None:
     """The lumped label spans D-II and D-III, so only those can fill it.
 
