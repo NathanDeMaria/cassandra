@@ -453,3 +453,19 @@ def test_a_team_whose_only_result_was_a_tie_is_still_playing() -> None:
 
     assert set(frame["team"]) == {"Team A", "Team B"}
     assert frame[["wins", "losses"]].to_numpy().sum() == 0
+
+
+def test_a_written_artifact_is_readable_like_its_neighbours(tmp_path: Path) -> None:
+    """`mkstemp` makes 0600; the release JSON beside it doesn't.
+
+    A model directory where two of the four files are readable and two
+    aren't is a puzzle nobody should have to solve.
+    """
+    frame = _replay(EloPredictor(_LEAGUE), _two_seasons())
+    path = history_path(tmp_path, _LEAGUE, "elo")
+    reference = tmp_path / "reference.json"
+    reference.write_text("{}")
+
+    write_history(frame, path)
+
+    assert (path.stat().st_mode & 0o777) == (reference.stat().st_mode & 0o777)

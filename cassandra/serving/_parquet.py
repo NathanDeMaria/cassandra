@@ -106,6 +106,28 @@ def ordered(frame: pd.DataFrame, sort_by: Sequence[str]) -> pd.DataFrame:
     return frame.sort_values(list(sort_by), kind="stable").reset_index(drop=True)
 
 
+def _default_file_mode() -> int:
+    """The mode an ordinary file creation would land on, this process.
+
+    `mkstemp` creates 0600, which is right for a temp file and wrong for
+    the artifact it becomes: the release JSON written next to it goes
+    through `Path.write_text` and gets the umask's answer, and a directory
+    where two of the four files are readable and two aren't is a puzzle
+    nobody should have to solve.
+
+    Read once, at import, because there is no `os.getumask` -- setting it
+    to read it is the only way, and doing that per write would leave a
+    window where another thread creating a file gets the wrong mode. At
+    import the process is still single-threaded.
+    """
+    current = os.umask(0)
+    os.umask(current)
+    return 0o666 & ~current
+
+
+_FILE_MODE = _default_file_mode()
+
+
 def to_bytes(frame: pd.DataFrame) -> bytes:
     """The file's exact contents, in memory.
 
@@ -158,6 +180,9 @@ def write_bytes(payload: bytes, path: Path) -> None:
     try:
         with os.fdopen(handle, "wb") as f:
             f.write(payload)
+        # Before the rename, not after: the file is only ever visible under
+        # its final name with the mode it will keep.
+        os.chmod(tmp, _FILE_MODE)
         os.replace(tmp, path)
     finally:
         # Only reached with the file still there if something above raised;
