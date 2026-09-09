@@ -1,0 +1,31 @@
+{
+    "predictor_class": "GlickoPredictor",
+    "league": "ncaawvb",
+    "parameters": {
+        "home_advantage": [
+            0,
+            200
+        ],
+        "initial_rd": [
+            80,
+            450
+        ],
+        "weekly_rd_increase": [
+            0,
+            80
+        ],
+        "season_rd_increase": [
+            0,
+            350
+        ],
+        "scoring_method": [
+            "binary",
+            "pythagorean"
+        ],
+        "season_regression": [
+            0,
+            0.75
+        ]
+    },
+    "n_iter": 150
+}
