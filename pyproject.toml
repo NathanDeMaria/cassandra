@@ -13,7 +13,13 @@ python = "^3.14"
 #
 # Pinned to the rev `endgame_aws` resolves it at, so the two never disagree
 # about what a Game is. Bump them together.
-endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "f0be488a26c9bcf60a21ba00146581779485e852", subdirectory = "py-endgame"}
+#
+# This rev is the one that adds ncaawvb -- women's college volleyball,
+# `models/ncaawvb/`. It is a `DailyLeague`, so a season pickle arrives as a
+# single Week and `iter_weeks` rebuilds ~17 calendar weeks out of the game
+# dates; nothing here had to change for that, but it is the reason the raw
+# `.weeks` count looks wrong if you go looking.
+endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "b15f504fbef74459aaf3aea0526f3a6dc11a4f9e", subdirectory = "py-endgame"}
 # Team knowledge: which names are the same team, and what division and
 # conference each played in. Pure python apart from its extras, so it costs a
 # serving install one dependency it already has.
@@ -73,11 +79,15 @@ bayesian-optimization = "^3.2.1"
 # that true.
 #
 # The rev is the one that adds the processed play-by-play layer -- the weekly
-# parquet `cassandra.game_control` reads -- and is deliberately the same rev
-# `lucky-ones` pins below, so the two packages that read that layer agree on
-# `PLAY_SCHEMA` rather than each having its own idea of it. Later revs only
-# touch the write side (a yardline clamp), which is nothing cassandra does.
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "26646aa4c3f77422a500603710f6b662fe94305e", subdirectory = "py-endgame-aws"}
+# parquet `cassandra.game_control` reads -- and it agrees with the rev
+# `lucky-ones` pins below about `PLAY_SCHEMA`, rather than the two packages
+# that read that layer each having their own idea of it.
+#
+# Moved forward to pick up ncaawvb. `PLAY_SCHEMA` is untouched between the
+# two revs, so that agreement still holds; what did change on the way is the
+# write side (a yardline clamp now rejects a negative start, not just a
+# zero) and the odds fetch, neither of which cassandra does.
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "3347c8202f253f2b450babfea175e3540125b8f9", subdirectory = "py-endgame-aws"}
 # In-game win probability, and the `game_control` number cassandra turns into
 # an alternate score line. The fits ship inside the package, so pinning the
 # rev pins the model: which win probability curve a rating was built against
