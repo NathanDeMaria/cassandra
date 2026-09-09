@@ -42,6 +42,24 @@ pydantic = "^2.12.5"
 # `cassandra/__init__.py` defers its fit-path re-exports for the same reason.
 [tool.poetry.group.fit.dependencies]
 scikit-learn = "^1.8.0"
+# Parquet, for `history.parquet` and `predictions.parquet`. pandas resolves
+# the engine inside `to_parquet`/`read_parquet` rather than at import, which
+# is what lets `cassandra.serving.history` and `.predictions` define their
+# schemas and build their rows in a serving install that has no pyarrow --
+# `predictions_test.test_the_schemas_import_without_pyarrow` holds that.
+# Only the reads and writes need this, and only the fitting side calls them.
+#
+# So it is here rather than in `main`, for the reason `endgame_aws` is: at
+# ~152MB it is the single biggest thing that could land in a web image, and
+# the whole point of the split is that the image reading a release never
+# pays for it. The webapp does have pyarrow -- it reads endgame's play-by-
+# play -- so it can read these two files; it just doesn't get it from us.
+#
+# Declared rather than left to endgame_aws's and lucky-ones' transitive
+# copy, the same call `lucky-ones`' `data` extra is documented as making
+# below: an import in this repo should be backed by something that says why
+# it's there.
+pyarrow = "^25.0.1"
 fire = "^0.7.1"
 bayesian-optimization = "^3.2.1"
 # Where the seasons, the odds and the play-by-play live. Only `cassandra.odds`
