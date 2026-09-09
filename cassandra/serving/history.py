@@ -81,8 +81,16 @@ class WeekSnapshot(NamedTuple):
     the API because the observer sits inside the game walk, where the tally
     is free -- `ratings_from_predictor` is right that a record isn't the
     *predictor's* to know, and this isn't the predictor. A tie counts for
-    neither, matching `publish._with_records`. A team the predictor rates
-    that hasn't played this season is absent from both and reads as 0-0.
+    neither, matching `publish._with_records`, so a team whose only result
+    was a draw is 0-0 and still very much playing -- which is why `played`
+    is its own set rather than something read off these two.
+
+    `played` is every team that has appeared in a game this season up to
+    and including this week. `ratings` is everyone the predictor rates,
+    which is a different and much larger group: a rating never leaves a
+    predictor, so by 2026 it still holds programs that folded in 2012.
+    Carrying both lets an observer decide which it wants -- `RatingHistory`
+    writes rows for the intersection, see there for why.
     """
 
     league: str
@@ -90,6 +98,7 @@ class WeekSnapshot(NamedTuple):
     week: int
     date: datetime
     ratings: Mapping[str, Rating]
+    played: frozenset[str]
     wins: Mapping[str, int]
     losses: Mapping[str, int]
 
@@ -119,6 +128,27 @@ class RatingHistory:
 
     def __call__(self, snapshot: WeekSnapshot) -> None:
         for team, rating in snapshot.ratings.items():
+            if team not in snapshot.played:
+                # A team the predictor still rates but that isn't playing
+                # this season. Ratings are forever -- nothing removes a
+                # team from one -- so without this every program that ever
+                # existed gets a row every week for the rest of history: on
+                # ncaafb that was a quarter of the file, and 57 programs
+                # whose last game was in 2014 were still drawing a flat
+                # line through 2026.
+                #
+                # Season-to-date rather than the season's whole roster, so
+                # a team's line starts at its first game rather than at a
+                # rating it carried in from last year under this year's
+                # label. Once it has played it keeps getting rows through
+                # its idle weeks, which is what a chart wants.
+                #
+                # Iterating `ratings` and filtering, rather than walking
+                # `played` and looking rating up, because the two can
+                # disagree: a predictor is free to rate whoever it likes,
+                # and this way the file only ever holds teams it actually
+                # rates.
+                continue
             self._rows.append(
                 {
                     "team": team,

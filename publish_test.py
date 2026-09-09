@@ -658,16 +658,26 @@ def test_every_game_the_release_trained_on_has_a_prediction_row(
     assert len(stored) > len(release.trained_through.processed_game_ids)
 
 
-def test_the_history_covers_the_teams_the_release_rates(tmp_path: Path) -> None:
+def test_the_history_names_teams_the_way_the_release_does(tmp_path: Path) -> None:
     """Same canonical names, so a movement lookup is a dict hit.
 
     `generate_predictions` renames teams before the predictor sees them, so
     both sides come from the same walk -- this is the test that keeps it
     that way if either side ever starts renaming on its own.
+
+    A subset, not an equality: the release rates every team the predictor
+    has ever seen, and the history only carries the ones that played the
+    season in question. The current season is where the two do have to line
+    up, because that is the pairing the ratings table reads.
     """
     release, history, _ = _all_three(tmp_path)
 
-    assert set(history["team"]) == set(release.ratings)
+    assert set(history["team"]) <= set(release.ratings)
+    current = history[history["year"] == release.trained_through.season_year]
+    played_this_season = {
+        team for team, rating in release.ratings.items() if rating.wins or rating.losses
+    }
+    assert played_this_season <= set(current["team"])
 
 
 def test_the_history_and_the_release_agree_about_the_current_record(
