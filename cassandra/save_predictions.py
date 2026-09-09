@@ -13,7 +13,8 @@ from endgame.types import Season, iter_weeks
 from endgame_aws import Config, list_all_keys, read_seasons
 
 from .odds import Odds, OddsDatabase
-from .predictor import GameResult, Predictor
+from .predictor import GameResult, Predictor, RatingsUnsupported
+from .serving.history import WeekObserver, WeekSnapshot, tally
 
 _SEASON_KEY_RE = re.compile(r"^seasons/(\d+)/([^/]+)\.pkl$")
 
@@ -28,12 +29,28 @@ async def read_all_seasons(league: str, bucket: str) -> AsyncIterator[Season]:
             yield season
 
 
+def _rates_teams(predictor: Predictor) -> bool:
+    """Whether this predictor has per-team ratings to snapshot.
+
+    Asked by touching the property, because `RatingsUnsupported` is how the
+    base class answers it -- there is no capability flag, and adding an
+    Optional return to `Predictor.ratings` to make this easier would put a
+    None in the path of every consumer that already handles it correctly.
+    """
+    try:
+        predictor.ratings
+    except RatingsUnsupported:
+        return False
+    return True
+
+
 def generate_predictions(
     predictor: Predictor,
     seasons: Iterable[Season],
     post_callbacks: bool = False,
     namer: TeamNamer | None = None,
     roll_over_final_season: bool = True,
+    week_observer: WeekObserver | None = None,
 ) -> Iterator[GameResult]:
     """Replay every season in order, training the predictor as it goes.
 
@@ -45,6 +62,18 @@ def generate_predictions(
     about to be read as "where the teams stand". Scoring can't tell the
     difference, since no game follows it, so this defaults to True and only
     publish -- which does read the ratings afterward -- turns it off.
+
+    `week_observer` is called once per played week, after the week's games
+    and *before* `pass_week`, with a `WeekSnapshot` of where the ratings
+    stand. Before, because `pass_week` is what ages a rating -- Glicko
+    inflates every team's rd there -- and the snapshot is meant to be what
+    the team finished the week with, not what it starts the next one at.
+
+    There is deliberately no second hook on `pass_season`. The last week's
+    call already lands before both `pass_week` and `pass_season`, so it
+    *is* the season's final standing; a season hook would either repeat
+    that row or record the next season's opening state under this season's
+    label.
     """
     # Team names are canonicalized here, before anything sees a game, so the
     # predictor, the predictions and the release all agree on who a team is.
@@ -52,6 +81,17 @@ def generate_predictions(
     # registry, and a test that wants no renaming passes TeamNamer.empty().
     if namer is None:
         namer = TeamNamer.for_league(predictor.league)
+    # Resolved once, not caught per week: a predictor either rates teams or
+    # it doesn't, and FlatPredictor -- the one that doesn't -- would
+    # otherwise raise on every week of every season. A run with no ratings
+    # to capture simply captures nothing; it does not fall back to rows of
+    # placeholders, which would read as "this model rates everyone the
+    # same" rather than "this model rates nobody".
+    observer = (
+        week_observer
+        if week_observer is not None and _rates_teams(predictor)
+        else None
+    )
     # Chronological order matters here: update_game feeds each result back
     # into the predictor, so replaying games out of order trains it on
     # results from the future. iter_weeks raises if a season's weeks overlap
@@ -59,6 +99,11 @@ def generate_predictions(
     # sorting can't save us.
     ordered = sorted(seasons, key=lambda s: s.year)
     for index, season in enumerate(ordered):
+        # Season to date, reset at the boundary: a rating sits next to a
+        # record, and a cumulative one over sixteen replayed seasons isn't
+        # what that column means.
+        wins: dict[str, int] = {}
+        losses: dict[str, int] = {}
         for week in iter_weeks(season):
             played = [g for g in week.games_in_order if g.completed]
             if not played and week.games:
@@ -77,8 +122,33 @@ def generate_predictions(
             for game in played:
                 game = namer.apply(game)
                 prediction = predictor.update_game(game)
+                if observer is not None:
+                    tally(
+                        wins,
+                        losses,
+                        game.home,
+                        game.away,
+                        game.home_score - game.away_score,
+                    )
                 yield GameResult(
                     prediction, game, year=season.year, week_number=week.number
+                )
+            if observer is not None and played:
+                observer(
+                    WeekSnapshot(
+                        league=predictor.league,
+                        year=season.year,
+                        week=week.number,
+                        # The last game that was *played*, not `week.end`:
+                        # a week in progress has fixtures in it now, and
+                        # `week.end` would date this snapshot in the
+                        # future. Identical to `week.end` for a finished
+                        # week, which is every week but the current one.
+                        date=max(game.date for game in played),
+                        ratings=predictor.ratings,
+                        wins=wins,
+                        losses=losses,
+                    )
                 )
             predictor.pass_week()
         if roll_over_final_season or index < len(ordered) - 1:
@@ -198,13 +268,20 @@ def join_with_odds(
     odds_db: OddsDatabase,
     post_callbacks: bool,
     roll_over_final_season: bool = True,
+    week_observer: WeekObserver | None = None,
 ) -> Iterator[_Prediction]:
     # like build_predictions_df, but meant for optimization that already has read seasons/odds into memory
+    #
+    # `week_observer` is passed straight through. It rides on this rather
+    # than on `build_predictions_df` because the caller that wants a rating
+    # history is publish, and publish is the one that already reads the
+    # seasons and the odds once for the whole run.
     for result in generate_predictions(
         predictor,
         seasons,
         post_callbacks=post_callbacks,
         roll_over_final_season=roll_over_final_season,
+        week_observer=week_observer,
     ):
         odds = odds_db.get_odds(result.game.game_id)
         yield _build_prediction(result, odds)
