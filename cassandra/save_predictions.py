@@ -104,6 +104,10 @@ def generate_predictions(
         # what that column means.
         wins: dict[str, int] = {}
         losses: dict[str, int] = {}
+        # Who has turned up this season, which is not "who has a record":
+        # a tie counts toward neither column, and a team whose only result
+        # so far was a draw is still playing. `WeekSnapshot.played`.
+        played_teams: set[str] = set()
         for week in iter_weeks(season):
             played = [g for g in week.games_in_order if g.completed]
             if not played and week.games:
@@ -123,6 +127,7 @@ def generate_predictions(
                 game = namer.apply(game)
                 prediction = predictor.update_game(game)
                 if observer is not None:
+                    played_teams.update((game.home, game.away))
                     tally(
                         wins,
                         losses,
@@ -146,6 +151,7 @@ def generate_predictions(
                         # week, which is every week but the current one.
                         date=max(game.date for game in played),
                         ratings=predictor.ratings,
+                        played=frozenset(played_teams),
                         wins=wins,
                         losses=losses,
                     )

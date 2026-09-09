@@ -130,13 +130,14 @@ def test_a_replay_writes_one_row_per_team_per_week() -> None:
 
     assert list(frame.columns) == list(HISTORY_COLUMNS)
     assert not frame.duplicated(subset=list(HISTORY_KEY)).any()
-    # Four weeks. Teams only appear once the predictor has rated them, which
-    # for Elo is once they've played: A and B from 2025 week 1, C from week 2.
+    # A row per team that has played *this season* so far. A and B from 2025
+    # week 1; C joins in week 2. In 2026 only A and B play, so C -- still
+    # rated, and rated for good -- gets no rows at all.
     assert frame.groupby(["year", "week"]).size().to_dict() == {
         (2025, 1): 2,
         (2025, 2): 3,
-        (2026, 1): 3,
-        (2026, 2): 3,
+        (2026, 1): 2,
+        (2026, 2): 2,
     }
     assert (frame["run_id"] == _RUN).all()
 
@@ -209,8 +210,9 @@ def test_records_are_season_to_date_and_reset_at_the_boundary() -> None:
     # 2026 starts over rather than carrying 1-1 forward.
     assert records[("Team A", 2026, 1)] == (1, 0)
     assert records[("Team A", 2026, 2)] == (2, 0)
-    # Team C played only in 2025 and is 0-0 in the season it sat out.
-    assert records[("Team C", 2026, 2)] == (0, 0)
+    # Team C played only in 2025, so 2026 has no row for it at all rather
+    # than a 0-0 one -- see `test_a_team_that_isnt_playing_gets_no_rows`.
+    assert ("Team C", 2026, 2) not in records
 
 
 def test_a_tie_counts_for_neither_side() -> None:
@@ -385,3 +387,69 @@ def test_the_in_memory_bytes_are_what_a_write_leaves_on_disk(tmp_path: Path) -> 
     write_history(frame, path)
 
     assert history_bytes(frame) == path.read_bytes()
+
+
+def test_a_team_that_isnt_playing_this_season_gets_no_rows() -> None:
+    """A rating is forever; a history row shouldn't be.
+
+    Nothing ever removes a team from a predictor's ratings, so without this
+    every program that ever existed draws a flat line to the present. On
+    ncaafb that was a quarter of the file -- 873 teams rated in 2026 against
+    675 that played -- including 57 whose last game was before 2015.
+    """
+    frame = _replay(EloPredictor(_LEAGUE), _two_seasons())
+
+    assert "Team C" in set(frame[frame["year"] == 2025]["team"])
+    # Still rated in 2026 -- this is a row rule, not a forgetting rule.
+    assert "Team C" not in set(frame[frame["year"] == 2026]["team"])
+
+
+def test_a_teams_line_starts_at_its_first_game_of_the_season() -> None:
+    """Season-to-date, not the season's whole roster.
+
+    Before its first game a team's rating is last year's, carried in under
+    this year's label, and it has no record. A line that starts when the
+    team does is the honest one.
+    """
+    frame = _replay(EloPredictor(_LEAGUE), _two_seasons())
+
+    in_2025 = frame[frame["year"] == 2025]
+    # Team C debuts in week 2, so it has no week 1 row even though the
+    # predictor was already rating A and B by then.
+    assert set(in_2025[in_2025["week"] == 1]["team"]) == {"Team A", "Team B"}
+    assert "Team C" in set(in_2025[in_2025["week"] == 2]["team"])
+
+
+def test_an_idle_week_still_gets_a_row_once_a_team_has_played() -> None:
+    """The rule is "played this season", not "played this week".
+
+    Otherwise a team's line goes dotted through its bye weeks, and "up 40
+    points since last week" has nothing to subtract from.
+    """
+    seasons = [
+        _season(
+            2025,
+            [_game("Team A", "Team B", 80, 60, 2025, 1)],
+            [_game("Team A", "Team C", 70, 65, 2025, 2)],
+        )
+    ]
+
+    frame = _replay(EloPredictor(_LEAGUE), seasons, roll_over_final_season=False)
+
+    # Team B sat out week 2 and still has a row for it.
+    week2 = frame[frame["week"] == 2]
+    assert set(week2["team"]) == {"Team A", "Team B", "Team C"}
+
+
+def test_a_team_whose_only_result_was_a_tie_is_still_playing() -> None:
+    """`played` is its own set, not something read off wins and losses.
+
+    A tie counts toward neither column, so a team inferred from the record
+    would vanish from the file for the week it drew.
+    """
+    seasons = [_season(2025, [_game("Team A", "Team B", 70, 70, 2025, 1)])]
+
+    frame = _replay(EloPredictor(_LEAGUE), seasons, roll_over_final_season=False)
+
+    assert set(frame["team"]) == {"Team A", "Team B"}
+    assert frame[["wins", "losses"]].to_numpy().sum() == 0
