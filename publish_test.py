@@ -29,8 +29,23 @@ from cassandra.prob_to_margin import (
     BaseProbToMarginPredictor,
     LogisticProbToMarginPredictor,
 )
-from cassandra.serving import LogisticMarginCalibration, Metrics, ModelRelease
-from publish import build_release, release_json, write_release
+from cassandra.serving import (
+    LogisticMarginCalibration,
+    Metrics,
+    ModelRelease,
+    RatingHistory,
+    history_path,
+    predictions_path,
+    read_history,
+    read_predictions,
+)
+from publish import (
+    build_artifacts,
+    build_release,
+    release_json,
+    write_artifacts,
+    write_release,
+)
 
 # A league nobody has run, so no opponent priors on disk get picked up.
 _LEAGUE = "test_league"
@@ -581,3 +596,197 @@ def test_the_model_name_drops_the_result_suffix() -> None:
         "glicko_full"
     )
     assert publish._model_name(Path("models/mens/flat_result.json")) == "flat"
+
+
+# ------------------------------------------------------------------------------
+# The three artifacts, and the invariant that ties them together
+# ------------------------------------------------------------------------------
+
+
+def _all_three(out: Path) -> tuple[ModelRelease, pd.DataFrame, pd.DataFrame]:
+    """One publish, as four files on disk, read back the way a consumer would."""
+    config = _config()
+    history = RatingHistory()
+    predictor, df = publish._predictions(
+        publish._Job(config.league, _MODEL, config),
+        _seasons(),
+        OddsDatabase({}),
+        now=_LAST_GAME + timedelta(days=365),
+        week_observer=history,
+    )
+    release = build_release(config, _MODEL, predictor, df)
+    write_artifacts(build_artifacts(release, history, df), out)
+    return (
+        ModelRelease.model_validate(
+            json.loads((out / "models" / _LEAGUE / _MODEL / "latest.json").read_text())
+        ),
+        read_history(history_path(out, _LEAGUE, _MODEL)),
+        read_predictions(predictions_path(out, _LEAGUE, _MODEL)),
+    )
+
+
+def test_one_run_id_across_the_release_the_history_and_the_predictions(
+    tmp_path: Path,
+) -> None:
+    """What lets a consumer trust that the three files describe one model.
+
+    Three artifacts published from three runs would each be internally
+    consistent and jointly meaningless.
+    """
+    release, history, predictions = _all_three(tmp_path)
+
+    assert set(history["run_id"]) == {release.run_id}
+    assert set(predictions["run_id"]) == {release.run_id}
+
+
+def test_every_game_the_release_trained_on_has_a_prediction_row(
+    tmp_path: Path,
+) -> None:
+    """The invariant `serving.predictions` exists for.
+
+    A game inside `processed_game_ids` with no stored forecast is the
+    failure mode: the webapp's rule sends completed games to this file, so a
+    missing row means it falls back to re-predicting a game the model has
+    already trained on and printing that as a forecast.
+    """
+    release, _, predictions = _all_three(tmp_path)
+
+    stored = set(predictions["game_id"])
+    assert set(release.trained_through.processed_game_ids) <= stored
+    # And the file covers the earlier seasons too, which the watermark
+    # deliberately doesn't -- it's a resume marker, not the game list.
+    assert len(stored) > len(release.trained_through.processed_game_ids)
+
+
+def test_the_history_covers_the_teams_the_release_rates(tmp_path: Path) -> None:
+    """Same canonical names, so a movement lookup is a dict hit.
+
+    `generate_predictions` renames teams before the predictor sees them, so
+    both sides come from the same walk -- this is the test that keeps it
+    that way if either side ever starts renaming on its own.
+    """
+    release, history, _ = _all_three(tmp_path)
+
+    assert set(history["team"]) == set(release.ratings)
+
+
+def test_the_history_and_the_release_agree_about_the_current_record(
+    tmp_path: Path,
+) -> None:
+    """`publish._with_records` and the observer count the same games."""
+    release, history, _ = _all_three(tmp_path)
+
+    current = history[history["year"] == release.trained_through.season_year]
+    final = current.sort_values("week").drop_duplicates("team", keep="last")
+    for team, wins, losses in zip(
+        final["team"], final["wins"], final["losses"], strict=True
+    ):
+        assert (wins, losses) == (
+            release.ratings[team].wins,
+            release.ratings[team].losses,
+        )
+
+
+def test_a_bad_frame_stops_the_publish_before_anything_is_written(
+    tmp_path: Path,
+) -> None:
+    """All three or none, enforced by ordering rather than a transaction.
+
+    Everything is assembled in memory first, so a schema problem fails
+    before a file lands; then the parquet artifacts go down and
+    `latest.json` -- the pointer the API reads -- goes last. The window that
+    leaves is a history and predictions with no release naming them, which
+    is inert. The other order leaves a live release whose completed games
+    have no stored forecast, which is the thing this all exists to prevent.
+    """
+    config = _config()
+    predictor, df = _run(config)
+    release = build_release(config, _MODEL, predictor, df)
+
+    with pytest.raises(KeyError):
+        write_artifacts(
+            build_artifacts(
+                release, RatingHistory(), df.drop(columns=["team1_win_prob"])
+            ),
+            tmp_path,
+        )
+
+    assert not (tmp_path / "models" / _LEAGUE / _MODEL).exists()
+
+
+def test_upload_puts_the_parquet_artifacts_before_the_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The bucket gets all four, in the order that keeps a stop harmless.
+
+    `latest.json` is the pointer the API reads, so it goes last: an upload
+    that dies part-way leaves a history and predictions nothing points at,
+    rather than a live release whose completed games have no forecast.
+    """
+    config = _config()
+    history = RatingHistory()
+    predictor, df = publish._predictions(
+        publish._Job(config.league, _MODEL, config),
+        _seasons(),
+        OddsDatabase({}),
+        now=_LAST_GAME + timedelta(days=365),
+        week_observer=history,
+    )
+    release = build_release(config, _MODEL, predictor, df)
+    artifacts = build_artifacts(release, history, df)
+    put: list[tuple[str, bytes]] = []
+
+    async def _fake_save(bucket: str, key: str, data: bytes) -> None:
+        put.append((key, data))
+
+    monkeypatch.setattr(publish, "save_data_to_s3", _fake_save)
+
+    keys = asyncio.run(publish.upload_artifacts(artifacts, "a-bucket"))
+
+    prefix = f"models/{_LEAGUE}/{_MODEL}"
+    assert [key for key, _ in put] == [
+        f"{prefix}/history.parquet",
+        f"{prefix}/predictions.parquet",
+        f"{prefix}/runs/{release.run_id}.json",
+        f"{prefix}/latest.json",
+    ]
+    assert list(keys) == [key for key, _ in put]
+
+
+def test_the_bucket_gets_the_same_bytes_as_the_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Not a second serialization of the same frames -- the same object.
+
+    Otherwise `--upload` is only reasonably likely to put what you read
+    locally into the bucket, and a difference would surface as a parquet
+    the API reads differently from the one you checked.
+    """
+    config = _config()
+    history = RatingHistory()
+    predictor, df = publish._predictions(
+        publish._Job(config.league, _MODEL, config),
+        _seasons(),
+        OddsDatabase({}),
+        now=_LAST_GAME + timedelta(days=365),
+        week_observer=history,
+    )
+    artifacts = build_artifacts(
+        build_release(config, _MODEL, predictor, df), history, df
+    )
+    put: dict[str, bytes] = {}
+
+    async def _fake_save(bucket: str, key: str, data: bytes) -> None:
+        put[key] = data
+
+    monkeypatch.setattr(publish, "save_data_to_s3", _fake_save)
+
+    history_file, predictions_file, _, latest_path = write_artifacts(
+        artifacts, tmp_path
+    )
+    asyncio.run(publish.upload_artifacts(artifacts, "a-bucket"))
+
+    prefix = f"models/{_LEAGUE}/{_MODEL}"
+    assert put[f"{prefix}/history.parquet"] == history_file.read_bytes()
+    assert put[f"{prefix}/predictions.parquet"] == predictions_file.read_bytes()
+    assert put[f"{prefix}/latest.json"] == latest_path.read_bytes()
