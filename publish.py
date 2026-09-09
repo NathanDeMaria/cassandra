@@ -22,6 +22,16 @@ Nothing here is new capability. `join_with_odds` runs the model,
 `score_predictions` fits the prob->margin mapping, and `cassandra.serving`
 owns the schema; this is the assembly.
 
+A publish produces four objects, under `models/{league}/{model}/`:
+`latest.json` and its copy under `runs/`, plus `history.parquet` (what every
+team was rated at the end of every week) and `predictions.parquet` (what the
+model said before each game, from before that game updated it). All four
+carry one `run_id` and are written -- and uploaded -- together or not at
+all, because the webapp reads the stored prediction for a completed game
+and predicts live for an unplayed one, and a release without its
+predictions silently turns the first case back into hindsight. See
+`build_artifacts` and `cassandra.serving.predictions`.
+
 The one judgment call it does make is *when* the offseason rollover lands in
 a release, since publishing is the only caller that reads a predictor's
 ratings after the replay rather than its predictions during one. See
@@ -31,7 +41,6 @@ ratings after the replay rather than its predictions during one. See
 import asyncio
 import json
 import sys
-from collections import Counter
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -61,11 +70,21 @@ from cassandra.predictor import (
 from cassandra.save_predictions import join_with_odds, read_all_seasons
 from cassandra.serving import (
     ModelRelease,
+    RatingHistory,
     TeamRating,
     TrainedThrough,
+    WeekObserver,
     calibration_from_predictor,
+    history_bytes,
+    history_path,
     metrics_from_scored,
+    model_dir,
+    predictions_bytes,
+    predictions_frame,
+    predictions_path,
     ratings_from_predictor,
+    tally,
+    write_artifact_bytes,
 )
 from evaluate_models import _models
 
@@ -121,25 +140,26 @@ def _with_records(
     next to its record on the front page, and a cumulative record over every
     season the model ever replayed isn't what that table means. A team the
     predictor rates but that hasn't played this season keeps its 0-0.
+
+    `serving.history.tally` does the counting, and it is the same function
+    the week observer runs inside the replay -- including its rule that a
+    tie counts for neither side, since a TeamRating has nowhere to put one
+    and `team1_win` calling it a home loss is fine for scoring a probability
+    and wrong on a standings table. Shared rather than written twice because
+    a release's record and the last row of that team's history are the same
+    claim in two places, and there is a test holding them equal.
     """
     season = df[df["year"] == df["year"].max()]
-    wins: Counter[str] = Counter()
-    losses: Counter[str] = Counter()
+    wins: dict[str, int] = {}
+    losses: dict[str, int] = {}
     margins = (season["home_score"] - season["away_score"]).tolist()
     homes = season["home_team"].astype(str).tolist()
     aways = season["away_team"].astype(str).tolist()
     for home, away, margin in zip(homes, aways, margins, strict=True):
-        if margin == 0:
-            # A TeamRating has nowhere to put a tie, and `team1_win` calls one
-            # a home loss -- fine for scoring a probability, wrong on a
-            # standings table. Rare enough to leave out of both columns.
-            continue
-        winner, loser = (home, away) if margin > 0 else (away, home)
-        wins[winner] += 1
-        losses[loser] += 1
+        tally(wins, losses, home, away, margin)
     return {
         team: rating.model_copy(
-            update={"wins": wins[team], "losses": losses[team]},
+            update={"wins": wins.get(team, 0), "losses": losses.get(team, 0)},
         )
         for team, rating in ratings.items()
     }
@@ -213,15 +233,118 @@ def release_json(release: ModelRelease) -> str:
 def write_release(release: ModelRelease, out: Path) -> tuple[Path, Path]:
     """Write the release into the bucket's layout, rooted at `out`."""
     payload = release_json(release)
-    model_dir = out / "models" / release.league / release.model
-    (model_dir / "runs").mkdir(parents=True, exist_ok=True)
-    run_path = model_dir / "runs" / f"{release.run_id}.json"
-    latest_path = model_dir / "latest.json"
+    directory = model_dir(out, release.league, release.model)
+    (directory / "runs").mkdir(parents=True, exist_ok=True)
+    run_path = directory / "runs" / f"{release.run_id}.json"
+    latest_path = directory / "latest.json"
     run_path.write_text(payload)
     # A copy of the run file, not a pointer to it: the API serves latest.json
     # with one GET, and rolling back is `cp runs/<old>.json latest.json`.
     latest_path.write_text(payload)
     return run_path, latest_path
+
+
+class Artifacts(NamedTuple):
+    """One run's three artifacts, serialized, before any of them is stored.
+
+    Bytes rather than frames because the same object goes to two places --
+    a local directory and an s3 key -- and serializing twice would leave
+    nothing guaranteeing they match. The release is carried whole because
+    `write_release` and `upload_release` want the id and the layout off it.
+
+    Built in one step (`build_artifacts`) and stored in another, which is
+    what makes "all three or none" checkable: a schema problem raises
+    before the first byte lands anywhere.
+    """
+
+    release: ModelRelease
+    history: bytes
+    predictions: bytes
+
+
+def build_artifacts(
+    release: ModelRelease, history: RatingHistory, df: pd.DataFrame
+) -> Artifacts:
+    """Serialize a finished run's three artifacts, or raise having written none.
+
+    The webapp's honesty rule depends on the three being one set: a
+    completed game shows the stored pre-game prediction and an unplayed one
+    is predicted live from the release, so a release published without its
+    predictions leaves the consumer re-predicting games the model has
+    already trained on. See `cassandra.serving.predictions`.
+    """
+    margin_predictor = release.margin_predictor()
+    if margin_predictor is None:
+        # `build_release` always fits one, so this is a can't-happen guard
+        # rather than a case. Raising keeps it that way: predictions.parquet
+        # stores `predicted_margin` from the run's own calibration, and a
+        # release with no calibration has no honest value to put there.
+        raise ValueError(
+            f"{release.league}/{release.model} has no margin calibration; "
+            "refusing to publish a release without its predictions"
+        )
+    return Artifacts(
+        release=release,
+        history=history_bytes(history.frame(release.run_id)),
+        predictions=predictions_bytes(
+            predictions_frame(df, release.run_id, margin_predictor)
+        ),
+    )
+
+
+# The order the four objects are stored in, on disk and in the bucket
+# alike, and the one thing that makes a half-finished publish harmless.
+#
+# There is no transaction to be had over four objects, so the ordering
+# stands in for one. The parquet artifacts go first and `latest.json` goes
+# last, because `latest.json` is the pointer the API reads: stopping
+# part-way leaves a history and a set of predictions that nothing is
+# pointing at yet, which is inert. The reverse order leaves a live release
+# whose completed games have no stored forecast, and a consumer following
+# the "completed game -> stored prediction" rule would quietly fall back to
+# re-predicting games the model has memorized. That is the failure this
+# whole pairing exists to prevent.
+#
+# `runs/<id>.json` sits between them for the reason `upload_release`
+# already gives: the archive copy before the served one, so there is never
+# a release being handed out with nothing to roll back to.
+
+
+def write_artifacts(artifacts: Artifacts, out: Path) -> tuple[Path, Path, Path, Path]:
+    """Write a run's artifacts into the bucket's layout, rooted at `out`.
+
+    Each parquet is written whole, replacing what was there: a full replay
+    walks every season and every game, so it is the only writer that can
+    rewrite them. `upsert_history` / `upsert_predictions` are what the
+    incremental refresh uses instead.
+    """
+    release = artifacts.release
+    history_file = history_path(out, release.league, release.model)
+    predictions_file = predictions_path(out, release.league, release.model)
+    write_artifact_bytes(artifacts.history, history_file)
+    write_artifact_bytes(artifacts.predictions, predictions_file)
+    print(f"  wrote {history_file}\n  wrote {predictions_file}")
+
+    run_path, latest_path = write_release(release, out)
+    print(f"  wrote {run_path}\n  wrote {latest_path}")
+    return history_file, predictions_file, run_path, latest_path
+
+
+async def upload_artifacts(artifacts: Artifacts, bucket: str) -> tuple[str, ...]:
+    """Put the same four objects in s3, in the same order, under the same layout.
+
+    The same `bytes` that went to disk, not a second serialization of the
+    same frames -- so reading the local artifact really is reading what got
+    served.
+    """
+    release = artifacts.release
+    prefix = f"models/{release.league}/{release.model}"
+    history_key = f"{prefix}/history.parquet"
+    predictions_key = f"{prefix}/predictions.parquet"
+    await save_data_to_s3(bucket, history_key, artifacts.history)
+    await save_data_to_s3(bucket, predictions_key, artifacts.predictions)
+    run_key, latest_key = await upload_release(release, bucket)
+    return history_key, predictions_key, run_key, latest_key
 
 
 async def upload_release(release: ModelRelease, bucket: str) -> tuple[str, str]:
@@ -315,6 +438,7 @@ def _predictions(
     seasons: Sequence[Season],
     odds_db: OddsDatabase,
     now: datetime | None = None,
+    week_observer: WeekObserver | None = None,
 ) -> tuple[Predictor, pd.DataFrame]:
     """Replay one model over already-loaded seasons.
 
@@ -336,6 +460,7 @@ def _predictions(
         odds_db,
         post_callbacks=False,
         roll_over_final_season=False,
+        week_observer=week_observer,
     )
     df = pd.DataFrame([asdict(p) for p in predictions])
     # An empty frame has no `date` to ask about. Nothing to roll over either,
@@ -361,7 +486,8 @@ async def _publish_one(
     bucket: str,
 ) -> None:
     print(f"=== {job.league}/{job.model} ({job.config.predictor_class}) ===")
-    predictor, df = _predictions(job, seasons, odds_db)
+    history = RatingHistory()
+    predictor, df = _predictions(job, seasons, odds_db, week_observer=history)
     # Written for parity with evaluate_models.py, which leaves the same file
     # for the same config. Nothing here reads it back -- the predictor is
     # already in hand -- so it's an artifact of the run, not a step in it.
@@ -376,14 +502,13 @@ async def _publish_one(
         f"through {release.trained_through.season_year} "
         f"({len(release.trained_through.processed_game_ids)} games this season)"
     )
-
-    run_path, latest_path = write_release(release, out)
-    print(f"  wrote {run_path}\n  wrote {latest_path}")
+    artifacts = build_artifacts(release, history, df)
+    write_artifacts(artifacts, out)
 
     if not upload:
         return
-    run_key, latest_key = await upload_release(release, bucket)
-    print(f"  uploaded s3://{bucket}/{run_key}\n  uploaded s3://{bucket}/{latest_key}")
+    for key in await upload_artifacts(artifacts, bucket):
+        print(f"  uploaded s3://{bucket}/{key}")
 
 
 def _by_league(jobs: Sequence[_Job]) -> Iterator[tuple[str, list[_Job]]]:
