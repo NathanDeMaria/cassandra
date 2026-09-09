@@ -13,6 +13,16 @@ from .history import (
     write_history,
 )
 from .layout import model_dir
+from .predictions import (
+    PREDICTION_COLUMNS,
+    PREDICTIONS_KEY,
+    predictions_bytes,
+    predictions_frame,
+    predictions_path,
+    read_predictions,
+    upsert_predictions,
+    write_predictions,
+)
 from .release import (
     IsotonicMarginCalibration,
     LogisticMarginCalibration,
