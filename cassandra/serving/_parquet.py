@@ -22,6 +22,7 @@ that lets the refresh job run on a schedule without churning the object.
 """
 
 import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -142,13 +143,25 @@ def write_bytes(payload: bytes, path: Path) -> None:
     ought to agree.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Pid in the name so two writers don't share a temp file and hand each
-    # other half a frame.
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    # `dir=path.parent`, not the system temp dir: `os.replace` is only
+    # atomic within a filesystem, and raises outright across one -- which a
+    # container with /tmp on a different mount would hit every time.
+    #
+    # `mkstemp` rather than a name of our own so uniqueness is the stdlib's
+    # problem. Two writers must not share a temp file and hand each other
+    # half a frame, and a pid isn't enough for that: one process publishing
+    # several models writes this path more than once, and pids get reused.
+    handle, name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(name)
     try:
-        tmp.write_bytes(payload)
+        with os.fdopen(handle, "wb") as f:
+            f.write(payload)
         os.replace(tmp, path)
     finally:
+        # Only reached with the file still there if something above raised;
+        # `os.replace` has renamed it out from under this by then.
         tmp.unlink(missing_ok=True)
 
 
