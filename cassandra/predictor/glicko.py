@@ -13,6 +13,7 @@ from .base_predictor import (
 )
 from .blend import validated_scale
 from .opponent_prior import OpponentPriorManager
+from .rest import DEFAULT_REST_ADVANTAGE, RestLedger
 from .types import Matchup, Prediction, Rating
 
 
@@ -45,6 +46,9 @@ class GlickoPredictor(Predictor):
         # can move the two together rather than needing the categorical
         # resolved first.
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
+        # Rating points per day the home side is better rested by. 0 is off,
+        # which is what every model published before this replayed with.
+        rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -61,6 +65,7 @@ class GlickoPredictor(Predictor):
         self._scoring_method = scoring_method
         self._sigmoid_scale = validated_scale("sigmoid_scale", sigmoid_scale)
         self._score = get_scoring_function(scoring_method, self._sigmoid_scale)
+        self._rest = RestLedger(rest_advantage)
 
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(
             league, model=self.__class__.__name__
@@ -79,6 +84,9 @@ class GlickoPredictor(Predictor):
         adjusted_home_rating = home_rating.rating
         if not matchup.neutral_site:
             adjusted_home_rating += self._home_advantage
+        # Outside the neutral-site guard on purpose: nobody is at home in a
+        # bowl and both teams still arrived on different amounts of rest.
+        adjusted_home_rating += self.rest_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
         win_prob = 1 / (1 + 10 ** ((away_rating.rating - adjusted_home_rating) / 400))
         return Prediction(team1_win_prob=win_prob)
@@ -98,6 +106,8 @@ class GlickoPredictor(Predictor):
         )
 
         self._prior_manager.add_game(game)
+        # After the prediction, so a game never contributes to its own rest.
+        self._rest.record(game)
         return prediction
 
     def _actual(self, game: Game) -> float:
@@ -184,6 +194,7 @@ class GlickoPredictor(Predictor):
             "initial_rd": self._initial_rd,
             "scoring_method": self._scoring_method,
             "sigmoid_scale": self._sigmoid_scale,
+            "rest_advantage": self._rest.per_day,
             "season_regression": self._season_regression,
             "ratings": {
                 team: [r.rating, r.rating_deviation]

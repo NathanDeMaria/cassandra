@@ -267,6 +267,7 @@ from .epa import EpaIndex
 from .game_control import GameControlIndex
 from .glicko import GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
+from .rest import DEFAULT_REST_ADVANTAGE
 
 # Points of margin per unit of logit, for the two sources that arrive in
 # points: the final score and EPA's implied margin.
@@ -380,6 +381,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         weekly_rd_increase: float = 1,
         season_rd_increase: float = 120,
         initial_rd: float = 216,
+        rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         season_regression: float = 0.0,
         play_weight: float = DEFAULT_PLAY_WEIGHT,
         epa_share: float = DEFAULT_EPA_SHARE,
@@ -404,6 +406,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
             weekly_rd_increase=weekly_rd_increase,
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
+            rest_advantage=rest_advantage,
             season_regression=season_regression,
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
