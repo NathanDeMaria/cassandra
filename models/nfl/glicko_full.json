@@ -21,6 +21,10 @@
         "season_regression": [
             0,
             0.75
+        ],
+        "sigmoid_scale": [
+            2,
+            30
         ]
     },
     "fixed": {

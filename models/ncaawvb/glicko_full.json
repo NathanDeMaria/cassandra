@@ -20,11 +20,16 @@
         ],
         "scoring_method": [
             "binary",
-            "pythagorean"
+            "pythagorean",
+            "sigmoid"
         ],
         "season_regression": [
             0,
             0.75
+        ],
+        "sigmoid_scale": [
+            0.25,
+            3
         ]
     },
     "n_iter": 150

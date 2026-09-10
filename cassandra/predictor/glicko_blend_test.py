@@ -304,8 +304,10 @@ def test_the_temperatures_round_trip_through_a_release() -> None:
     assert state["control_temp"] == 0.4
     assert state["epa_margin_scale"] == 21.0
     assert restored.state_dict() == state
-    # The parent's scorer is not part of this model any more.
+    # The parent's scorer is not part of this model any more, and neither is
+    # the scale it would have used: `mov_scale` is this class's own.
     assert "scoring_method" not in state
+    assert "sigmoid_scale" not in state
 
 
 def test_the_residual_is_off_by_default(game: GameFactory) -> None:
@@ -404,6 +406,7 @@ def test_a_release_from_before_mov_scale_still_loads() -> None:
         "season_rd_increase": 120,
         "initial_rd": 216,
         "scoring_method": "sigmoid",
+        "sigmoid_scale": 10.0,
         "season_regression": 0.0,
         "play_weight": 0.17,
         "epa_share": 0.29,
@@ -420,6 +423,7 @@ def test_a_release_from_before_mov_scale_still_loads() -> None:
     assert state["epa_residual_beta"] == DEFAULT_EPA_RESIDUAL_BETA
     assert state["play_weight"] == pytest.approx(0.17)
     assert "scoring_method" not in state
+    assert "sigmoid_scale" not in state
 
 
 def test_no_play_weight_at_the_configs_pins_is_exactly_glicko_full(

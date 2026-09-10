@@ -255,6 +255,7 @@ from typing import Any, Self
 
 from endgame.types import Game
 
+from ..scoring import DEFAULT_SIGMOID_SCALE
 from .base_predictor import Anchor
 from .blend import (
     DEFAULT_EPA_SHARE,
@@ -278,8 +279,8 @@ from .opponent_prior import OpponentPriorManager
 # an argument for leaving them unsearched: 10 was never fitted to anything.
 # `cassandra/scoring/sigmoid.py` carries a `# TODO: fiddle with k` and the
 # same 10 is used for hockey goals and college football touchdowns alike.
-DEFAULT_MOV_SCALE = 10.0
-DEFAULT_EPA_MARGIN_SCALE = 10.0
+DEFAULT_MOV_SCALE = DEFAULT_SIGMOID_SCALE
+DEFAULT_EPA_MARGIN_SCALE = DEFAULT_SIGMOID_SCALE
 
 # Temperature on control, which is the one source that does not arrive in
 # points. 1.0 leaves it exactly as the index stores it, which is what this
@@ -569,6 +570,11 @@ class BlendedGlickoPredictor(GlickoPredictor):
         """
         params = dict(data)
         params.pop("scoring_method", None)
+        # And its scale, for the same reason and with the same safety: this
+        # class's `mov_scale` is the only thing that decides what a final
+        # score is worth here, so the parent's scorer -- and whatever scale
+        # it would have used -- is never consulted.
+        params.pop("sigmoid_scale", None)
         return super().from_state_dict(params)
 
     def state_dict(self) -> dict[str, Any]:
@@ -589,6 +595,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         # `from_state_dict` would hand back to a constructor that no longer
         # takes it.
         state.pop("scoring_method", None)
+        state.pop("sigmoid_scale", None)
         return {
             **state,
             "play_weight": self._blend.play_weight,
