@@ -3,13 +3,19 @@ from typing import Any, Self
 
 from endgame.types import Game
 
+from .adjustments import (
+    DEFAULT_QB_OUT_PENALTY,
+    DEFAULT_TRAVEL_ADVANTAGE,
+    MatchupAdjustments,
+)
 from .base_predictor import (
     Anchor,
     Predictor,
     resolved_anchors,
     validated_regression,
 )
-from .rest import DEFAULT_REST_ADVANTAGE, RestLedger
+from .qb_out import QbOutIndex
+from .rest import DEFAULT_REST_ADVANTAGE
 from .types import Matchup, Prediction, Rating
 
 
@@ -20,9 +26,12 @@ class EloPredictor(Predictor):
         home_advantage: float = 105,
         k: float = 20,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
+        travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
+        qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
         season_regression: float = 0.0,
         ratings: dict[str, float] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
+        qb_out: QbOutIndex | None = None,
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
@@ -30,7 +39,12 @@ class EloPredictor(Predictor):
         self._ratings: dict[str, float] = ratings or {}
         self._home_advantage = home_advantage
         self._k = k
-        self._rest = RestLedger(rest_advantage)
+        self._adjustments = MatchupAdjustments(
+            rest_advantage=rest_advantage,
+            travel_advantage=travel_advantage,
+            qb_out_penalty=qb_out_penalty,
+            qb_out=qb_out if qb_out is not None else QbOutIndex.for_league(league),
+        )
 
     def predict_game(self, matchup: Matchup) -> Prediction:
         home_rating = self.get_rating(matchup.home)
@@ -38,7 +52,7 @@ class EloPredictor(Predictor):
         if not matchup.neutral_site:
             adjusted_home_rating = home_rating + self._home_advantage
         # Outside the neutral-site guard: see GlickoPredictor.predict_game.
-        adjusted_home_rating += self.rest_adjustment(matchup)
+        adjusted_home_rating += self.matchup_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
         win_prob = 1 / (1 + 10 ** ((away_rating - adjusted_home_rating) / 400))
         return Prediction(team1_win_prob=win_prob)
@@ -59,7 +73,7 @@ class EloPredictor(Predictor):
             prediction.team1_win_prob - actual
         )
         # After the prediction, so a game never contributes to its own rest.
-        self._rest.record(game)
+        self._adjustments.record(game)
         return prediction
 
     def get_rating(self, team: str) -> float:
@@ -80,7 +94,9 @@ class EloPredictor(Predictor):
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
-            "rest_advantage": self._rest.per_day,
+            "rest_advantage": self._adjustments.rest.per_day,
+            "travel_advantage": self._adjustments.travel_advantage,
+            "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,
             "ratings": self._ratings,
             "anchors": self._anchors,

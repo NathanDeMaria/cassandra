@@ -9,7 +9,7 @@ from endgame.types import Game
 
 from cassandra.constants import CASSANDRA_HOME
 
-from .rest import RestLedger
+from .adjustments import MatchupAdjustments
 from .types import Matchup, Prediction, Rating
 
 _ANCHOR_DIR = CASSANDRA_HOME / "predictor" / "data"
@@ -162,12 +162,11 @@ class Predictor(ABC):
         # teams are effectively a separate closed pool: pulling them toward
         # the same 1500 as an SEC team is what the anchor exists to fix.
         self._anchors: dict[str, Anchor] = {}
-        # When each team last played, for the subclasses that price a rest
-        # gap. Inert here for the same reason `_season_regression` is 0: a
-        # predictor that doesn't expose `rest_advantage` gets a ledger whose
-        # `adjustment` is always 0 rather than a None to guard against at
-        # every call site.
-        self._rest = RestLedger()
+        # Rest, travel and quarterback availability. Inert here for the same
+        # reason `_season_regression` is 0: a predictor that exposes none of
+        # the weights gets a bundle whose `points` is always 0, rather than a
+        # None to guard against at every call site.
+        self._adjustments = MatchupAdjustments()
         # Which season the replay is in, set by `pass_season`. None until it
         # enters one, which is every team's earliest anchor -- see
         # `anchor_in`. Only anchors with a history read it at all.
@@ -287,17 +286,17 @@ class Predictor(ABC):
     def pass_week(self) -> None:
         pass
 
-    def rest_adjustment(self, matchup: Matchup) -> float:
-        """Rating points the home side gets for arriving better rested.
+    def matchup_adjustment(self, matchup: Matchup) -> float:
+        """Rating points the home side gets from rest, travel and availability.
 
-        0 for a predictor that doesn't expose `rest_advantage`, and 0 for the
-        first game either team plays in a season -- see `RestLedger`. Shared
-        here rather than written per subclass for the reason `regress` is:
-        the three rating models want the identical arithmetic, and a version
-        that differs between them by a sign is the kind of bug that shows up
-        as a slightly worse brier score and nothing else.
+        0 for a predictor that exposes none of the weights, and 0 for a term
+        whose input is missing -- see `MatchupAdjustments`. Shared here
+        rather than written per subclass for the reason `regress` is: the
+        rating models want the identical arithmetic, and a version that
+        differs between them by a sign is the kind of bug that shows up as a
+        slightly worse brier score and nothing else.
         """
-        return self._rest.adjustment(matchup)
+        return self._adjustments.points(matchup)
 
     def pass_season(self, year: int | None = None) -> None:
         """Cross into a new season. `year` is the one being entered.
@@ -321,7 +320,7 @@ class Predictor(ABC):
         # than a bye. Cleared here rather than clamped, because clamping
         # would still hand the season opener a differential built out of
         # which team played a bowl.
-        self._rest.reset()
+        self._adjustments.pass_season()
         self._roll_over()
 
     def _roll_over(self) -> None:

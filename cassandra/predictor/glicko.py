@@ -5,6 +5,11 @@ from typing import Any, NamedTuple, Self
 from endgame.types import Game
 
 from ..scoring import DEFAULT_SIGMOID_SCALE, get_scoring_function
+from .adjustments import (
+    DEFAULT_QB_OUT_PENALTY,
+    DEFAULT_TRAVEL_ADVANTAGE,
+    MatchupAdjustments,
+)
 from .base_predictor import (
     Anchor,
     Predictor,
@@ -13,7 +18,8 @@ from .base_predictor import (
 )
 from .blend import validated_scale
 from .opponent_prior import OpponentPriorManager
-from .rest import DEFAULT_REST_ADVANTAGE, RestLedger
+from .qb_out import QbOutIndex
+from .rest import DEFAULT_REST_ADVANTAGE
 from .types import Matchup, Prediction, Rating
 
 
@@ -46,11 +52,17 @@ class GlickoPredictor(Predictor):
         # can move the two together rather than needing the categorical
         # resolved first.
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
-        # Rating points per day the home side is better rested by. 0 is off,
-        # which is what every model published before this replayed with.
+        # The three matchup terms. Each 0 is off, which is what every model
+        # published before them replayed with. See `MatchupAdjustments`.
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
+        travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
+        qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
+        # Defaulted rather than required, like the prior manager: a
+        # replay wants the league's saved index and a caller with an
+        # injury report passes one built in memory.
+        qb_out: QbOutIndex | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
     ) -> None:
@@ -65,7 +77,12 @@ class GlickoPredictor(Predictor):
         self._scoring_method = scoring_method
         self._sigmoid_scale = validated_scale("sigmoid_scale", sigmoid_scale)
         self._score = get_scoring_function(scoring_method, self._sigmoid_scale)
-        self._rest = RestLedger(rest_advantage)
+        self._adjustments = MatchupAdjustments(
+            rest_advantage=rest_advantage,
+            travel_advantage=travel_advantage,
+            qb_out_penalty=qb_out_penalty,
+            qb_out=qb_out if qb_out is not None else QbOutIndex.for_league(league),
+        )
 
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(
             league, model=self.__class__.__name__
@@ -85,8 +102,10 @@ class GlickoPredictor(Predictor):
         if not matchup.neutral_site:
             adjusted_home_rating += self._home_advantage
         # Outside the neutral-site guard on purpose: nobody is at home in a
-        # bowl and both teams still arrived on different amounts of rest.
-        adjusted_home_rating += self.rest_adjustment(matchup)
+        # bowl and both teams still arrived on different rest, and neither
+        # has its quarterback back because the game is neutral. The travel
+        # term zeroes itself there -- see `MatchupAdjustments.travel_points`.
+        adjusted_home_rating += self.matchup_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
         win_prob = 1 / (1 + 10 ** ((away_rating.rating - adjusted_home_rating) / 400))
         return Prediction(team1_win_prob=win_prob)
@@ -107,7 +126,7 @@ class GlickoPredictor(Predictor):
 
         self._prior_manager.add_game(game)
         # After the prediction, so a game never contributes to its own rest.
-        self._rest.record(game)
+        self._adjustments.record(game)
         return prediction
 
     def _actual(self, game: Game) -> float:
@@ -194,7 +213,9 @@ class GlickoPredictor(Predictor):
             "initial_rd": self._initial_rd,
             "scoring_method": self._scoring_method,
             "sigmoid_scale": self._sigmoid_scale,
-            "rest_advantage": self._rest.per_day,
+            "rest_advantage": self._adjustments.rest.per_day,
+            "travel_advantage": self._adjustments.travel_advantage,
+            "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,
             "ratings": {
                 team: [r.rating, r.rating_deviation]
