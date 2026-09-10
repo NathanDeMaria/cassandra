@@ -256,6 +256,7 @@ from typing import Any, Self
 from endgame.types import Game
 
 from ..scoring import DEFAULT_SIGMOID_SCALE
+from .adjustments import DEFAULT_QB_OUT_PENALTY, DEFAULT_TRAVEL_ADVANTAGE
 from .base_predictor import Anchor
 from .blend import (
     DEFAULT_EPA_SHARE,
@@ -267,6 +268,7 @@ from .epa import EpaIndex
 from .game_control import GameControlIndex
 from .glicko import GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
+from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
 
 # Points of margin per unit of logit, for the two sources that arrive in
@@ -382,6 +384,8 @@ class BlendedGlickoPredictor(GlickoPredictor):
         season_rd_increase: float = 120,
         initial_rd: float = 216,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
+        travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
+        qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
         season_regression: float = 0.0,
         play_weight: float = DEFAULT_PLAY_WEIGHT,
         epa_share: float = DEFAULT_EPA_SHARE,
@@ -390,6 +394,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         epa_margin_scale: float = DEFAULT_EPA_MARGIN_SCALE,
         epa_residual_beta: float = DEFAULT_EPA_RESIDUAL_BETA,
         opponent_prior_manager: OpponentPriorManager | None = None,
+        qb_out: QbOutIndex | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
         game_control: GameControlIndex | None = None,
@@ -407,6 +412,9 @@ class BlendedGlickoPredictor(GlickoPredictor):
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
             rest_advantage=rest_advantage,
+            travel_advantage=travel_advantage,
+            qb_out_penalty=qb_out_penalty,
+            qb_out=qb_out,
             season_regression=season_regression,
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,

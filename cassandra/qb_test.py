@@ -7,7 +7,7 @@ regex that works on imagined text.
 
 import pytest
 
-from .qb import attempt_share, passer, starters
+from .qb import attempt_share, ball_carrier, name_key, passer, starters, team_games
 
 
 @pytest.mark.parametrize(
@@ -97,3 +97,66 @@ def test_attempt_share_says_how_much_to_trust_a_start() -> None:
     assert attempt_share({"A": 30, "B": 2}) == pytest.approx(30 / 32)
     assert attempt_share({"A": 9, "B": 8}) == pytest.approx(9 / 17)
     assert attempt_share({}) == 0.0
+
+
+# ------------------------------------------------------- the second format
+
+# Real ncaafb text, clock-prefixed and `Last,First`. About 1.6% of plays and
+# present in roughly half of games, never as a whole game.
+_ALT_PASS = (
+    "(05:55) Shotgun Nussmeier,Garrett pass incomplete deep left to Hilton Jr.,Chris"
+)
+_ALT_RUSH = "(04:47) No Huddle-Shotgun Van Buren Jr.,Michael rush left for 2 yards gain"
+_ALT_SURNAME = (
+    "(01:02) No Huddle-Shotgun Del Rio-Wilson,Angel pass complete short right to Y"
+)
+
+
+def test_the_clock_and_formation_come_off_before_the_name() -> None:
+    """Or the passer is "Shotgun Nussmeier,Garrett", who does not exist."""
+    assert passer(_ALT_PASS) == "Nussmeier,Garrett"
+    assert ball_carrier(_ALT_RUSH) == "Van Buren Jr.,Michael"
+
+
+def test_a_surname_with_spaces_survives_the_prefix_strip() -> None:
+    """The formation has to come off by name, not by counting tokens."""
+    assert passer(_ALT_SURNAME) == "Del Rio-Wilson,Angel"
+
+
+def test_the_two_formats_normalize_to_the_same_person() -> None:
+    """Without this a quarterback looks absent when he was only described
+    differently, which is an injury that didn't happen."""
+    assert name_key("Garrett Nussmeier") == name_key("Nussmeier,Garrett")
+    assert name_key("Taylen Green") == name_key("Green,Taylen")
+
+
+def test_a_suffix_is_not_part_of_the_key() -> None:
+    assert name_key("Michael Penix Jr.") == name_key("Michael Penix")
+
+
+def test_a_sack_counts_as_a_snap_taken() -> None:
+    """It is not a rushing attempt, and availability isn't asking about that."""
+    assert (
+        ball_carrier("Brendon Lewis sacked by Quincy Rhodes Jr. for a loss of 9 yards")
+        == "Brendon Lewis"
+    )
+
+
+def test_a_kneel_down_names_nobody() -> None:
+    assert ball_carrier("(00:06) Kneel down by Southeastern La. at SLU20") is None
+
+
+def test_snap_keys_hold_everyone_who_touched_it() -> None:
+    """Runners included -- the question is whether a given man played."""
+    plays = [
+        ("g1", "10", "Starter Name pass complete to X for 5 yds"),
+        ("g1", "10", "Runner Person run for 12 yds"),
+        ("g1", "10", "Starter Name sacked by Somebody Else for a loss of 4 yards"),
+    ]
+
+    (found,) = team_games(*zip(*plays)).values()
+
+    assert found.starter == "Starter Name"
+    assert found.snap_keys == {name_key("Starter Name"), name_key("Runner Person")}
+    assert found.attempts == 1
+    assert found.share == 1.0

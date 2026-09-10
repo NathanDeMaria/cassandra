@@ -178,7 +178,7 @@ def test_a_game_never_counts_toward_its_own_rest(build: Build) -> None:
 
     assert returned == pytest.approx(expected)
     # And afterwards both sides have just played, so the edge is gone.
-    assert p._rest.differential(_Matchup("A", "B", 22)) == 0.0
+    assert p._adjustments.rest.differential(_Matchup("A", "B", 22)) == 0.0
 
 
 @pytest.mark.parametrize("build", [_elo, _glicko], ids=["elo", "glicko"])
@@ -190,7 +190,7 @@ def test_the_offseason_clears_the_ledger(build: Build) -> None:
 
     p.pass_season(2027)
 
-    assert p._rest.differential(_Matchup("A", "B", 15)) == 0.0
+    assert p._adjustments.rest.differential(_Matchup("A", "B", 15)) == 0.0
 
 
 @pytest.mark.parametrize("build", [_elo, _glicko], ids=["elo", "glicko"])
@@ -218,7 +218,7 @@ def test_a_bye_is_worth_something_and_only_the_bye_is() -> None:
     level = p.predict_game(_Matchup("A", "B", 20)).team1_win_prob
     # B plays again a week later; A does not. Recorded straight onto the
     # ledger so no rating moves with it.
-    p._rest.record(_game("B", "X", 8))
+    p._adjustments.rest.record(_game("B", "X", 8))
     with_bye = p.predict_game(_Matchup("A", "B", 20)).team1_win_prob
 
     assert with_bye > level

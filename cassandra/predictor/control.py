@@ -164,10 +164,12 @@ from typing import Any
 from endgame.types import Game
 
 from ..scoring import DEFAULT_SIGMOID_SCALE
+from .adjustments import DEFAULT_QB_OUT_PENALTY, DEFAULT_TRAVEL_ADVANTAGE
 from .base_predictor import Anchor
 from .game_control import GameControlIndex, validated_control_weight
 from .glicko import GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
+from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
 
 # Where a search starts, and what a hand-built one does with no argument:
@@ -214,9 +216,12 @@ class ControlGlickoPredictor(GlickoPredictor):
         # can search rather than inherit.
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
+        travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
+        qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
         season_regression: float = 0.0,
         control_weight: float = DEFAULT_CONTROL_WEIGHT,
         opponent_prior_manager: OpponentPriorManager | None = None,
+        qb_out: QbOutIndex | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
         game_control: GameControlIndex | None = None,
@@ -231,6 +236,9 @@ class ControlGlickoPredictor(GlickoPredictor):
             scoring_method=scoring_method,
             sigmoid_scale=sigmoid_scale,
             rest_advantage=rest_advantage,
+            travel_advantage=travel_advantage,
+            qb_out_penalty=qb_out_penalty,
+            qb_out=qb_out,
             season_regression=season_regression,
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
