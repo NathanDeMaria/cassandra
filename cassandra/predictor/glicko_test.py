@@ -1,5 +1,6 @@
 import pytest
 
+from ..scoring import DEFAULT_SIGMOID_SCALE
 from .conftest import GameFactory
 from .glicko import GlickoPredictor
 
@@ -53,3 +54,51 @@ def test_save_load_keeps_the_deviations(tmp_path, game: GameFactory) -> None:
             predictor.get_rating(team).rating_deviation
         )
     assert loaded.get_rating("Unknown").rating_deviation == 200
+
+
+def test_the_sigmoid_scale_round_trips_through_the_state(game: GameFactory) -> None:
+    """It changes what a game was worth, so a release has to carry it.
+
+    A model refit at a searched scale and reloaded at the default 10 is a
+    different model wearing the same ratings.
+    """
+    predictor = GlickoPredictor(
+        "test_league", scoring_method="sigmoid", sigmoid_scale=1.5
+    )
+
+    state = predictor.state_dict()
+    restored = GlickoPredictor.from_state_dict(state)
+
+    assert state["sigmoid_scale"] == 1.5
+    assert restored.state_dict() == state
+
+
+def test_a_model_that_never_named_a_scale_still_gets_the_old_one() -> None:
+    """Every release published before this existed replayed at 10."""
+    predictor = GlickoPredictor("test_league", scoring_method="sigmoid")
+
+    assert predictor.state_dict()["sigmoid_scale"] == DEFAULT_SIGMOID_SCALE
+
+
+def test_a_smaller_scale_moves_a_rating_further(game: GameFactory) -> None:
+    """What the parameter is for, seen through the ratings rather than the
+    scorer: at a scale the score line is measured in, a sweep is a rout and
+    Glicko moves accordingly."""
+    sweep = game("Home", "Away", 3, 0)
+
+    def _after(scale: float) -> float:
+        predictor = GlickoPredictor(
+            "test_league", scoring_method="sigmoid", sigmoid_scale=scale
+        )
+        predictor.update_game(sweep)
+        return predictor.get_rating("Home").rating
+
+    assert _after(1.0) > _after(DEFAULT_SIGMOID_SCALE)
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0])
+def test_a_scale_of_zero_or_less_is_refused(scale: float) -> None:
+    """0 divides by zero and a negative reads the score line backwards --
+    the same rule `validated_scale` already holds the blend's scales to."""
+    with pytest.raises(ValueError, match="sigmoid_scale must be positive"):
+        GlickoPredictor("test_league", sigmoid_scale=scale)

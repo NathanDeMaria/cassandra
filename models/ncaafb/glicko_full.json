@@ -17,6 +17,10 @@
         "season_rd_increase": [
             0,
             500
+        ],
+        "sigmoid_scale": [
+            2,
+            30
         ]
     },
     "fixed": {

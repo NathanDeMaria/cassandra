@@ -4,13 +4,14 @@ from typing import Any, NamedTuple, Self
 
 from endgame.types import Game
 
-from ..scoring import get_scoring_function
+from ..scoring import DEFAULT_SIGMOID_SCALE, get_scoring_function
 from .base_predictor import (
     Anchor,
     Predictor,
     resolved_anchors,
     validated_regression,
 )
+from .blend import validated_scale
 from .opponent_prior import OpponentPriorManager
 from .types import Matchup, Prediction, Rating
 
@@ -39,6 +40,11 @@ class GlickoPredictor(Predictor):
         season_rd_increase: float = 120,
         initial_rd: float = 216,
         scoring_method: str = "binary",
+        # Only `scoring_method="sigmoid"` reads this; see
+        # `get_scoring_function`. Accepted whatever the method is so a search
+        # can move the two together rather than needing the categorical
+        # resolved first.
+        sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -53,7 +59,8 @@ class GlickoPredictor(Predictor):
         self._season_rd_increase = season_rd_increase
         self._initial_rd = initial_rd
         self._scoring_method = scoring_method
-        self._score = get_scoring_function(scoring_method)
+        self._sigmoid_scale = validated_scale("sigmoid_scale", sigmoid_scale)
+        self._score = get_scoring_function(scoring_method, self._sigmoid_scale)
 
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(
             league, model=self.__class__.__name__
@@ -176,6 +183,7 @@ class GlickoPredictor(Predictor):
             "season_rd_increase": self._season_rd_increase,
             "initial_rd": self._initial_rd,
             "scoring_method": self._scoring_method,
+            "sigmoid_scale": self._sigmoid_scale,
             "season_regression": self._season_regression,
             "ratings": {
                 team: [r.rating, r.rating_deviation]

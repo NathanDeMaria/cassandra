@@ -163,6 +163,7 @@ from typing import Any
 
 from endgame.types import Game
 
+from ..scoring import DEFAULT_SIGMOID_SCALE
 from .base_predictor import Anchor
 from .game_control import GameControlIndex, validated_control_weight
 from .glicko import GlickoPredictor, _Rating
@@ -207,6 +208,10 @@ class ControlGlickoPredictor(GlickoPredictor):
         # `scoring_method` from its search, so this default is what a probe
         # actually runs with, the way `glicko_binary.json` leans on Glicko's.
         scoring_method: str = "sigmoid",
+        # Forwarded because this class is the one that defaults to the
+        # sigmoid, so it is the one whose score line most needs a scale it
+        # can search rather than inherit.
+        sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
         season_regression: float = 0.0,
         control_weight: float = DEFAULT_CONTROL_WEIGHT,
         opponent_prior_manager: OpponentPriorManager | None = None,
@@ -222,6 +227,7 @@ class ControlGlickoPredictor(GlickoPredictor):
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
             scoring_method=scoring_method,
+            sigmoid_scale=sigmoid_scale,
             season_regression=season_regression,
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
