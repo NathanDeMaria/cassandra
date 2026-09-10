@@ -168,6 +168,7 @@ from .base_predictor import Anchor
 from .game_control import GameControlIndex, validated_control_weight
 from .glicko import GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
+from .rest import DEFAULT_REST_ADVANTAGE
 
 # Where a search starts, and what a hand-built one does with no argument:
 # take the controlled line whole wherever there is one. This class exists to
@@ -212,6 +213,7 @@ class ControlGlickoPredictor(GlickoPredictor):
         # sigmoid, so it is the one whose score line most needs a scale it
         # can search rather than inherit.
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
+        rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         season_regression: float = 0.0,
         control_weight: float = DEFAULT_CONTROL_WEIGHT,
         opponent_prior_manager: OpponentPriorManager | None = None,
@@ -228,6 +230,7 @@ class ControlGlickoPredictor(GlickoPredictor):
             initial_rd=initial_rd,
             scoring_method=scoring_method,
             sigmoid_scale=sigmoid_scale,
+            rest_advantage=rest_advantage,
             season_regression=season_regression,
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,

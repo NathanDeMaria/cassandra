@@ -9,6 +9,7 @@ from .base_predictor import (
     resolved_anchors,
     validated_regression,
 )
+from .rest import DEFAULT_REST_ADVANTAGE, RestLedger
 from .types import Matchup, Prediction, Rating
 
 
@@ -18,6 +19,7 @@ class EloPredictor(Predictor):
         league: str,
         home_advantage: float = 105,
         k: float = 20,
+        rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         season_regression: float = 0.0,
         ratings: dict[str, float] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
@@ -28,12 +30,15 @@ class EloPredictor(Predictor):
         self._ratings: dict[str, float] = ratings or {}
         self._home_advantage = home_advantage
         self._k = k
+        self._rest = RestLedger(rest_advantage)
 
     def predict_game(self, matchup: Matchup) -> Prediction:
         home_rating = self.get_rating(matchup.home)
         adjusted_home_rating = home_rating
         if not matchup.neutral_site:
             adjusted_home_rating = home_rating + self._home_advantage
+        # Outside the neutral-site guard: see GlickoPredictor.predict_game.
+        adjusted_home_rating += self.rest_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
         win_prob = 1 / (1 + 10 ** ((away_rating - adjusted_home_rating) / 400))
         return Prediction(team1_win_prob=win_prob)
@@ -53,6 +58,8 @@ class EloPredictor(Predictor):
         self._ratings[game.away] = away_rating + self._k * (
             prediction.team1_win_prob - actual
         )
+        # After the prediction, so a game never contributes to its own rest.
+        self._rest.record(game)
         return prediction
 
     def get_rating(self, team: str) -> float:
@@ -73,6 +80,7 @@ class EloPredictor(Predictor):
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
+            "rest_advantage": self._rest.per_day,
             "season_regression": self._season_regression,
             "ratings": self._ratings,
             "anchors": self._anchors,
