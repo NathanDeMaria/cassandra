@@ -28,13 +28,24 @@ than charged to the home team's venue.
 """
 
 import math
+from collections.abc import Sequence
+
+#: Where one team plays. A bare pair is a team that has always played in the
+#: same place, which is nearly all of them. A list of `(year, lat, lon)` steps
+#: is a franchise that moved: the coordinates are the ones in effect from that
+#: year on, so the seasons before a relocation are measured from the old city.
+#:
+#: The same two shapes, for the same reason, as `predictor.base_predictor`'s
+#: `Anchor` -- most entries never change and writing every one of them a
+#: history would bury the three that did.
+Venue = tuple[float, float] | Sequence[tuple[int, float, float]]
 
 #: (latitude, longitude) per team, in the canonical names the replay uses --
 #: `TeamNamer.for_league("ncaafb")` output, so these join straight onto a
 #: predictions frame without a second naming vocabulary.
 #:
 #: Hand-entered and approximate; see the module docstring.
-VENUES: dict[str, tuple[float, float]] = {
+VENUES: dict[str, Venue] = {
     "Air Force Falcons": (38.99, -104.86),
     "Akron Zips": (41.08, -81.52),
     "Alabama Crimson Tide": (33.21, -87.55),
@@ -172,12 +183,78 @@ VENUES: dict[str, tuple[float, float]] = {
     "Western Michigan Broncos": (42.28, -85.61),
     "Wisconsin Badgers": (43.07, -89.41),
     "Wyoming Cowboys": (41.31, -105.58),
+    # ---- nfl. Names are the bare nicknames the replay uses for this league.
+    #
+    # Three franchises moved inside the window cassandra replays (1999 on) and
+    # carry their history rather than a single point. Getting these wrong is
+    # not a rounding error: the Rams' two homes are 2,500km apart, and a
+    # single coordinate would misprice every trip they took for seventeen
+    # seasons.
+    "bears": (41.86, -87.62),
+    "bengals": (39.10, -84.52),
+    "bills": (42.77, -78.79),
+    "broncos": (39.74, -105.02),
+    "browns": (41.51, -81.70),
+    "buccaneers": (27.98, -82.50),
+    "cardinals": (33.53, -112.26),
+    "chargers": ((1999, 32.78, -117.12), (2017, 33.95, -118.34)),
+    "chiefs": (39.05, -94.48),
+    "colts": (39.76, -86.16),
+    "commanders": (38.91, -76.86),
+    "cowboys": (32.75, -97.09),
+    "dolphins": (25.96, -80.24),
+    "eagles": (39.90, -75.17),
+    "falcons": (33.76, -84.40),
+    "giants": (40.81, -74.07),
+    "jaguars": (30.32, -81.64),
+    "jets": (40.81, -74.07),
+    "lions": (42.34, -83.05),
+    "niners": (37.40, -121.97),
+    "packers": (44.50, -88.06),
+    "panthers": (35.23, -80.85),
+    "patriots": (42.09, -71.26),
+    "raiders": ((1999, 37.75, -122.20), (2020, 36.09, -115.18)),
+    "rams": ((1999, 38.63, -90.19), (2016, 33.95, -118.34)),
+    "ravens": (39.28, -76.62),
+    "saints": (29.95, -90.08),
+    "seahawks": (47.60, -122.33),
+    "steelers": (40.45, -80.02),
+    "texans": (29.68, -95.41),
+    "titans": (36.17, -86.77),
+    "vikings": (44.97, -93.26),
 }
 
 _EARTH_RADIUS_KM = 6371.0
 
 
-def distance_km(away: str, home: str) -> float | None:
+def venue(team: str, season: int | None = None) -> tuple[float, float] | None:
+    """Where this team played in `season`, or None if the table has no entry.
+
+    Clamped at both ends, the way `anchor_in` is: before the first step is
+    the same answer as the first step, and after the last is the last. A
+    `season` of None reads as "wherever it plays now", which is what a
+    caller with no date wants.
+    """
+    found = VENUES.get(team)
+    if found is None:
+        return None
+    first = found[0]
+    if isinstance(first, (int, float)):
+        # A bare (lat, lon): a team that has always played in one place.
+        second = found[1]
+        assert isinstance(second, (int, float))
+        return (float(first), float(second))
+    steps = [step for step in found if not isinstance(step, (int, float))]
+    _, lat, lon = steps[0]
+    if season is not None:
+        for step_year, step_lat, step_lon in steps:
+            if step_year > season:
+                break
+            lat, lon = step_lat, step_lon
+    return (float(lat), float(lon))
+
+
+def distance_km(away: str, home: str, season: int | None = None) -> float | None:
     """Great-circle km the away team travelled, or None if either is unknown.
 
     None rather than 0 for a missing venue: 0 is "they were already there",
@@ -186,8 +263,12 @@ def distance_km(away: str, home: str) -> float | None:
     Great-circle rather than road or flight distance because the ordering is
     what matters -- a bucketed axis only needs to know that Hawai'i to
     Storrs is a long way and Duke to NC State is not.
+
+    `season` picks the right home for a franchise that moved. Without one
+    every relocation is measured from where the team plays today, which is
+    wrong by 2,500km for every Rams road trip before 2016.
     """
-    start, end = VENUES.get(away), VENUES.get(home)
+    start, end = venue(away, season), venue(home, season)
     if start is None or end is None:
         return None
     lat1, lon1 = math.radians(start[0]), math.radians(start[1])

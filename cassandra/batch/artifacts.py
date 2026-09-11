@@ -28,6 +28,7 @@ from cassandra.predictor import (
     load_epa,
     load_game_control,
 )
+from cassandra.predictor.qb_out import qb_out_path
 
 # Shared bucket, so cassandra's generated files get a prefix of their own
 # rather than sitting next to endgame's `seasons/` and `odds/`.
@@ -170,6 +171,11 @@ def game_control_for(league: str) -> list[Path]:
 def epa_for(league: str) -> list[Path]:
     """The file one EPA sweep produces, whether or not it exists."""
     return [epa_path(league)]
+
+
+def qb_out_for(league: str) -> list[Path]:
+    """The file one quarterback availability sweep produces."""
+    return [qb_out_path(league)]
 
 
 def results_for(league: str, model: str) -> list[Path]:

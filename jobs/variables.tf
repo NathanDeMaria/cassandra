@@ -58,6 +58,12 @@ variable "epa_memory" {
   default     = 6144
 }
 
+variable "qb_out_memory" {
+  description = "MiB for a qb-out child. It reads the same weekly play-by-play the other two sweeps do, but keeps only a starter's name and a set of ball-carriers per team per game, so it needs far less than either -- the parquet for one week is the high-water mark, not anything it accumulates."
+  type        = number
+  default     = 4096
+}
+
 variable "publish_memory" {
   description = "MiB for a publish child. Higher than optimize: publish holds a league's seasons and the odds database at once."
   type        = number

@@ -45,6 +45,7 @@ from cassandra.predictor import (
     EPA_LEAGUES,
     anchor_path,
 )
+from cassandra.predictor.qb_out import QB_LEAGUES
 
 
 def _bucket() -> str:
@@ -147,6 +148,48 @@ async def _game_control(
 
         if upload:
             keys = await artifacts.upload(bucket, artifacts.game_control_for(league))
+            for key in keys:
+                print(f"  uploaded s3://{bucket}/{key}")
+
+
+async def _qb_out(
+    leagues: list[str] | None,
+    index: int | None,
+    upload: bool,
+) -> None:
+    # Late, like the sweeps above: this pulls pyarrow, and `jobs.py submit`
+    # runs on a laptop to send a SubmitJob and has no reason to import a
+    # fitting stack.
+    from endgame_aws.pbp_parquet import get_processed_plays_store
+
+    from cassandra.qb_out_build import build, write
+    from cassandra.save_predictions import read_all_seasons
+
+    if leagues is None:
+        child = manifest.array_index(index)
+        leagues = (
+            [dag.qb_out_league(child)] if child is not None else list(QB_LEAGUES)
+        )
+
+    bucket = _bucket()
+    await artifacts.download_predictor_data(bucket)
+
+    store = get_processed_plays_store()
+
+    class _Weeks:
+        async def load_week(self, league: str, season: int, week: int):
+            return await store.load_week_or_empty(league, season, week)
+
+    for league in leagues:
+        print(f"=== {league} / quarterback availability ===")
+        seasons = [s async for s in read_all_seasons(league, bucket)]
+        missing = await build(league, seasons, _Weeks())
+        write(league, missing)
+        flagged = sum(len(teams) for teams in missing.values())
+        print(f"  {len(missing):,} games with somebody out, {flagged:,} team-games")
+
+        if upload:
+            keys = await artifacts.upload(bucket, artifacts.qb_out_for(league))
             for key in keys:
                 print(f"  uploaded s3://{bucket}/{key}")
 
@@ -397,6 +440,30 @@ class Jobs:
         """
         asyncio.run(_epa(_as_list(league), index, rebuild, upload))
 
+    def qb_out(
+        self,
+        league: list[str] | str | None = None,
+        index: int | None = None,
+        upload: bool = True,
+    ) -> None:
+        """Sweep play-by-play into a league's quarterback availability index.
+
+        Rebuilt whole every time rather than topped up. Unlike the two sweeps
+        above there is no model fit behind this to key idempotency on -- the
+        input is a regex over play text -- and the parse is cheap next to the
+        read, so "what does the current parser say about every game" is the
+        only question worth answering. Merging two parsers' opinions into one
+        file is the thing to avoid, and that has already bitten once: a
+        format the parser could not read left the 2026 index empty and half
+        of 2025 missing, and only a full rebuild fixed it.
+
+        `models/{ncaafb,nfl}/glicko_full.json` and their siblings search
+        `qb_out_penalty`, so this has to have run at least once or that
+        parameter is a dimension over an empty index -- the search would
+        spend probes on a term that is always zero.
+        """
+        asyncio.run(_qb_out(_as_list(league), index, upload))
+
     def optimize(
         self,
         index: int | None = None,
@@ -450,6 +517,7 @@ class Jobs:
         anchors_job_definition: str | None = None,
         game_control_job_definition: str | None = None,
         epa_job_definition: str | None = None,
+        qb_out_job_definition: str | None = None,
         optimize_job_definition: str | None = None,
         evaluate_job_definition: str | None = None,
         publish_job_definition: str | None = None,
@@ -476,6 +544,9 @@ class Jobs:
                     "GAME_CONTROL", game_control_job_definition
                 ),
                 epa_job_definition=_job_definition("EPA", epa_job_definition),
+                qb_out_job_definition=_job_definition(
+                    "QB_OUT", qb_out_job_definition
+                ),
                 optimize_job_definition=_job_definition(
                     "OPTIMIZE", optimize_job_definition
                 ),

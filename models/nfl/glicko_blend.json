@@ -13,6 +13,18 @@
         "epa_residual_beta": [
             0,
             1.5
+        ],
+        "rest_advantage": [
+            0,
+            40
+        ],
+        "travel_advantage": [
+            0,
+            40
+        ],
+        "qb_out_penalty": [
+            0,
+            150
         ]
     },
     "fixed": {

@@ -70,6 +70,7 @@ locals {
     anchors      = module.anchors.name
     game_control = module.game_control.name
     epa          = module.epa.name
+    qb_out       = module.qb_out.name
     optimize     = module.optimize.name
     evaluate     = module.evaluate.name
     publish      = module.publish.name
@@ -225,6 +226,26 @@ module "epa" {
   environment_variables = local.job_environment
 }
 
+# The third sweep: the same weekly parquet, read for who took a snap at
+# quarterback. Cheaper than the other two -- it is a regex over play text
+# rather than a model over situations -- and it is a node because
+# `models/{ncaafb,nfl}/glicko_full.json` and their siblings search
+# `qb_out_penalty`, which is a dimension over an empty index until this has
+# run.
+module "qb_out" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
+
+  job_name           = "cassandra-qb-out"
+  image              = local.image
+  command            = ["qb_out"]
+  execution_role_arn = local.shared.batch_execution_role_arn
+  job_role_arn       = aws_iam_role.job.arn
+  memory             = var.qb_out_memory
+  retry_attempts     = 3
+
+  environment_variables = local.job_environment
+}
+
 module "optimize" {
   source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
 
@@ -310,6 +331,7 @@ module "launcher" {
     { name = "CASSANDRA_ANCHORS_JOB_DEFINITION", value = local.job_definitions.anchors },
     { name = "CASSANDRA_GAME_CONTROL_JOB_DEFINITION", value = local.job_definitions.game_control },
     { name = "CASSANDRA_EPA_JOB_DEFINITION", value = local.job_definitions.epa },
+    { name = "CASSANDRA_QB_OUT_JOB_DEFINITION", value = local.job_definitions.qb_out },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
     { name = "CASSANDRA_EVALUATE_JOB_DEFINITION", value = local.job_definitions.evaluate },
     { name = "CASSANDRA_PUBLISH_JOB_DEFINITION", value = local.job_definitions.publish },

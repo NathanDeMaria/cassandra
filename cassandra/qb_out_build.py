@@ -20,6 +20,7 @@ game itself, which nobody has at kickoff.
 
 import json
 from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
 from call_it_what_you_want import TeamNamer
 from endgame.types import Season, iter_weeks
@@ -32,10 +33,15 @@ from cassandra.qb import TeamGameQb, team_games
 _MAX_WEEK = 30
 
 
-class PlayWeeks:
-    """What this build needs from a play store, so a test can hand it a dict."""
+class PlayWeeks(Protocol):
+    """What this build needs from a play store, so a test can hand it a dict.
 
-    async def load_week(self, league: str, season: int, week: int): ...
+    A protocol rather than a base class: the real implementation is
+    `endgame_aws`'s store wrapped to return an empty table for a week that
+    isn't there, and a test hands over something backed by a dict.
+    """
+
+    async def load_week(self, league: str, season: int, week: int) -> Any: ...
 
 
 def _canonical(namer: TeamNamer, teams: Sequence[str]) -> dict[str, str]:
