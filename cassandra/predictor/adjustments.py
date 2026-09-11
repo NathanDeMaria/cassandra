@@ -107,7 +107,10 @@ class MatchupAdjustments:
         """
         if not self.travel_advantage or matchup.neutral_site:
             return 0.0
-        km = distance_km(matchup.away, matchup.home)
+        # The calendar year of the game, which is the season for all but the
+        # January tail of one. A relocation is a January apart at worst and
+        # nobody moved mid-postseason.
+        km = distance_km(matchup.away, matchup.home, matchup.date.year)
         if km is None:
             return 0.0
         return self.travel_advantage * km / _KM_PER_UNIT

@@ -127,6 +127,7 @@ def _submit(monkeypatch: pytest.MonkeyPatch, **kwargs) -> list[dag.Submitted]:
             anchors_job_definition="a",
             game_control_job_definition="gc",
             epa_job_definition="epa",
+            qb_out_job_definition="qb-out",
             optimize_job_definition="o",
             evaluate_job_definition="e",
             publish_job_definition="p",
@@ -308,9 +309,7 @@ class _FakeSession:
         return False
 
 
-def _submitted_requests(
-    monkeypatch: pytest.MonkeyPatch, **kwargs
-) -> list[dict]:
+def _submitted_requests(monkeypatch: pytest.MonkeyPatch, **kwargs) -> list[dict]:
     """Every SubmitJob request a real (non-dry) submit would send."""
     client = _FakeBatchClient()
     monkeypatch.setattr(dag, "get_session", lambda: _FakeSession(client))
@@ -319,6 +318,7 @@ def _submitted_requests(
             anchors_job_definition="a",
             game_control_job_definition="gc",
             epa_job_definition="epa",
+            qb_out_job_definition="qb-out",
             optimize_job_definition="o",
             evaluate_job_definition="e",
             publish_job_definition="p",
@@ -350,9 +350,7 @@ def test_rebuild_anchors_tells_the_job_to_refit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The one way to overwrite anchors from a batch run."""
-    requests = _submitted_requests(
-        monkeypatch, leagues=["mens"], rebuild_anchors=True
-    )
+    requests = _submitted_requests(monkeypatch, leagues=["mens"], rebuild_anchors=True)
 
     assert _command(requests, "anchors") == ["anchors", "--if-missing=False"]
 
@@ -407,7 +405,7 @@ def _by_command(requests: list[dict]) -> dict[str, dict]:
     return {r["containerOverrides"]["command"][0]: r for r in requests}
 
 
-def test_a_football_league_gets_both_sweeps(
+def test_a_football_league_gets_every_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The sweeps are nodes again because the blended models read what they
@@ -419,6 +417,7 @@ def test_a_football_league_gets_both_sweeps(
         "cassandra-anchors",
         "cassandra-game-control",
         "cassandra-epa",
+        "cassandra-qb-out",
         "cassandra-optimize",
         "cassandra-evaluate",
         "cassandra-publish",
@@ -434,6 +433,7 @@ def test_a_basketball_league_gets_neither_sweep(
 
     assert "cassandra-game-control" not in _stages(submitted)
     assert "cassandra-epa" not in _stages(submitted)
+    assert "cassandra-qb-out" not in _stages(submitted)
 
 
 def test_skipping_the_sweeps_still_optimizes(
@@ -461,9 +461,7 @@ def test_the_sweeps_refresh_rather_than_rebuild_by_default(
     assert _command(plain, "game_control") == ["game_control"]
     assert _command(plain, "epa") == ["epa"]
 
-    rebuilt = _submitted_requests(
-        monkeypatch, leagues=["ncaafb"], rebuild_sweeps=True
-    )
+    rebuilt = _submitted_requests(monkeypatch, leagues=["ncaafb"], rebuild_sweeps=True)
     assert _command(rebuilt, "game_control") == ["game_control", "--rebuild"]
     assert _command(rebuilt, "epa") == ["epa", "--rebuild"]
 
@@ -478,25 +476,34 @@ def test_each_sweep_child_gets_the_list_its_array_was_sized_against(
 
     control = _environment(by_command["game_control"])[dag._CONTROL_LEAGUES_ENV_VAR]
     epa = _environment(by_command["epa"])[dag._EPA_LEAGUES_ENV_VAR]
+    qb_out = _environment(by_command["qb_out"])[dag._QB_OUT_LEAGUES_ENV_VAR]
 
     assert control.split(",") == ["nfl", "ncaafb"]
     assert epa.split(",") == ["nfl", "ncaafb"]
+    assert qb_out.split(",") == ["nfl", "ncaafb"]
 
 
-def test_optimize_waits_for_the_anchors_and_both_sweeps(
+def test_optimize_waits_for_the_anchors_and_every_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Three parents, and each of them decides something a child reads: the
+    """Four parents, and each of them decides something a child reads: the
     anchors set the scale, and the sweeps write the indexes the blended
-    models fit `play_weight` against. A search that started before them would
+    models fit `play_weight` against and the availability the matchup terms
+    price. A search that started before them would
     report that the plays are worthless, which is a real answer to a question
     nobody asked.
     """
     requests = _submitted_requests(monkeypatch, leagues=["ncaafb"])
     depends = _by_command(requests)["optimize"]["dependsOn"]
 
-    # The fake client numbers jobs in submission order: anchors, control, epa.
-    assert depends == [{"jobId": "job-1"}, {"jobId": "job-2"}, {"jobId": "job-3"}]
+    # The fake client numbers jobs in submission order: anchors, control,
+    # epa, qb-out.
+    assert depends == [
+        {"jobId": "job-1"},
+        {"jobId": "job-2"},
+        {"jobId": "job-3"},
+        {"jobId": "job-4"},
+    ]
 
 
 def test_the_sweeps_do_not_wait_on_the_anchors(

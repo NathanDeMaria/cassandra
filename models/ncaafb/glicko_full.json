@@ -21,6 +21,18 @@
         "sigmoid_scale": [
             2,
             30
+        ],
+        "rest_advantage": [
+            0,
+            25
+        ],
+        "travel_advantage": [
+            0,
+            25
+        ],
+        "qb_out_penalty": [
+            0,
+            80
         ]
     },
     "fixed": {

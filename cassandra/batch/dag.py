@@ -52,6 +52,7 @@ from aiobotocore.session import get_session
 from cassandra.batch import manifest
 from cassandra.batch.manifest import Work
 from cassandra.predictor import ANCHOR_LEAGUES, CONTROL_LEAGUES, EPA_LEAGUES
+from cassandra.predictor.qb_out import QB_LEAGUES
 
 # AWS Batch rejects an array job of size 1 -- `arrayProperties.size` has to be
 # at least 2. A single-model run is the normal way to test a change, so it
@@ -79,6 +80,7 @@ async def submit(
     anchors_job_definition: str,
     game_control_job_definition: str,
     epa_job_definition: str,
+    qb_out_job_definition: str,
     optimize_job_definition: str,
     evaluate_job_definition: str,
     publish_job_definition: str,
@@ -163,6 +165,7 @@ async def submit(
     # fit, so a league can be in one and not the other.
     control_leagues = [league for league in CONTROL_LEAGUES if league in scope_leagues]
     epa_leagues = [league for league in EPA_LEAGUES if league in scope_leagues]
+    qb_out_leagues = [league for league in QB_LEAGUES if league in scope_leagues]
     run_sweeps = not (skip_sweeps or skip_optimize)
 
     # A dry run builds every request and sends none, so it must not need a
@@ -205,6 +208,13 @@ async def submit(
                 _CONTROL_LEAGUES_ENV_VAR,
             ),
             ("epa", epa_job_definition, "epa", epa_leagues, _EPA_LEAGUES_ENV_VAR),
+            (
+                "qb-out",
+                qb_out_job_definition,
+                "qb_out",
+                qb_out_leagues,
+                _QB_OUT_LEAGUES_ENV_VAR,
+            ),
         ):
             if not (sweep_leagues and run_sweeps):
                 continue
@@ -234,7 +244,7 @@ async def submit(
                 # against whatever the sweeps wrote. Waiting on an array's
                 # parent waits for all of it, so no child starts searching
                 # against a scale still being fit or an index still being
-                # written. Three edges against Batch's limit of 20.
+                # written. Four edges against Batch's limit of 20.
                 depends_on=[
                     job.job_id
                     for job in ([anchors_job] if anchors_job else []) + sweep_jobs
@@ -281,6 +291,7 @@ _PUBLISH_LEAGUES_ENV_VAR = "CASSANDRA_PUBLISH_LEAGUES"
 _ANCHOR_LEAGUES_ENV_VAR = "CASSANDRA_ANCHOR_LEAGUES"
 _CONTROL_LEAGUES_ENV_VAR = "CASSANDRA_CONTROL_LEAGUES"
 _EPA_LEAGUES_ENV_VAR = "CASSANDRA_EPA_LEAGUES"
+_QB_OUT_LEAGUES_ENV_VAR = "CASSANDRA_QB_OUT_LEAGUES"
 
 
 def _league_args(leagues: list[str] | None) -> list[str]:
@@ -392,6 +403,11 @@ def control_league(index: int) -> str:
 def epa_league(index: int) -> str:
     """Which league this EPA array child owns."""
     return _league_at(_EPA_LEAGUES_ENV_VAR, index)
+
+
+def qb_out_league(index: int) -> str:
+    """Which league this quarterback availability array child owns."""
+    return _league_at(_QB_OUT_LEAGUES_ENV_VAR, index)
 
 
 def _league_at(env_var: str, index: int) -> str:

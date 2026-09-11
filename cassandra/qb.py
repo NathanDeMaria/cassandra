@@ -11,7 +11,7 @@ The second is what makes an availability flag possible. A team's expected
 starter is whoever started its previous game; if that player records no pass
 and no rush in this one, he did not play.
 
-## Three formats
+## Four formats
 
 ncaafb play text arrives in three shapes, and all of them have to be read or
 a quarterback looks absent when he was only described differently:
@@ -19,6 +19,7 @@ a quarterback looks absent when he was only described differently:
     Taylen Green pass complete to O'Mega Blake for 16 yds
     (05:55) Shotgun Nussmeier,Garrett pass incomplete deep left to Hilton Jr.,Chris
     (15:00) No Huddle-Shotgun #7 K.Jackson pass complete short left to #3 C.Brown
+    (Shotgun) D.Gabriel pass short middle to D.Njoku to CLV 47 for 12 yards
 
 Which one dominates changes by season, which is the trap. The first covers
 almost all of 2025 and the third almost none of it -- and in 2026 the third
@@ -27,9 +28,14 @@ of one season and shipped is a parser that silently stops working, and this
 one did: before the `#7 K.Jackson` shape was handled, the 2026 index was
 empty and the feature did nothing at all for the season being played.
 
+The fourth is the NFL feed, and it is the odd one: a completion carries no
+word for itself at all, and a carry is `up the middle` rather than any kind
+of "rush". Handled here because `QB_LEAGUES` covers nfl, and an index built
+for a league whose text nobody parsed is a parameter that searches nothing.
+
 They write names three ways -- `First Last`, `Last,First`, `F.Last` -- so
 nothing matches across them without normalizing, hence `name_key`, which
-reduces all three to a last name and a first initial.
+reduces all of them to a last name and a first initial.
 
 The known limitation is a multi-word surname: "Michael Van Buren Jr." and
 "Van Buren Jr.,Michael" normalize differently, because the first-format
@@ -69,12 +75,15 @@ _PASSER_PLAIN = re.compile(
 #: a rush in the box score.
 _RUSHER_PLAIN = re.compile(r"^([A-Z][^,;]{1,39}?) (?:run for|sacked by)")
 
-#: The clock the second format opens with, and the formations that follow it.
-#: A closed set, read off the data rather than guessed: three spellings cover
-#: every prefixed play, and the surname behind them can itself contain spaces
-#: ("Del Rio-Wilson,Angel"), so the prefix has to come off by name rather
-#: than by counting tokens.
-_CLOCK = re.compile(r"^\(\d+:\d+\)\s*")
+#: What a play's text can open with before the name: a clock or a formation
+#: in parentheses -- `(05:55)`, `(Shotgun)`, `(No Huddle, Shotgun)` -- or a
+#: bare formation. Both can appear, in that order.
+#:
+#: The bare spellings are a closed set read off the data rather than guessed,
+#: because the surname behind them can itself contain spaces
+#: ("Del Rio-Wilson,Angel") and the prefix has to come off by name rather
+#: than by counting tokens. The parenthesised form needs no such list.
+_PARENTHESISED = re.compile(r"^\([^)]*\)\s*")
 _FORMATION = re.compile(r"^(?:No Huddle-Shotgun|No Huddle|Shotgun)\s*")
 
 #: `#N F.Last pass|rush|sacked ...`, the third format, once the prefix is
@@ -85,6 +94,22 @@ _PASSER_HASH = re.compile(
 )
 _CARRIER_HASH = re.compile(r"^#\d+ ([A-Z]\.[\w'\-]+) (?:pass|rush|sacked)\b")
 
+#: The NFL feed, which names everyone `F.Last` and writes a completion with
+#: no verb for it at all -- `D.Gabriel pass short middle to D.Njoku` -- so
+#: this cannot ask for "complete" the way the college patterns do. Anchored
+#: on the initial-and-dot shape instead, which is what keeps it from reading
+#: `Jaden Reddell 14 Yd pass from Gunner Stockton` -- a scoring line whose
+#: first name is the *receiver* -- as a pass by Jaden Reddell.
+#:
+#: Its rushes have no rush verb either: a carry is `up the middle`, `left
+#: end`, `right tackle`. `scrambles` and `sacked` are snaps the quarterback
+#: took and count; `kicks`, `punts`, `kneels`, `spiked` and `reported` are
+#: not carries and deliberately do not.
+_PASSER_NFL = re.compile(r"^([A-Z]\.[\w'\-]+) pass\b")
+_CARRIER_NFL = re.compile(
+    r"^([A-Z]\.[\w'\-]+) (?:pass|sacked|scrambles|up the|left|right)\b"
+)
+
 #: `Last,First pass|rush|sacked ...` once the prefix is off.
 _CARRIER_COMMA = re.compile(
     r"^([\w'\-. ]{1,30},[\w'\-. ]{1,25}?) (?:pass|rush|sacked)\b"
@@ -93,11 +118,18 @@ _PASSER_COMMA = re.compile(r"^([\w'\-. ]{1,30},[\w'\-. ]{1,25}?) pass\b")
 
 
 def _unprefixed(text: str) -> str:
-    """The second format with its clock and formation removed.
+    """`text` with any leading clock and formation removed.
 
-    A no-op on the common format, which starts with the name.
+    Looped because the two stack: ncaafb writes `(15:00) No Huddle-Shotgun
+    #7 K.Jackson ...`, a clock and then a bare formation. A no-op on the
+    format that starts with the name.
     """
-    return _FORMATION.sub("", _CLOCK.sub("", text))
+    for _ in range(4):
+        stripped = _FORMATION.sub("", _PARENTHESISED.sub("", text))
+        if stripped == text:
+            return text
+        text = stripped
+    return text
 
 
 def name_key(name: str) -> str:
@@ -139,7 +171,11 @@ def passer(text: str | None) -> str | None:
     if not text:
         return None
     return _match(
-        _unprefixed(text.strip()), _PASSER_HASH, _PASSER_PLAIN, _PASSER_COMMA
+        _unprefixed(text.strip()),
+        _PASSER_HASH,
+        _PASSER_NFL,
+        _PASSER_PLAIN,
+        _PASSER_COMMA,
     )
 
 
@@ -155,6 +191,7 @@ def ball_carrier(text: str | None) -> str | None:
     return _match(
         _unprefixed(text.strip()),
         _CARRIER_HASH,
+        _CARRIER_NFL,
         _PASSER_PLAIN,
         _RUSHER_PLAIN,
         _CARRIER_COMMA,
