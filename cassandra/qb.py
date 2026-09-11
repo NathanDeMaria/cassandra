@@ -11,25 +11,38 @@ The second is what makes an availability flag possible. A team's expected
 starter is whoever started its previous game; if that player records no pass
 and no rush in this one, he did not play.
 
-## Two formats
+## Three formats
 
-ncaafb play text arrives in two shapes, and both have to be read or a
-quarterback looks absent when he was only described differently:
+ncaafb play text arrives in three shapes, and all of them have to be read or
+a quarterback looks absent when he was only described differently:
 
     Taylen Green pass complete to O'Mega Blake for 16 yds
     (05:55) Shotgun Nussmeier,Garrett pass incomplete deep left to Hilton Jr.,Chris
+    (15:00) No Huddle-Shotgun #7 K.Jackson pass complete short left to #3 C.Brown
 
-The second is about 1.6% of plays and appears in roughly half of games,
-never as a whole game. It writes names `Last,First` where the first writes
-`First Last`, so nothing matches across them without normalizing -- hence
-`name_key`, which reduces both to a last name and a first initial.
+Which one dominates changes by season, which is the trap. The first covers
+almost all of 2025 and the third almost none of it -- and in 2026 the third
+is 20,387 of 22,692 plays in a single week. A parser validated on one week
+of one season and shipped is a parser that silently stops working, and this
+one did: before the `#7 K.Jackson` shape was handled, the 2026 index was
+empty and the feature did nothing at all for the season being played.
+
+They write names three ways -- `First Last`, `Last,First`, `F.Last` -- so
+nothing matches across them without normalizing, hence `name_key`, which
+reduces all three to a last name and a first initial.
 
 The known limitation is a multi-word surname: "Michael Van Buren Jr." and
 "Van Buren Jr.,Michael" normalize differently, because the first-format
-parse cannot tell which of the middle tokens belong to the surname. Those
-players get two keys and can read as a quarterback change or an absence that
-did not happen. It is a handful of players and it is why the availability
-index is a naive one.
+parse cannot tell which of the middle tokens belong to the surname, and the
+third format is read only up to the first space after the initial. Those
+players get more than one key and can read as a quarterback change or an
+absence that did not happen. It is a handful of players and it is why the
+availability index is a naive one.
+
+A kneel-down is deliberately not a snap here. It is neither a pass nor a
+rush in the box score, which is the definition this is built to, and a
+quarterback who came back on to kneel out a half is not evidence that he
+was available.
 """
 
 import re
@@ -40,11 +53,16 @@ from typing import NamedTuple
 #: Suffixes that are not part of a surname for matching purposes.
 _SUFFIXES = frozenset({"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"})
 
+#: `F.Last`, the third format's name shape.
+_INITIAL = re.compile(r"^[A-Z]\.[^ ]")
+
 #: `First Last pass complete|incomplete ...`, the common format. Bounded
 #: rather than greedy: the sentence carries a second name after "to", and an
 #: unbounded prefix would swallow a preceding clause on a play whose text
 #: runs two sentences together.
-_PASSER_PLAIN = re.compile(r"^([A-Z][^,;]{1,39}?) pass (?:complete|incomplete)")
+_PASSER_PLAIN = re.compile(
+    r"^([A-Z][^,;#]{1,39}?) pass (?:complete|incomplete|intercepted)"
+)
 
 #: `First Last run for ...` and `First Last sacked by ...`. A sack is a snap
 #: the quarterback took, so it counts for availability even though it is not
@@ -58,6 +76,14 @@ _RUSHER_PLAIN = re.compile(r"^([A-Z][^,;]{1,39}?) (?:run for|sacked by)")
 #: than by counting tokens.
 _CLOCK = re.compile(r"^\(\d+:\d+\)\s*")
 _FORMATION = re.compile(r"^(?:No Huddle-Shotgun|No Huddle|Shotgun)\s*")
+
+#: `#N F.Last pass|rush|sacked ...`, the third format, once the prefix is
+#: off. The jersey number is what tells it from the other two. Bounded to
+#: a single token after the initial so the verb can never be swallowed.
+_PASSER_HASH = re.compile(
+    r"^#\d+ ([A-Z]\.[\w'\-]+) pass (?:complete|incomplete|intercepted)"
+)
+_CARRIER_HASH = re.compile(r"^#\d+ ([A-Z]\.[\w'\-]+) (?:pass|rush|sacked)\b")
 
 #: `Last,First pass|rush|sacked ...` once the prefix is off.
 _CARRIER_COMMA = re.compile(
@@ -84,6 +110,10 @@ def name_key(name: str) -> str:
     name = name.strip()
     if "," in name:
         last, _, first = name.partition(",")
+    elif _INITIAL.match(name):
+        # `K.Jackson`: the initial is the first name and everything after the
+        # dot is the surname.
+        first, last = name[0], name[2:]
     else:
         parts = [p for p in name.split() if p.lower().strip(".") not in _SUFFIXES]
         if not parts:
@@ -108,7 +138,9 @@ def passer(text: str | None) -> str | None:
     """The name credited with the pass, or None if this isn't a pass play."""
     if not text:
         return None
-    return _match(_unprefixed(text.strip()), _PASSER_PLAIN, _PASSER_COMMA)
+    return _match(
+        _unprefixed(text.strip()), _PASSER_HASH, _PASSER_PLAIN, _PASSER_COMMA
+    )
 
 
 def ball_carrier(text: str | None) -> str | None:
@@ -121,7 +153,11 @@ def ball_carrier(text: str | None) -> str | None:
     if not text:
         return None
     return _match(
-        _unprefixed(text.strip()), _PASSER_PLAIN, _RUSHER_PLAIN, _CARRIER_COMMA
+        _unprefixed(text.strip()),
+        _CARRIER_HASH,
+        _PASSER_PLAIN,
+        _RUSHER_PLAIN,
+        _CARRIER_COMMA,
     )
 
 
