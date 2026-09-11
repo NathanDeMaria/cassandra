@@ -27,6 +27,10 @@ from endgame.types import Season, iter_weeks
 from cassandra.predictor.qb_out import QbOutFile, qb_out_path
 from cassandra.qb import TeamGameQb, team_games
 
+#: Past any real season. NCAAFB runs to about 17 source weeks plus bowls,
+#: the NFL to 22; this is the loop bound for "ask for everything".
+_MAX_WEEK = 30
+
 
 class PlayWeeks:
     """What this build needs from a play store, so a test can hand it a dict."""
@@ -115,7 +119,16 @@ async def build(
             ),
         )
         parsed: dict[tuple[str, str], TeamGameQb] = {}
-        for number, _ in enumerate(weeks, start=1):
+        # A fixed range rather than the week numbers `iter_weeks` hands back.
+        # The play store is keyed by the *source's* week numbering and
+        # `iter_weeks` rebuilds calendar weeks for a league with a
+        # `season_start`, so the two need not agree -- ncaafb 2026's calendar
+        # weeks start at 2 while its plays are filed under 2, 3 and 4. Asking
+        # for every plausible number and merging what comes back sidesteps the
+        # question: the result is keyed by (game id, team), so a week that
+        # isn't there contributes nothing and one asked for twice cannot
+        # double count.
+        for number in range(1, _MAX_WEEK + 1):
             table = await source.load_week(league, season.year, number)
             if table is None or table.num_rows == 0:
                 continue
