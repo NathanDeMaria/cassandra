@@ -213,7 +213,7 @@ class GlickoPredictor(Predictor):
             "initial_rd": self._initial_rd,
             "scoring_method": self._scoring_method,
             "sigmoid_scale": self._sigmoid_scale,
-            "rest_advantage": self._adjustments.rest.per_day,
+            "rest_advantage": self._adjustments.rest.points,
             "travel_advantage": self._adjustments.travel_advantage,
             "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,

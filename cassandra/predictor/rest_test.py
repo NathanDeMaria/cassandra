@@ -10,7 +10,7 @@ from .base_predictor import Predictor
 from .elo import EloPredictor
 from .glicko import GlickoPredictor
 from .opponent_prior import OpponentPriorManager
-from .rest import REST_CAP_DAYS, RestLedger
+from .rest import REST_THRESHOLD_DAYS, RestLedger
 
 _LEAGUE = "test_league"
 # A base date plus an offset, rather than a day-of-month: these tests reach
@@ -61,7 +61,7 @@ def _glicko(rest_advantage: float = 0.0) -> GlickoPredictor:
 
 def test_a_season_opener_has_no_differential() -> None:
     """ "No idea" and "extremely rested" are different claims."""
-    ledger = RestLedger(per_day=5.0)
+    ledger = RestLedger(points=5.0)
     ledger.record(_game("A", "B", 1))
 
     # B has a date, C never played -- so there is nothing to compare.
@@ -70,29 +70,54 @@ def test_a_season_opener_has_no_differential() -> None:
 
 
 def test_the_differential_is_days_off_home_minus_away() -> None:
-    ledger = RestLedger(per_day=5.0)
+    ledger = RestLedger(points=5.0)
     ledger.record(_game("A", "B", 1))  # both last played the 1st
     ledger.record(_game("B", "C", 8))  # B played again on the 8th
 
     # On the 15th: A rested 14 days, B rested 7.
     assert ledger.differential(_Matchup("A", "B", 15)) == pytest.approx(7.0)
-    assert ledger.adjustment(_Matchup("A", "B", 15)) == pytest.approx(35.0)
     # And it is antisymmetric.
     assert ledger.differential(_Matchup("B", "A", 15)) == pytest.approx(-7.0)
 
 
-def test_a_long_layoff_is_clamped() -> None:
-    """Past two weeks the gap stops being rest and starts being a bowl."""
-    ledger = RestLedger(per_day=1.0)
+def test_the_bump_is_flat_once_the_threshold_is_cleared() -> None:
+    """A bye is a bye. Ten days off is not twice five days off."""
+    ledger = RestLedger(points=5.0)
+    ledger.record(_game("A", "B", 1))
+    ledger.record(_game("B", "C", 8))
+
+    # A is 7 days better rested, and again 30 days better rested.
+    assert ledger.adjustment(_Matchup("A", "B", 15)) == pytest.approx(5.0)
+    assert ledger.adjustment(_Matchup("A", "B", 38)) == pytest.approx(5.0)
+    assert ledger.adjustment(_Matchup("B", "A", 15)) == pytest.approx(-5.0)
+
+
+def test_a_gap_under_the_threshold_is_worth_nothing() -> None:
+    """A Thursday game is a different fact from a bye, and measured it does
+    not run the same way."""
+    ledger = RestLedger(points=5.0)
+    ledger.record(_game("A", "B", 1))
+    ledger.record(_game("B", "C", 4))  # B played 3 days later
+
+    # A is only 3 days better rested, under the 5-day threshold.
+    assert ledger.differential(_Matchup("A", "B", 8)) == pytest.approx(3.0)
+    assert ledger.adjustment(_Matchup("A", "B", 8)) == 0.0
+
+
+def test_the_threshold_is_what_bounds_a_long_layoff() -> None:
+    """A team whose last game was a bowl is "rested", not 37 days of rested."""
+    ledger = RestLedger(points=1.0)
     ledger.record(_game("A", "B", 1))
     ledger.record(_game("B", "C", 25))
 
     # A has been off 59 days, B off 35 -- a 24-day raw differential.
-    assert ledger.differential(_Matchup("A", "B", 60)) == REST_CAP_DAYS
+    assert ledger.differential(_Matchup("A", "B", 60)) == pytest.approx(24.0)
+    assert ledger.adjustment(_Matchup("A", "B", 60)) == pytest.approx(1.0)
+    assert REST_THRESHOLD_DAYS == 5.0
 
 
 def test_a_ledger_that_is_switched_off_costs_nothing() -> None:
-    ledger = RestLedger(per_day=0.0)
+    ledger = RestLedger(points=0.0)
     ledger.record(_game("A", "B", 1))
     ledger.record(_game("B", "C", 8))
 
@@ -100,7 +125,7 @@ def test_a_ledger_that_is_switched_off_costs_nothing() -> None:
 
 
 def test_reset_forgets_every_date() -> None:
-    ledger = RestLedger(per_day=5.0)
+    ledger = RestLedger(points=5.0)
     ledger.record(_game("A", "B", 1))
     ledger.record(_game("B", "C", 8))
 
@@ -112,7 +137,7 @@ def test_reset_forgets_every_date() -> None:
 def test_a_negative_rest_advantage_is_refused() -> None:
     """It would mean a rested team is worse for being rested."""
     with pytest.raises(ValueError, match="rest_advantage must be non-negative"):
-        RestLedger(per_day=-1.0)
+        RestLedger(points=-1.0)
 
 
 # ------------------------------------------------------------- the predictors

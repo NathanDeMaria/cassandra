@@ -37,30 +37,28 @@ from endgame.types import Game
 
 from .types import Matchup
 
-#: Rating points per day of rest advantage. 0 is the feature switched off,
-#: which is what every model published before this replayed with, so a
-#: release that names no value replays exactly as it did.
+#: Rating points for arriving off a bye when the other side isn't. A flat
+#: bump, not a rate: see `RestLedger` for why this is a threshold rather than
+#: a slope. 0 is the feature switched off, which is what every model
+#: published before this replayed with.
 DEFAULT_REST_ADVANTAGE = 0.0
 
-#: How many days of differential the model is willing to read. Past this the
-#: gap stops being rest and starts being a different kind of fact: a team
-#: whose last game was a bowl and one that finished in November differ by
-#: five weeks, and no amount of that is recovery. Also what keeps the first
-#: game after a mid-season cancellation from dominating a team's season.
+#: How much longer one side's gap has to be before it counts as a bye.
 #:
-#: 14 because two weeks covers a bye plus its neighbouring week, which is the
-#: largest gap that happens on purpose in a football season.
-REST_CAP_DAYS = 14.0
+#: 5 days, because college football is played on Saturdays: a team on its
+#: normal week has a 7-day gap, one coming off a bye has 14, and the
+#: interesting cases are the ones that clear a week. Below this the
+#: differential is a Thursday game or a Friday game, which is a different
+#: fact and, measured, not a consistent one -- the +2 to +3 day bucket runs
+#: the *opposite* way to the +4 to +7 bucket.
+REST_THRESHOLD_DAYS = 5.0
 
 
 def validated_rest_advantage(value: float) -> float:
     """Check a `rest_advantage` on its way into a predictor.
 
-    Negative is refused rather than searched. It would mean a rested team is
-    worse for being rested, and a search that wandered there would be fitting
-    the handful of long-gap games -- bowls, cancellations -- that
-    `REST_CAP_DAYS` exists to bound in the first place. 0 is the off switch
-    and stays legal.
+    Negative is refused rather than searched: it would mean a rested team is
+    worse for being rested. 0 is the off switch and stays legal.
     """
     if value < 0:
         raise ValueError(f"rest_advantage must be non-negative, got {value}")
@@ -68,7 +66,22 @@ def validated_rest_advantage(value: float) -> float:
 
 
 class RestLedger:
-    """When each team last played, and what today's gap is worth.
+    """When each team last played, and whether one side is coming off a bye.
+
+    **A threshold, not a slope.** The first version of this priced rating
+    points per day of differential, and that form fights the data: the
+    per-bucket residual on ncaafb is not monotone in days, with the +2 to +3
+    day bucket running -0.94 while +4 to +7 runs +1.26, so a line drawn
+    through them is wrong in the middle by construction. Measured against the
+    residuals directly, the best linear-in-days correction recovers 0.00108
+    of margin MAE and the best bucketed one 0.00217 -- the shape is worth
+    about as much as the effect.
+
+    So the question this asks is the one worth asking: did one side come off
+    a bye and the other not? Anything past the threshold is the same answer,
+    which also disposes of the long-layoff problem the old day cap existed
+    for -- a team whose last game was a bowl is simply "rested", not
+    thirty-seven days of rested.
 
     Held by `Predictor` rather than by a mixin, the way `_anchors` and
     `_season_regression` are: the base keeps an inert one so every predictor
@@ -81,16 +94,23 @@ class RestLedger:
     """
 
     def __init__(
-        self, per_day: float = DEFAULT_REST_ADVANTAGE, cap_days: float = REST_CAP_DAYS
+        self,
+        points: float = DEFAULT_REST_ADVANTAGE,
+        threshold_days: float = REST_THRESHOLD_DAYS,
     ) -> None:
-        self._per_day = validated_rest_advantage(per_day)
-        self._cap_days = cap_days
+        self._points = validated_rest_advantage(points)
+        self._threshold_days = threshold_days
         self._last_played: dict[str, datetime] = {}
 
     @property
-    def per_day(self) -> float:
-        """Rating points per day of differential. 0 means switched off."""
-        return self._per_day
+    def points(self) -> float:
+        """Rating points for the rested side. 0 means switched off."""
+        return self._points
+
+    @property
+    def threshold_days(self) -> float:
+        """How much longer a gap has to be before it counts as a bye."""
+        return self._threshold_days
 
     def record(self, game: Game) -> None:
         """Note that both sides played on this date.
@@ -121,18 +141,35 @@ class RestLedger:
         return (date - last).total_seconds() / 86400.0
 
     def differential(self, matchup: Matchup) -> float:
-        """Home days off minus away days off, clamped, 0 when either is unknown.
+        """Home days off minus away days off, 0 when either is unknown.
 
         0 for an opener is the honest answer and the conservative one: with
         one side's rest unknown there is no differential to price, and
         guessing would put the largest adjustment of the season on the game
         the model knows least about.
+
+        Unclamped -- the threshold in `adjustment` is what bounds a long
+        layoff, and a caller reading this for a diagnostic wants the real
+        number of days.
         """
         home = self._days_off(matchup.home, matchup.date)
         away = self._days_off(matchup.away, matchup.date)
         if home is None or away is None:
             return 0.0
-        return max(-self._cap_days, min(self._cap_days, home - away))
+        return home - away
+
+    def rested_side(self, matchup: Matchup) -> float:
+        """+1 if the home side came off the longer break, -1 if the away side.
+
+        0 when neither cleared the threshold, which is most games: college
+        football is Saturday to Saturday, so the usual differential is zero.
+        """
+        difference = self.differential(matchup)
+        if difference >= self._threshold_days:
+            return 1.0
+        if difference <= -self._threshold_days:
+            return -1.0
+        return 0.0
 
     def adjustment(self, matchup: Matchup) -> float:
         """Rating points to add to the home side for the rest gap.
@@ -140,6 +177,6 @@ class RestLedger:
         Applied at a neutral site as well, unlike a home advantage: nobody is
         at home in a bowl and both teams still arrived on different rest.
         """
-        if not self._per_day:
+        if not self._points:
             return 0.0
-        return self._per_day * self.differential(matchup)
+        return self._points * self.rested_side(matchup)
