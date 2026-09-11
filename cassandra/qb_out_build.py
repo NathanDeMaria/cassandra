@@ -153,7 +153,7 @@ async def build(
         sides = {
             game.game_id: (game.home, game.away)
             for week in weeks
-            for game in week.games
+            for game in week.games_in_order
         }
         parsed: dict[tuple[str, str], TeamGameQb] = {}
         # A fixed range rather than the week numbers `iter_weeks` hands back.
