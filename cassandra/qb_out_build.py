@@ -19,6 +19,7 @@ game itself, which nobody has at kickoff.
 """
 
 import json
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
@@ -44,20 +45,50 @@ class PlayWeeks(Protocol):
     async def load_week(self, league: str, season: int, week: int) -> Any: ...
 
 
-def _canonical(namer: TeamNamer, teams: Sequence[str]) -> dict[str, str]:
-    """ESPN team id -> canonical name, for the teams a league actually rates.
+def home_away_ids(
+    offense_team_ids: Sequence[str | None],
+    home_scores: Sequence[int | None],
+    away_scores: Sequence[int | None],
+) -> tuple[str | None, str | None]:
+    """Which of a game's two team ids is the home side, read off the scoring.
 
-    Built from the names the replay uses rather than from the registry at
-    large, so the ids that resolve are exactly the ones a matchup will be
-    keyed by. A team whose name doesn't resolve to an id is dropped: it can
-    never be looked up, and an entry nothing matches is worse than none.
+    Voted rather than looked up. The obvious way to turn a play's
+    `offense_team_id` into a team name is a registry, and
+    `call_it_what_you_want` is an NCAA one -- `TeamNamer.for_league("nfl")`
+    is empty, so every id resolved to None and the first nfl index built
+    came out with zero games in it across forty-seven seasons.
+
+    So it is derived from the plays instead, which works for any league with
+    play-by-play and cannot disagree with the names the replay uses. Each
+    play where the home score went up is a vote that its offense is the home
+    team, and each play where the away score went up is a vote against.
+    Majority wins, which absorbs the plays where the scoring side isn't the
+    offense -- a pick six, a punt return -- without needing to know which
+    those were.
+
+    (None, None) for a game with no scoring at all to vote on, or one where
+    the vote is tied, which is a game this cannot place and had better skip.
     """
-    found: dict[str, str] = {}
-    for team in teams:
-        espn_id = namer.espn_id(team)
-        if espn_id is not None:
-            found[str(espn_id)] = team
-    return found
+    # Every team that ran a play starts at zero, so a side that never scored
+    # is still rankable: one team's negative votes place the other, and a
+    # shutout would otherwise leave only one candidate and no game.
+    votes: Counter[str] = Counter(
+        {str(team_id): 0 for team_id in offense_team_ids if team_id is not None}
+    )
+    previous: tuple[int, int] | None = None
+    for team_id, home, away in zip(offense_team_ids, home_scores, away_scores):
+        if home is None or away is None:
+            continue
+        current = (home, away)
+        if previous is not None and team_id is not None:
+            votes[str(team_id)] += (current[0] - previous[0]) - (
+                current[1] - previous[1]
+            )
+        previous = current
+    ranked = sorted(votes.items(), key=lambda item: (-item[1], item[0]))
+    if len(ranked) < 2 or ranked[0][1] <= ranked[-1][1]:
+        return (None, None)
+    return (ranked[0][0], ranked[-1][0])
 
 
 def out_teams(
@@ -101,6 +132,12 @@ async def build(
     read -- so "what does the current parser say about every game" is the
     only question worth answering, and merging two parsers' opinions into one
     file is the thing to avoid.
+
+    A play's `offense_team_id` is turned into a team name per game, by
+    `home_away_ids`, rather than through the team registry: the registry is
+    an NCAA one and knows nothing about the NFL. `namer` is still applied to
+    the games first, so the names this writes are the ones a `Matchup`
+    carries.
     """
     namer = namer if namer is not None else TeamNamer.for_league(league)
     missing: dict[str, set[str]] = {}
@@ -113,17 +150,11 @@ async def build(
             week._replace(games=[namer.apply(game) for game in week.games])
             for week in iter_weeks(season)
         ]
-        names = _canonical(
-            namer,
-            sorted(
-                {
-                    team
-                    for week in weeks
-                    for game in week.games
-                    for team in (game.home, game.away)
-                }
-            ),
-        )
+        sides = {
+            game.game_id: (game.home, game.away)
+            for week in weeks
+            for game in week.games
+        }
         parsed: dict[tuple[str, str], TeamGameQb] = {}
         # A fixed range rather than the week numbers `iter_weeks` hands back.
         # The play store is keyed by the *source's* week numbering and
@@ -139,12 +170,28 @@ async def build(
             if table is None or table.num_rows == 0:
                 continue
             columns = table.to_pydict()
-            for (game_id, team_id), value in team_games(
-                columns["game_id"], columns["offense_team_id"], columns["text"]
-            ).items():
-                team = names.get(team_id)
-                if team is not None:
-                    parsed[(game_id, team)] = value
+            by_game: dict[str, list[int]] = {}
+            for row, game_id in enumerate(columns["game_id"]):
+                by_game.setdefault(str(game_id), []).append(row)
+            for game_id, rows in by_game.items():
+                names = sides.get(game_id)
+                if names is None:
+                    continue
+                offense = [columns["offense_team_id"][i] for i in rows]
+                home_id, away_id = home_away_ids(
+                    offense,
+                    [columns["home_score"][i] for i in rows],
+                    [columns["away_score"][i] for i in rows],
+                )
+                if home_id is None or away_id is None:
+                    continue
+                by_id = {home_id: names[0], away_id: names[1]}
+                for (_, team_id), value in team_games(
+                    [game_id] * len(rows), offense, [columns["text"][i] for i in rows]
+                ).items():
+                    team = by_id.get(team_id)
+                    if team is not None:
+                        parsed[(game_id, team)] = value
 
         ordered: dict[str, list[tuple[str, str]]] = {}
         for week in weeks:
