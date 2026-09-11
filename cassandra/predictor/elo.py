@@ -94,7 +94,7 @@ class EloPredictor(Predictor):
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
-            "rest_advantage": self._adjustments.rest.per_day,
+            "rest_advantage": self._adjustments.rest.points,
             "travel_advantage": self._adjustments.travel_advantage,
             "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,
