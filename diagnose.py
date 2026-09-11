@@ -14,6 +14,12 @@ paying for it on every scheduled evaluate would be paying for it daily.
 
 What to read, in order:
 
+- **`mae ceiling`.** What a *perfect* correction of this axis would recover,
+  which is the budget any parameter built on it competes for. Read it first:
+  the payoff is quadratic in the bias, so an axis can be several sigma from
+  its null and still have a ceiling of a thousandth of a point. Three
+  matchup terms were built against axes whose ceilings were 0.0002 to
+  0.0017, and none of them moved the model.
 - **`signal_points` against the model's margin MAE.** An axis worth building
   for is one where the structure is a real fraction of the error. Against
   ncaafb around 13 and nfl around 10, a tenth of a point is not a project
@@ -73,6 +79,13 @@ def _print_report(report: AxisReport, margin_mae: float) -> None:
         f"  dispersion {report.dispersion:6.3f}   null {report.null_dispersion:6.3f}"
         f"   sigma {report.sigma:7.2f}"
         f"   signal {report.signal_points:6.3f} pts ({share:5.2%} of MAE)"
+    )
+    # The number that decides whether to build: what a perfect correction of
+    # this axis would actually recover. Usually far smaller than `signal`,
+    # because the payoff is quadratic in the bias -- see `AxisReport`.
+    print(
+        f"  mae ceiling {report.mae_ceiling:7.5f} pts"
+        f"   ({report.mae_ceiling / margin_mae if margin_mae else float('nan'):6.3%} of MAE)"
     )
     # `home_field` reuses SliceStats to stay one type, but its two live
     # columns are a team's home edge and its rating error rather than a

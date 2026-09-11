@@ -203,6 +203,26 @@ class AxisReport(NamedTuple):
     dispersion once the null's is removed in quadrature -- the points of real
     per-game structure, at best (see the module docstring on why at best).
 
+    `mae_ceiling` is the number that decides whether to build. It is the
+    margin MAE a *perfect* correction of this axis would recover: every
+    slice's own bias removed from its own games, which no feature can beat
+    because no feature knows more about the slice than its mean. Read it
+    against the model's MAE -- 13 on ncaafb, 10 on nfl.
+
+    It is small far more often than `sigma` suggests, because the payoff is
+    quadratic in the bias:
+
+        gain ~= share * bias^2 / (2 * sigma_residual)
+
+    With a residual spread of 16.5 points, a one-point bias on 5% of games
+    is worth about 0.001 and a four-point bias on the same 5% is worth about
+    0.018 -- sixteen times more for four times the bias. That curvature is
+    why an axis can be many sigma from its null, visibly structured, and
+    still not worth a parameter: `sigma` says the structure is real and
+    `mae_ceiling` says what it is worth. Three matchup terms were built
+    against axes at 2-4 sigma whose ceilings were 0.0002 to 0.0017, and none
+    of them moved the model.
+
     A `sigma` near zero with slices that look interesting is the ordinary
     outcome and the one this class exists to report: the interesting-looking
     slices are what noise does.
@@ -215,6 +235,7 @@ class AxisReport(NamedTuple):
     null_dispersion: float
     sigma: float
     signal_points: float
+    mae_ceiling: float
 
 
 class TeamHomeField(NamedTuple):
@@ -370,6 +391,61 @@ def _dispersion(residual: np.ndarray, codes: np.ndarray, n_slices: int) -> float
     return float(np.sqrt((counts[present] * (means - grand) ** 2).sum() / total))
 
 
+def _mae_ceiling(residual: np.ndarray, codes: np.ndarray) -> float:
+    """Margin MAE a perfect correction of this axis would recover.
+
+    Every slice's own mean removed from its own games. No feature can beat
+    it, because none knows more about a slice than its mean -- so this is the
+    budget a parameter is competing for, and `AxisReport` explains why it is
+    usually far smaller than `sigma` makes an axis look.
+
+    Computed exactly rather than from the quadratic rule of thumb: the games
+    are already in hand, the rule assumes a normal residual, and the cost is
+    one pass.
+    """
+    corrected = residual.copy()
+    for code in np.unique(codes):
+        rows = codes == code
+        corrected[rows] -= residual[rows].mean()
+    return float(np.abs(residual).mean() - np.abs(corrected).mean())
+
+
+def _home_field_ceiling(
+    residual: np.ndarray,
+    home_codes: np.ndarray,
+    away_codes: np.ndarray,
+    home_n: np.ndarray,
+    away_n: np.ndarray,
+    both: np.ndarray,
+    n_teams: int,
+) -> float:
+    """Margin MAE a per-team home advantage would recover, at best.
+
+    Its own function rather than `_mae_ceiling` because this axis's slices
+    overlap: every game belongs to two teams, so there is no partition to
+    take a mean over. The correction is the model the axis argues for --
+    each team carries its own home edge, and a game is worth half the
+    difference between the two teams' edges.
+
+    Half, for the reason `TeamHomeField` gives about `home_excess`: a
+    converged replay has already absorbed half of a team's real home edge
+    into its rating, so the part still missing from a given game is half the
+    difference.
+
+    Teams without enough games on both sides contribute 0 -- the same ones
+    `home_field_table` drops, since an edge estimated from three road games
+    is not an edge.
+    """
+    home_sum = np.bincount(home_codes, weights=residual, minlength=n_teams)
+    away_sum = np.bincount(away_codes, weights=-residual, minlength=n_teams)
+    excess = np.zeros(n_teams)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = home_sum / np.maximum(home_n, 1) - away_sum / np.maximum(away_n, 1)
+    excess[both] = ratio[both]
+    correction = (excess[home_codes] - excess[away_codes]) / 2
+    return float(np.abs(residual).mean() - np.abs(residual - correction).mean())
+
+
 def _signal_points(observed: float, null: np.ndarray) -> float:
     """What is left of `observed` once the null's own dispersion is removed.
 
@@ -443,6 +519,7 @@ def axis_report(
             null_dispersion=0.0,
             sigma=0.0,
             signal_points=0.0,
+            mae_ceiling=0.0,
         )
 
     # groupby already yields the labels in sorted order, which is the order
@@ -476,6 +553,7 @@ def axis_report(
         # the honest reading of it rather than an inf.
         sigma=0.0 if null_sd == 0 else (observed - null_mean) / null_sd,
         signal_points=_signal_points(observed, null),
+        mae_ceiling=_mae_ceiling(residual, codes),
     )
 
 
@@ -616,6 +694,7 @@ def home_field_report(
             null_dispersion=0.0,
             sigma=0.0,
             signal_points=0.0,
+            mae_ceiling=0.0,
         )
     observed = _excess_dispersion(residual)
 
@@ -633,6 +712,9 @@ def home_field_report(
         null_dispersion=null_mean,
         sigma=0.0 if null_sd == 0 else (observed - null_mean) / null_sd,
         signal_points=_signal_points(observed, null),
+        mae_ceiling=_home_field_ceiling(
+            residual, home_codes, away_codes, home_n, away_n, both, n_teams
+        ),
     )
 
 
