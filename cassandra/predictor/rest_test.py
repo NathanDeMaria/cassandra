@@ -10,7 +10,7 @@ from .base_predictor import Predictor
 from .elo import EloPredictor
 from .glicko import GlickoPredictor
 from .opponent_prior import OpponentPriorManager
-from .rest import REST_THRESHOLD_DAYS, RestLedger
+from .rest import REST_MAX_GAP_DAYS, REST_THRESHOLD_DAYS, RestLedger
 
 _LEAGUE = "test_league"
 # A base date plus an offset, rather than a day-of-month: these tests reach
@@ -81,15 +81,18 @@ def test_the_differential_is_days_off_home_minus_away() -> None:
 
 
 def test_the_bump_is_flat_once_the_threshold_is_cleared() -> None:
-    """A bye is a bye. Ten days off is not twice five days off."""
-    ledger = RestLedger(points=5.0)
-    ledger.record(_game("A", "B", 1))
-    ledger.record(_game("B", "C", 8))
+    """A bye is a bye. Thirteen days better rested is not twice seven."""
+    seven = RestLedger(points=5.0)
+    seven.record(_game("A", "B", 1))
+    seven.record(_game("B", "C", 8))  # A off 14, B off 7 on day 15
 
-    # A is 7 days better rested, and again 30 days better rested.
-    assert ledger.adjustment(_Matchup("A", "B", 15)) == pytest.approx(5.0)
-    assert ledger.adjustment(_Matchup("A", "B", 38)) == pytest.approx(5.0)
-    assert ledger.adjustment(_Matchup("B", "A", 15)) == pytest.approx(-5.0)
+    thirteen = RestLedger(points=5.0)
+    thirteen.record(_game("A", "B", 1))
+    thirteen.record(_game("B", "C", 14))  # A off 14, B off 1 on day 15
+
+    assert seven.adjustment(_Matchup("A", "B", 15)) == pytest.approx(5.0)
+    assert thirteen.adjustment(_Matchup("A", "B", 15)) == pytest.approx(5.0)
+    assert seven.adjustment(_Matchup("B", "A", 15)) == pytest.approx(-5.0)
 
 
 def test_a_gap_under_the_threshold_is_worth_nothing() -> None:
@@ -104,16 +107,37 @@ def test_a_gap_under_the_threshold_is_worth_nothing() -> None:
     assert ledger.adjustment(_Matchup("A", "B", 8)) == 0.0
 
 
-def test_the_threshold_is_what_bounds_a_long_layoff() -> None:
-    """A team whose last game was a bowl is "rested", not 37 days of rested."""
-    ledger = RestLedger(points=1.0)
+def test_a_gap_too_long_to_be_a_bye_is_read_as_missing_data() -> None:
+    """A team is not off for three weeks mid-season. Far more often the game
+    it played is a row the season file doesn't have, and reading the hole as
+    a bye would invent that team's largest adjustment of the year."""
+    ledger = RestLedger(points=5.0)
     ledger.record(_game("A", "B", 1))
-    ledger.record(_game("B", "C", 25))
+    ledger.record(_game("B", "C", 8))
 
-    # A has been off 59 days, B off 35 -- a 24-day raw differential.
-    assert ledger.differential(_Matchup("A", "B", 60)) == pytest.approx(24.0)
-    assert ledger.adjustment(_Matchup("A", "B", 60)) == pytest.approx(1.0)
+    # A has been off 24 days by day 25 -- past the guard.
+    assert ledger.differential(_Matchup("A", "B", 25)) == pytest.approx(7.0)
+    assert ledger.adjustment(_Matchup("A", "B", 25)) == 0.0
+
+
+def test_one_suspect_side_is_enough_to_throw_the_comparison_out() -> None:
+    """The differential is a difference, and only as good as its worse half.
+
+    Here the *away* side is the one with the hole, and the home side looks
+    like an ordinary week -- the adjustment still has to stand down.
+    """
+    ledger = RestLedger(points=5.0)
+    ledger.record(_game("B", "C", 1))  # B last played on day 1
+    ledger.record(_game("A", "C", 18))  # A last played on day 18
+
+    # On day 25: A off 7 (normal), B off 24 (a hole).
+    assert ledger.adjustment(_Matchup("A", "B", 25)) == 0.0
+
+
+def test_the_guard_sits_above_every_ordinary_schedule() -> None:
+    """A real bye is 14 days and two in a row is 21."""
     assert REST_THRESHOLD_DAYS == 5.0
+    assert REST_MAX_GAP_DAYS == 20.0
 
 
 def test_a_ledger_that_is_switched_off_costs_nothing() -> None:
