@@ -242,7 +242,7 @@ from .adjustments import DEFAULT_QB_OUT_PENALTY, DEFAULT_TRAVEL_ADVANTAGE
 from .base_predictor import Anchor
 from .blend import validated_fraction, validated_scale
 from .epa import EpaIndex
-from .glicko import GlickoPredictor, _Rating, glicko_step
+from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating, glicko_step
 from .opponent_prior import OpponentPriorManager
 from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
@@ -330,6 +330,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         initial_rd: float = 216,
         scoring_method: str = "binary",
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
+        prediction_scale: float = DEFAULT_PREDICTION_SCALE,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
@@ -368,6 +369,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
             initial_rd=initial_rd,
             scoring_method=scoring_method,
             sigmoid_scale=sigmoid_scale,
+            prediction_scale=prediction_scale,
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
             qb_out_penalty=qb_out_penalty,
@@ -576,8 +578,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
             home_rating += self._home_advantage
         home_rating += self.matchup_adjustment(matchup)
         away_rating = self._blended_rating(matchup.away)
-        win_prob = 1 / (1 + 10 ** ((away_rating - home_rating) / 400))
-        return Prediction(team1_win_prob=win_prob)
+        return Prediction(team1_win_prob=self.win_prob(home_rating, away_rating))
 
     def update_game(self, game: Game) -> Prediction:
         """The parent's update, then the children's.

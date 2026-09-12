@@ -266,7 +266,7 @@ from .blend import (
 )
 from .epa import EpaIndex
 from .game_control import GameControlIndex
-from .glicko import GlickoPredictor, _Rating
+from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
 from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
@@ -383,6 +383,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         weekly_rd_increase: float = 1,
         season_rd_increase: float = 120,
         initial_rd: float = 216,
+        prediction_scale: float = DEFAULT_PREDICTION_SCALE,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
@@ -411,6 +412,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
             weekly_rd_increase=weekly_rd_increase,
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
+            prediction_scale=prediction_scale,
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
             qb_out_penalty=qb_out_penalty,

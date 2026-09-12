@@ -59,7 +59,8 @@
         "season_regression": 0.19976561840476365,
         "scoring_method": "sigmoid",
         "sigmoid_scale": 7.343159884223557,
-        "travel_advantage": 0
+        "travel_advantage": 0,
+        "prediction_scale": 400
     },
     "fixed_from": "glicko_full",
     "n_iter": 1000

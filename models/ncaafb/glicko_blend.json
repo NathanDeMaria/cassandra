@@ -32,7 +32,8 @@
         "mov_scale": 12.944801475131687,
         "control_temp": 1.0,
         "epa_margin_scale": 10.0,
-        "travel_advantage": 0
+        "travel_advantage": 0,
+        "prediction_scale": 400
     },
     "fixed_from": "glicko_full",
     "n_iter": 500

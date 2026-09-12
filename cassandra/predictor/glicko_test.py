@@ -2,7 +2,8 @@ import pytest
 
 from ..scoring import DEFAULT_SIGMOID_SCALE
 from .conftest import GameFactory
-from .glicko import GlickoPredictor
+from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating
+from .types import Rating
 
 # The rating half of Glicko's behavior is checked against every model in
 # contract_test.py. What's here is the deviation, which only Glicko keeps.
@@ -102,3 +103,61 @@ def test_a_scale_of_zero_or_less_is_refused(scale: float) -> None:
     the same rule `validated_scale` already holds the blend's scales to."""
     with pytest.raises(ValueError, match="sigmoid_scale must be positive"):
         GlickoPredictor("test_league", sigmoid_scale=scale)
+
+
+def test_a_model_that_never_named_a_prediction_scale_predicts_at_400() -> None:
+    """Every release published before this existed read a gap Elo's way."""
+    predictor = GlickoPredictor("test_league", home_advantage=0)
+
+    assert predictor.state_dict()["prediction_scale"] == DEFAULT_PREDICTION_SCALE
+    assert predictor.win_prob(1900, 1500) == pytest.approx(10 / 11)
+
+
+def test_a_wider_prediction_scale_reads_the_same_gap_as_a_closer_game(
+    game: GameFactory,
+) -> None:
+    """What the parameter is for: the ratings stay put, the confidence moves."""
+
+    def _prob(scale: float) -> float:
+        predictor = GlickoPredictor(
+            "test_league", prediction_scale=scale, ratings={"Home": _Rating(1700, 100)}
+        )
+        return predictor.predict_game(game("Home", "Away")).team1_win_prob
+
+    assert _prob(800) < _prob(400) < _prob(200)
+
+
+def test_the_prediction_scale_leaves_the_update_alone(game: GameFactory) -> None:
+    """It is a readout, not a learning rate.
+
+    The update keeps Glicko's own 400 whatever the predictions are read at,
+    so two models that differ only in this parameter hold identical ratings
+    after the same games. That is what makes it safe to search: it cannot
+    trade against the deviations for how far a game moves a rating.
+    """
+    played = [game("A", "B", 21, 7), game("B", "C", 3, 30), game("C", "A", 14, 10)]
+
+    def _ratings(scale: float) -> dict[str, Rating]:
+        predictor = GlickoPredictor("test_league", prediction_scale=scale)
+        for g in played:
+            predictor.update_game(g)
+        return predictor.ratings
+
+    assert _ratings(250) == _ratings(DEFAULT_PREDICTION_SCALE)
+
+
+def test_the_prediction_scale_round_trips_through_the_state() -> None:
+    """It changes every probability a release gives, so the release carries it."""
+    predictor = GlickoPredictor("test_league", prediction_scale=310.5)
+
+    state = predictor.state_dict()
+    restored = GlickoPredictor.from_state_dict(state)
+
+    assert state["prediction_scale"] == 310.5
+    assert restored.state_dict() == state
+
+
+@pytest.mark.parametrize("scale", [0.0, -400.0])
+def test_a_prediction_scale_of_zero_or_less_is_refused(scale: float) -> None:
+    with pytest.raises(ValueError, match="prediction_scale must be positive"):
+        GlickoPredictor("test_league", prediction_scale=scale)

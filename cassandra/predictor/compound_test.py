@@ -23,7 +23,7 @@ from .compound import (
 )
 from .conftest import GameFactory
 from .epa import EpaIndex
-from .glicko import GlickoPredictor
+from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor
 from .opponent_prior import OpponentPriorManager
 from .types import GameEpa, Rating, Unit
 
@@ -68,11 +68,13 @@ def _predictor(
     home_advantage: float = 95,
     weekly_rd_increase: float = 1,
     season_regression: float = 0.0,
+    prediction_scale: float = DEFAULT_PREDICTION_SCALE,
     anchors: Mapping[str, Anchor] | None = None,
 ) -> CompoundGlickoPredictor:
     return CompoundGlickoPredictor(
         "test_league",
         game_epa=EpaIndex(epa or {}),
+        prediction_scale=prediction_scale,
         unit_weight=unit_weight,
         offense_scale=offense_scale,
         defense_scale=defense_scale,
@@ -91,16 +93,23 @@ def _predictor(
     )
 
 
-def test_unit_weight_zero_is_glicko_game_by_game(game: GameFactory) -> None:
+@pytest.mark.parametrize("prediction_scale", [DEFAULT_PREDICTION_SCALE, 275.0])
+def test_unit_weight_zero_is_glicko_game_by_game(
+    game: GameFactory, prediction_scale: float
+) -> None:
     """The baseline a search's own zero has to reproduce, on the same games.
 
     Every game has EPA, so the children *are* moving -- they just aren't
     allowed to speak. That is the stronger version of the check: it says the
     children's update touches nothing the parent reads.
+
+    At a non-default `prediction_scale` too, because this class predicts
+    from its own blended rating and the identity holds only if it reads the
+    gap at the parent's scale rather than a 400 of its own.
     """
     epa = {str(i): LOPSIDED for i in range(4)}
-    compound = _predictor(epa, unit_weight=0.0)
-    glicko = GlickoPredictor("test_league")
+    compound = _predictor(epa, unit_weight=0.0, prediction_scale=prediction_scale)
+    glicko = GlickoPredictor("test_league", prediction_scale=prediction_scale)
     schedule = [
         game("A", "B", 21, 7, game_id="0"),
         game("C", "D", 10, 24, game_id="1"),
