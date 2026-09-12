@@ -1,0 +1,29 @@
+{
+    "predictor_class": "CompoundGlickoPredictor",
+    "league": "nfl",
+    "parameters": {
+        "unit_weight": [
+            0,
+            0.5
+        ],
+        "epa_scale": [
+            0.5,
+            5
+        ],
+        "parent_share": [
+            0,
+            1
+        ]
+    },
+    "fixed": {
+        "home_advantage": 40.64639257174925,
+        "initial_rd": 332.3618983979494,
+        "weekly_rd_increase": 32.72532572250293,
+        "season_rd_increase": 95.97246906905978,
+        "season_regression": 0.10179004471528443,
+        "scoring_method": "sigmoid",
+        "sigmoid_scale": 10.0
+    },
+    "fixed_from": "glicko_full",
+    "n_iter": 250
+}

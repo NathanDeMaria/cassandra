@@ -1,0 +1,29 @@
+{
+    "predictor_class": "CompoundGlickoPredictor",
+    "league": "ncaafb",
+    "parameters": {
+        "unit_weight": [
+            0,
+            0.5
+        ],
+        "epa_scale": [
+            0.5,
+            5
+        ],
+        "parent_share": [
+            0,
+            1
+        ]
+    },
+    "fixed": {
+        "home_advantage": 46.15485975637294,
+        "initial_rd": 531.7962683831678,
+        "weekly_rd_increase": 0.0,
+        "season_rd_increase": 250.0,
+        "season_regression": 0.0,
+        "scoring_method": "sigmoid",
+        "sigmoid_scale": 10.0
+    },
+    "fixed_from": "glicko_full",
+    "n_iter": 250
+}
