@@ -143,6 +143,15 @@ poetry run python jobs.py manifest             # the work list, in array-index o
 poetry run python jobs.py anchors --league ncaafb --if-missing=False  # force a refit
 ```
 
+When `glicko_full` has been re-searched, the configs that pin its fit --
+`glicko_blend`, `glicko_compound`, `glicko_compound_narrow` -- are stale until
+their pins are copied forward, which the run report's FROZEN PARAMETERS
+section will keep saying. `sync_pins.py` is that edit:
+
+```bash
+poetry run python sync_pins.py --league ncaafb,nfl --source glicko_full --download
+```
+
 Batch is the only way to run the whole thing; there is no local sweep. Each
 stage still runs on one machine for testing — `--download=False
 --upload=False` touches s3 not at all and writes only to `~/.cassandra`:

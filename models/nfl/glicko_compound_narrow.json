@@ -1,0 +1,36 @@
+{
+    "predictor_class": "CompoundGlickoPredictor",
+    "league": "nfl",
+    "parameters": {
+        "unit_weight": [
+            0,
+            0.5
+        ],
+        "offense_scale": [
+            2,
+            40
+        ],
+        "defense_scale": [
+            2,
+            40
+        ],
+        "parent_share": [
+            0,
+            1
+        ]
+    },
+    "fixed": {
+        "home_advantage": 9.433180792226858,
+        "initial_rd": 140.38021913892632,
+        "weekly_rd_increase": 87.7703050066037,
+        "season_rd_increase": 119.41345619756913,
+        "season_regression": 0.19976561840476365,
+        "scoring_method": "sigmoid",
+        "sigmoid_scale": 7.343159884223557,
+        "travel_advantage": 0,
+        "rest_advantage": 28.397275223818944,
+        "qb_out_penalty": 36.74396887644051
+    },
+    "fixed_from": "glicko_full",
+    "n_iter": 300
+}
