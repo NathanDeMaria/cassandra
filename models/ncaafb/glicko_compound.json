@@ -23,7 +23,7 @@
             620
         ],
         "defense_initial_rd": [
-            80,
+            40,
             620
         ],
         "offense_weekly_rd_increase": [
@@ -33,10 +33,6 @@
         "defense_weekly_rd_increase": [
             0,
             120
-        ],
-        "offense_season_rd_increase": [
-            0,
-            500
         ],
         "defense_season_rd_increase": [
             0,
@@ -60,7 +56,8 @@
         "scoring_method": "sigmoid",
         "sigmoid_scale": 12.944801475131687,
         "travel_advantage": 0,
-        "prediction_scale": 400
+        "prediction_scale": 400,
+        "offense_season_rd_increase": 0
     },
     "fixed_from": "glicko_full",
     "n_iter": 1000
