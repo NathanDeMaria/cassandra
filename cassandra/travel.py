@@ -25,6 +25,40 @@ Neutral-site games are the other gap and cannot be closed from here: the
 `Game` says a game was neutral and never says where it was, so a bowl in
 Miami and one in Pasadena are the same record. Those are excluded rather
 than charged to the home team's venue.
+
+What the distance was measured to be worth, and why it is pinned at 0
+---------------------------------------------------------------------
+
+`MatchupAdjustments.travel_points` reads this as rating points per 1,000 km,
+added to the home side -- a home field advantage that grows with the trip.
+Measured on 2026-09-12 against `glicko_full`'s current fit with the term
+off, binning the win-probability residual by the away side's trip:
+
+    ncaafb, 14,721 games          nfl, 6,538 games
+    <250 km     +0.008            +0.086 (n=182)
+    250-500     +0.010            +0.042
+    500-1k      +0.017            +0.049
+    1k-1.5k     +0.012            +0.044
+    1.5k-2.5k   +0.031            +0.059
+    2.5k+       +0.042 (n=681)    +0.072
+
+ncaafb's runs about linear, ~0.011 of win probability per 1,000 km, and of
+five framings tried -- linear, time zones crossed, sqrt, a step at 1,500 km,
+and the six bucket means -- linear and time zones are the best and within
+noise of each other (t = 3.5 and 3.6; brier gain over a refit home
+advantage 0.00015). It is symmetric in direction: west by one, two, three
+zones reads +0.027, +0.042, +0.067 and east +0.019, +0.048, +0.058, so it
+is not a body-clock effect; and binning by the away side's local kickoff
+hour finds nothing, with the before-10am bucket the *smallest* at +0.008.
+Distance, linear, and small. nfl has nothing at all: every form is t ~ 1
+and the buckets are flat between +0.04 and +0.07.
+
+So the framing was not the problem, and the term is pinned at 0 in every
+football config because 0.00015 on one league is not worth a search
+dimension -- a `glicko_full` search put it against the zero bound in nfl
+with 58% of its best probes crowding the edge. The ncaafb 0.00015 is real
+and is the one cost of the pin; a config can re-open it by moving
+`travel_advantage` back under `parameters`.
 """
 
 import math
