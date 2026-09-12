@@ -10,10 +10,6 @@
             0,
             1
         ],
-        "epa_residual_beta": [
-            0,
-            1.5
-        ],
         "rest_advantage": [
             0,
             25
@@ -33,7 +29,8 @@
         "control_temp": 1.0,
         "epa_margin_scale": 10.0,
         "travel_advantage": 0,
-        "prediction_scale": 400
+        "prediction_scale": 400,
+        "epa_residual_beta": 0
     },
     "fixed_from": "glicko_full",
     "n_iter": 500

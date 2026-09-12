@@ -225,6 +225,16 @@ same quantity, worth the small variance reduction that averaging two
 measurements buys and nothing beyond it. A signal that agreed with the
 scoreboard less would not do better here; it would do worse.
 
+The 20260912-184934 run asked once more, with the update now seeing the
+matchup terms, and got the same answer at lower volume: ncaafb 0.033 with
+64% of its best probes on the floor, nfl 0 with 36%. So `epa_residual_beta`
+is pinned at 0 in both configs -- a pin, not a deletion, because the answer
+is about *this* EPA index: a different one (opponent-adjusted, garbage time
+excluded, another model of the play) makes the residual a different
+quantity, and the question reopens with it. Pinning it changes nothing
+about how much EPA counts; that is still `play_weight` and `epa_share`'s
+question, and both stay searched.
+
 The other caution stands and is now moot: EPA and control correlate 0.72
 (nfl) and 0.83 (ncaafb) with each other, so they were never two independent
 looks either.
