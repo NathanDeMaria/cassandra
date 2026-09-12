@@ -116,3 +116,26 @@ def test_a_missing_fit_says_what_to_do(league: Path, tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="--download"):
         sync_pins.sync("mens", "glicko_full")
+
+
+def test_a_pin_the_fit_predates_waits_for_the_next_search(league: Path) -> None:
+    """A dimension added to the source's search, pinned in the child at the
+    default, before the search has run: the fit on disk has no value for it.
+    Leave the pin alone and say so, rather than crash on every child until
+    the next Batch run lands."""
+    config = json.loads((league / "glicko_full.json").read_text())
+    config["parameters"]["prediction_scale"] = [200, 600]
+    _write(league / "glicko_full.json", config)
+    child = json.loads((league / "glicko_blend.json").read_text())
+    child["fixed"]["prediction_scale"] = 400
+    _write(league / "glicko_blend.json", child)
+
+    lines = sync_pins.sync("mens", "glicko_full")
+
+    assert lines == [
+        "mens/glicko_blend: home_advantage 46.0 -> 61.5, scoring_method 'binary' -> 'sigmoid'",
+        "mens/glicko_blend: prediction_scale not in the fit yet; "
+        "re-run after the next glicko_full search",
+    ]
+    after = json.loads((league / "glicko_blend.json").read_text())
+    assert after["fixed"]["prediction_scale"] == 400
