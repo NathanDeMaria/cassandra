@@ -30,6 +30,11 @@ class _Rating(NamedTuple):
 
 _Q = math.log(10) / 400
 
+# The rating gap that reads as a 10-to-1 favorite when a game is *predicted*.
+# Elo's 400, which is also the scale the update learns at (`_Q`), so a model
+# that never named one predicts exactly as it always has.
+DEFAULT_PREDICTION_SCALE = 400.0
+
 
 class GlickoPredictor(Predictor):
     """Glicko rating system.
@@ -52,6 +57,25 @@ class GlickoPredictor(Predictor):
         # can move the two together rather than needing the categorical
         # resolved first.
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
+        # How far apart two ratings have to be for one side to be a 10-to-1
+        # favorite. Elo's answer is 400 and the *update* keeps it (`_Q`), so
+        # this only changes how a rating gap is read as a win probability,
+        # not how a game moves the ratings.
+        #
+        # Its own knob because the two scales are not the same question once
+        # `scoring_method` is "sigmoid". The update then chases the expected
+        # *margin score* of a game, which a dominant team never scores a full
+        # 1.0 on, so the ratings settle closer together than the win
+        # probabilities they are read as would need. `reasoning/
+        # prediction_scale.ipynb` shows what that looked like on ncaafb:
+        # calibrated in the first four games of a season, then about five
+        # points under-confident at both ends of the scale for the rest of
+        # it. The search had one lever to widen a prediction with -- the
+        # deviations, which set how far a game moves a rating -- and it
+        # pulled it: an `initial_rd` above 400, which is also why the first
+        # game of a season taught twice what the sixth did. This is the lever
+        # it wanted.
+        prediction_scale: float = DEFAULT_PREDICTION_SCALE,
         # The three matchup terms. Each 0 is off, which is what every model
         # published before them replayed with. See `MatchupAdjustments`.
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
@@ -77,6 +101,7 @@ class GlickoPredictor(Predictor):
         self._scoring_method = scoring_method
         self._sigmoid_scale = validated_scale("sigmoid_scale", sigmoid_scale)
         self._score = get_scoring_function(scoring_method, self._sigmoid_scale)
+        self._prediction_scale = validated_scale("prediction_scale", prediction_scale)
         self._adjustments = MatchupAdjustments(
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
@@ -107,8 +132,19 @@ class GlickoPredictor(Predictor):
         # term zeroes itself there -- see `MatchupAdjustments.travel_points`.
         adjusted_home_rating += self.matchup_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
-        win_prob = 1 / (1 + 10 ** ((away_rating.rating - adjusted_home_rating) / 400))
-        return Prediction(team1_win_prob=win_prob)
+        return Prediction(
+            team1_win_prob=self.win_prob(adjusted_home_rating, away_rating.rating)
+        )
+
+    def win_prob(self, home_rating: float, away_rating: float) -> float:
+        """How a rating gap reads as a win probability, at `prediction_scale`.
+
+        Here rather than inline in `predict_game` because a subclass that
+        predicts from a different rating -- `CompoundGlickoPredictor` blends
+        the record's with the units' -- still has to read the gap the way
+        the parent does, or its `unit_weight` 0 stops being the parent.
+        """
+        return 1 / (1 + 10 ** ((away_rating - home_rating) / self._prediction_scale))
 
     def update_game(self, game: Game) -> Prediction:
         prediction = self.predict_game(game)
@@ -198,6 +234,7 @@ class GlickoPredictor(Predictor):
             "initial_rd": self._initial_rd,
             "scoring_method": self._scoring_method,
             "sigmoid_scale": self._sigmoid_scale,
+            "prediction_scale": self._prediction_scale,
             "rest_advantage": self._adjustments.rest.points,
             "travel_advantage": self._adjustments.travel_advantage,
             "qb_out_penalty": self._adjustments.qb_out_penalty,

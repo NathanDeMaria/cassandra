@@ -29,7 +29,8 @@
         "sigmoid_scale": 7.343159884223557,
         "travel_advantage": 0,
         "rest_advantage": 28.397275223818944,
-        "qb_out_penalty": 36.74396887644051
+        "qb_out_penalty": 36.74396887644051,
+        "prediction_scale": 400
     },
     "fixed_from": "glicko_full",
     "n_iter": 300
