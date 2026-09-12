@@ -247,7 +247,9 @@ def test_the_children_are_scored_against_the_parent_before_the_game(
     GlickoPredictor.update_game(stale, played)
     # Now feed the children the *post-game* parents, which is the ordering
     # `update_game` exists to avoid.
-    stale._update_units(played, stale.get_rating("A"), stale.get_rating("B"))
+    stale._update_units(
+        played, stale.get_rating("A"), stale.get_rating("B"), stale._home_advantage
+    )
 
     assert predictor._offsets("A") != stale._offsets("A")
 
