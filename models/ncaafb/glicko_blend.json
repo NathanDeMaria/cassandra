@@ -24,12 +24,12 @@
         ]
     },
     "fixed": {
-        "home_advantage": 46.15485975637294,
-        "initial_rd": 531.7962683831678,
-        "weekly_rd_increase": 0.0,
-        "season_rd_increase": 250.0,
+        "home_advantage": 41.29527728121523,
+        "initial_rd": 416.3348739491044,
+        "weekly_rd_increase": 19.07160040718282,
+        "season_rd_increase": 286.8013457693235,
         "season_regression": 0.0,
-        "mov_scale": 10.0,
+        "mov_scale": 12.944801475131687,
         "control_temp": 1.0,
         "epa_margin_scale": 10.0,
         "travel_advantage": 0
