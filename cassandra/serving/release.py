@@ -19,8 +19,20 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from cassandra.predictor import Predictor, Rating, load_predictor_class
+from cassandra.predictor import Predictor, Rating, Unit, Units, load_predictor_class
 from cassandra.prob_to_margin import BaseProbToMarginPredictor
+
+
+class UnitRating(BaseModel):
+    """One side of a team, on the same scale as `TeamRating.rating`.
+
+    `rd` is not optional here the way it is on the team: only a Glicko rates
+    sides, and the deviation is what the model reads to decide how much a
+    side has to say. See `predictor.types.Unit`.
+    """
+
+    rating: float
+    rd: float
 
 
 class TeamRating(BaseModel):
@@ -28,12 +40,21 @@ class TeamRating(BaseModel):
 
     `rd` is Glicko's rating deviation; Elo and Elo538 don't have one, so it
     stays None rather than being faked as 0.
+
+    `offense` and `defense` are the two sides a compound model rates under
+    the team, on the team's own scale -- a 1650 offense means what a 1650
+    team does. None for every other model, and None for a team the compound
+    model has no play-by-play for, rather than a copy of the team's prior:
+    a consumer that finds them can show them, and one that finds None has
+    nothing to show, which is the honest state.
     """
 
     rating: float
     rd: float | None = None
     wins: int = 0
     losses: int = 0
+    offense: UnitRating | None = None
+    defense: UnitRating | None = None
 
 
 def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
@@ -45,9 +66,34 @@ def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
     Raises RatingsUnsupported for a predictor with no ratings (FlatPredictor).
     """
     return {
-        team: TeamRating(rating=rating.rating, rd=rating.rd)
+        team: TeamRating(
+            rating=rating.rating,
+            rd=rating.rd,
+            offense=_unit_rating(rating.units.offense) if rating.units else None,
+            defense=_unit_rating(rating.units.defense) if rating.units else None,
+        )
         for team, rating in predictor.ratings.items()
     }
+
+
+def _unit_rating(unit: Unit) -> UnitRating:
+    return UnitRating(rating=unit.rating, rd=unit.rd)
+
+
+def _units(rating: TeamRating) -> Units | None:
+    """The two sides as the predictor holds them, or None if the release has neither.
+
+    Both or nothing: a compound model rates the two sides from the same
+    games, so a release carrying one without the other is not a state any
+    model produces, and half a pair would be rebuilt as a whole one at the
+    prior.
+    """
+    if rating.offense is None or rating.defense is None:
+        return None
+    return Units(
+        Unit(rating.offense.rating, rating.offense.rd),
+        Unit(rating.defense.rating, rating.defense.rd),
+    )
 
 
 class _MarginCalibrationBase(BaseModel):
@@ -214,7 +260,7 @@ class ModelRelease(BaseModel):
         return predictor_class.from_ratings(
             self.league,
             {
-                team: Rating(rating=rating.rating, rd=rating.rd)
+                team: Rating(rating=rating.rating, rd=rating.rd, units=_units(rating))
                 for team, rating in self.ratings.items()
             },
             **self.params,

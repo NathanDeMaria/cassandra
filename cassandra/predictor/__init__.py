@@ -29,4 +29,13 @@ from .glicko_blend import BlendedGlickoPredictor
 from .margin_blend import BlendedMarginEloPredictor
 from .margin_elo import MarginEloPredictor
 from .matchup import predict_matchup
-from .types import GameControl, GameEpa, GameResult, Matchup, Prediction, Rating
+from .types import (
+    GameControl,
+    GameEpa,
+    GameResult,
+    Matchup,
+    Prediction,
+    Rating,
+    Unit,
+    Units,
+)
