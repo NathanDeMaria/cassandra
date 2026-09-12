@@ -23,7 +23,7 @@
             30
         ],
         "prediction_scale": [
-            200,
+            100,
             600
         ],
         "rest_advantage": [
