@@ -818,7 +818,7 @@ def main(argv):
             if not matches:
                 sys.exit(
                     f"No run {run_id}. Recent: "
-                    + ", ".join(r["run_id"] for r in runs[:10])
+                    + ", ".join(r.run_id for r in runs[:10])
                 )
             run = matches[0]
         else:
