@@ -1,8 +1,9 @@
 """Which teams played a game without the quarterback who started the last one.
 
 The index is `{league}_qb_out.json`: game id -> the canonical team names whose
-expected starter took no snap. `cassandra.qb_out_build` writes it by walking
-play-by-play; everything on the replay path reads it from here, so
+expected starter took no snap and was covered for by someone junior to him.
+`cassandra.qb_out_build` writes it by walking play-by-play and spells out the
+rule; everything on the replay path reads it from here, so
 `cassandra.predictor` stays installable without pyarrow -- the same split
 `game_control` makes for the same reason.
 

@@ -8,10 +8,29 @@ artifact is the seam.
 The rule, per team per game:
 
     expected starter = whoever started that team's previous game this season
-    out              = the expected starter took no pass, rush or sack
+    out              = the expected starter took no pass, rush or sack, and
+                       whoever started instead is junior to him
 
 A team's first game of a season has no expected starter and is skipped -- the
 question "is he missing?" needs somebody to be missing.
+
+*Junior* means he first started for this team later in the season than the
+man he replaced, or never had. It is there for the week the starter comes
+back. Without it the rule is one game deep: the backup started last week,
+so he is the expected starter this week, and the returning starter reads as
+the backup being out -- a penalty against the team for getting its
+quarterback back. On the indexes built without it, 185 of the NFL's 678
+absences were followed by a flag the very next game against 14 the game
+after that, which is the shape of that artifact rather than of injuries.
+Seniority rather than a season-to-date attempt count because the count
+fails early: a starter hurt in week two and back in week four has fewer
+attempts than the man who covered for him.
+
+What that does not catch is a demotion. A starter benched for the man
+behind him reads as an absence the first week, exactly as before -- the
+plays cannot tell a benching from an injury -- and if he later gets the job
+back, the junior man sitting is not an absence. Rare, and no worse than
+the one-game rule was.
 
 Read `cassandra.predictor.qb_out` on the lookahead before reading any number
 this produces. Whether a quarterback played is taken from the plays of the
@@ -103,6 +122,9 @@ def out_teams(
     """
     missing: dict[str, set[str]] = {}
     previous: dict[str, TeamGameQb] = {}
+    # Per team, each quarterback's place in the order they first started
+    # this season. The one who started the opener is 0.
+    seniority: dict[str, dict[str, int]] = {}
     for game_id, team in ordered_games:
         current = parsed.get((game_id, team))
         expected = previous.get(team)
@@ -114,7 +136,14 @@ def out_teams(
             # available, and calling that "out" would flag every wildcat
             # afternoon as an injury.
             continue
-        if expected.starter_key not in current.snap_keys:
+        starters = seniority.setdefault(team, {expected.starter_key: 0})
+        # Compared before this game's starter is entered, so a man starting
+        # for the first time is junior to everyone.
+        is_junior = current.starter_key not in starters or (
+            starters[current.starter_key] > starters[expected.starter_key]
+        )
+        starters.setdefault(current.starter_key, len(starters))
+        if expected.starter_key not in current.snap_keys and is_junior:
             missing.setdefault(game_id, set()).add(team)
     return missing
 
