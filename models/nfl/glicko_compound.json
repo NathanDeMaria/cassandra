@@ -46,10 +46,6 @@
             0,
             40
         ],
-        "travel_advantage": [
-            0,
-            40
-        ],
         "qb_out_penalty": [
             0,
             150
@@ -62,7 +58,8 @@
         "season_rd_increase": 95.97246906905978,
         "season_regression": 0.10179004471528443,
         "scoring_method": "sigmoid",
-        "sigmoid_scale": 10.0
+        "sigmoid_scale": 10.0,
+        "travel_advantage": 0
     },
     "fixed_from": "glicko_full",
     "n_iter": 1000
