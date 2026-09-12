@@ -115,7 +115,15 @@ class GlickoPredictor(Predictor):
         home_rating = self.get_rating(game.home)
         away_rating = self.get_rating(game.away)
         actual = self._actual(game)
-        home_adj = 0 if game.neutral_site else self._home_advantage
+        # The same edge the prediction gave the home side, so the update
+        # measures the result against what the matchup made likely rather
+        # than against the bare ratings. Leaving the matchup terms out here
+        # charged a backup's loss to the rating in full and gave nothing to
+        # a team that beat a rested one -- the prediction knew the odds were
+        # different, and the update pretended it didn't.
+        home_adj = (
+            0 if game.neutral_site else self._home_advantage
+        ) + self.matchup_adjustment(game)
 
         self._update_rating(
             game.home, home_rating, away_rating, actual, home_adjustment=home_adj

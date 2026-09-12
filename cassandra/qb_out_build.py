@@ -7,30 +7,55 @@ artifact is the seam.
 
 The rule, per team per game:
 
-    expected starter = whoever started that team's previous game this season
-    out              = the expected starter took no pass, rush or sack, and
-                       whoever started instead is junior to him
+    starter = the first man to start for the team this season, until a
+              junior has started `HANDOVER` games in a row without him
+    out     = the starter took no pass, rush or sack
 
-A team's first game of a season has no expected starter and is skipped -- the
-question "is he missing?" needs somebody to be missing.
+A team's first game of a season is what names the starter and is never
+flagged -- the question "is he missing?" needs somebody to be missing.
 
-*Junior* means he first started for this team later in the season than the
-man he replaced, or never had. It is there for the week the starter comes
-back. Without it the rule is one game deep: the backup started last week,
-so he is the expected starter this week, and the returning starter reads as
-the backup being out -- a penalty against the team for getting its
-quarterback back. On the indexes built without it, 185 of the NFL's 678
-absences were followed by a flag the very next game against 14 the game
-after that, which is the shape of that artifact rather than of injuries.
-Seniority rather than a season-to-date attempt count because the count
-fails early: a starter hurt in week two and back in week four has fewer
-attempts than the man who covered for him.
+## Why the whole absence, and why the handover
+
+The first version of this was one game deep: the expected starter was
+whoever started the previous game. That had two problems, and the second
+was found by fixing the first.
+
+The week a starter came back, the backup who had covered was the expected
+man, took no snap, and the team was flagged for getting its quarterback
+back. Runs of consecutive flags gave it away -- 185 NFL runs of exactly two
+against 14 of three, a one-week absence plus its return rather than
+two-week injuries. Requiring the man who started instead to be *junior* to
+the man missing (first started for the team later this season, or never
+had) fixed that, and on the NFL dropped 337 of 894 flags.
+
+But the one-game rule also flagged only the *first* game of an absence: from
+the second game on, the backup was the expected starter and the team read as
+whole. The penalty therefore said "a backup is starting today" for one week
+and then nothing, while the man was still out. So the starter is now the
+senior man until somebody has held the job long enough to be the starter
+instead, and every game he is missing until then is out. Replayed on the
+NFL at the `glicko_full` fit off the local season cache, best brier over
+the penalty:
+
+    one game deep, as shipped        0.220033
+    first game of an absence only    0.219559
+    whole absence, handover 2        0.219372
+    whole absence, handover 3        0.219130
+    whole absence, handover 4        0.219324
+    whole absence, never             0.219387
+
+Three consecutive starts hands the job over. Shorter and a real absence
+ends too early; longer and a starter lost for the season keeps his team
+penalized for a backup who has, by then, become the team the rating
+measures. Seniority rather than a season-to-date attempt count because the
+count fails early: a starter hurt in week two and back in week four has
+fewer attempts than the man who covered.
 
 What that does not catch is a demotion. A starter benched for the man
-behind him reads as an absence the first week, exactly as before -- the
-plays cannot tell a benching from an injury -- and if he later gets the job
-back, the junior man sitting is not an absence. Rare, and no worse than
-the one-game rule was.
+behind him reads as an absence for three weeks -- the plays cannot tell a
+benching from an injury -- and if he later gets the job back, the man who
+lost it sitting is not an absence. Rare, and no worse than the one-game
+rule was.
 
 Read `cassandra.predictor.qb_out` on the lookahead before reading any number
 this produces. Whether a quarterback played is taken from the plays of the
@@ -51,6 +76,10 @@ from cassandra.qb import TeamGameQb, team_games
 #: Past any real season. NCAAFB runs to about 17 source weeks plus bowls,
 #: the NFL to 22; this is the loop bound for "ask for everything".
 _MAX_WEEK = 30
+
+#: Consecutive starts by one man, without the starter, that make him the
+#: starter. See the module docstring for the measurement behind 3.
+HANDOVER = 3
 
 
 class PlayWeeks(Protocol):
@@ -121,30 +150,32 @@ def out_teams(
     schedule and this has only the plays.
     """
     missing: dict[str, set[str]] = {}
-    previous: dict[str, TeamGameQb] = {}
-    # Per team, each quarterback's place in the order they first started
-    # this season. The one who started the opener is 0.
-    seniority: dict[str, dict[str, int]] = {}
+    starter: dict[str, str] = {}
+    # Per team, who has been starting in the starter's absence and for how
+    # many games running. Cleared the moment the starter takes a snap.
+    covering: dict[str, tuple[str, int]] = {}
     for game_id, team in ordered_games:
         current = parsed.get((game_id, team))
-        expected = previous.get(team)
-        if current is not None:
-            previous[team] = current
-        if expected is None or current is None:
-            # No expected starter yet, or no passing at all in this game --
-            # a team that never threw tells us nothing about who was
-            # available, and calling that "out" would flag every wildcat
-            # afternoon as an injury.
+        if current is None:
+            # No passing at all in this game -- a team that never threw
+            # tells us nothing about who was available, and calling that
+            # "out" would flag every wildcat afternoon as an injury.
             continue
-        starters = seniority.setdefault(team, {expected.starter_key: 0})
-        # Compared before this game's starter is entered, so a man starting
-        # for the first time is junior to everyone.
-        is_junior = current.starter_key not in starters or (
-            starters[current.starter_key] > starters[expected.starter_key]
-        )
-        starters.setdefault(current.starter_key, len(starters))
-        if expected.starter_key not in current.snap_keys and is_junior:
-            missing.setdefault(game_id, set()).add(team)
+        expected = starter.get(team)
+        if expected is None:
+            starter[team] = current.starter_key
+            continue
+        if expected in current.snap_keys:
+            covering.pop(team, None)
+            continue
+        missing.setdefault(game_id, set()).add(team)
+        cover, streak = covering.get(team, (None, 0))
+        streak = streak + 1 if cover == current.starter_key else 1
+        if streak >= HANDOVER:
+            starter[team] = current.starter_key
+            covering.pop(team, None)
+        else:
+            covering[team] = (current.starter_key, streak)
     return missing
 
 

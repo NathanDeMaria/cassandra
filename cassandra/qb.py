@@ -7,11 +7,11 @@ is the sentence ESPN writes for a play. Two things are read out of it:
 - **who started**: the passer with the most attempts for a team in a game.
 - **who took a snap**: everyone credited with a pass or a rush.
 
-The second is what makes an availability flag possible. A team's expected
-starter is whoever started its previous game; if that player records no pass
-and no rush in this one, he did not play. Whether that is an absence -- and
-not the starter coming back while the man who covered for him sits -- is
-`cassandra.qb_out_build`'s call, which knows the order they first started.
+The second is what makes an availability flag possible. If the team's
+starter records no pass and no rush in a game, he did not play. Who the
+starter is -- and when a man who has been covering for him becomes the
+starter instead -- is `cassandra.qb_out_build`'s call, which sees the
+season in order.
 
 ## Four formats
 
@@ -269,7 +269,9 @@ def starters(
     texts: Iterable[str | None],
 ) -> dict[tuple[str, str], str]:
     """Likely starting quarterback per (game_id, team_id), by display name."""
-    return {k: v.starter for k, v in team_games(game_ids, offense_team_ids, texts).items()}
+    return {
+        k: v.starter for k, v in team_games(game_ids, offense_team_ids, texts).items()
+    }
 
 
 def attempt_share(tally: Mapping[str, int]) -> float:

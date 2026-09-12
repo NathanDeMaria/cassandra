@@ -7,6 +7,14 @@ fixture rather than of either team, all three are knowable before kickoff
 (with the caveat `qb_out` spells out about how the index is built), and all
 three are added to the home side in rating points.
 
+They are in the update as well as the prediction. A rating model learns
+from the gap between what happened and what it expected, and the matchup
+terms are part of what it expected: a team that lost without its
+quarterback was supposed to, and a team that won at a side coming off a
+bye did something harder than the bare ratings say. Elo gets that for free
+by updating off the prediction it just made; Glicko recomputes the
+expected score inside `glicko_step` and has to be handed the same edge.
+
 One bundle rather than three parameters threaded separately, because the
 predictors that want them want all of them and `predict_game` should gain
 one line, not three. It follows `PlayBlend` in `blend.py`: a value object

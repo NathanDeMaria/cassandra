@@ -586,14 +586,20 @@ class CompoundGlickoPredictor(GlickoPredictor):
         `super().update_game` moves them and a unit's expected score belongs
         against the team its opponent was known to be when the contest was
         played -- the same "predict, then learn" ordering the parent itself
-        follows. The children go second so the parent's `_update_rating`
-        calls, which read both teams' ratings before writing either, see the
-        state they expect.
+        follows. The home edge is read first for the same reason: the
+        parent's update records the game in the rest ledger, after which
+        both teams have just played and the gap that was there is gone. The
+        children go second so the parent's `_update_rating` calls, which
+        read both teams' ratings before writing either, see the state they
+        expect.
         """
         home_parent = self.get_rating(game.home)
         away_parent = self.get_rating(game.away)
+        home_edge = (
+            0 if game.neutral_site else self._home_advantage
+        ) + self.matchup_adjustment(game)
         prediction = super().update_game(game)
-        self._update_units(game, home_parent, away_parent)
+        self._update_units(game, home_parent, away_parent, home_edge)
         return prediction
 
     def _contest_score(self, epa_per_play: float, scale: float) -> float:
@@ -636,7 +642,11 @@ class CompoundGlickoPredictor(GlickoPredictor):
         self._epa_count += 2
 
     def _update_units(
-        self, game: Game, home_parent: _Rating, away_parent: _Rating
+        self,
+        game: Game,
+        home_parent: _Rating,
+        away_parent: _Rating,
+        home_edge: float,
     ) -> None:
         """Run the two unit contests, if the game has EPA to score them by.
 
@@ -644,7 +654,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
         the game*, passed in rather than re-read because `update_game` has
         already moved them. A unit's expected score is against the team its
         opponent was known to be when the contest was played, not the one it
-        became by playing it.
+        became by playing it. `home_edge` is read before the game too, for
+        the rest ledger's sake.
 
         Each contest goes through `glicko_step` with both sides at prior plus
         offset, so the step sees absolute ratings on the parent's scale, and
@@ -654,11 +665,10 @@ class CompoundGlickoPredictor(GlickoPredictor):
         and a child that inherited it would look twice as unsure as the
         evidence says.
 
-        The home edge is the parent's `home_advantage`, whole, on each
-        contest -- the parent's own update applies it the same way, and the
-        two contests' edges sum to twice one edge exactly as their gaps sum
-        to twice the team gap. Like the parent's update, not the matchup
-        adjustments, which the parent reserves for the prediction.
+        The home edge -- the parent's `home_advantage` plus the matchup
+        adjustments -- goes on each contest whole. The parent's own update
+        applies it the same way, and the two contests' edges sum to twice
+        one edge exactly as their gaps sum to twice the team gap.
         """
         epa = self._game_epa.get(game.game_id)
         if epa is None or epa.home_weighted is None or epa.away_weighted is None:
@@ -668,7 +678,6 @@ class CompoundGlickoPredictor(GlickoPredictor):
             # from the score.
             return
         self._see(epa.home_weighted, epa.away_weighted)
-        home_adj = 0 if game.neutral_site else self._home_advantage
         home_prior = self._prior(game.home, home_parent)
         away_prior = self._prior(game.away, away_parent)
         home = self._offsets(game.home)
@@ -690,21 +699,21 @@ class CompoundGlickoPredictor(GlickoPredictor):
         self._units[game.home] = _Units(
             offense=_offset(
                 home_prior,
-                glicko_step(home_offense, away_defense, home_ball_o, home_adj),
+                glicko_step(home_offense, away_defense, home_ball_o, home_edge),
             ),
             defense=_offset(
                 home_prior,
-                glicko_step(home_defense, away_offense, 1 - away_ball_d, home_adj),
+                glicko_step(home_defense, away_offense, 1 - away_ball_d, home_edge),
             ),
         )
         self._units[game.away] = _Units(
             offense=_offset(
                 away_prior,
-                glicko_step(away_offense, home_defense, away_ball_o, -home_adj),
+                glicko_step(away_offense, home_defense, away_ball_o, -home_edge),
             ),
             defense=_offset(
                 away_prior,
-                glicko_step(away_defense, home_offense, 1 - home_ball_d, -home_adj),
+                glicko_step(away_defense, home_offense, 1 - home_ball_d, -home_edge),
             ),
         )
 
