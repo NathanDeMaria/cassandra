@@ -4,15 +4,23 @@
     "parameters": {
         "unit_weight": [
             0,
-            0.5
+            1
         ],
         "epa_scale": [
-            0.5,
-            5
+            10,
+            200
         ],
         "parent_share": [
             0,
             1
+        ],
+        "offense_initial_rd": [
+            80,
+            620
+        ],
+        "defense_initial_rd": [
+            80,
+            620
         ]
     },
     "fixed": {
@@ -25,5 +33,5 @@
         "sigmoid_scale": 10.0
     },
     "fixed_from": "glicko_full",
-    "n_iter": 250
+    "n_iter": 400
 }

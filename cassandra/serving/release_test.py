@@ -336,11 +336,15 @@ def test_rebuilds_the_elo_family_too(
 def _compound() -> CompoundGlickoPredictor:
     """A compound model with EPA for some of the season and not the rest."""
     epa = {
-        "Team B@Team A": GameEpa(home=0.3, away=-0.2, home_plays=70, away_plays=65),
-        "Team A@Team C": GameEpa(home=-0.1, away=0.4, home_plays=60, away_plays=72),
+        "Team B@Team A": GameEpa(
+            0.3, -0.2, 70, 65, home_weighted=0.3, away_weighted=-0.2
+        ),
+        "Team A@Team C": GameEpa(
+            -0.1, 0.4, 60, 72, home_weighted=-0.1, away_weighted=0.4
+        ),
     }
     predictor = CompoundGlickoPredictor(
-        "test_league", game_epa=EpaIndex(epa), unit_weight=0.3
+        "test_league", game_epa=EpaIndex(epa), unit_weight=3.0
     )
     _trained(predictor)
     return predictor
@@ -348,7 +352,7 @@ def _compound() -> CompoundGlickoPredictor:
 
 def test_a_release_carries_each_teams_offense_and_defense() -> None:
     """On the team's scale, and only for teams the index had a play for."""
-    release = _snapshot(_compound(), "CompoundGlickoPredictor", {"unit_weight": 0.3})
+    release = _snapshot(_compound(), "CompoundGlickoPredictor", {"unit_weight": 3.0})
 
     a = release.ratings["Team A"]
     assert a.offense is not None and a.defense is not None
@@ -374,7 +378,7 @@ def test_rebuilds_a_compound_predictor_that_predicts_the_same() -> None:
     """
     original = _compound()
     rebuilt = _snapshot(
-        original, "CompoundGlickoPredictor", {"unit_weight": 0.3}
+        original, "CompoundGlickoPredictor", {"unit_weight": 3.0}
     ).rating_predictor()
     assert isinstance(rebuilt, CompoundGlickoPredictor)
 
@@ -402,7 +406,7 @@ def test_a_side_without_its_pair_is_not_a_side() -> None:
     )
     rebuilt = release.rating_predictor()
     assert isinstance(rebuilt, CompoundGlickoPredictor)
-    assert rebuilt.unit_confidence("Team A") == 0
+    assert rebuilt.unit_information("Team A") == 0
 
 
 def test_an_unrated_team_is_the_same_stranger_on_both_sides() -> None:

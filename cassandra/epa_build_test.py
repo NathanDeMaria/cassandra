@@ -23,7 +23,14 @@ from cassandra.conftest import (
 from cassandra.conftest import (
     season_for as _season,
 )
-from cassandra.epa_build import CLIP, build, current_fit, sweep, write
+from cassandra.epa_build import (
+    CLIP,
+    WEIGHT_POWER,
+    build,
+    current_fit,
+    sweep,
+    write,
+)
 from cassandra.predictor.epa import EpaFit, load_epa, read_epa_file
 
 
@@ -81,6 +88,27 @@ def test_the_number_is_the_unweighted_reading() -> None:
     assert epa["g1"].home != pytest.approx(scored.home)
 
 
+def test_the_weighted_reading_rides_alongside() -> None:
+    """The other average off the same call, with its effective sample.
+
+    The compound model rates an offense on the game as it was contested,
+    so the weighted pair has to land in the index too -- beside the flat
+    one, not instead of it, because the blends still want the flat one.
+    """
+    plays = _plays("g1")
+    game = next(iter(group_by_game(plays)))
+    scored = MODELS[_LEAGUE].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
+
+    epa, _ = asyncio.run(
+        sweep(_LEAGUE, [_season(2025, "g1")], _Source({(2025, 1): plays}))
+    )
+
+    assert epa["g1"].home_weighted == pytest.approx(scored.home)
+    assert epa["g1"].away_weighted == pytest.approx(scored.away)
+    assert epa["g1"].home_weight == pytest.approx(scored.home_weight)
+    assert 0 < epa["g1"].home_weight <= epa["g1"].home_plays
+
+
 def test_the_play_counts_are_the_denominators_that_were_used() -> None:
     """The honesty field, and what turns the averages back into points."""
     plays = _plays("g1")
@@ -118,6 +146,7 @@ def test_the_fit_names_both_models() -> None:
     assert fit.ep_run_id == MODELS[_LEAGUE].expected_points_release.run_id
     assert fit.clip == CLIP
     assert fit.reading == "unweighted"
+    assert fit.weight_power == WEIGHT_POWER
 
 
 def test_an_unchanged_fit_only_re_sweeps_the_newest_season() -> None:
@@ -143,6 +172,7 @@ def test_an_unchanged_fit_only_re_sweeps_the_newest_season() -> None:
         {"ep_run_id": "20200101-000000"},
         {"clip": 5.0},
         {"reading": "weighted"},
+        {"weight_power": 1.0},
     ],
 )
 def test_any_field_of_the_fit_moving_rebuilds_the_league(changed: dict) -> None:
