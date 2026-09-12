@@ -13,15 +13,12 @@
         "mov_cap": [
             5,
             60
-        ],
-        "season_regression": [
-            0,
-            0.5
         ]
     },
     "fixed": {
-        "margin_scale": 7
+        "margin_scale": 7,
+        "season_regression": 0
     },
-    "n_iter": 150,
-    "objective": "margin_mae"
+    "objective": "margin_mae",
+    "n_iter": 150
 }
