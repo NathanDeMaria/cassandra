@@ -15,7 +15,8 @@ import pytest
 
 from .base_predictor import MEAN_RATING, Anchor
 from .compound import (
-    DEFAULT_EPA_SCALE,
+    DEFAULT_DEFENSE_SCALE,
+    DEFAULT_OFFENSE_SCALE,
     DEFAULT_PARENT_SHARE,
     DEFAULT_UNIT_WEIGHT,
     CompoundGlickoPredictor,
@@ -54,10 +55,15 @@ def _predictor(
     epa: dict[str, GameEpa] | None = None,
     *,
     unit_weight: float = DEFAULT_UNIT_WEIGHT,
-    epa_scale: float = DEFAULT_EPA_SCALE,
+    offense_scale: float = DEFAULT_OFFENSE_SCALE,
+    defense_scale: float = DEFAULT_DEFENSE_SCALE,
     parent_share: float = DEFAULT_PARENT_SHARE,
     offense_initial_rd: float | None = None,
     defense_initial_rd: float | None = None,
+    offense_weekly_rd_increase: float | None = None,
+    defense_weekly_rd_increase: float | None = None,
+    offense_season_rd_increase: float | None = None,
+    defense_season_rd_increase: float | None = None,
     initial_rd: float = 216,
     home_advantage: float = 95,
     weekly_rd_increase: float = 1,
@@ -68,10 +74,15 @@ def _predictor(
         "test_league",
         game_epa=EpaIndex(epa or {}),
         unit_weight=unit_weight,
-        epa_scale=epa_scale,
+        offense_scale=offense_scale,
+        defense_scale=defense_scale,
         parent_share=parent_share,
         offense_initial_rd=offense_initial_rd,
         defense_initial_rd=defense_initial_rd,
+        offense_weekly_rd_increase=offense_weekly_rd_increase,
+        defense_weekly_rd_increase=defense_weekly_rd_increase,
+        offense_season_rd_increase=offense_season_rd_increase,
+        defense_season_rd_increase=defense_season_rd_increase,
         initial_rd=initial_rd,
         home_advantage=home_advantage,
         weekly_rd_increase=weekly_rd_increase,
@@ -294,20 +305,36 @@ def test_the_unit_gap_flips_with_the_venue(game: GameFactory) -> None:
     )
 
 
-def test_a_contest_is_scored_in_points_at_twice_the_parents_slope() -> None:
-    """The currency conversion, on the nose.
+def test_a_contest_is_a_logistic_of_epa_per_play_at_the_sides_own_scale() -> None:
+    """+0.1 a play at 10 logits per point is one logit over an average offense
+    (the center is 0 before any game). No snap count anywhere: the same
+    per-play average scores the same whether the offense ran 40 plays or 90."""
+    predictor = _predictor()
+    assert predictor._contest_score(0.1, 10.0) == pytest.approx(
+        1 / (1 + 2.718281828**-1)
+    )
+    assert predictor._contest_score(0.1, 20.0) == pytest.approx(
+        1 / (1 + 2.718281828**-2)
+    )
 
-    +0.1 a play at 50 points per play is 5 points over an average offense
-    (the center is 0 before any game). The parent reads 5 points as
-    `sigmoid(5 / 10)`; a contest is half a game, so it reads them at twice
-    that. No snap count anywhere: the same per-play average scores the
-    same whether the offense ran 40 plays or 90.
-    """
-    predictor = _predictor(epa_scale=50.0)
-    assert predictor._contest_score(0.1) == pytest.approx(1 / (1 + 2.718281828**-1))
 
-    doubled = _predictor(epa_scale=100.0)
-    assert doubled._contest_score(0.1) == pytest.approx(1 / (1 + 2.718281828**-2))
+def test_each_side_reads_the_same_contest_at_its_own_sharpness(
+    game: GameFactory,
+) -> None:
+    """A sharper defense scale moves defenses more, and offenses not at all."""
+    played = game("A", "B", 21, 7, game_id="g")
+    even = _predictor({"g": LOPSIDED}, offense_scale=10.0, defense_scale=10.0)
+    sharp_defense = _predictor({"g": LOPSIDED}, offense_scale=10.0, defense_scale=30.0)
+    even.update_game(played)
+    sharp_defense.update_game(played)
+
+    assert sharp_defense.get_units("A").offense == even.get_units("A").offense
+    assert sharp_defense.get_units("A").defense.rating > (
+        even.get_units("A").defense.rating
+    )
+    assert sharp_defense.get_units("B").defense.rating < (
+        even.get_units("B").defense.rating
+    )
 
 
 def test_the_contest_reads_the_garbage_time_adjusted_average(
@@ -394,7 +421,7 @@ def test_two_average_offenses_leave_the_units_where_they_were(
 def test_the_children_round_trip_through_the_state_dict(game: GameFactory) -> None:
     """The path a release would have to take for the children to survive."""
     predictor = _predictor(
-        {"g": LOPSIDED}, unit_weight=0.3, epa_scale=1.6, parent_share=0.4
+        {"g": LOPSIDED}, unit_weight=0.3, defense_scale=9.0, parent_share=0.4
     )
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
 
@@ -489,34 +516,58 @@ def test_full_regression_forgets_the_children_entirely(game: GameFactory) -> Non
     assert predictor.unit_gap(game("A", "B")) == pytest.approx(0)
 
 
-def test_deviations_grow_between_games_and_cap_at_their_own_initial(
+def test_deviations_grow_between_games_at_their_own_rate_and_cap_at_their_own_initial(
     game: GameFactory,
 ) -> None:
-    """Each side at its own cap, so an offense can be the steadier of the two."""
+    """Each side on its own clock, so an offense can be the steadier of the two."""
     predictor = _predictor(
         {"g": LOPSIDED},
-        weekly_rd_increase=50,
         offense_initial_rd=120,
         defense_initial_rd=180,
+        offense_weekly_rd_increase=0,
+        defense_weekly_rd_increase=50,
     )
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     after_game = predictor.get_units("A")
 
     predictor.pass_week()
-    assert predictor.get_units("A").offense.rating_deviation > (
-        after_game.offense.rating_deviation
-    )
+    grown = predictor.get_units("A")
+    assert grown.offense.rating_deviation == after_game.offense.rating_deviation
+    assert grown.defense.rating_deviation > after_game.defense.rating_deviation
 
     for _ in range(20):
         predictor.pass_week()
-    assert predictor.get_units("A").offense.rating_deviation == 120
+    assert predictor.get_units("A").offense.rating_deviation < 120
     assert predictor.get_units("A").defense.rating_deviation == 180
-    assert predictor.unit_information("A") == 0
 
 
-def test_the_unit_deviations_default_to_the_parents() -> None:
-    predictor = _predictor(initial_rd=333)
+def test_the_offseason_widens_each_side_by_its_own_increase(
+    game: GameFactory,
+) -> None:
+    predictor = _predictor(
+        {"g": LOPSIDED},
+        offense_season_rd_increase=0,
+        defense_season_rd_increase=30,
+    )
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    before = predictor.get_units("A")
+
+    predictor.pass_season()
+
+    after = predictor.get_units("A")
+    assert after.offense.rating_deviation == before.offense.rating_deviation
+    assert after.defense.rating_deviation == pytest.approx(
+        (before.defense.rating_deviation**2 + 30**2) ** 0.5
+    )
+
+
+def test_the_childrens_clock_defaults_to_the_parents() -> None:
+    predictor = _predictor(initial_rd=333, weekly_rd_increase=7)
     assert (predictor._offense_initial_rd, predictor._defense_initial_rd) == (333, 333)
+    assert predictor._offense_weekly_rd_increase == 7
+    assert predictor._defense_weekly_rd_increase == 7
+    assert predictor._offense_season_rd_increase == 120  # the parent's default
+    assert predictor._defense_season_rd_increase == 120
 
     split = _predictor(initial_rd=333, offense_initial_rd=100)
     assert (split._offense_initial_rd, split._defense_initial_rd) == (100, 333)
@@ -551,11 +602,19 @@ def test_out_of_range_parameters_are_rejected() -> None:
         with pytest.raises(ValueError):
             _predictor(parent_share=parent_share)
     with pytest.raises(ValueError):
-        _predictor(epa_scale=0.0)
+        _predictor(offense_scale=0.0)
+    with pytest.raises(ValueError):
+        _predictor(defense_scale=-1.0)
     with pytest.raises(ValueError):
         _predictor(offense_initial_rd=0.0)
     with pytest.raises(ValueError):
         _predictor(defense_initial_rd=0.0)
+    with pytest.raises(ValueError):
+        _predictor(offense_weekly_rd_increase=-1.0)
+    with pytest.raises(ValueError):
+        _predictor(defense_season_rd_increase=-1.0)
+    # 0 is a real increase -- the parent's own is 0 in ncaafb's fit.
+    assert _predictor(offense_weekly_rd_increase=0.0)._offense_weekly_rd_increase == 0
 
 
 def test_zero_is_the_off_switch_for_both_fractions() -> None:

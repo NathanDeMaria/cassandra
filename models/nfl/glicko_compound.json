@@ -6,9 +6,13 @@
             0,
             1
         ],
-        "epa_scale": [
-            10,
-            200
+        "offense_scale": [
+            1,
+            40
+        ],
+        "defense_scale": [
+            1,
+            40
         ],
         "parent_share": [
             0,
@@ -21,6 +25,22 @@
         "defense_initial_rd": [
             80,
             620
+        ],
+        "offense_weekly_rd_increase": [
+            0,
+            120
+        ],
+        "defense_weekly_rd_increase": [
+            0,
+            120
+        ],
+        "offense_season_rd_increase": [
+            0,
+            500
+        ],
+        "defense_season_rd_increase": [
+            0,
+            500
         ]
     },
     "fixed": {

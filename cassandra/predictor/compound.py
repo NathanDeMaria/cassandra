@@ -15,33 +15,50 @@ it were a Glicko match*: the offense's EPA per play, squashed through a
 logistic to [0, 1], is what the offense scored and one minus it is what the
 defense did.
 
-Putting EPA on the parent's scale
----------------------------------
+Scoring a contest
+-----------------
 
-The parent's target for a game is `sigmoid(margin / sigmoid_scale)` and its
-expected score is Glicko's logistic of a rating gap, so a rating gap *is* an
-expected points margin, at whatever slope the league's fit found. For the
-children to be on that scale their contests have to be scored in the same
-points through the same squash, and they are:
+The result of a contest is the offense's EPA per play, **garbage time
+adjusted** -- `GameEpa.home_weighted` / `.away_weighted`, each snap weighted
+by how much the game was still in doubt when it happened. The game as it
+was contested, not as it was run out. Minus what an average offense
+averages (`epa_center`, a running mean of every offense seen so far), through
+a logistic, and that is the score in [0, 1] that `glicko_step` takes:
 
-- The result of a contest is the offense's EPA per play, **garbage time
-  adjusted** -- `GameEpa.home_weighted` / `.away_weighted`, each snap
-  weighted by how much the game was still in doubt when it happened. The
-  game as it was contested, not as it was run out. Minus what an average
-  offense averages (`epa_center`, a running mean of every offense seen so
-  far) it is how much better per snap this offense played than average, and
-  times `epa_scale` -- a typical side's snap count -- that is points over an
-  average-length game. **Not** times the game's own snap count: an offense
-  is rated on how well it moved the ball, not on how often it got to, and a
-  snap count would credit the offense for a defense that kept handing it
-  the ball back.
+    offense scores   sigmoid(offense_scale * (epa - center))
+    defense scores   1 - sigmoid(defense_scale * (epa - center))
 
-- A contest is half a game. With a team's unit rating defined as the mean of
-  its offense and defense, the two contests' gaps -- home offense less away
-  defense, away offense less home defense -- sum to *twice* the gap between
-  the two teams' unit means, so a contest's points are read at twice the
-  team slope: `sigmoid(2 * points / sigmoid_scale)`. Without the 2 every
-  unit gap comes out half the parent's for the same strength.
+Per play, **not** times the game's snap count: an offense is rated on how
+well it moved the ball, not on how often it got to, and a snap count would
+credit the offense for a defense that kept handing it the ball back.
+
+What the offense is measured *against* is the defense it faced, and that
+happens where it does for the parent: `glicko_step` takes the expected score
+from the gap between the two units and moves each by actual minus expected.
+The center is not that comparison. It only says where 0.5 sits -- an
+offense that played like the league's average offense scored half -- which
+is what it takes for an average offense against an average defense to be a
+draw, and for the anchors to be priors for both sides rather than for
+both-sides-shifted-by-a-constant.
+
+Each side reads the contest at its own sharpness, `offense_scale` and
+`defense_scale`, so the two sides of one contest need not sum to 1: they
+are two updates against the same expected score. There is no reason a
+tenth of a point per snap has to be exactly as much evidence about a defense
+as about an offense, and measured it isn't (below).
+
+**Where the scale puts the units.** The parent's target for a game is
+`sigmoid(margin / sigmoid_scale)` and its expected score is Glicko's
+logistic of a rating gap, so a rating gap *is* an expected points margin at
+whatever slope the league's fit found. A contest is half a game -- with a
+team's unit rating the mean of its two sides, the two contests' gaps sum to
+twice the gap between the teams' unit means -- so reading a per-play average
+as points over a typical game (~80 snaps in ncaafb), through the parent's
+squash, at twice the team slope, comes to a scale of `2 * 80 / 10 = 16`
+logits per point of EPA per play. That is the setting under which the
+children land on the parent's rating scale, and it is the default. It is
+not a constraint: the search moves both scales, and a drift off the
+parent's currency is absorbed by `unit_weight` at prediction.
 
 Which makes the anchors priors for both sides. A division fit says where a
 D-III *team* enters, and a child on the team's scale can enter there too, so
@@ -56,12 +73,14 @@ residuals on top of the record; at 0 they are ratings of their own, seeded
 where the parent was seeded. Either way 0 offset is "nothing known" and the
 offseason pulls toward it.
 
-Each side has its own initial deviation, `offense_initial_rd` and
-`defense_initial_rd`, both defaulting to the parent's. Offense is said to
-be the steadier of the two, and the initial value is where a side starts
-*and* the cap the offseason grows back to -- so a steadier side is a
-smaller number here, which is less to learn at first and less to forget
-each year.
+Each side runs its own Glicko clock: `offense_initial_rd` and
+`defense_initial_rd` (where a deviation starts, and the cap it grows back
+to), `offense_weekly_rd_increase` / `defense_weekly_rd_increase`, and
+`offense_season_rd_increase` / `defense_season_rd_increase`. All default to
+the parent's. Offense is said to be the steadier of the two, and a steadier
+side is a smaller initial deviation and smaller increases -- less to learn
+at first, less to forget each week and each year. The search moves all six
+apart; the parent's values are where it starts.
 
 How the children speak
 ----------------------
@@ -120,15 +139,17 @@ priors, so the parent is the baseline exactly and `unit_weight` 0 reproduces
 its 0.158621. Every number is against that, and the EPA column is over the
 20,860 games the index has for those seasons.
 
-    unit_weight  epa_scale  parent_share   d brier   d brier, EPA games
-           0.10         40           0.0  -0.000057           -0.000155
-           0.05         40           0.0  -0.000048           -0.000129
-           0.10         80           0.0  -0.000049           -0.000182
-           0.20         40           0.0  -0.000002           -0.000021
-           0.50         80           0.0  +0.000468           +0.000947
-           1.00         80           0.0  +0.001268           +0.002667
-           0.10         40           0.5  -0.000031           -0.000112
-           0.10         40           1.0  +0.000028           +0.000024
+    unit_weight  offense_scale  defense_scale  parent_share   d brier   EPA games
+           0.10             16              8           0.0  -0.000068   -0.000208
+           0.10              8              8           0.0  -0.000057   -0.000155
+           0.10             16             16           0.0  -0.000049   -0.000182
+           0.10              8             16           0.0  -0.000042   -0.000139
+           0.05              8              8           0.0  -0.000048   -0.000129
+           0.20              8              8           0.0  -0.000002   -0.000021
+           0.50             16             16           0.0  +0.000468   +0.000947
+           1.00             16             16           0.0  +0.001268   +0.002667
+           0.10              8              8           0.5  -0.000031   -0.000112
+           0.10              8              8           1.0  +0.000028   +0.000024
 
 Four readings. **A contest is a tenth of a game.** `unit_weight` 1 -- both
 deviations at face value -- hands the units about half the rating and costs
@@ -140,14 +161,19 @@ the scoreboard measures, worth the variance reduction of averaging in a
 little of it and nothing beyond. **The anchor is the better prior**:
 `parent_share` 0 beats 1 at every weight. Scoring a child against its
 team's record makes it learn the part of the record the plays don't show,
-and that part predicts less well than the plays do on their own.
-**`epa_scale` is flat from 40 to 80** -- 0.5 to 1 typical game's worth of
-snaps -- and 20 is too soft. **The two sides look equally knowable**:
-tightening the offense's initial deviation to 300 while the defense stays
-at the parent's 531 costs 0.00002, tightening the defense's costs 0.00001,
-tightening both costs 0.00004. The hypothesis that offense is the steadier
-side is not what this replay shows, but the resolution here is a few
-probes, and the configs search both.
+and that part predicts less well than the plays do on their own. **The
+offense reads sharper than the defense.** The best row scores the offense
+at twice the defense's scale; the reverse split is the worst of the four
+scale rows. A tenth of a point per snap is more evidence about the offense
+that produced it than about the defense that allowed it, which is the
+"offense is steadier" hypothesis showing up through the scale. **The
+clocks don't say yet.** Single probes off the 8/8 row: giving the offense a
+smaller season increase than the parent's (100 against 250) costs 0.00005
+and a larger one (400) gains 0.00001; the defense's the other way round by
+less; a weekly increase of 30 on both gains 0.00001. Tightening either
+side's initial deviation to 300 costs 0.00001-0.00002. None of that is a
+sweep, and none of it points the way the hypothesis predicts; the configs
+search all six.
 
 Against the same scoring, the blend the first draft used -- a linear
 `(1 - w) * parent + w * units` with `w` faded by confidence -- reaches
@@ -232,16 +258,20 @@ from .types import Matchup, Prediction, Rating, Unit, Units
 # make a hand-built one silently identical to the model it subclasses.
 DEFAULT_UNIT_WEIGHT = 0.1
 
-# Points of scoreboard margin per point of EPA *per play*: the snaps that
-# turn a per-play average into what an average-length game would have shown.
+# How sharply a contest is scored: logit per point of EPA per play, one for
+# each side. An offense a tenth of a point per snap above average scores
+# `sigmoid(0.1 * scale)` -- 0.83 at 16 -- and the defense across from it
+# scores one minus the same thing at *its* scale.
 #
-# A side runs about 80 snaps in an ncaafb game and about 65 in the nfl, so
-# 80 is "take the per-play number as the points it would be over a typical
-# ncaafb game" -- the one setting with a meaning on its own, and where a
-# search starts rather than where it should stay: it is also the sharpness
-# of the contest score, and the measurement in the module docstring found
-# sharper better.
-DEFAULT_EPA_SCALE = 80.0
+# 16 is what "read the per-play number as points over a typical game, through
+# the parent's own squash, at twice the team slope" comes to for ncaafb
+# (2 * 80 snaps / sigmoid_scale 10), which is the setting that puts the units
+# on the parent's rating scale. That is where a search starts, and the
+# measurement in the module docstring found 8 to 16 flat. The same number for
+# both sides by default, because nothing has yet shown one side wants to be
+# scored more sharply than the other; the search moves them apart.
+DEFAULT_OFFENSE_SCALE = 16.0
+DEFAULT_DEFENSE_SCALE = 16.0
 
 # How much of the parent a child is scored against, as against its anchor:
 # the prior a child sits on is `parent_share * parent + (1 - parent_share) *
@@ -305,10 +335,19 @@ class CompoundGlickoPredictor(GlickoPredictor):
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
         season_regression: float = 0.0,
         unit_weight: float = DEFAULT_UNIT_WEIGHT,
-        epa_scale: float = DEFAULT_EPA_SCALE,
+        offense_scale: float = DEFAULT_OFFENSE_SCALE,
+        defense_scale: float = DEFAULT_DEFENSE_SCALE,
         parent_share: float = DEFAULT_PARENT_SHARE,
+        # The children's own Glicko clock, side by side: where a deviation
+        # starts (and the cap it grows back to), how much it widens between
+        # weeks, and how much between seasons. Each `None` is "the parent's",
+        # which is what a hand-built one gets and where a search starts.
         offense_initial_rd: float | None = None,
         defense_initial_rd: float | None = None,
+        offense_weekly_rd_increase: float | None = None,
+        defense_weekly_rd_increase: float | None = None,
+        offense_season_rd_increase: float | None = None,
+        defense_season_rd_increase: float | None = None,
         opponent_prior_manager: OpponentPriorManager | None = None,
         qb_out: QbOutIndex | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -344,17 +383,40 @@ class CompoundGlickoPredictor(GlickoPredictor):
             # backwards from its best-measured games.
             raise ValueError(f"unit_weight must be non-negative, got {unit_weight}")
         self._unit_weight = unit_weight
-        self._epa_scale = validated_scale("epa_scale", epa_scale)
+        self._offense_scale = validated_scale("offense_scale", offense_scale)
+        self._defense_scale = validated_scale("defense_scale", defense_scale)
         self._parent_share = validated_fraction("parent_share", parent_share)
-        self._offense_initial_rd = (
-            initial_rd
-            if offense_initial_rd is None
-            else validated_scale("offense_initial_rd", offense_initial_rd)
+        self._offense_initial_rd = _or_parents(
+            "offense_initial_rd", offense_initial_rd, initial_rd
         )
-        self._defense_initial_rd = (
-            initial_rd
-            if defense_initial_rd is None
-            else validated_scale("defense_initial_rd", defense_initial_rd)
+        self._defense_initial_rd = _or_parents(
+            "defense_initial_rd", defense_initial_rd, initial_rd
+        )
+        # The increases may be 0 -- the parent's own is, in ncaafb's fit --
+        # so they are checked for sign rather than through `validated_scale`.
+        self._offense_weekly_rd_increase = _or_parents(
+            "offense_weekly_rd_increase",
+            offense_weekly_rd_increase,
+            weekly_rd_increase,
+            zero_ok=True,
+        )
+        self._defense_weekly_rd_increase = _or_parents(
+            "defense_weekly_rd_increase",
+            defense_weekly_rd_increase,
+            weekly_rd_increase,
+            zero_ok=True,
+        )
+        self._offense_season_rd_increase = _or_parents(
+            "offense_season_rd_increase",
+            offense_season_rd_increase,
+            season_rd_increase,
+            zero_ok=True,
+        )
+        self._defense_season_rd_increase = _or_parents(
+            "defense_season_rd_increase",
+            defense_season_rd_increase,
+            season_rd_increase,
+            zero_ok=True,
         )
         # Units start empty rather than seeded from the prior manager the way
         # the parent's ratings are: a unit's prior is the team's anchor or
@@ -534,31 +596,33 @@ class CompoundGlickoPredictor(GlickoPredictor):
         self._update_units(game, home_parent, away_parent)
         return prediction
 
-    def _contest_score(self, epa_per_play: float) -> float:
-        """What an offense's game counts as, in [0, 1], on the parent's scale.
+    def _contest_score(self, epa_per_play: float, scale: float) -> float:
+        """What an offense's game counts as, in [0, 1], at one side's sharpness.
 
         The garbage-time-adjusted average, `GameEpa.home_weighted` or
         `.away_weighted`, minus what an average offense averages -- the
-        running `epa_center` -- is how much better per snap this offense
-        played than average while the game was still being contested. Times
-        `epa_scale` that is points over an average-length game: the same
-        conversion `EpaIndex.margin` makes, with a typical snap count in
-        place of the game's own, so that an offense is rated on how well it
-        moved the ball and not on how often it got to. A snap count on the
-        line would also reward the side that ran more plays for reasons that
-        are not its offense's -- a defense that forced three-and-outs hands
-        its own offense the ball more.
+        running `epa_center` -- through a logistic at `scale` logits per
+        point of EPA per play. Per play, never times a snap count: an
+        offense is rated on how well it moved the ball, not on how often it
+        got to, and a snap count would credit the offense for a defense that
+        kept handing it the ball back.
 
-        Then the parent's own squash, `sigmoid(points / sigmoid_scale)`, at
-        *twice* the points. Twice because a contest is half a game: the two
-        contests' gaps sum to twice the gap between the teams' unit means
-        (see `unit_rating`), so a contest's points have to be read at twice
-        the team slope for the units to land on the team scale. Without the
-        2 every unit gap would be half as large as the parent's for the same
-        strength, and the blend would be mixing currencies again.
+        The center is *not* what the offense is measured against. That is
+        the opponent, and it happens in `glicko_step`: the expected score
+        comes from the gap between this offense and the defense it faced,
+        and the update is the actual score minus that. The center only says
+        where 0.5 sits -- an offense that played like the league's average
+        offense scored half, which is what it takes for an average offense
+        against an average defense to be a draw and for the anchors to be
+        priors for both sides rather than for both-sides-shifted.
+
+        `scale` is the side's own: the offense reads its result at
+        `offense_scale`, and the defense across from it reads one minus the
+        same result at `defense_scale`. Two rather than one because there is
+        no reason a tenth of a point per snap has to be exactly as much
+        evidence about a defense as about an offense.
         """
-        points = (epa_per_play - self.epa_center) * self._epa_scale
-        return 1 / (1 + math.exp(-2 * points / self._sigmoid_scale))
+        return 1 / (1 + math.exp(-scale * (epa_per_play - self.epa_center)))
 
     def _see(self, home: float, away: float) -> None:
         """Fold a game's two offenses -- the weighted reading -- into the center.
@@ -615,40 +679,49 @@ class CompoundGlickoPredictor(GlickoPredictor):
         away_offense = _absolute(away_prior, away.offense)
         away_defense = _absolute(away_prior, away.defense)
 
-        home_ball = self._contest_score(epa.home_weighted)
-        away_ball = self._contest_score(epa.away_weighted)
+        # Each side reads the contest at its own sharpness, so the two sides
+        # of one contest need not sum to 1 -- they are two updates against
+        # the same expected score, not two halves of one number.
+        home_ball_o = self._contest_score(epa.home_weighted, self._offense_scale)
+        home_ball_d = self._contest_score(epa.home_weighted, self._defense_scale)
+        away_ball_o = self._contest_score(epa.away_weighted, self._offense_scale)
+        away_ball_d = self._contest_score(epa.away_weighted, self._defense_scale)
 
         self._units[game.home] = _Units(
             offense=_offset(
                 home_prior,
-                glicko_step(home_offense, away_defense, home_ball, home_adj),
+                glicko_step(home_offense, away_defense, home_ball_o, home_adj),
             ),
             defense=_offset(
                 home_prior,
-                glicko_step(home_defense, away_offense, 1 - away_ball, home_adj),
+                glicko_step(home_defense, away_offense, 1 - away_ball_d, home_adj),
             ),
         )
         self._units[game.away] = _Units(
             offense=_offset(
                 away_prior,
-                glicko_step(away_offense, home_defense, away_ball, -home_adj),
+                glicko_step(away_offense, home_defense, away_ball_o, -home_adj),
             ),
             defense=_offset(
                 away_prior,
-                glicko_step(away_defense, home_offense, 1 - home_ball, -home_adj),
+                glicko_step(away_defense, home_offense, 1 - home_ball_d, -home_adj),
             ),
         )
 
-    def _grow_unit_rd(self, units: _Units, increase: float) -> _Units:
-        """Both children's deviations widened by `increase`, each capped at its own initial."""
+    def _grow_unit_rd(
+        self, units: _Units, offense_increase: float, defense_increase: float
+    ) -> _Units:
+        """Each side's deviation widened by its own increase, capped at its own initial."""
         return _Units(
             *(
                 _Rating(
                     unit.rating,
                     min(cap, math.sqrt(unit.rating_deviation**2 + increase**2)),
                 )
-                for unit, cap in zip(
-                    units, (self._offense_initial_rd, self._defense_initial_rd)
+                for unit, increase, cap in zip(
+                    units,
+                    (offense_increase, defense_increase),
+                    (self._offense_initial_rd, self._defense_initial_rd),
                 )
             )
         )
@@ -656,7 +729,11 @@ class CompoundGlickoPredictor(GlickoPredictor):
     def pass_week(self) -> None:
         super().pass_week()
         self._units = {
-            team: self._grow_unit_rd(units, self._weekly_rd_increase)
+            team: self._grow_unit_rd(
+                units,
+                self._offense_weekly_rd_increase,
+                self._defense_weekly_rd_increase,
+            )
             for team, units in self._units.items()
         }
 
@@ -667,7 +744,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
         team's anchor or its parent or a mix -- by the same
         `season_regression` the parent uses toward its anchor. Not through
         `regress`, whose target is the anchor itself: the offset is already
-        measured from there.
+        measured from there. Then each side's deviation grows by its own
+        season increase.
         """
         super()._roll_over()
         keep = 1 - self._season_regression
@@ -681,7 +759,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
                         keep * units.defense.rating, units.defense.rating_deviation
                     ),
                 ),
-                self._season_rd_increase,
+                self._offense_season_rd_increase,
+                self._defense_season_rd_increase,
             )
             for team, units in self._units.items()
         }
@@ -700,10 +779,15 @@ class CompoundGlickoPredictor(GlickoPredictor):
         return {
             **super().state_dict(),
             "unit_weight": self._unit_weight,
-            "epa_scale": self._epa_scale,
+            "offense_scale": self._offense_scale,
+            "defense_scale": self._defense_scale,
             "parent_share": self._parent_share,
             "offense_initial_rd": self._offense_initial_rd,
             "defense_initial_rd": self._defense_initial_rd,
+            "offense_weekly_rd_increase": self._offense_weekly_rd_increase,
+            "defense_weekly_rd_increase": self._defense_weekly_rd_increase,
+            "offense_season_rd_increase": self._offense_season_rd_increase,
+            "defense_season_rd_increase": self._defense_season_rd_increase,
             "epa_seen": [self._epa_sum, self._epa_count],
             "units": {
                 team: [
@@ -779,6 +863,23 @@ class CompoundGlickoPredictor(GlickoPredictor):
                 _offset(prior, _Rating(*rating.units.defense)),
             )
         return predictor
+
+
+def _or_parents(
+    name: str, value: float | None, parents: float, zero_ok: bool = False
+) -> float:
+    """One of the children's clock settings: the value given, or the parent's.
+
+    Checked the way the parent's own would be if the parent checked them:
+    a deviation has to be positive, an increase only non-negative.
+    """
+    if value is None:
+        return parents
+    if value < 0 or (value == 0 and not zero_ok):
+        raise ValueError(
+            f"{name} must be {'non-negative' if zero_ok else 'positive'}, got {value}"
+        )
+    return value
 
 
 def _absolute(prior: float, offset: _Rating) -> _Rating:
