@@ -48,6 +48,10 @@ _PROBE_CELLS = re.compile(r"^\|(.+)\|\s*$")
 # The last line a finished optimize child prints: `artifacts.upload` echoing
 # the key it wrote. Its absence in a SUCCEEDED job means --upload=False.
 _UPLOADED = re.compile(r"^\s+uploaded (?P<key>s3://\S+)$")
+# A retried attempt picking up a checkpoint: `[optimize] resumed at probe 340
+# of 1005`. The probes before it are in an earlier attempt's stream, which
+# the fetch doesn't pull, so the report counts them from this line.
+_RESUMED = re.compile(r"^\[optimize\] resumed at probe (?P<done>\d+) of (?P<total>\d+)$")
 _DIAGNOSTIC = re.compile(r"^\[optimize\] (?P<message>.+)$")
 _WARNING = re.compile(r"^(?P<origin>\S+?:\d+): (?P<kind>\w*Warning): (?P<message>.+)$")
 _EXCEPTION = re.compile(
@@ -83,6 +87,9 @@ class Child:
         self.n_iter = None
         self.targets = []
         self.probe_values = []
+        # Probes an earlier attempt of this job scored, when this stream is a
+        # resumed one; they precede `targets` and are not in it.
+        self.resumed_from = 0
         self.diagnostics = []
         self.error = None
         self.uploaded = None
@@ -162,6 +169,11 @@ def _parse_log(child, lines, warnings):
             child.predictor_class = section["cls"]
             child.n_iter = int(section["n_iter"])
             pending_frames = []
+            continue
+
+        resumed = _RESUMED.match(line)
+        if resumed:
+            child.resumed_from = int(resumed["done"])
             continue
 
         probe = _PROBE.match(line)
@@ -377,21 +389,31 @@ def _infrastructure_notes(stages):
         for child in entry["children"]:
             label = f"{stage}/{child.name}"
             if child.attempts > 1:
-                # `retry_strategy` only retries on `Host EC2*`, and nothing
-                # checkpoints, so an earlier attempt's search was discarded --
-                # true even when the job eventually SUCCEEDED, which is why
-                # this can't be folded into the failure grouping.
-                reclaimed.append((label, child.attempts, child.duration))
+                # `retry_strategy` only retries on `Host EC2*`. An optimize
+                # child checkpoints and resumes (`cassandra.checkpoint`);
+                # anything else restarts from zero -- true even when the job
+                # eventually SUCCEEDED, which is why this can't be folded
+                # into the failure grouping.
+                reclaimed.append(
+                    (label, child.attempts, child.duration, child.resumed_from)
+                )
             if child.container_reason:
                 unstartable.setdefault(child.container_reason, []).append(label)
 
     out = []
-    for label, attempts, duration in reclaimed:
-        out.append(
-            f"  {label}: {attempts} attempts -- spot reclaim. Nothing "
-            f"checkpoints, so only the last attempt's {_duration(duration)} "
-            "produced anything."
-        )
+    for label, attempts, duration, resumed_from in reclaimed:
+        if resumed_from:
+            out.append(
+                f"  {label}: {attempts} attempts -- spot reclaim. Resumed from "
+                f"its checkpoint at probe {resumed_from}; only the probes "
+                "after the last save were paid for twice."
+            )
+        else:
+            out.append(
+                f"  {label}: {attempts} attempts -- spot reclaim. Nothing "
+                f"checkpoints, so only the last attempt's "
+                f"{_duration(duration)} produced anything."
+            )
     for reason, labels in unstartable.items():
         shown = ", ".join(labels[:4]) + (
             f", +{len(labels) - 4} more" if len(labels) > 4 else ""
@@ -604,7 +626,11 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
     for child in optimize:
         if child.targets:
             best = f"{child.best:.6f}"
-            probes = f"{len(child.targets)}"
+            probes = (
+                f"{child.resumed_from}+{len(child.targets)}"
+                if child.resumed_from
+                else f"{len(child.targets)}"
+            )
             converged = f"best@{child.best_iteration} last+@{child.last_improvement}"
             gain = f"{child.gain:+.6f}"
         else:
