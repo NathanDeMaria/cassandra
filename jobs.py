@@ -585,7 +585,11 @@ class Jobs:
 
 
 def _as_list(value: list[str] | str | None) -> list[str] | None:
-    """fire hands back a str for one flag and a tuple for repeats."""
+    """fire hands back a str for one value and a tuple for `--league a,b`.
+
+    Comma-separated, not repeated: `--league a --league b` keeps only `b`,
+    silently, which is how a two-league run once came out nfl-only.
+    """
     if value is None:
         return None
     if isinstance(value, str):

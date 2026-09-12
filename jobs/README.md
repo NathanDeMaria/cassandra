@@ -134,7 +134,7 @@ than the models were fit on, with nothing in the output saying so.
 # From the repo root -- these submit to Batch, they don't run locally.
 make submit                                    # the whole DAG
 make submit ARGS="--dry-run"                   # print what would be submitted, no AWS needed
-make submit ARGS="--league mens"               # one league
+make submit ARGS="--league mens"               # one league (two: --league mens,womens)
 make submit ARGS="--league mens --model elo --skip-evaluate"   # one model, as a test
 make submit ARGS="--skip-optimize"             # re-evaluate and re-publish from s3
 make submit ARGS="--skip-anchors"              # optimize, but don't re-check the anchors
