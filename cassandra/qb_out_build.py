@@ -7,35 +7,27 @@ artifact is the seam.
 
 The rule, per team per game:
 
-    starter = the first man to start for the team this season, until a
-              junior has started `HANDOVER` games in a row without him
+    starter = the first man to start for the team this season, until
+              either a more established man starts in his place or a cover
+              has started `HANDOVER[league]` games in a row without him
     out     = the starter took no pass, rush or sack
 
-A team's first game of a season is what names the starter and is never
-flagged -- the question "is he missing?" needs somebody to be missing.
+Established is more starts this season, or the same number and the earlier
+first one. A team's first game of a season is what names the starter and is
+never flagged -- the question "is he missing?" needs somebody to be missing.
 
-## Why the whole absence, and why the handover
+## Why the whole absence, and why the handover is per league
 
 The first version of this was one game deep: the expected starter was
-whoever started the previous game. That had two problems, and the second
-was found by fixing the first.
-
-The week a starter came back, the backup who had covered was the expected
-man, took no snap, and the team was flagged for getting its quarterback
-back. Runs of consecutive flags gave it away -- 185 NFL runs of exactly two
-against 14 of three, a one-week absence plus its return rather than
-two-week injuries. Requiring the man who started instead to be *junior* to
-the man missing (first started for the team later this season, or never
-had) fixed that, and on the NFL dropped 337 of 894 flags.
-
-But the one-game rule also flagged only the *first* game of an absence: from
-the second game on, the backup was the expected starter and the team read as
-whole. The penalty therefore said "a backup is starting today" for one week
-and then nothing, while the man was still out. So the starter is now the
-senior man until somebody has held the job long enough to be the starter
-instead, and every game he is missing until then is out. Replayed on the
-NFL at the `glicko_full` fit off the local season cache, best brier over
-the penalty:
+whoever started the previous game. The week a starter came back, the backup
+who had covered was the expected man, took no snap, and the team was
+flagged for getting its quarterback back. Runs of consecutive flags gave it
+away -- 185 NFL runs of exactly two against 14 of three, a one-week absence
+plus its return rather than two-week injuries. Keeping the senior man as the
+starter through his absence fixed that, and also flags every game of it
+rather than the first: the penalty said "a backup is starting today" for
+one week and then nothing, while the man was still out. Replayed on the
+NFL at the `glicko_full` fit, best brier over the penalty:
 
     one game deep, as shipped        0.220033
     first game of an absence only    0.219559
@@ -44,18 +36,39 @@ the penalty:
     whole absence, handover 4        0.219324
     whole absence, never             0.219387
 
-Three consecutive starts hands the job over. Shorter and a real absence
+College is a different sport for this. Its quarterback changes are mostly
+not injuries -- a battle settled in week three, a benching, a platoon --
+and from the second game of one of those on, the man playing is the team's
+real quarterback and the team is *better*, not worse. Scored on the
+`glicko_full` margin residual of every flagged team-game (positive means
+the team beat the model's expectation), 2023-2025 ncaafb and 2015-2024 NFL:
+
+                                   ncaafb                 nfl
+    handover 1 (first game only)   n=822  -1.93 pts     n=332  -3.02 pts
+    handover 3 (whole absence)     n=1394 -1.11         n=628  -2.73
+
+Same mean on the NFL either way, so the extra games are worth flagging;
+on ncaafb the extra 570 team-games run about +2.5, the sign of a switch
+that improved the team. Hence the constant is per league.
+
+`HANDOVER` counts consecutive starts by one man: shorter and a real absence
 ends too early; longer and a starter lost for the season keeps his team
 penalized for a backup who has, by then, become the team the rating
-measures. Seniority rather than a season-to-date attempt count because the
-count fails early: a starter hurt in week two and back in week four has
-fewer attempts than the man who covered.
+measures. Two backups alternating are a team without a starter, not a new
+one.
 
-What that does not catch is a demotion. A starter benched for the man
-behind him reads as an absence for three weeks -- the plays cannot tell a
-benching from an injury -- and if he later gets the job back, the man who
-lost it sitting is not an absence. Rare, and no worse than the one-game
-rule was.
+The "more established" clause is what an early-season return needs. With
+two games played and one start apiece, the opener's starter is the coach's
+pick, and him starting again is not the other man's absence -- that one
+was found by hand, Illinois State's Rittenhouse hurt at Oklahoma, out a
+week, back in week three. Starts rather than attempts because attempts fail
+the same way: a starter hurt early and back two weeks later has thrown
+fewer passes than the man who covered.
+
+What this does not catch is a demotion. A starter benched for the man
+behind him reads as an absence until the handover -- the plays cannot tell
+a benching from an injury -- which on the NFL is three weeks. Rare there,
+and on ncaafb, where it is common, the handover is one game.
 
 Read `cassandra.predictor.qb_out` on the lookahead before reading any number
 this produces. Whether a quarterback played is taken from the plays of the
@@ -78,8 +91,9 @@ from cassandra.qb import TeamGameQb, team_games
 _MAX_WEEK = 30
 
 #: Consecutive starts by one man, without the starter, that make him the
-#: starter. See the module docstring for the measurement behind 3.
-HANDOVER = 3
+#: starter -- per league, because a college quarterback change is usually
+#: not an injury. See the module docstring for the measurements.
+HANDOVER: Mapping[str, int] = {"nfl": 3, "ncaafb": 1}
 
 
 class PlayWeeks(Protocol):
@@ -142,18 +156,24 @@ def home_away_ids(
 def out_teams(
     ordered_games: Sequence[tuple[str, str]],
     parsed: Mapping[tuple[str, str], TeamGameQb],
+    handover: int,
 ) -> dict[str, set[str]]:
-    """Which teams were missing their expected starter, by game id.
+    """Which teams were missing their starter, by game id.
 
     `ordered_games` is (game_id, team) in the order that team played them,
     within one season. The caller does the ordering because it has the
-    schedule and this has only the plays.
+    schedule and this has only the plays. `handover` is how many straight
+    starts by one other man make him the starter instead.
     """
     missing: dict[str, set[str]] = {}
     starter: dict[str, str] = {}
     # Per team, who has been starting in the starter's absence and for how
     # many games running. Cleared the moment the starter takes a snap.
     covering: dict[str, tuple[str, int]] = {}
+    # Per team, starts this season by man and the order they first started
+    # in, for "more established". Both count only games already played.
+    starts: dict[str, Counter[str]] = {}
+    first_start: dict[str, dict[str, int]] = {}
     for game_id, team in ordered_games:
         current = parsed.get((game_id, team))
         if current is None:
@@ -161,21 +181,32 @@ def out_teams(
             # tells us nothing about who was available, and calling that
             # "out" would flag every wildcat afternoon as an injury.
             continue
+        today = current.starter_key
+        tally = starts.setdefault(team, Counter())
+        order = first_start.setdefault(team, {})
         expected = starter.get(team)
-        if expected is None:
-            starter[team] = current.starter_key
-            continue
-        if expected in current.snap_keys:
+
+        def standing(key: str) -> tuple[int, int]:
+            return (tally[key], -order.get(key, len(order)))
+
+        if expected is None or standing(today) > standing(expected):
+            # First game, or the established man starting in place of a
+            # cover: he has the job, and nobody is missing.
+            starter[team] = today
             covering.pop(team, None)
-            continue
-        missing.setdefault(game_id, set()).add(team)
-        cover, streak = covering.get(team, (None, 0))
-        streak = streak + 1 if cover == current.starter_key else 1
-        if streak >= HANDOVER:
-            starter[team] = current.starter_key
+        elif expected in current.snap_keys:
             covering.pop(team, None)
         else:
-            covering[team] = (current.starter_key, streak)
+            missing.setdefault(game_id, set()).add(team)
+            cover, streak = covering.get(team, (None, 0))
+            streak = streak + 1 if cover == today else 1
+            if streak >= handover:
+                starter[team] = today
+                covering.pop(team, None)
+            else:
+                covering[team] = (today, streak)
+        tally[today] += 1
+        order.setdefault(today, len(order))
     return missing
 
 
@@ -233,6 +264,11 @@ async def build(
             by_game: dict[str, list[int]] = {}
             for row, game_id in enumerate(columns["game_id"]):
                 by_game.setdefault(str(game_id), []).append(row)
+            # The starter is whoever threw early, so the plays have to be in
+            # game order. They arrive that way today; sorting is cheap
+            # insurance against a store that stops promising it.
+            for rows in by_game.values():
+                rows.sort(key=lambda i: columns["sequence_number"][i] or 0)
             for game_id, rows in by_game.items():
                 names = sides.get(game_id)
                 if names is None:
@@ -261,7 +297,9 @@ async def build(
                 for team in (game.home, game.away):
                     ordered.setdefault(team, []).append((game.game_id, team))
         for team_games_in_order in ordered.values():
-            for game_id, teams in out_teams(team_games_in_order, parsed).items():
+            for game_id, teams in out_teams(
+                team_games_in_order, parsed, HANDOVER[league]
+            ).items():
                 missing.setdefault(game_id, set()).update(teams)
     return missing
 
