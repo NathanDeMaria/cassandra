@@ -63,6 +63,64 @@ def test_the_expected_starter_rolls_forward() -> None:
     assert out_teams([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed) == {"g2": {"A"}}
 
 
+def test_the_starter_coming_back_is_not_the_backup_being_out() -> None:
+    """The week after an absence, the man who covered sits back down.
+
+    The one-game rule read that as a second absence -- the backup started
+    the previous game, so he was the expected starter -- and penalized the
+    team for getting its quarterback back.
+    """
+    parsed = {
+        ("g1", "A"): _qb("ace", ("ace",)),
+        ("g2", "A"): _qb("backup", ("backup",)),  # ace out
+        ("g3", "A"): _qb("ace", ("ace",)),  # ace back, backup sits
+    }
+
+    assert out_teams([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed) == {"g2": {"A"}}
+
+
+def test_a_return_after_a_long_absence_is_still_a_return() -> None:
+    """Seniority rather than attempts: by g4 the backup has thrown more
+    passes this season than the starter, and is still the backup."""
+    parsed = {
+        ("g1", "A"): _qb("ace", ("ace",)),
+        ("g2", "A"): _qb("backup", ("backup",)),
+        ("g3", "A"): _qb("backup", ("backup",)),
+        ("g4", "A"): _qb("ace", ("ace",)),
+    }
+    ordered = [("g1", "A"), ("g2", "A"), ("g3", "A"), ("g4", "A")]
+
+    assert out_teams(ordered, parsed) == {"g2": {"A"}}
+
+
+def test_a_second_absence_is_an_absence() -> None:
+    """The backup having covered before does not make him the starter."""
+    parsed = {
+        ("g1", "A"): _qb("ace", ("ace",)),
+        ("g2", "A"): _qb("backup", ("backup",)),
+        ("g3", "A"): _qb("ace", ("ace",)),
+        ("g4", "A"): _qb("backup", ("backup",)),
+    }
+    ordered = [("g1", "A"), ("g2", "A"), ("g3", "A"), ("g4", "A")]
+
+    assert out_teams(ordered, parsed) == {"g2": {"A"}, "g4": {"A"}}
+
+
+def test_the_backup_can_be_missing_too() -> None:
+    """Once the starter is gone for the season the backup is the man
+    expected, and a third quarterback covering for him is an absence."""
+    parsed = {
+        ("g1", "A"): _qb("ace", ("ace",)),
+        ("g2", "A"): _qb("backup", ("backup",)),  # ace out for the year
+        ("g3", "A"): _qb("backup", ("backup",)),
+        ("g4", "A"): _qb("third", ("third",)),  # backup out
+        ("g5", "A"): _qb("backup", ("backup",)),  # backup back
+    }
+    ordered = [("g1", "A"), ("g2", "A"), ("g3", "A"), ("g4", "A"), ("g5", "A")]
+
+    assert out_teams(ordered, parsed) == {"g2": {"A"}, "g4": {"A"}}
+
+
 def test_two_teams_are_tracked_apart() -> None:
     parsed = {
         ("g1", "A"): _qb("ace_a", ("ace_a",)),

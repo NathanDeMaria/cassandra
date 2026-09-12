@@ -9,7 +9,9 @@ is the sentence ESPN writes for a play. Two things are read out of it:
 
 The second is what makes an availability flag possible. A team's expected
 starter is whoever started its previous game; if that player records no pass
-and no rush in this one, he did not play.
+and no rush in this one, he did not play. Whether that is an absence -- and
+not the starter coming back while the man who covered for him sits -- is
+`cassandra.qb_out_build`'s call, which knows the order they first started.
 
 ## Four formats
 
