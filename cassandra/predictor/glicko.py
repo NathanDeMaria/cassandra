@@ -150,22 +150,7 @@ class GlickoPredictor(Predictor):
         score: float,
         home_adjustment: float,
     ) -> None:
-        g_opp = _g(opp_rating.rating_deviation)
-        expected_score = 1 / (
-            1
-            + 10
-            ** (
-                g_opp * (opp_rating.rating - (my_rating.rating + home_adjustment)) / 400
-            )
-        )
-        d2 = 1 / (_Q**2 * g_opp**2 * expected_score * (1 - expected_score))
-        rd_inv_sq = 1 / my_rating.rating_deviation**2
-        rd_inv_plus_d2 = rd_inv_sq + 1 / d2
-        rd_new = math.sqrt(1 / rd_inv_plus_d2)
-        rating_new = my_rating.rating + (_Q / rd_inv_plus_d2) * g_opp * (
-            score - expected_score
-        )
-        self._ratings[team] = _Rating(rating_new, rd_new)
+        self._ratings[team] = glicko_step(my_rating, opp_rating, score, home_adjustment)
 
     def get_rating(self, team: str) -> _Rating:
         # See EloPredictor.get_rating. The rd stays `initial_rd`: knowing which
@@ -257,6 +242,38 @@ class GlickoPredictor(Predictor):
             for team, r in ratings.items()
         }
         return predictor
+
+
+def glicko_step(
+    my_rating: _Rating,
+    opp_rating: _Rating,
+    score: float,
+    home_adjustment: float,
+) -> _Rating:
+    """One Glicko update: where `my_rating` lands after `score` against `opp_rating`.
+
+    A pure function rather than a method because the arithmetic is the same
+    whatever the two ratings stand for. `GlickoPredictor` runs a team through
+    it against a team; `CompoundGlickoPredictor` runs an offense through it
+    against a defense. One copy, so the two cannot drift apart by a sign.
+
+    `home_adjustment` is added to `my_rating` before the expected score is
+    taken: positive for the side at home, negative for the side that isn't.
+    """
+    g_opp = _g(opp_rating.rating_deviation)
+    expected_score = 1 / (
+        1
+        + 10
+        ** (g_opp * (opp_rating.rating - (my_rating.rating + home_adjustment)) / 400)
+    )
+    d2 = 1 / (_Q**2 * g_opp**2 * expected_score * (1 - expected_score))
+    rd_inv_sq = 1 / my_rating.rating_deviation**2
+    rd_inv_plus_d2 = rd_inv_sq + 1 / d2
+    rd_new = math.sqrt(1 / rd_inv_plus_d2)
+    rating_new = my_rating.rating + (_Q / rd_inv_plus_d2) * g_opp * (
+        score - expected_score
+    )
+    return _Rating(rating_new, rd_new)
 
 
 def _g(rating_deviation: float) -> float:

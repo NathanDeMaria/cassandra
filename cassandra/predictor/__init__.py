@@ -5,6 +5,7 @@ from .base_predictor import (
     anchor_path,
     load_anchors,
 )
+from .compound import CompoundGlickoPredictor
 from .config import (
     OptimizationConfig,
     PredictorConfig,

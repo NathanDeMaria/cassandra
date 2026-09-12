@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from .base_predictor import MEAN_RATING
+from .compound import CompoundGlickoPredictor
 from .conftest import GameFactory
 from .control import ControlGlickoPredictor
 from .elo import EloPredictor
@@ -40,7 +41,7 @@ RatedModel = (
 Rated = EloPredictor | Elo538Predictor | GlickoPredictor | MarginEloPredictor
 Model = RatedModel | type[FlatPredictor]
 
-# The three play-by-play models are here rather than only in their own test
+# The four play-by-play models are here rather than only in their own test
 # files because what they change is the update, not the contract: they still
 # have to save, load, regress and anchor like anything else. Built for a
 # league with no sweep they hold empty indexes and leave every game at its
@@ -52,6 +53,7 @@ RATED_MODELS: list[RatedModel] = [
     GlickoPredictor,
     ControlGlickoPredictor,
     BlendedGlickoPredictor,
+    CompoundGlickoPredictor,
     MarginEloPredictor,
     BlendedMarginEloPredictor,
 ]
