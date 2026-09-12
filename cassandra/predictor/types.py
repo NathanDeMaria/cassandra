@@ -28,6 +28,26 @@ class Matchup(Protocol):
     def game_id(self) -> str: ...
 
 
+class Unit(NamedTuple):
+    """One side of a team -- its offense or its defense -- as a rating.
+
+    Always with a deviation, unlike `Rating`: the only model that rates sides
+    is a Glicko, and a side's deviation is what says how much it has been
+    seen, which the model reads at prediction. See
+    `CompoundGlickoPredictor.unit_confidence`.
+    """
+
+    rating: float
+    rd: float
+
+
+class Units(NamedTuple):
+    """A team's two sides, on the same scale as its rating."""
+
+    offense: Unit
+    defense: Unit
+
+
 class Rating(NamedTuple):
     """One team's standing, in the shape every predictor can express.
 
@@ -36,10 +56,18 @@ class Rating(NamedTuple):
     denominator they normalize to on the way out to a release and denormalize
     from on the way back. `rd` is None for the Elo family rather than faked as
     0, because 0 is a meaningful (and very wrong) rating deviation.
+
+    `units` is the offense and defense a compound model keeps under the
+    rating, and None for every model that doesn't -- which is all but one,
+    so it is last and defaulted and a `Rating(r, rd)` written before it
+    existed is the same tuple it always was. Here rather than in a second
+    property because this is the seam a release goes through, and a side
+    rating that didn't go through it would be lost on the way back.
     """
 
     rating: float
     rd: float | None = None
+    units: Units | None = None
 
 
 class GameControl(NamedTuple):

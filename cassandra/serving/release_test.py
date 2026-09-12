@@ -12,9 +12,12 @@ from pydantic import ValidationError
 
 from cassandra.model_eval import score_predictions
 from cassandra.predictor import (
+    CompoundGlickoPredictor,
     Elo538Predictor,
     EloPredictor,
+    EpaIndex,
     FlatPredictor,
+    GameEpa,
     GlickoPredictor,
     Predictor,
     RatingsUnsupported,
@@ -34,6 +37,7 @@ from .release import (
     ModelRelease,
     TeamRating,
     TrainedThrough,
+    UnitRating,
     calibration_from_predictor,
     metrics_from_scored,
     ratings_from_predictor,
@@ -327,6 +331,78 @@ def test_rebuilds_the_elo_family_too(
     assert predict_matchup(rebuilt, "Team A", "Team C").team1_win_prob == pytest.approx(
         predict_matchup(original, "Team A", "Team C").team1_win_prob
     )
+
+
+def _compound() -> CompoundGlickoPredictor:
+    """A compound model with EPA for some of the season and not the rest."""
+    epa = {
+        "Team B@Team A": GameEpa(home=0.3, away=-0.2, home_plays=70, away_plays=65),
+        "Team A@Team C": GameEpa(home=-0.1, away=0.4, home_plays=60, away_plays=72),
+    }
+    predictor = CompoundGlickoPredictor(
+        "test_league", game_epa=EpaIndex(epa), unit_weight=0.3
+    )
+    _trained(predictor)
+    return predictor
+
+
+def test_a_release_carries_each_teams_offense_and_defense() -> None:
+    """On the team's scale, and only for teams the index had a play for."""
+    release = _snapshot(_compound(), "CompoundGlickoPredictor", {"unit_weight": 0.3})
+
+    a = release.ratings["Team A"]
+    assert a.offense is not None and a.defense is not None
+    assert a.offense.rd > 0 and a.defense.rd > 0
+    # Team B and Team C each played in an EPA game too; a team that hadn't
+    # would carry None on both sides, the way the Elo family does.
+    assert all(rating.offense is not None for rating in release.ratings.values())
+
+
+def test_the_elo_family_carries_no_sides() -> None:
+    release = _snapshot(_trained(EloPredictor("test_league")), "EloPredictor", {})
+    assert all(
+        rating.offense is None and rating.defense is None
+        for rating in release.ratings.values()
+    )
+
+
+def test_rebuilds_a_compound_predictor_that_predicts_the_same() -> None:
+    """The sides are read at prediction, so a dropped side changes the number.
+
+    `unit_weight` is well above its default so that a rebuild which lost
+    the sides -- and so predicts as the parent alone -- is visibly wrong.
+    """
+    original = _compound()
+    rebuilt = _snapshot(
+        original, "CompoundGlickoPredictor", {"unit_weight": 0.3}
+    ).rating_predictor()
+    assert isinstance(rebuilt, CompoundGlickoPredictor)
+
+    for home, away in (("Team A", "Team B"), ("Team C", "Team A")):
+        assert predict_matchup(rebuilt, home, away).team1_win_prob == pytest.approx(
+            predict_matchup(original, home, away).team1_win_prob
+        )
+        assert predict_matchup(rebuilt, home, away).team1_win_prob != pytest.approx(
+            predict_matchup(
+                GlickoPredictor.from_ratings("test_league", original.ratings),
+                home,
+                away,
+            ).team1_win_prob
+        )
+
+
+def test_a_side_without_its_pair_is_not_a_side() -> None:
+    """Half a pair is no state any model produces, so it rebuilds as none."""
+    rating = TeamRating(rating=1500, rd=100, offense=UnitRating(rating=1600, rd=90))
+    release = _release(
+        predictor_class="CompoundGlickoPredictor",
+        params={},
+        ratings={"Team A": rating},
+        league="test_league",
+    )
+    rebuilt = release.rating_predictor()
+    assert isinstance(rebuilt, CompoundGlickoPredictor)
+    assert rebuilt.unit_confidence("Team A") == 0
 
 
 def test_an_unrated_team_is_the_same_stranger_on_both_sides() -> None:

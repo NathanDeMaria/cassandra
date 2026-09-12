@@ -174,6 +174,17 @@ degradation rather than as nothing.
 What is not established: the optimum, which this scan bracketed rather than
 found, and whether nfl behaves the same way; the configs in `models/` are
 what will say.
+
+What a release carries
+----------------------
+
+`ratings` hands each team's `Rating` out with its two sides attached, as
+absolutes on the team's scale, and `from_ratings` puts them back -- so a
+release rehydrates to a model that predicts as the publisher's did. A team
+the index never had a play for goes out with no sides and comes back with
+none, which is confidence 0 and the parent alone. The one thing a release
+does not carry is the running center, which only matters to a rebuilt model
+that keeps updating; see `from_ratings`.
 """
 
 import math
@@ -191,7 +202,7 @@ from .glicko import GlickoPredictor, _Rating, glicko_step
 from .opponent_prior import OpponentPriorManager
 from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
-from .types import GameEpa, Matchup, Prediction
+from .types import GameEpa, Matchup, Prediction, Rating, Unit, Units
 
 # How much of a fully-known team's rating, at prediction, is its units rather
 # than its record: `(1 - w) * parent + w * (offense + defense) / 2`, with `w`
@@ -663,6 +674,59 @@ class CompoundGlickoPredictor(GlickoPredictor):
         seen = params.pop("epa_seen", (0.0, 0))
         params["epa_seen"] = (float(seen[0]), int(seen[1]))
         return super().from_state_dict(params)
+
+    @property
+    def ratings(self) -> dict[str, Rating]:
+        """The parent's ratings, each carrying its two sides where there are any.
+
+        Absolutes, not offsets: a release reader wants a 1650 offense to
+        mean what a 1650 team does, and the prior an offset is measured from
+        is this model's business. Only teams the index has had a play for
+        carry sides; the rest are None rather than a pair sitting at the
+        prior with the initial deviation, which a consumer could not tell
+        from a measured pair that happens to sit there.
+        """
+        return {
+            team: rating._replace(
+                units=self._absolute_units(team) if team in self._units else None
+            )
+            for team, rating in super().ratings.items()
+        }
+
+    def _absolute_units(self, team: str) -> Units:
+        units = self.get_units(team)
+        return Units(
+            Unit(units.offense.rating, units.offense.rating_deviation),
+            Unit(units.defense.rating, units.defense.rating_deviation),
+        )
+
+    @classmethod
+    def from_ratings(
+        cls, league: str, ratings: Mapping[str, Rating], **params: Any
+    ) -> Self:
+        """The parent's rebuild, then the sides put back under their teams.
+
+        The release holds absolutes, so each side goes back to an offset from
+        the prior *this* predictor computes -- its parent rating and whatever
+        anchors it has -- and comes back out of `get_units` as the absolute
+        that went in, whether or not the anchors match the publisher's.
+
+        What a release does not carry is the running center, so a rebuilt
+        model that goes on to update from new games recenters from those. It
+        converges within a few dozen offenses and cancels in every gap the
+        model reads, so a prediction never sees it; a rating read off such a
+        model could sit a few points from where the publisher's would.
+        """
+        predictor = super().from_ratings(league, ratings, **params)
+        for team, rating in ratings.items():
+            if rating.units is None:
+                continue
+            prior = predictor._prior(team)
+            predictor._units[team] = _Units(
+                _offset(prior, _Rating(*rating.units.offense)),
+                _offset(prior, _Rating(*rating.units.defense)),
+            )
+        return predictor
 
 
 def _absolute(prior: float, offset: _Rating) -> _Rating:

@@ -24,7 +24,7 @@ from .conftest import GameFactory
 from .epa import EpaIndex
 from .glicko import GlickoPredictor
 from .opponent_prior import OpponentPriorManager
-from .types import GameEpa
+from .types import GameEpa, Rating, Unit
 
 # A game where the home offense moved the ball and the away one didn't. Over
 # a full complement of snaps, so nothing here is about the play counts.
@@ -79,8 +79,15 @@ def test_unit_weight_zero_is_glicko_game_by_game(game: GameFactory) -> None:
         assert compound.update_game(played) == glicko.update_game(played)
 
     assert compound.unit_confidence("A") > 0
-    assert compound.ratings == glicko.ratings
+    assert _parents(compound) == glicko.ratings
     assert compound.predict_game(game("B", "C")) == glicko.predict_game(game("B", "C"))
+
+
+def _parents(predictor: CompoundGlickoPredictor) -> dict[str, Rating]:
+    """The ratings without the sides, for comparing against a plain Glicko."""
+    return {
+        team: rating._replace(units=None) for team, rating in predictor.ratings.items()
+    }
 
 
 def test_a_league_without_epa_is_glicko_whatever_the_weight(
@@ -230,7 +237,7 @@ def test_the_children_move_the_prediction(game: GameFactory) -> None:
         predictor = _predictor(epa, unit_weight=weight)
         predictor.update_game(game("A", "C", 21, 7, game_id="a"))
         predictor.update_game(game("B", "D", 21, 7, game_id="b"))
-        assert predictor.ratings["A"] == predictor.ratings["B"]
+        assert _parents(predictor)["A"] == _parents(predictor)["B"]
         predictions.append(predictor.predict_game(game("A", "B")).team1_win_prob)
 
     assert (
@@ -331,20 +338,59 @@ def test_the_children_round_trip_through_the_state_dict(game: GameFactory) -> No
     )
 
 
-def test_from_ratings_comes_back_with_the_children_empty(game: GameFactory) -> None:
-    """The documented limit: a release carries one rating per team."""
-    predictor = _predictor({"g": LOPSIDED})
+def test_ratings_carry_the_sides_as_absolutes_for_teams_that_have_them(
+    game: GameFactory,
+) -> None:
+    """What a release reads: the two sides on the team's scale, or nothing."""
+    predictor = _predictor({"g": LOPSIDED}, anchors={"A": 1200})
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    predictor.update_game(game("C", "D", 21, 7))  # no EPA
+
+    sides = predictor.ratings["A"].units
+    assert sides is not None
+    assert sides.offense == Unit(*predictor.get_units("A").offense)
+    # Absolutes on the team's scale, not offsets: both of A's sides won
+    # their contests, so both sit above the 1200 anchor rather than above 0.
+    assert sides.offense.rating > 1200
+    assert sides.defense.rating > 1200
+    assert predictor.ratings["C"].units is None
+
+
+def test_from_ratings_puts_the_sides_back(game: GameFactory) -> None:
+    """The release round trip, side by side with the parent's."""
+    predictor = _predictor({"g": LOPSIDED}, anchors={"A": 1200})
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    predictor.update_game(game("C", "D", 21, 7))  # no EPA
+
+    rebuilt = CompoundGlickoPredictor.from_ratings(
+        "test_league", predictor.ratings, game_epa=EpaIndex(), anchors={"A": 1200}
+    )
+
+    for team in ("A", "B"):
+        assert rebuilt.get_units(team) == predictor.get_units(team)
+        assert rebuilt.unit_confidence(team) == predictor.unit_confidence(team)
+    assert rebuilt.unit_confidence("C") == 0
+    assert rebuilt.ratings == predictor.ratings
+    for home, away in (("A", "B"), ("C", "A"), ("D", "B")):
+        assert rebuilt.predict_game(game(home, away)) == predictor.predict_game(
+            game(home, away)
+        )
+
+
+def test_the_sides_survive_a_rebuild_with_different_anchors(
+    game: GameFactory,
+) -> None:
+    """A consumer without the publisher's anchor file still reads the same
+    offense: the release holds absolutes, and the prior is only how they are
+    stored on the way in."""
+    predictor = _predictor({"g": LOPSIDED}, anchors={"A": 1200})
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
 
     rebuilt = CompoundGlickoPredictor.from_ratings(
-        "test_league", predictor.ratings, game_epa=EpaIndex()
+        "test_league", predictor.ratings, game_epa=EpaIndex(), anchors={}
     )
 
-    assert rebuilt.ratings == predictor.ratings
-    assert rebuilt.unit_confidence("A") == 0
-    assert rebuilt.predict_game(game("A", "B")) == GlickoPredictor.from_ratings(
-        "test_league", predictor.ratings
-    ).predict_game(game("A", "B"))
+    assert rebuilt.get_units("A") == predictor.get_units("A")
 
 
 def test_the_offseason_pulls_the_children_toward_their_prior(
