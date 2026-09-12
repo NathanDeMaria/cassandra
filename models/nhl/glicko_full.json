@@ -10,10 +10,6 @@
             80,
             350
         ],
-        "weekly_rd_increase": [
-            0,
-            60
-        ],
         "season_rd_increase": [
             0,
             250
@@ -23,14 +19,14 @@
             "pythagorean",
             "sigmoid"
         ],
-        "season_regression": [
-            0,
-            0.75
-        ],
         "sigmoid_scale": [
             0.1,
             6
         ]
+    },
+    "fixed": {
+        "weekly_rd_increase": 0,
+        "season_regression": 0
     },
     "n_iter": 150
 }

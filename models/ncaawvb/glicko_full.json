@@ -23,14 +23,13 @@
             "pythagorean",
             "sigmoid"
         ],
-        "season_regression": [
-            0,
-            0.75
-        ],
         "sigmoid_scale": [
             0.05,
             3
         ]
+    },
+    "fixed": {
+        "season_regression": 0
     },
     "n_iter": 150
 }
