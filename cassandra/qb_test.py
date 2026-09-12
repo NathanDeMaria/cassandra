@@ -250,8 +250,10 @@ def test_a_numbered_receiver_is_not_the_passer() -> None:
     """The lazy tail stops at the first verb, so `to #12 D.Boston` is never
     pulled into the passer's name."""
     text = "(14:22) Shotgun #2 D.Williams Jr. pass complete short right to #12 D.Boston"
+    thrower = passer(text)
 
-    assert name_key(passer(text)) == "williams d"
+    assert thrower is not None
+    assert name_key(thrower) == "williams d"
 
 
 def test_the_nfl_feed_keeps_a_suffix_too() -> None:
