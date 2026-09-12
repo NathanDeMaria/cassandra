@@ -117,9 +117,9 @@ async def _run_optimization(config_file: str) -> None:
     # Inside Batch the search saves itself under this job's id and a retry
     # after a spot reclaim resumes from the save; anywhere else there is no
     # id and nothing is saved. See `cassandra.checkpoint`.
-    checkpoint = S3Checkpoint.for_this_job(aws_config.bucket)
+    checkpoint = S3Checkpoint.for_this_job()
     if checkpoint is not None:
-        print(f"[optimize] checkpointing to s3://{aws_config.bucket}/{checkpoint.key}")
+        print(f"[optimize] checkpointing to s3://{checkpoint.bucket}/{checkpoint.key}")
     target, params = optimize(
         target_function,
         config_model.parameters,

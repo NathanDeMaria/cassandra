@@ -38,6 +38,11 @@ locals {
   # results to under a `cassandra/` prefix.
   batch_bucket = local.shared.bucket
 
+  # Where anything temporary goes -- search checkpoints, and any future
+  # intermediate that only has to survive a retry. Provisioned and expired by
+  # aws-batch-optimization; see `cassandra.constants.temp_bucket`.
+  temp_bucket = local.shared.temp_bucket
+
   # What every job definition gets, whether or not it is known to need it.
   #
   # The region used to be the launcher's alone, on the reasoning that it was
@@ -59,6 +64,7 @@ locals {
   job_environment = [
     { name = "AWS_DEFAULT_REGION", value = var.aws_region },
     { name = "CASSANDRA_BUCKET", value = local.batch_bucket },
+    { name = "CASSANDRA_TEMP_BUCKET", value = local.temp_bucket },
   ]
 
   # What the launcher submits. `game_control` used to be deliberately absent
@@ -114,14 +120,22 @@ data "aws_iam_policy_document" "job" {
     ]
   }
 
-  # A search saves itself under `cassandra/checkpoints/<job id>.json` and
-  # deletes the save once it has finished (`cassandra.checkpoint`). Delete
-  # is granted on that prefix and nowhere else: nothing a job writes
-  # elsewhere in the bucket is its to remove.
+  # The temp bucket: a search saves itself there under
+  # `cassandra/checkpoints/<job id>.json` and deletes the save once it has
+  # finished (`cassandra.checkpoint`). Delete is granted here and not on the
+  # batch bucket: nothing a job writes there is its to remove.
   statement {
-    sid       = "CheckpointCleanup"
-    actions   = ["s3:DeleteObject"]
-    resources = ["arn:aws:s3:::${local.batch_bucket}/cassandra/checkpoints/*"]
+    sid = "TempBucketIO"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::${local.temp_bucket}",
+      "arn:aws:s3:::${local.temp_bucket}/*",
+    ]
   }
 
   statement {
@@ -268,7 +282,7 @@ module "optimize" {
   timeout_seconds    = var.optimize_timeout_seconds
 
   # The compute environment is all spot. A search that gets reclaimed now
-  # resumes from the checkpoint it keeps in the bucket (`cassandra.checkpoint`),
+  # resumes from the checkpoint it keeps in the temp bucket (`cassandra.checkpoint`),
   # so a retry pays for the probes since the last save rather than for the
   # whole attempt. Only host failures retry; a config that genuinely fails
   # still fails once.

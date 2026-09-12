@@ -7,6 +7,7 @@ its save rather than from zero, that a SIGTERM makes a save, that a
 finished search drops its save, and that a Batch job finds its own slot.
 """
 
+import json
 import os
 import signal
 from pathlib import Path
@@ -15,6 +16,7 @@ import numpy as np
 import pytest
 
 from .checkpoint import CHECKPOINT_PREFIX, FileCheckpoint, S3Checkpoint
+from .constants import temp_bucket
 from .optimize import INIT_POINTS, optimize
 
 BOUNDS = {"x": (-3.0, 3.0), "y": (-3.0, 3.0)}
@@ -162,11 +164,32 @@ def test_a_file_save_replaces_rather_than_truncates(tmp_path: Path) -> None:
 
 
 def test_a_batch_job_finds_its_own_slot(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keyed by the job id, with an array child's colon made key-safe."""
+    """Keyed by the job id, with an array child's colon made key-safe, in the
+    temp bucket."""
+    monkeypatch.setenv("CASSANDRA_TEMP_BUCKET", "scratch")
     monkeypatch.delenv("AWS_BATCH_JOB_ID", raising=False)
-    assert S3Checkpoint.for_this_job("bucket") is None
+    assert S3Checkpoint.for_this_job() is None
 
     monkeypatch.setenv("AWS_BATCH_JOB_ID", "2d995432-63be:7")
-    slot = S3Checkpoint.for_this_job("bucket")
+    slot = S3Checkpoint.for_this_job()
     assert slot is not None
+    assert slot.bucket == "scratch"
     assert slot.key == f"{CHECKPOINT_PREFIX}2d995432-63be-7.json"
+
+
+def test_the_temp_bucket_comes_from_the_environment_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    outputs = tmp_path / "config.json"
+    outputs.write_text(json.dumps({"temp_bucket": {"value": "from-file"}}))
+    monkeypatch.setattr("cassandra.constants._OUTPUTS_FILE", outputs)
+
+    monkeypatch.setenv("CASSANDRA_TEMP_BUCKET", "from-env")
+    assert temp_bucket() == "from-env"
+
+    monkeypatch.delenv("CASSANDRA_TEMP_BUCKET")
+    assert temp_bucket() == "from-file"
+
+    monkeypatch.setattr("cassandra.constants._OUTPUTS_FILE", tmp_path / "missing.json")
+    with pytest.raises(FileNotFoundError, match="CASSANDRA_TEMP_BUCKET"):
+        temp_bucket()

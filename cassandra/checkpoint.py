@@ -20,9 +20,9 @@ with a higher `AWS_BATCH_JOB_ATTEMPT`, so `for_this_job` finds the save the
 previous attempt left. A later run of the same config is a different job
 and starts clean, which is the point: it is searching different seasons
 and a rebuilt index, and a save from last week would resume a search over
-data that no longer exists. The job deletes its save on success, and the
-prefix carries a lifecycle rule for the ones a job that spent every attempt
-leaves behind -- see `CHECKPOINT_PREFIX`.
+data that no longer exists. The saves live in the temp bucket
+(`cassandra.constants.temp_bucket`), which expires whatever a job that spent
+every attempt leaves behind; a job that finishes deletes its own.
 
 Outside Batch there is no job id and nothing is saved, unless a caller
 hands the optimizer a `FileCheckpoint` -- which is what the tests do, and
@@ -39,17 +39,11 @@ from typing import Any, Protocol, Self
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
 
-# Under the shared bucket's `cassandra/` prefix like every other artifact,
-# in a directory of its own so a lifecycle rule can expire it: nothing here
-# is worth keeping past the job that wrote it, and a job that fails every
-# attempt leaves its last save behind. Apply on the bucket, once:
-#
-#   {"Rules": [{"ID": "cassandra-checkpoints", "Status": "Enabled",
-#               "Filter": {"Prefix": "cassandra/checkpoints/"},
-#               "Expiration": {"Days": 7}}]}
-#
-# Seven days is longer than any job can live (Batch's own timeout is hours),
-# so a rule can never expire a save an attempt is about to resume from.
+from .constants import temp_bucket
+
+# Under a `cassandra/` prefix in the temp bucket, the way every artifact in
+# the batch bucket is: the temp bucket is shared too, and a key that says
+# whose it is costs nothing.
 CHECKPOINT_PREFIX = "cassandra/checkpoints/"
 
 # How Batch tells a container which job it is. An array child's id is
@@ -92,7 +86,7 @@ class FileCheckpoint:
 
 
 class S3Checkpoint:
-    """A save in the batch bucket, under `CHECKPOINT_PREFIX`.
+    """A save in the temp bucket, under `CHECKPOINT_PREFIX`.
 
     Synchronous on purpose: `bayes_opt` drives the search from a plain loop,
     and the SIGTERM handler that makes the save worth having runs on the
@@ -106,12 +100,16 @@ class S3Checkpoint:
         self._key = key
 
     @classmethod
-    def for_this_job(cls, bucket: str) -> Self | None:
+    def for_this_job(cls) -> Self | None:
         """The save slot for the Batch job this process is, or None outside Batch."""
         job_id = os.environ.get(_JOB_ID_VAR)
         if not job_id:
             return None
-        return cls(bucket, f"{CHECKPOINT_PREFIX}{job_id.replace(':', '-')}.json")
+        return cls(temp_bucket(), f"{CHECKPOINT_PREFIX}{job_id.replace(':', '-')}.json")
+
+    @property
+    def bucket(self) -> str:
+        return self._bucket
 
     @property
     def key(self) -> str:
@@ -145,8 +143,8 @@ class S3Checkpoint:
 
         Housekeeping after a search that has already produced its result,
         so a denied delete -- a role without the grant, say -- must not turn
-        a finished search into a failed job. The lifecycle rule on the prefix
-        picks up what this leaves.
+        a finished search into a failed job. The temp bucket expires what
+        this leaves.
         """
 
         async def delete() -> None:
