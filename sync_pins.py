@@ -62,8 +62,17 @@ def sync(league: str, source: str) -> list[str]:
         if raw.get("fixed_from") != source:
             continue
         changed = []
+        waiting = []
         for name, pinned in raw["fixed"].items():
             if name in source_config.parameters:
+                if name not in fitted:
+                    # The source searches it and the fit on disk predates the
+                    # dimension -- a parameter added to the search that has
+                    # not been run yet. The pin keeps the value it was
+                    # written with, which is the default the fit replayed
+                    # at, and moves on the run after.
+                    waiting.append(name)
+                    continue
                 current = fitted[name]
             elif name in source_config.fixed:
                 current = source_config.fixed[name]
@@ -77,6 +86,11 @@ def sync(league: str, source: str) -> list[str]:
             lines.append(f"{league}/{path.stem}: " + ", ".join(changed))
         else:
             lines.append(f"{league}/{path.stem}: already in sync")
+        if waiting:
+            lines.append(
+                f"{league}/{path.stem}: {', '.join(waiting)} not in the fit yet; "
+                f"re-run after the next {source} search"
+            )
     return lines
 
 
