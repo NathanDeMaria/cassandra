@@ -34,7 +34,7 @@ class Unit(NamedTuple):
     Always with a deviation, unlike `Rating`: the only model that rates sides
     is a Glicko, and a side's deviation is what says how much it has been
     seen, which the model reads at prediction. See
-    `CompoundGlickoPredictor.unit_confidence`.
+    `CompoundGlickoPredictor.unit_information`.
     """
 
     rating: float
@@ -91,7 +91,7 @@ class GameControl(NamedTuple):
 
 
 class GameEpa(NamedTuple):
-    """One game's EPA per play, one number per offense.
+    """One game's EPA per play, one number per offense -- two readings of it.
 
     Expected points added per snap: what each offense moved the ball's value
     by, averaged over the snaps it ran. Unlike `GameControl` these are not
@@ -101,30 +101,47 @@ class GameEpa(NamedTuple):
     `away` what the away offense did, each signed for the team with the ball,
     so a home defense that kept forcing punts shows up as a low `away`.
 
-    The *unweighted* reading, since that is what the sweep writes -- every
-    snap counted once, garbage time included. `lucky_ones` reports it
-    alongside a competitiveness-weighted one and is explicit about which is
-    for which job: weighted is the better description of a single game, and
-    unweighted "is the one to rank on and the one to add up across a season",
-    because the weighting removes noise a season averages away anyway at a
-    price in sample that doesn't come back. A rating model is the second job.
-    Unnamed in the fields for the reason `GameControl` doesn't name its
-    reading either: it is a property of the whole file and lives in the
-    `EpaFit` header, not repeated on sixteen thousand rows.
+    `home` and `away` are the *unweighted* reading: every snap counted once,
+    garbage time included. `lucky_ones` reports it alongside a
+    competitiveness-weighted one and is explicit about which is for which
+    job: weighted is the better description of a single game, and unweighted
+    "is the one to rank on and the one to add up across a season", because
+    the weighting removes noise a season averages away anyway at a price in
+    sample that doesn't come back. `home_plays` and `away_plays` are the
+    denominators, and the part that says whether to trust the numbers: a
+    per-play average over twelve snaps of a weather-shortened game is not
+    the same measurement as one over seventy. They are also what turns these
+    averages back into the points they came from, which is what
+    `EpaIndex.margin` does for the margin-native models.
 
-    Both sides, unlike `GameControl` -- there is no `1 -` to recover the away
-    number from the home one, and the two denominators genuinely differ.
-    `home_plays` and `away_plays` are those denominators, and they are the
-    part that says whether to trust the numbers: a per-play average over
-    twelve snaps of a weather-shortened game is not the same measurement as
-    one over seventy. They are also what turns these averages back into the
-    points they came from, which is what a margin-native model wants.
+    `home_weighted` and `away_weighted` are the other reading: the same
+    bounded EPA over the same snaps, each snap weighted by how much the game
+    was still in doubt when it happened -- garbage time adjusted, in the
+    phrase. `home_weight` and `away_weight` are the effective samples behind
+    them, the sum of the play weights, and the honest part of those numbers
+    the way the play counts are for the flat ones: 12 of 70 is an average
+    over the first quarter and a half of a rout. The weighted pair can be
+    None where the flat one can't -- a team whose every snap came with the
+    game already decided has nothing to average -- and defaults to None so a
+    `GameEpa` built without it reads as a game with no weighted reading.
+
+    Both readings, because two models want two different things of a game.
+    A model blending EPA *into the scoreboard's own target* wants the flat
+    one, for `lucky_ones`' reason. A model rating an offense on how it
+    played wants the game as it was contested, not as it was run out; see
+    `cassandra.predictor.compound`. Neither reading is named in the fields:
+    which is which is a property of the whole file, and lives in the
+    `EpaFit` header rather than being repeated on sixteen thousand rows.
     """
 
     home: float
     away: float
     home_plays: int
     away_plays: int
+    home_weighted: float | None = None
+    away_weighted: float | None = None
+    home_weight: float = 0.0
+    away_weight: float = 0.0
 
 
 class Prediction(NamedTuple):

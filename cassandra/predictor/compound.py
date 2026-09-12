@@ -24,13 +24,17 @@ expected points margin, at whatever slope the league's fit found. For the
 children to be on that scale their contests have to be scored in the same
 points through the same squash, and they are:
 
-- An offense's per-play average times its snaps is the points it added over
-  the game. Minus what an average offense would have added over the same
-  snaps -- `epa_center`, a running mean of every offense seen so far -- it is
-  the offense's margin over average, and the two offenses' margins in a game
-  difference to the game's EPA margin, which `glicko_blend` measured at 0.86
-  of the scoreboard's spread. `epa_scale` is the exchange rate between the
-  two kinds of points.
+- The result of a contest is the offense's EPA per play, **garbage time
+  adjusted** -- `GameEpa.home_weighted` / `.away_weighted`, each snap
+  weighted by how much the game was still in doubt when it happened. The
+  game as it was contested, not as it was run out. Minus what an average
+  offense averages (`epa_center`, a running mean of every offense seen so
+  far) it is how much better per snap this offense played than average, and
+  times `epa_scale` -- a typical side's snap count -- that is points over an
+  average-length game. **Not** times the game's own snap count: an offense
+  is rated on how well it moved the ball, not on how often it got to, and a
+  snap count would credit the offense for a defense that kept handing it
+  the ball back.
 
 - A contest is half a game. With a team's unit rating defined as the mean of
   its offense and defense, the two contests' gaps -- home offense less away
@@ -52,27 +56,37 @@ residuals on top of the record; at 0 they are ratings of their own, seeded
 where the parent was seeded. Either way 0 offset is "nothing known" and the
 offseason pulls toward it.
 
-Measured, the scale holds: with the units alone (`unit_weight` 0, so they are
-learning without speaking) the unit gap tracks the parent's gap at +0.91
-correlation with a slope of 0.67 across 20,860 ncaafb games, and across
-teams the unit mean correlates +0.87 with the parent rating.
+Each side has its own initial deviation, `offense_initial_rd` and
+`defense_initial_rd`, both defaulting to the parent's. Offense is said to
+be the steadier of the two, and the initial value is where a side starts
+*and* the cap the offseason grows back to -- so a steadier side is a
+smaller number here, which is less to learn at first and less to forget
+each year.
 
 How the children speak
 ----------------------
 
-Two ratings on one scale blend, so at prediction a team is rated
+The record and the units are two estimates of one quantity, each with a
+deviation, so at prediction they are combined the way two noisy
+measurements of one thing are: by precision.
 
-    (1 - w) * parent + w * (offense + defense) / 2,   w = unit_weight * confidence
+    rating = (parent / rd_parent^2 + w * earned * unit_mean)
+           / (1 / rd_parent^2 + w * earned)
 
-and the parent's own arithmetic -- home edge, matchup adjustments, Glicko's
-logistic of the gap -- runs on that. `confidence` is one minus the units'
-share of the variance they started with: 0 for a pair still at the initial
-deviation, toward 1 as it tightens. It is what keeps a team the index has
-never had a play for at its record, which is most of an ncaafb schedule and
-all of it before 2006; without it the blend regresses every such team toward
-its anchor by `unit_weight`, and costs more on the games it can't see than it
-earns on the ones it can (measured: +0.00019 overall against -0.00012 on
-the EPA games, at `unit_weight` 0.1).
+`unit_mean` is `(offense + defense) / 2`; `earned` is its precision net of
+what the pair started with -- 0 for a pair still at the initial deviations,
+growing as they tighten -- because the prior is not evidence and the parent
+has already counted it once; `w` is `unit_weight`, how far to trust a
+unit's deviation against the parent's, with 1 taking both at face value.
+Then the parent's own arithmetic -- home edge, matchup adjustments, Glicko's
+logistic of the gap -- runs on that rating.
+
+A team the index never had a play for has earned nothing and stays at its
+record, which is most of an ncaafb schedule and all of it before 2006. That
+matters more than it sounds: a blend that did not fade regressed every such
+team toward its anchor and cost more on the games it couldn't see than it
+earned on the ones it could (measured: +0.00019 overall against -0.00012 on
+the EPA games).
 
 At `unit_weight` 0 this is `GlickoPredictor` exactly, game by game -- the
 same property `BlendedGlickoPredictor` has at `play_weight` 0 and for the
@@ -100,40 +114,45 @@ What it was measured to be worth
 --------------------------------
 
 Replayed on ncaafb 2002-2023 off the local season cache (2021, 2024 and 2025
-skipped for mis-grouped weeks), holding `glicko_full`'s fitted parameters and
-the same saved opponent priors, so the parent is the baseline exactly and
-`unit_weight` 0 reproduces its 0.158621. Every number is against that, and
-the EPA column is over the 20,860 games the index has.
+skipped for mis-grouped weeks) against an index rebuilt with the weighted
+pair, holding `glicko_full`'s fitted parameters and the same saved opponent
+priors, so the parent is the baseline exactly and `unit_weight` 0 reproduces
+its 0.158621. Every number is against that, and the EPA column is over the
+20,860 games the index has for those seasons.
 
-    parent_share  epa_scale  unit_weight   d brier   d brier, EPA games
-             0.0        2.5         0.10  -0.000063         -0.000171
-             0.0        1.6         0.10  -0.000060         -0.000159
-             0.0        4.0         0.10  -0.000061         -0.000167
-             0.0        1.0         0.10  -0.000048         -0.000119
-             0.0        1.0         0.25  +0.000027         +0.000008
-             0.0        1.0         0.50  +0.000590         +0.001139
-             0.0        1.0         1.00  +0.003652         +0.007555
-             0.5        1.0         0.10  -0.000042         -0.000098
-             1.0        1.0         0.10  -0.000017         -0.000034
-             1.0        1.0         1.00  +0.004674         +0.011031
+    unit_weight  epa_scale  parent_share   d brier   d brier, EPA games
+           0.10         40           0.0  -0.000057           -0.000155
+           0.05         40           0.0  -0.000048           -0.000129
+           0.10         80           0.0  -0.000049           -0.000182
+           0.20         40           0.0  -0.000002           -0.000021
+           0.50         80           0.0  +0.000468           +0.000947
+           1.00         80           0.0  +0.001268           +0.002667
+           0.10         40           0.5  -0.000031           -0.000112
+           0.10         40           1.0  +0.000028           +0.000024
 
-Three readings. **The weight wants to be small**: a tenth of the rating,
-with a quarter already break-even and the units alone (`unit_weight` 1) a
-model 0.004 worse than the parent even though they are on its scale and
-correlate with it at 0.87. That is the finding of `glicko_blend` arriving by
-a different road -- EPA is a noisier measurement of the thing the scoreboard
-measures, worth the variance reduction of averaging in a little of it and
-nothing beyond. **The anchor is the better prior**: `parent_share` 0 beats
-1 at every weight, and 1 at weight 1 is the worst row in the table. Scoring
-a child against its team's record makes it learn the part of the record the
-plays don't show, and that part predicts less well than the plays do on
-their own. **`epa_scale` is flat above 1**: 1.6 through 4.0 are within
-0.000003 of each other. Past ~2 the squash is saturated and a contest is
-scored on who won it, which is `binary_score`'s answer, and it is a little
-better than the points. `unit_initial_rd` above the parent's `initial_rd`
-costs on the non-EPA games -- a looser prior takes longer to earn
-confidence and moves further when it does -- so it defaults to the parent's
-and stays out of the search.
+Four readings. **A contest is a tenth of a game.** `unit_weight` 1 -- both
+deviations at face value -- hands the units about half the rating and costs
+0.0013; the optimum is near 0.1, which under precision weighting has a
+plain meaning: as evidence about the team, a contest on EPA is worth about
+a tenth of a result on the scoreboard. That is `glicko_blend`'s finding
+arriving by a different road -- EPA is a noisier measurement of the thing
+the scoreboard measures, worth the variance reduction of averaging in a
+little of it and nothing beyond. **The anchor is the better prior**:
+`parent_share` 0 beats 1 at every weight. Scoring a child against its
+team's record makes it learn the part of the record the plays don't show,
+and that part predicts less well than the plays do on their own.
+**`epa_scale` is flat from 40 to 80** -- 0.5 to 1 typical game's worth of
+snaps -- and 20 is too soft. **The two sides look equally knowable**:
+tightening the offense's initial deviation to 300 while the defense stays
+at the parent's 531 costs 0.00002, tightening the defense's costs 0.00001,
+tightening both costs 0.00004. The hypothesis that offense is the steadier
+side is not what this replay shows, but the resolution here is a few
+probes, and the configs search both.
+
+Against the same scoring, the blend the first draft used -- a linear
+`(1 - w) * parent + w * units` with `w` faded by confidence -- reaches
+-0.000030 at its best. Precision weighting is both the version with a
+reason and the better one.
 
 The gain is about half `BlendedGlickoPredictor`'s -0.00013 and, like it,
 about a hundredth of the 0.009 that separates ncaafb's two best models.
@@ -152,19 +171,18 @@ marked down every game it was favored. Scored against nothing (children as
 ratings in their own arbitrary currency) it helped by 0.00004. Putting the
 children in the parent's currency, as above, is what let the anchors seed
 them and what turned the residual reading from destructive into merely
-worse; fading unseen units out of the blend is what let the seeded children
-be used at all. Between them they are the improvement from 0.00004 to
-0.00006.
+worse; fading unseen units out of the combination is what let the seeded
+children be used at all.
 
 **The signal is real.** Permute which game each `GameEpa` belongs to --
 both sides kept together, every marginal preserved, only the correspondence
 to the game played destroyed -- and replay the best row fifteen times:
 
     shuffles  null mean   vs off      real is
-          15   0.158793  +0.000172   8.6 sd better, 0/15 matched it
+          15   0.159113  +0.000492   11.3 sd better, 0/15 matched it
 
 Note the sign on the null, as `glicko_blend` notes it: a shuffled index is
-*worse than no index at all*, by nearly three times what the real one is
+*worse than no index at all*, by nearly nine times what the real one is
 better by. Units seeded on real anchors and confidently rated on the wrong
 games are a liability, not noise, so this is a narrow well and not a flat
 direction any plausible number would do for. It is also the operational
@@ -182,7 +200,7 @@ What a release carries
 absolutes on the team's scale, and `from_ratings` puts them back -- so a
 release rehydrates to a model that predicts as the publisher's did. A team
 the index never had a play for goes out with no sides and comes back with
-none, which is confidence 0 and the parent alone. The one thing a release
+none, which is nothing earned and the parent alone. The one thing a release
 does not carry is the running center, which only matters to a rebuilt model
 that keeps updating; see `from_ratings`.
 """
@@ -202,31 +220,28 @@ from .glicko import GlickoPredictor, _Rating, glicko_step
 from .opponent_prior import OpponentPriorManager
 from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
-from .types import GameEpa, Matchup, Prediction, Rating, Unit, Units
+from .types import Matchup, Prediction, Rating, Unit, Units
 
-# How much of a fully-known team's rating, at prediction, is its units rather
-# than its record: `(1 - w) * parent + w * (offense + defense) / 2`, with `w`
-# this times the units' confidence.
-#
-# A fraction, because the two are on one scale and a blend of two opinions is
-# what combining them means. A tenth rather than the visible-blend half
-# `DEFAULT_PLAY_WEIGHT` reasons its way to, because this one is measured: a
-# quarter is already break-even and a half costs 0.0006 -- see the module
-# docstring -- so a hand-built one at a half would be the model the numbers
-# say not to build. Not 0, which would make it silently identical to the
-# model it subclasses.
+# How far to trust a unit's deviation against the parent's, when the two are
+# combined by precision at prediction. 1 takes both at face value, and is
+# measured to cost 0.0013 brier: a unit's deviation shrinks at Glicko's rate
+# per contest, and a contest is far weaker evidence about *winning* than a
+# result is. A tenth is where the measurement sits -- see the module
+# docstring -- and is the reading a fitted value carries: a contest is worth
+# about a tenth of a game as evidence about the team. Not 0, which would
+# make a hand-built one silently identical to the model it subclasses.
 DEFAULT_UNIT_WEIGHT = 0.1
 
-# Points of scoreboard margin per point of EPA.
+# Points of scoreboard margin per point of EPA *per play*: the snaps that
+# turn a per-play average into what an average-length game would have shown.
 #
-# 1.0 takes EPA at face value as the points it claims to be, which is where
-# `margin_blend` starts too and for the same reason: it is the one setting
-# with a meaning. It is not where the numbers say to stay -- EPA's implied
-# margin has 0.86 of the final margin's spread in both football leagues
-# (`glicko_blend` measured it), because every play is bounded at the clip and
-# blowouts are understated -- so a search should expect to find something
-# above 1, and 1/0.86 = 1.16 is the value that matches the two spreads.
-DEFAULT_EPA_SCALE = 1.0
+# A side runs about 80 snaps in an ncaafb game and about 65 in the nfl, so
+# 80 is "take the per-play number as the points it would be over a typical
+# ncaafb game" -- the one setting with a meaning on its own, and where a
+# search starts rather than where it should stay: it is also the sharpness
+# of the contest score, and the measurement in the module docstring found
+# sharper better.
+DEFAULT_EPA_SCALE = 80.0
 
 # How much of the parent a child is scored against, as against its anchor:
 # the prior a child sits on is `parent_share * parent + (1 - parent_share) *
@@ -266,9 +281,13 @@ class CompoundGlickoPredictor(GlickoPredictor):
     is. The football configs pin it to sigmoid, which is the setting under
     which the two are on identical footing.
 
-    `unit_initial_rd` is `None` for "the parent's `initial_rd`": a unit nobody
-    has seen play is exactly as unknown as a team nobody has, and the parent's
-    fit already says how unknown that is for the league.
+    `offense_initial_rd` and `defense_initial_rd` are `None` for "the
+    parent's `initial_rd`": a unit nobody has seen play is exactly as unknown
+    as a team nobody has, and the parent's fit already says how unknown that
+    is for the league. Two rather than one because the two sides need not be
+    equally knowable -- offense is said to be the more stable of the two,
+    which is a smaller deviation to start from and, since the initial value
+    is also the cap the offseason grows back to, less to forget each year.
     """
 
     def __init__(
@@ -288,7 +307,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
         unit_weight: float = DEFAULT_UNIT_WEIGHT,
         epa_scale: float = DEFAULT_EPA_SCALE,
         parent_share: float = DEFAULT_PARENT_SHARE,
-        unit_initial_rd: float | None = None,
+        offense_initial_rd: float | None = None,
+        defense_initial_rd: float | None = None,
         opponent_prior_manager: OpponentPriorManager | None = None,
         qb_out: QbOutIndex | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -318,13 +338,23 @@ class CompoundGlickoPredictor(GlickoPredictor):
             ratings=ratings,
             anchors=anchors,
         )
-        self._unit_weight = validated_fraction("unit_weight", unit_weight)
+        if unit_weight < 0:
+            # 0 is the off switch and stays legal. Below it a unit's evidence
+            # counts *against* the parent's, which is a model that learns
+            # backwards from its best-measured games.
+            raise ValueError(f"unit_weight must be non-negative, got {unit_weight}")
+        self._unit_weight = unit_weight
         self._epa_scale = validated_scale("epa_scale", epa_scale)
         self._parent_share = validated_fraction("parent_share", parent_share)
-        self._unit_initial_rd = (
+        self._offense_initial_rd = (
             initial_rd
-            if unit_initial_rd is None
-            else validated_scale("unit_initial_rd", unit_initial_rd)
+            if offense_initial_rd is None
+            else validated_scale("offense_initial_rd", offense_initial_rd)
+        )
+        self._defense_initial_rd = (
+            initial_rd
+            if defense_initial_rd is None
+            else validated_scale("defense_initial_rd", defense_initial_rd)
         )
         # Units start empty rather than seeded from the prior manager the way
         # the parent's ratings are: a unit's prior is the team's anchor or
@@ -382,8 +412,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
         return self._units.get(
             team,
             _Units(
-                _Rating(0.0, self._unit_initial_rd),
-                _Rating(0.0, self._unit_initial_rd),
+                _Rating(0.0, self._offense_initial_rd),
+                _Rating(0.0, self._defense_initial_rd),
             ),
         )
 
@@ -421,40 +451,53 @@ class CompoundGlickoPredictor(GlickoPredictor):
         """
         return self.unit_rating(matchup.home) - self.unit_rating(matchup.away)
 
-    def unit_confidence(self, team: str) -> float:
-        """How much this team's units have learned, in [0, 1].
+    def unit_information(self, team: str) -> float:
+        """What this team's units have learned, as precision: 1 / rd^2, earned.
 
-        0 for a pair still at the initial deviation -- nothing seen, or a
-        release that never carried them -- and toward 1 as the deviations
-        tighten: one minus the units' share of the variance they started
-        with. It is what keeps a team the index has never had a play for at
-        its parent's rating, rather than blended toward its anchor by a unit
-        that is nothing but the anchor. That is most of an ncaafb schedule
-        and all of it before 2006, so without this the blend costs more on
-        the games it can't see than it earns on the ones it can.
+        The unit mean is `(offense + defense) / 2`, so its variance is a
+        quarter of the two deviations' squared sum and its precision the
+        reciprocal of that. *Earned* precision is that minus what the pair
+        started with: 0 for a pair still at the initial deviations --
+        nothing seen, or a release that never carried them -- and growing
+        as they tighten. Net of the prior because the prior is not evidence:
+        a unit nobody has seen is at its anchor, which the parent has
+        already counted once.
 
-        Glicko already keeps the number this needs. The parent has no
-        matching factor because it is the base estimate: a team the parent
-        has never seen is at its anchor and the blend of an anchor with an
-        anchor is the anchor.
+        Glicko keeps exactly the numbers this needs, which is why the blend
+        below can be a real one. A team the index never had a play for --
+        most of an ncaafb schedule, all of it before 2006 -- earns nothing
+        and stays at its record.
         """
         offsets = self._offsets(team)
-        variance = (
+        now = 4 / (
             offsets.offense.rating_deviation**2 + offsets.defense.rating_deviation**2
-        ) / 2
-        return 1 - variance / self._unit_initial_rd**2
+        )
+        prior = 4 / (self._offense_initial_rd**2 + self._defense_initial_rd**2)
+        return max(0.0, now - prior)
 
     def _blended_rating(self, team: str) -> float:
-        """What a team is rated, for a prediction: record and units, blended.
+        """What a team is rated, for a prediction: record and units, combined.
 
-        `unit_weight` is how much of a fully-known unit pair's opinion is
-        taken; `unit_confidence` is how fully known this pair is.
+        Two estimates of the same quantity, each with a deviation, combine
+        by precision -- the inverse-variance weighting that is the standard
+        answer to "I have two noisy measurements of one thing", and the one
+        with a reason behind it. The parent brings `1 / rd^2`; the units
+        bring what they have earned (`unit_information`), times
+        `unit_weight`, which says how far to trust a unit's deviation
+        against the parent's. At 1 the deviations are taken at face value;
+        at 0 the units are silent; above 1 the units are trusted past what
+        their deviations claim.
         """
-        parent = self.get_rating(team).rating
+        parent = self.get_rating(team)
         if not self._unit_weight:
-            return parent
-        weight = self._unit_weight * self.unit_confidence(team)
-        return (1 - weight) * parent + weight * self.unit_rating(team)
+            return parent.rating
+        earned = self._unit_weight * self.unit_information(team)
+        if not earned:
+            return parent.rating
+        parent_precision = 1 / parent.rating_deviation**2
+        return (parent_precision * parent.rating + earned * self.unit_rating(team)) / (
+            parent_precision + earned
+        )
 
     def predict_game(self, matchup: Matchup) -> Prediction:
         """The parent's arithmetic on a blended rating.
@@ -491,15 +534,20 @@ class CompoundGlickoPredictor(GlickoPredictor):
         self._update_units(game, home_parent, away_parent)
         return prediction
 
-    def _contest_score(self, epa_per_play: float, plays: int) -> float:
+    def _contest_score(self, epa_per_play: float) -> float:
         """What an offense's game counts as, in [0, 1], on the parent's scale.
 
-        Per-play average times snaps is the points the offense added, and
-        minus what an average offense would have added over the same snaps
-        it is the offense's margin over average -- the two offenses' margins
-        difference to the game's EPA margin, which is what puts them in the
-        scoreboard's points. `epa_scale` is the exchange rate between the two
-        kinds of points; see `DEFAULT_EPA_SCALE`.
+        The garbage-time-adjusted average, `GameEpa.home_weighted` or
+        `.away_weighted`, minus what an average offense averages -- the
+        running `epa_center` -- is how much better per snap this offense
+        played than average while the game was still being contested. Times
+        `epa_scale` that is points over an average-length game: the same
+        conversion `EpaIndex.margin` makes, with a typical snap count in
+        place of the game's own, so that an offense is rated on how well it
+        moved the ball and not on how often it got to. A snap count on the
+        line would also reward the side that ran more plays for reasons that
+        are not its offense's -- a defense that forced three-and-outs hands
+        its own offense the ball more.
 
         Then the parent's own squash, `sigmoid(points / sigmoid_scale)`, at
         *twice* the points. Twice because a contest is half a game: the two
@@ -509,18 +557,18 @@ class CompoundGlickoPredictor(GlickoPredictor):
         2 every unit gap would be half as large as the parent's for the same
         strength, and the blend would be mixing currencies again.
         """
-        points = (epa_per_play - self.epa_center) * plays * self._epa_scale
+        points = (epa_per_play - self.epa_center) * self._epa_scale
         return 1 / (1 + math.exp(-2 * points / self._sigmoid_scale))
 
-    def _see(self, epa: GameEpa) -> None:
-        """Fold a game's two offenses into the running center.
+    def _see(self, home: float, away: float) -> None:
+        """Fold a game's two offenses -- the weighted reading -- into the center.
 
         Before the game is scored, not after, so the very first contest is
         centered on its own game rather than on 0 -- and after that it is
         one game in a thousand either way. It has already been played, so
         nothing here is read before it happened.
         """
-        self._epa_sum += epa.home + epa.away
+        self._epa_sum += home + away
         self._epa_count += 2
 
     def _update_units(
@@ -549,9 +597,13 @@ class CompoundGlickoPredictor(GlickoPredictor):
         adjustments, which the parent reserves for the prediction.
         """
         epa = self._game_epa.get(game.game_id)
-        if epa is None:
+        if epa is None or epa.home_weighted is None or epa.away_weighted is None:
+            # No plays, or -- with the weighting on -- a side whose every snap
+            # came with the game already decided. Nothing to rate either
+            # contest on, so neither runs; the parent has already learned
+            # from the score.
             return
-        self._see(epa)
+        self._see(epa.home_weighted, epa.away_weighted)
         home_adj = 0 if game.neutral_site else self._home_advantage
         home_prior = self._prior(game.home, home_parent)
         away_prior = self._prior(game.away, away_parent)
@@ -563,8 +615,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
         away_offense = _absolute(away_prior, away.offense)
         away_defense = _absolute(away_prior, away.defense)
 
-        home_ball = self._contest_score(epa.home, epa.home_plays)
-        away_ball = self._contest_score(epa.away, epa.away_plays)
+        home_ball = self._contest_score(epa.home_weighted)
+        away_ball = self._contest_score(epa.away_weighted)
 
         self._units[game.home] = _Units(
             offense=_offset(
@@ -588,17 +640,16 @@ class CompoundGlickoPredictor(GlickoPredictor):
         )
 
     def _grow_unit_rd(self, units: _Units, increase: float) -> _Units:
-        """Both children's deviations widened by `increase`, capped like the parent's."""
+        """Both children's deviations widened by `increase`, each capped at its own initial."""
         return _Units(
             *(
                 _Rating(
                     unit.rating,
-                    min(
-                        self._unit_initial_rd,
-                        math.sqrt(unit.rating_deviation**2 + increase**2),
-                    ),
+                    min(cap, math.sqrt(unit.rating_deviation**2 + increase**2)),
                 )
-                for unit in units
+                for unit, cap in zip(
+                    units, (self._offense_initial_rd, self._defense_initial_rd)
+                )
             )
         )
 
@@ -651,7 +702,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
             "unit_weight": self._unit_weight,
             "epa_scale": self._epa_scale,
             "parent_share": self._parent_share,
-            "unit_initial_rd": self._unit_initial_rd,
+            "offense_initial_rd": self._offense_initial_rd,
+            "defense_initial_rd": self._defense_initial_rd,
             "epa_seen": [self._epa_sum, self._epa_count],
             "units": {
                 team: [

@@ -26,9 +26,28 @@ from .glicko import GlickoPredictor
 from .opponent_prior import OpponentPriorManager
 from .types import GameEpa, Rating, Unit
 
-# A game where the home offense moved the ball and the away one didn't. Over
-# a full complement of snaps, so nothing here is about the play counts.
-LOPSIDED = GameEpa(home=0.3, away=-0.3, home_plays=70, away_plays=70)
+
+def _epa(home: float, away: float) -> GameEpa:
+    """A game's EPA where the two readings agree and the samples are full.
+
+    The compound model reads only the weighted pair; the flat pair is here
+    because the tuple requires it. Nothing in these tests is about the
+    counts or the weights.
+    """
+    return GameEpa(
+        home=home,
+        away=away,
+        home_plays=70,
+        away_plays=70,
+        home_weighted=home,
+        away_weighted=away,
+        home_weight=60.0,
+        away_weight=60.0,
+    )
+
+
+# A game where the home offense moved the ball and the away one didn't.
+LOPSIDED = _epa(0.3, -0.3)
 
 
 def _predictor(
@@ -37,7 +56,8 @@ def _predictor(
     unit_weight: float = DEFAULT_UNIT_WEIGHT,
     epa_scale: float = DEFAULT_EPA_SCALE,
     parent_share: float = DEFAULT_PARENT_SHARE,
-    unit_initial_rd: float | None = None,
+    offense_initial_rd: float | None = None,
+    defense_initial_rd: float | None = None,
     initial_rd: float = 216,
     home_advantage: float = 95,
     weekly_rd_increase: float = 1,
@@ -50,7 +70,8 @@ def _predictor(
         unit_weight=unit_weight,
         epa_scale=epa_scale,
         parent_share=parent_share,
-        unit_initial_rd=unit_initial_rd,
+        offense_initial_rd=offense_initial_rd,
+        defense_initial_rd=defense_initial_rd,
         initial_rd=initial_rd,
         home_advantage=home_advantage,
         weekly_rd_increase=weekly_rd_increase,
@@ -78,7 +99,7 @@ def test_unit_weight_zero_is_glicko_game_by_game(game: GameFactory) -> None:
     for played in schedule:
         assert compound.update_game(played) == glicko.update_game(played)
 
-    assert compound.unit_confidence("A") > 0
+    assert compound.unit_information("A") > 0
     assert _parents(compound) == glicko.ratings
     assert compound.predict_game(game("B", "C")) == glicko.predict_game(game("B", "C"))
 
@@ -95,15 +116,15 @@ def test_a_league_without_epa_is_glicko_whatever_the_weight(
 ) -> None:
     """Four of the six leagues, and every ncaafb season before 2006.
 
-    Not because the weight is off: because a unit nobody has seen has a
-    confidence of 0, so the blend has nothing to blend.
+    Not because the weight is off: because a unit nobody has seen has
+    earned no precision, so the combination has nothing to combine.
     """
-    compound = _predictor(unit_weight=0.5)
+    compound = _predictor(unit_weight=5.0)
     glicko = GlickoPredictor("test_league")
     for played in (game("A", "B", 21, 7), game("B", "C", 3, 10)):
         assert compound.update_game(played) == glicko.update_game(played)
 
-    assert compound.unit_confidence("A") == 0
+    assert compound.unit_information("A") == 0
     assert compound.predict_game(game("C", "A")) == glicko.predict_game(game("C", "A"))
 
 
@@ -123,15 +144,15 @@ def test_a_contest_tightens_both_units_deviations_and_raises_confidence(
     game: GameFactory,
 ) -> None:
     predictor = _predictor({"g": LOPSIDED})
-    assert predictor.unit_confidence("A") == 0
+    assert predictor.unit_information("A") == 0
 
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
 
     for team in ("A", "B"):
         units = predictor.get_units(team)
-        assert units.offense.rating_deviation < predictor._unit_initial_rd
-        assert units.defense.rating_deviation < predictor._unit_initial_rd
-        assert 0 < predictor.unit_confidence(team) <= 1
+        assert units.offense.rating_deviation < predictor._offense_initial_rd
+        assert units.defense.rating_deviation < predictor._defense_initial_rd
+        assert predictor.unit_information(team) > 0
 
 
 def test_units_sit_on_the_anchor_before_they_have_played(game: GameFactory) -> None:
@@ -229,11 +250,11 @@ def test_the_children_move_the_prediction(game: GameFactory) -> None:
     goes up.
     """
     epa = {
-        "a": GameEpa(home=0.4, away=-0.4, home_plays=70, away_plays=70),
-        "b": GameEpa(home=-0.1, away=0.1, home_plays=70, away_plays=70),
+        "a": _epa(0.4, -0.4),
+        "b": _epa(-0.1, 0.1),
     }
     predictions = []
-    for weight in (0.0, 0.5, 1.0):
+    for weight in (0.0, 1.0, 4.0):
         predictor = _predictor(epa, unit_weight=weight)
         predictor.update_game(game("A", "C", 21, 7, game_id="a"))
         predictor.update_game(game("B", "D", 21, 7, game_id="b"))
@@ -256,7 +277,7 @@ def test_a_team_the_index_has_never_seen_keeps_its_parent_rating(
     A has EPA and B doesn't. A's line is blended; B's is its record exactly,
     not pulled toward an anchor by a unit that is nothing but the anchor.
     """
-    predictor = _predictor({"g": LOPSIDED}, unit_weight=0.5, anchors={"B": 1200})
+    predictor = _predictor({"g": LOPSIDED}, anchors={"B": 1200})
     predictor.update_game(game("A", "C", 21, 7, game_id="g"))
     predictor.update_game(game("B", "D", 21, 7))  # no EPA
 
@@ -276,16 +297,67 @@ def test_the_unit_gap_flips_with_the_venue(game: GameFactory) -> None:
 def test_a_contest_is_scored_in_points_at_twice_the_parents_slope() -> None:
     """The currency conversion, on the nose.
 
-    +0.1 a play over 50 snaps is 5 points over an average offense (the
-    center is 0 before any game). The parent reads 5 points as
+    +0.1 a play at 50 points per play is 5 points over an average offense
+    (the center is 0 before any game). The parent reads 5 points as
     `sigmoid(5 / 10)`; a contest is half a game, so it reads them at twice
-    that. `epa_scale` multiplies the points before either.
+    that. No snap count anywhere: the same per-play average scores the
+    same whether the offense ran 40 plays or 90.
     """
-    predictor = _predictor()
-    assert predictor._contest_score(0.1, 50) == pytest.approx(1 / (1 + 2.718281828**-1))
+    predictor = _predictor(epa_scale=50.0)
+    assert predictor._contest_score(0.1) == pytest.approx(1 / (1 + 2.718281828**-1))
 
-    doubled = _predictor(epa_scale=2.0)
-    assert doubled._contest_score(0.1, 50) == pytest.approx(1 / (1 + 2.718281828**-2))
+    doubled = _predictor(epa_scale=100.0)
+    assert doubled._contest_score(0.1) == pytest.approx(1 / (1 + 2.718281828**-2))
+
+
+def test_the_contest_reads_the_garbage_time_adjusted_average(
+    game: GameFactory,
+) -> None:
+    """The weighted pair, not the flat one, and never the snap count.
+
+    Two games whose flat readings and play counts differ every way they can
+    and whose weighted readings agree move the units identically.
+    """
+    lopsided = GameEpa(
+        home=0.3,
+        away=-0.3,
+        home_plays=70,
+        away_plays=70,
+        home_weighted=0.2,
+        away_weighted=-0.1,
+        home_weight=50.0,
+        away_weight=45.0,
+    )
+    same_when_contested = GameEpa(
+        home=0.0,
+        away=0.1,
+        home_plays=90,
+        away_plays=40,
+        home_weighted=0.2,
+        away_weighted=-0.1,
+        home_weight=20.0,
+        away_weight=12.0,
+    )
+    first = _predictor({"g": lopsided})
+    second = _predictor({"g": same_when_contested})
+    first.update_game(game("A", "B", 21, 7, game_id="g"))
+    second.update_game(game("A", "B", 21, 7, game_id="g"))
+
+    assert first.get_units("A") == second.get_units("A")
+    assert first.get_units("B") == second.get_units("B")
+
+
+def test_a_game_with_no_weighted_reading_runs_neither_contest(
+    game: GameFactory,
+) -> None:
+    """A side whose every snap came with the game decided has nothing to
+    average, and half a game can't be rated as a whole one."""
+    decided = GameEpa(home=0.3, away=-0.3, home_plays=70, away_plays=70)
+    predictor = _predictor({"g": decided})
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+
+    assert predictor.unit_information("A") == 0
+    assert predictor.epa_center == 0
 
 
 def test_the_center_is_the_running_mean_of_every_offense_seen(
@@ -293,8 +365,8 @@ def test_the_center_is_the_running_mean_of_every_offense_seen(
 ) -> None:
     predictor = _predictor(
         {
-            "g": GameEpa(home=0.1, away=-0.3, home_plays=70, away_plays=70),
-            "h": GameEpa(home=0.0, away=0.0, home_plays=70, away_plays=70),
+            "g": _epa(0.1, -0.3),
+            "h": _epa(0.0, 0.0),
         }
     )
     assert predictor.epa_center == 0
@@ -310,7 +382,7 @@ def test_two_average_offenses_leave_the_units_where_they_were(
     game: GameFactory,
 ) -> None:
     """A game centered on itself, with no home edge, is two drawn contests."""
-    epa = {"g": GameEpa(home=-0.05, away=-0.05, home_plays=70, away_plays=70)}
+    epa = {"g": _epa(-0.05, -0.05)}
     predictor = _predictor(epa, home_advantage=0)
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
 
@@ -368,8 +440,8 @@ def test_from_ratings_puts_the_sides_back(game: GameFactory) -> None:
 
     for team in ("A", "B"):
         assert rebuilt.get_units(team) == predictor.get_units(team)
-        assert rebuilt.unit_confidence(team) == predictor.unit_confidence(team)
-    assert rebuilt.unit_confidence("C") == 0
+        assert rebuilt.unit_information(team) == predictor.unit_information(team)
+    assert rebuilt.unit_information("C") == 0
     assert rebuilt.ratings == predictor.ratings
     for home, away in (("A", "B"), ("C", "A"), ("D", "B")):
         assert rebuilt.predict_game(game(home, away)) == predictor.predict_game(
@@ -417,38 +489,73 @@ def test_full_regression_forgets_the_children_entirely(game: GameFactory) -> Non
     assert predictor.unit_gap(game("A", "B")) == pytest.approx(0)
 
 
-def test_deviations_grow_between_games_and_cap_at_the_initial(
+def test_deviations_grow_between_games_and_cap_at_their_own_initial(
     game: GameFactory,
 ) -> None:
-    predictor = _predictor({"g": LOPSIDED}, weekly_rd_increase=50, unit_initial_rd=150)
+    """Each side at its own cap, so an offense can be the steadier of the two."""
+    predictor = _predictor(
+        {"g": LOPSIDED},
+        weekly_rd_increase=50,
+        offense_initial_rd=120,
+        defense_initial_rd=180,
+    )
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
-    after_game = predictor.get_units("A").offense.rating_deviation
+    after_game = predictor.get_units("A")
 
     predictor.pass_week()
-    assert predictor.get_units("A").offense.rating_deviation > after_game
+    assert predictor.get_units("A").offense.rating_deviation > (
+        after_game.offense.rating_deviation
+    )
 
     for _ in range(20):
         predictor.pass_week()
-    assert predictor.get_units("A").offense.rating_deviation == 150
-    assert predictor.unit_confidence("A") == 0
+    assert predictor.get_units("A").offense.rating_deviation == 120
+    assert predictor.get_units("A").defense.rating_deviation == 180
+    assert predictor.unit_information("A") == 0
 
 
-def test_the_unit_deviation_defaults_to_the_parents() -> None:
-    assert _predictor(initial_rd=333)._unit_initial_rd == 333
-    assert _predictor(initial_rd=333, unit_initial_rd=100)._unit_initial_rd == 100
+def test_the_unit_deviations_default_to_the_parents() -> None:
+    predictor = _predictor(initial_rd=333)
+    assert (predictor._offense_initial_rd, predictor._defense_initial_rd) == (333, 333)
+
+    split = _predictor(initial_rd=333, offense_initial_rd=100)
+    assert (split._offense_initial_rd, split._defense_initial_rd) == (100, 333)
+
+
+def test_the_combination_is_by_precision(game: GameFactory) -> None:
+    """The parent's `1 / rd^2` against what the units have earned.
+
+    Checked against the formula rather than by direction, because the
+    direction is what the linear blend also had and the formula is the
+    point: the weight on the units is the precision they earned over their
+    prior, times `unit_weight`, and nothing else.
+    """
+    predictor = _predictor({"g": LOPSIDED}, unit_weight=2.0)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+
+    parent = predictor.get_rating("A")
+    parent_precision = 1 / parent.rating_deviation**2
+    earned = 2.0 * predictor.unit_information("A")
+    expected = (
+        parent_precision * parent.rating + earned * predictor.unit_rating("A")
+    ) / (parent_precision + earned)
+
+    assert predictor._blended_rating("A") == pytest.approx(expected)
+    assert earned > 0
 
 
 def test_out_of_range_parameters_are_rejected() -> None:
-    for unit_weight in (-0.1, 1.5):
-        with pytest.raises(ValueError):
-            _predictor(unit_weight=unit_weight)
+    with pytest.raises(ValueError):
+        _predictor(unit_weight=-0.1)
     for parent_share in (-0.1, 1.5):
         with pytest.raises(ValueError):
             _predictor(parent_share=parent_share)
     with pytest.raises(ValueError):
         _predictor(epa_scale=0.0)
     with pytest.raises(ValueError):
-        _predictor(unit_initial_rd=0.0)
+        _predictor(offense_initial_rd=0.0)
+    with pytest.raises(ValueError):
+        _predictor(defense_initial_rd=0.0)
 
 
 def test_zero_is_the_off_switch_for_both_fractions() -> None:

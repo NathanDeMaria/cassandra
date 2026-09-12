@@ -25,7 +25,7 @@ from collections.abc import Mapping, Sequence
 
 from endgame.types import Season
 from lucky_ones import MODELS, GamePlays
-from lucky_ones.epa import DEFAULT_CLIP
+from lucky_ones.epa import DEFAULT_CLIP, DEFAULT_WEIGHT_POWER
 from lucky_ones.plays import PlaySource
 
 from cassandra.pbp_sweep import (
@@ -51,6 +51,12 @@ from cassandra.predictor.types import GameEpa
 # and because a sweep should say what it used rather than inherit it silently.
 CLIP = DEFAULT_CLIP
 
+# The exponent on the win-probability weighting behind the weighted pair.
+# The package default, and passed explicitly for the reason the clip is:
+# the header records it, so a change to the default upstream is found as a
+# stale index rather than merged into one.
+WEIGHT_POWER = DEFAULT_WEIGHT_POWER
+
 
 def current_fit(league: str) -> EpaFit:
     """What an index built right now would be built by.
@@ -66,22 +72,27 @@ def current_fit(league: str) -> EpaFit:
         ep_run_id=model.expected_points_release.run_id,
         clip=CLIP,
         reading=EPA_READING,
+        weight_power=WEIGHT_POWER,
     )
 
 
 def _score(league: str, game: GamePlays) -> GameEpa | None:
-    """One game's EPA per play, or None if an offense had no snaps.
+    """One game's EPA per play, both readings, or None if an offense had no snaps.
 
     The unweighted reading -- `home_unweighted` and `away_unweighted`, every
-    regulation snap counted once -- for the reason `GameEpa` gives: it is the
-    one to add up across a season, and a rating model is a season being added
-    up. The weighted pair off the same call is the better description of a
-    single game and is deliberately not what lands here.
+    regulation snap counted once -- is what `home` and `away` hold, for the
+    reason `GameEpa` gives: it is the one to add up across a season, and a
+    rating model blending it into the scoreboard is a season being added up.
+    The weighted pair off the same call goes in beside it, because a model
+    rating an offense on how it played wants the game as it was contested;
+    `weight_power` is passed explicitly so the header can say what it was.
 
-    `weight_power` is left at the package default and not passed, because it
-    cannot reach the numbers being kept. It only scales the weighted average.
+    None only when the *flat* reading is missing, which is an offense with
+    no snaps. The weighted reading can be missing on its own -- a side whose
+    every snap came with the game decided -- and that is a game with a flat
+    reading and no weighted one, which is what the tuple's None means.
     """
-    scored = MODELS[league].epa_per_play(game, clip=CLIP)
+    scored = MODELS[league].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
     if scored.home_unweighted is None or scored.away_unweighted is None:
         return None
     return GameEpa(
@@ -89,6 +100,10 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
         away=scored.away_unweighted,
         home_plays=scored.home_plays,
         away_plays=scored.away_plays,
+        home_weighted=scored.home,
+        away_weighted=scored.away,
+        home_weight=scored.home_weight,
+        away_weight=scored.away_weight,
     )
 
 
@@ -96,9 +111,7 @@ async def sweep(
     league: str, seasons: Sequence[Season], source: PlaySource
 ) -> tuple[dict[str, GameEpa], SweepStats]:
     """EPA for every game of `seasons` whose play-by-play covers it."""
-    return await sweep_plays(
-        league, seasons, source, lambda game: _score(league, game)
-    )
+    return await sweep_plays(league, seasons, source, lambda game: _score(league, game))
 
 
 def write(league: str, fit: EpaFit, games: Mapping[str, GameEpa]) -> None:

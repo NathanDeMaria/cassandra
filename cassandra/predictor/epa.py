@@ -44,7 +44,7 @@ from functools import cache
 from pathlib import Path
 from typing import Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from cassandra.constants import CASSANDRA_HOME
 
@@ -78,10 +78,11 @@ def epa_path(league: str) -> Path:
     return _PREDICTOR_DATA_DIR / f"{league}_epa.json"
 
 
-# Which of the two averages `lucky_ones` reports the sweep keeps. A constant
+# Which of the two averages `lucky_ones` reports lands in `GameEpa.home` and
+# `.away` -- the other lands in the `_weighted` pair beside it. A constant
 # rather than a literal in the build, because it is half of a comparison:
 # `EpaFit.reading` is what a stored index was built with, and this is what one
-# built now would be. See `GameEpa` for why it is this one.
+# built now would be. See `GameEpa` for what each reading is for.
 EPA_READING = "unweighted"
 
 
@@ -107,13 +108,13 @@ class EpaFit(BaseModel):
     there: the package defaults them and takes them as keywords, and changing
     either rewrites every number while the models behind them are identical.
 
-    `weight_power` is deliberately *not* here, which is worth saying because
-    it is the one knob of `epa_per_play` that's missing. The unweighted
-    reading is the flat mean over the same snaps, so the competitiveness
-    weighting cannot move it -- recording the power would make a sweep
-    rebuild an entire league over a parameter that provably changed nothing.
-    An index that ever holds `reading == "weighted"` needs it, and adding it
-    then is what makes every existing file correctly stale.
+    `weight_power` is the exponent on the win-probability weighting behind
+    the weighted pair. It was deliberately absent while the index held only
+    the flat reading, which the weighting cannot move -- recording it then
+    would have rebuilt a league over a parameter that changed nothing. The
+    index carries the weighted pair now, so it is here, and adding it is
+    what made every file written before it correctly stale: see
+    `read_epa_file`.
 
     Together these are what makes the sweep idempotent: a stage that finds
     its own fit already stored has nothing to do, and one that finds a
@@ -132,6 +133,7 @@ class EpaFit(BaseModel):
     ep_run_id: str
     clip: float
     reading: str
+    weight_power: float
 
 
 class EpaFile(BaseModel):
@@ -157,7 +159,17 @@ def read_epa_file(league: str) -> EpaFile | None:
     path = epa_path(league)
     if not path.exists():
         return None
-    return EpaFile.model_validate_json(path.read_text())
+    try:
+        return EpaFile.model_validate_json(path.read_text())
+    except ValidationError:
+        # A file this schema can't read is a file this build didn't write:
+        # the header grew a field, or the rows did. To the build stage that
+        # is "no index yet" and a full sweep, which is the right answer --
+        # `build` decides staleness by comparing headers, and a header that
+        # won't parse can't be compared. To a predictor it is no index at
+        # all, which replays the league at its real scores until the sweep
+        # runs; the batch DAG runs the sweep first.
+        return None
 
 
 @cache

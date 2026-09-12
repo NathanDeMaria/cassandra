@@ -19,6 +19,7 @@ _FIT = EpaFit(
     ep_run_id="20260904-024017",
     clip=3.0,
     reading="unweighted",
+    weight_power=2.0,
 )
 
 
@@ -84,7 +85,9 @@ def test_the_margin_is_the_points_each_offense_added() -> None:
     0.10 over 80 snaps is 8 points added; -0.05 over 60 is 3 given up. The
     home team out-produced the away team by 11.
     """
-    index = EpaIndex({"g1": GameEpa(home=0.10, away=-0.05, home_plays=80, away_plays=60)})
+    index = EpaIndex(
+        {"g1": GameEpa(home=0.10, away=-0.05, home_plays=80, away_plays=60)}
+    )
 
     assert index.margin("g1") == pytest.approx(11.0)
 
@@ -141,3 +144,27 @@ def test_the_fit_requires_every_field() -> None:
     """
     with pytest.raises(ValueError):
         EpaFit(lucky_ones="abc", run_id="1", ep_run_id="2", clip=3.0)  # ty: ignore[missing-argument]
+
+
+def test_a_file_this_schema_cannot_read_is_no_file(tmp_path: Path) -> None:
+    """An index written before the header grew `weight_power`.
+
+    The build stage reads None as "no index yet" and sweeps everything,
+    which is right: the rows it holds have no weighted pair. Raising instead
+    would take the build down on exactly the file it exists to replace.
+    """
+    path = tmp_path / "nfl_epa.json"
+    path.write_text(
+        json.dumps(
+            {
+                "league": "nfl",
+                "fit": {
+                    k: v for k, v in _FIT.model_dump().items() if k != "weight_power"
+                },
+                "games": {"g1": [0.1, 0.0, 60, 60]},
+            }
+        )
+    )
+
+    assert read_epa_file("nfl") is None
+    assert load_epa("nfl") == {}
