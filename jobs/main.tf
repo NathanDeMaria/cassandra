@@ -114,6 +114,16 @@ data "aws_iam_policy_document" "job" {
     ]
   }
 
+  # A search saves itself under `cassandra/checkpoints/<job id>.json` and
+  # deletes the save once it has finished (`cassandra.checkpoint`). Delete
+  # is granted on that prefix and nowhere else: nothing a job writes
+  # elsewhere in the bucket is its to remove.
+  statement {
+    sid       = "CheckpointCleanup"
+    actions   = ["s3:DeleteObject"]
+    resources = ["arn:aws:s3:::${local.batch_bucket}/cassandra/checkpoints/*"]
+  }
+
   statement {
     sid = "PublishArtifacts"
     # Write-only on purpose: publish builds a release from scratch every run
@@ -257,19 +267,20 @@ module "optimize" {
   memory             = var.optimize_memory
   timeout_seconds    = var.optimize_timeout_seconds
 
-  # The compute environment is all spot, and a search that gets reclaimed
-  # three hours in has produced nothing -- there's no checkpointing to resume
-  # from. Only host failures retry; a config that genuinely fails still fails
-  # once.
+  # The compute environment is all spot. A search that gets reclaimed now
+  # resumes from the checkpoint it keeps in the bucket (`cassandra.checkpoint`),
+  # so a retry pays for the probes since the last save rather than for the
+  # whole attempt. Only host failures retry; a config that genuinely fails
+  # still fails once.
   #
   # Six rather than three because three was measured to be too close: in the
   # 20260903-230628 run, six of twenty-four children were reclaimed and four
   # of those spent all three attempts, so the array came within one
-  # interruption of failing and taking evaluate and publish with it. The
-  # exposure is a product of wall time, and the longest searches are the ones
-  # that keep getting hit -- so this is not a number that gets safer as more
-  # `n_iter` goes in. Retries on a reclaim are nearly free: the attempt that
-  # died produced nothing to pay for.
+  # interruption of failing and taking evaluate and publish with it. That
+  # was before the checkpoint; with it each attempt only has to survive long
+  # enough to make progress, so six is now generous rather than tight -- but
+  # the count still caps how many reclaims a search can absorb, and the
+  # longest searches are the ones that keep getting hit.
   retry_attempts = 6
 
   environment_variables = local.job_environment

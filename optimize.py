@@ -6,6 +6,7 @@ from pathlib import Path
 import fire
 import pandas as pd
 
+from cassandra.checkpoint import S3Checkpoint
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.objective import Objective, get_objective
 from cassandra.optimize import optimize
@@ -113,8 +114,17 @@ async def _run_optimization(config_file: str) -> None:
         # about them at all, so they cost no dimension and appear in no probe.
         **config_model.fixed,
     )
+    # Inside Batch the search saves itself under this job's id and a retry
+    # after a spot reclaim resumes from the save; anywhere else there is no
+    # id and nothing is saved. See `cassandra.checkpoint`.
+    checkpoint = S3Checkpoint.for_this_job(aws_config.bucket)
+    if checkpoint is not None:
+        print(f"[optimize] checkpointing to s3://{aws_config.bucket}/{checkpoint.key}")
     target, params = optimize(
-        target_function, config_model.parameters, config_model.n_iter
+        target_function,
+        config_model.parameters,
+        config_model.n_iter,
+        checkpoint=checkpoint,
     )
 
     result_model = PredictorConfig(

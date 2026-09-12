@@ -1,9 +1,16 @@
 import math
+import signal
+import tempfile
+import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from bayes_opt import BayesianOptimization
+
+from .checkpoint import Checkpoint
 
 type _ParameterBound = tuple[float, float] | Sequence[str]
 
@@ -186,11 +193,36 @@ def _diagnose(
     )
 
 
+# bayes_opt's own default: random probes before the first fitted suggestion.
+# Named because the checkpoint arithmetic counts them -- a search of
+# `n_iter` is `INIT_POINTS + n_iter` probes -- and a resumed attempt must
+# not draw them again.
+INIT_POINTS = 5
+
+# Probes between saves. A probe on ncaafb is five to ten seconds of replay,
+# so this is a couple of minutes of work at risk between saves -- the SIGTERM
+# save below is what covers the gap when the reclaim is announced -- against
+# a state dump and an upload that cost about a second.
+CHECKPOINT_EVERY = 25
+
+
 def optimize(
     function: Callable[..., float],
     param_bounds: Mapping[str, _ParameterBound],
     iterations: int,
+    checkpoint: Checkpoint | None = None,
+    checkpoint_every: int = CHECKPOINT_EVERY,
 ) -> tuple[float, dict[str, float | str]]:
+    """Search `param_bounds` for `iterations` probes past the random start.
+
+    With a `checkpoint`, the search saves itself after every
+    `checkpoint_every` probes and on SIGTERM, and starts by loading whatever
+    that checkpoint holds -- so a container that is reclaimed and retried
+    picks up where the last attempt got to rather than from zero. See
+    `cassandra.checkpoint`. The result is the same either way: chunked
+    probing with a reload between chunks reproduces a single `maximize`
+    exactly, which `optimize_test` asserts.
+    """
     optimizer = BayesianOptimization(
         f=function,
         # The docs confirm list-of-str is how you do categorical
@@ -198,8 +230,20 @@ def optimize(
         pbounds=param_bounds,
         random_state=1,
     )
+    total = INIT_POINTS + iterations
 
-    optimizer.maximize(n_iter=iterations)
+    resumed = _load(optimizer, checkpoint)
+    if resumed:
+        print(f"[optimize] resumed at probe {resumed} of {total}")
+    with _saving_on_sigterm(optimizer, checkpoint):
+        while len(optimizer.res) < total:
+            done = len(optimizer.res)
+            # The random start only once, and never on a resumed search:
+            # a reload carries those probes with it.
+            init_points = INIT_POINTS if done == 0 else 0
+            step = min(checkpoint_every, total - done)
+            optimizer.maximize(init_points=init_points, n_iter=step - init_points)
+            _save(optimizer, checkpoint)
 
     if optimizer.max is None:
         raise ValueError("Optimizer did not find a maximum")
@@ -208,7 +252,67 @@ def optimize(
     for warning in diagnostics.warnings():
         print(f"[optimize] {warning}")
 
+    # Only once the result is in hand: a search that raised above keeps its
+    # save for the retry, and one that finished has nothing left to resume.
+    if checkpoint is not None:
+        checkpoint.clear()
     return optimizer.max["target"], optimizer.max["params"]
+
+
+def _load(optimizer: BayesianOptimization, checkpoint: Checkpoint | None) -> int:
+    """Restore a save into `optimizer`; the number of probes it carried, 0 if none."""
+    if checkpoint is None:
+        return 0
+    state = checkpoint.load()
+    if state is None:
+        return 0
+    # `load_state` wants a path, not bytes.
+    with tempfile.NamedTemporaryFile(suffix=".json") as handle:
+        handle.write(state)
+        handle.flush()
+        optimizer.load_state(handle.name)
+    return len(optimizer.res)
+
+
+def _save(optimizer: BayesianOptimization, checkpoint: Checkpoint | None) -> None:
+    if checkpoint is None:
+        return
+    with tempfile.NamedTemporaryFile(suffix=".json") as handle:
+        optimizer.save_state(handle.name)
+        checkpoint.save(Path(handle.name).read_bytes())
+
+
+@contextmanager
+def _saving_on_sigterm(
+    optimizer: BayesianOptimization, checkpoint: Checkpoint | None
+) -> Iterator[None]:
+    """Save the search when the container is told to stop.
+
+    ECS delivers SIGTERM ahead of the kill when a spot instance is reclaimed,
+    which is the moment the save is worth the most: the probes since the
+    last periodic save are still only in memory. The handler saves and then
+    exits with the conventional 128 + 15, and Batch's retry -- which keys on
+    the host failure, not the exit code -- brings the next attempt up on the
+    save.
+
+    Only the main thread can set a signal handler, and only when there is a
+    checkpoint to save to is there anything to do; otherwise the default
+    disposition stays.
+    """
+    if checkpoint is None or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def handler(signum: int, frame: object) -> None:
+        print("[optimize] SIGTERM: saving the search before stopping", flush=True)
+        _save(optimizer, checkpoint)
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _find_bound_hits(
