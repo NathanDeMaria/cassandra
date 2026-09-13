@@ -68,10 +68,13 @@ script again and keep waiting.
   broke; the `cascade:` casualties behind it are not separate failures.
 - `container never started` anywhere -- an image that isn't in ECR. Nothing
   ran; that needs a deploy, not patience.
-- An `INFRASTRUCTURE` reclaim (`N attempts -- spot reclaim`) on a child
-  whose name contains `glicko_full`, `glicko_compound` or `glicko_blend`.
-  Those are the hour-plus searches; a reclaim on a two-minute sweep is
-  routine and not worth a message.
+- An `INFRASTRUCTURE` reclaim (`N attempts -- spot reclaim`) whose line says
+  the work was **lost** -- `Nothing checkpoints` or a restart from zero --
+  on a child whose name contains `glicko_full`, `glicko_compound` or
+  `glicko_blend`. A line that says `Resumed from its checkpoint at probe N`
+  is the retry working as designed: keep waiting, and list it under
+  INFRASTRUCTURE in the final report. A reclaim on a two-minute sweep is
+  routine either way.
 - `WAITING FOR CAPACITY` for longer than an hour, counted from the first
   line you saw it on. Say how long.
 
