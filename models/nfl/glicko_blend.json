@@ -20,16 +20,16 @@
         ]
     },
     "fixed": {
-        "home_advantage": 9.433180792226858,
-        "initial_rd": 140.38021913892632,
-        "weekly_rd_increase": 87.7703050066037,
-        "season_rd_increase": 119.41345619756913,
-        "season_regression": 0.19976561840476365,
-        "mov_scale": 7.343159884223557,
+        "home_advantage": 60.19362742298362,
+        "initial_rd": 251.58686450937677,
+        "weekly_rd_increase": 31.107848063696725,
+        "season_rd_increase": 143.2340294711692,
+        "season_regression": 0.1151108598194098,
+        "mov_scale": 8.500938713470973,
         "control_temp": 1.0,
         "epa_margin_scale": 10.0,
         "travel_advantage": 0,
-        "prediction_scale": 400,
+        "prediction_scale": 489.5527220376322,
         "epa_residual_beta": 0
     },
     "fixed_from": "glicko_full",
