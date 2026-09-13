@@ -25,7 +25,7 @@
         ],
         "sigmoid_scale": [
             0.05,
-            3
+            6
         ]
     },
     "fixed": {
