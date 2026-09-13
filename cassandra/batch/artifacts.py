@@ -28,7 +28,7 @@ from cassandra.predictor import (
     load_epa,
     load_game_control,
 )
-from cassandra.predictor.qb_out import qb_out_path
+from cassandra.predictor.qb_out import load_qb_out, qb_out_path
 
 # Shared bucket, so cassandra's generated files get a prefix of their own
 # rather than sitting next to endgame's `seasons/` and `odds/`.
@@ -129,9 +129,10 @@ async def _list_keys(client, bucket: str, prefix: str) -> AsyncIterator[str]:
 async def download_predictor_data(bucket: str) -> list[Path]:
     """Pull what the predictors read off disk, and drop the cached reads.
 
-    Three things today: the division anchors, the per-game control a
-    `ControlGlickoPredictor` blends into its update, and the per-game EPA a
-    `BlendedMarginEloPredictor` reads alongside it.
+    Four things today: the division anchors, the per-game control a
+    `ControlGlickoPredictor` blends into its update, the per-game EPA a
+    `BlendedMarginEloPredictor` reads alongside it, and the quarterback
+    availability index every matchup-adjusted predictor prices.
 
     Dropping the caches is the whole reason this isn't just
     `download(bucket, PREDICTOR_DATA_PREFIX)`. `load_anchors`,
@@ -155,6 +156,13 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     load_anchors.cache_clear()
     load_game_control.cache_clear()
     load_epa.cache_clear()
+    # Missing from this list for the first month the index existed, and
+    # `test_the_download_drops_every_cached_read` is what makes sure the
+    # next one isn't: every Batch search of `qb_out_penalty` before
+    # 2026-09-13 ran against an empty index -- the fitted target of two
+    # ncaafb/glicko_full runs matched a replay with no index to five
+    # decimals -- so those fits were a coordinate the objective couldn't see.
+    load_qb_out.cache_clear()
     return paths
 
 
