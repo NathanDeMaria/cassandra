@@ -9,6 +9,8 @@ from .adjustments import (
     DEFAULT_QB_OUT_PENALTY,
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupAdjustments,
+    MatchupSources,
+    resolved_sources,
 )
 from .base_predictor import (
     Anchor,
@@ -18,7 +20,6 @@ from .base_predictor import (
 )
 from .blend import validated_scale
 from .opponent_prior import OpponentPriorManager
-from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
 from .types import Matchup, Prediction, Rating
 
@@ -83,10 +84,11 @@ class GlickoPredictor(Predictor):
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
         season_regression: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
-        # Defaulted rather than required, like the prior manager: a
-        # replay wants the league's saved index and a caller with an
-        # injury report passes one built in memory.
-        qb_out: QbOutIndex | None = None,
+        # Where the matchup terms read their facts. Defaulted rather than
+        # required, like the prior manager: a replay wants the league's own,
+        # and a caller who knows something it can't derive -- an injury
+        # report, a fixture's rest -- hands over a bundle that says so.
+        sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
     ) -> None:
@@ -106,7 +108,7 @@ class GlickoPredictor(Predictor):
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
             qb_out_penalty=qb_out_penalty,
-            qb_out=qb_out if qb_out is not None else QbOutIndex.for_league(league),
+            sources=resolved_sources(league, sources),
         )
 
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(
@@ -243,7 +245,7 @@ class GlickoPredictor(Predictor):
             "scoring_method": self._scoring_method,
             "sigmoid_scale": self._sigmoid_scale,
             "prediction_scale": self._prediction_scale,
-            "rest_advantage": self._adjustments.rest.points,
+            "rest_advantage": self._adjustments.rest_advantage,
             "travel_advantage": self._adjustments.travel_advantage,
             "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,

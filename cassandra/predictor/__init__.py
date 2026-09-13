@@ -1,3 +1,4 @@
+from .adjustments import MatchupAdjustments, MatchupSources
 from .base_predictor import (
     ANCHOR_LEAGUES,
     Predictor,
@@ -29,6 +30,8 @@ from .glicko_blend import BlendedGlickoPredictor
 from .margin_blend import BlendedMarginEloPredictor
 from .margin_elo import MarginEloPredictor
 from .matchup import predict_matchup
+from .qb_out import QB_LEAGUES, QbOutIndex, qb_out_path
+from .rest import RestLedger, RestSource, StatedRest
 from .types import (
     GameControl,
     GameEpa,

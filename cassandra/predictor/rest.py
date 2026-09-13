@@ -20,18 +20,31 @@ rest.
 
 ## What a consumer of a release gets
 
-Nothing, for now, and that is worth saying out loud. `ModelRelease` carries
-ratings and parameters; it does not carry when each team last played, so a
-`rating_predictor()` rebuilt from one starts with an empty ledger and prices
-every matchup at zero rest differential until it has walked some games. That
-is the safe direction -- a missing date reads as "no information" rather
-than as a wrong number -- but it means a live prediction off a release will
-not use this feature while a replayed one does. Carrying a last-played date
-per team in the release is what would close that, and it is deliberately not
-done here: the parameter has to earn its place in a search first.
+No dates. `ModelRelease` carries ratings and parameters; it does not carry
+when each team last played, so a `rating_predictor()` rebuilt from one starts
+with an empty `RestLedger` and prices every matchup at zero rest differential
+until it has walked some games. That is the safe direction -- a missing date
+reads as "no information" rather than as a wrong number -- and it means a
+live prediction off a release does not use this feature while a replayed one
+does.
+
+What closes that is the seam `qb_out` already has. "Did one side come off the
+longer break?" is asked of a `RestSource`, and a caller who knows the answer
+hands one over instead of the walking ledger:
+
+    sources = MatchupSources.for_league(league)._replace(
+        rest=StatedRest({"401752708": "LSU Tigers"})
+    )
+
+which is what rest looks like when it comes from a schedule somebody read
+rather than from games a replay walked. Carrying a last-played date per team
+*in the release* would close it a second way and is still deliberately not
+done: that changes the artifact format, and this does not.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Protocol
 
 from endgame.types import Game
 
@@ -82,6 +95,35 @@ def validated_rest_advantage(value: float) -> float:
     return value
 
 
+class RestSource(Protocol):
+    """Where the answer to "who is rested?" comes from.
+
+    Two implementations, and the difference between them is where the fact
+    was learned rather than what it means: `RestLedger` derives it from the
+    dates of games it has walked, and `StatedRest` is handed it. A predictor
+    asks the same question of either, which is what keeps `predict_game` the
+    one interface -- a what-if about a fixture and a replay of 2014 differ in
+    what they hand the predictor, not in how they call it.
+
+    `record` and `reset` are on the protocol rather than on the ledger alone
+    because the replay calls them on whatever it has. A source that was told
+    its answer has nothing to learn from a game and nothing to forget at a
+    season boundary, so it implements both as no-ops.
+    """
+
+    def rested_side(self, matchup: Matchup) -> float:
+        """+1 if the home side came off the longer break, -1 if the away side."""
+        ...
+
+    def record(self, game: Game) -> None:
+        """Note a played game."""
+        ...
+
+    def reset(self) -> None:
+        """Cross a season boundary."""
+        ...
+
+
 class RestLedger:
     """When each team last played, and whether one side is coming off a bye.
 
@@ -100,10 +142,11 @@ class RestLedger:
     for -- a team whose last game was a bowl is simply "rested", not
     thirty-seven days of rested.
 
-    Held by `Predictor` rather than by a mixin, the way `_anchors` and
-    `_season_regression` are: the base keeps an inert one so every predictor
-    can ask for the adjustment, and the subclasses that expose the parameter
-    replace it with a live one.
+    Reached through `MatchupSources`, which is what a predictor is handed and
+    what a caller swaps to state the answer instead. What it is *worth* is not
+    here: `rest_advantage` is a weight, it is fit by a search and rides in a
+    release's parameters, and keeping it on `MatchupAdjustments` beside
+    `qb_out_penalty` is what makes the two terms the same shape.
 
     The ledger is state, not configuration -- it is rebuilt by walking games
     and is reset at a season boundary, since a team's last game of one season
@@ -112,19 +155,12 @@ class RestLedger:
 
     def __init__(
         self,
-        points: float = DEFAULT_REST_ADVANTAGE,
         threshold_days: float = REST_THRESHOLD_DAYS,
         max_gap_days: float = REST_MAX_GAP_DAYS,
     ) -> None:
-        self._points = validated_rest_advantage(points)
         self._threshold_days = threshold_days
         self._max_gap_days = max_gap_days
         self._last_played: dict[str, datetime] = {}
-
-    @property
-    def points(self) -> float:
-        """Rating points for the rested side. 0 means switched off."""
-        return self._points
 
     @property
     def threshold_days(self) -> float:
@@ -208,12 +244,50 @@ class RestLedger:
             return -1.0
         return 0.0
 
-    def adjustment(self, matchup: Matchup) -> float:
-        """Rating points to add to the home side for the rest gap.
+class StatedRest:
+    """Who came off the longer break, by game, because somebody said so.
 
-        Applied at a neutral site as well, unlike a home advantage: nobody is
-        at home in a bowl and both teams still arrived on different rest.
+    The counterpart to `RestLedger` for the case it cannot serve: a fixture,
+    where the dates a ledger would need are in a schedule the replay has not
+    walked. Built in memory from what a caller knows, the way `QbOutIndex` is,
+    and keyed the same way -- game id to the team that is rested.
+
+    A team rather than a sign, for the reason the quarterback index holds
+    names: a caller states a fact it can check ("Michigan is off a bye"), and
+    which direction that pushes the number is this module's business. A sign
+    at the call site is a sign convention at the call site, and that is the
+    kind of thing that gets inverted once and noticed a season later.
+
+    Nobody is rested in a game the mapping does not mention, which is the same
+    answer a ledger gives when neither side clears the threshold and the same
+    one `QbOutIndex` gives for a game it has never seen.
+    """
+
+    def __init__(self, games: Mapping[str, str] | None = None) -> None:
+        self._games = dict(games or {})
+
+    def __len__(self) -> int:
+        return len(self._games)
+
+    def rested_side(self, matchup: Matchup) -> float:
+        """+1 if the home side is the stated one, -1 if the away side.
+
+        0 for a game nobody stated, and 0 for a stated team that is not in
+        this one: a name that matches neither side is a typo or a stale
+        fixture, and reading it as "the other team is rested" would turn a bad
+        input into the largest adjustment on the board.
         """
-        if not self._points:
+        rested = self._games.get(matchup.game_id)
+        if rested is None:
             return 0.0
-        return self._points * self.rested_side(matchup)
+        if rested == matchup.home:
+            return 1.0
+        if rested == matchup.away:
+            return -1.0
+        return 0.0
+
+    def record(self, game: Game) -> None:
+        """Nothing: a stated fact does not move as games are walked."""
+
+    def reset(self) -> None:
+        """Nothing: there are no dates here for a season boundary to void."""
