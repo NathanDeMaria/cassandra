@@ -7,6 +7,8 @@ from .adjustments import (
     DEFAULT_QB_OUT_PENALTY,
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupAdjustments,
+    MatchupSources,
+    resolved_sources,
 )
 from .base_predictor import (
     Anchor,
@@ -14,7 +16,6 @@ from .base_predictor import (
     resolved_anchors,
     validated_regression,
 )
-from .qb_out import QbOutIndex
 from .rest import DEFAULT_REST_ADVANTAGE
 from .types import Matchup, Prediction, Rating
 
@@ -31,7 +32,11 @@ class EloPredictor(Predictor):
         season_regression: float = 0.0,
         ratings: dict[str, float] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
-        qb_out: QbOutIndex | None = None,
+        # Where the matchup terms read their facts. Defaulted rather than
+        # required: a replay wants the league's own, and a caller who knows
+        # something it can't derive -- an injury report, a fixture's rest --
+        # hands over a bundle that says so.
+        sources: MatchupSources | None = None,
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
@@ -43,7 +48,7 @@ class EloPredictor(Predictor):
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
             qb_out_penalty=qb_out_penalty,
-            qb_out=qb_out if qb_out is not None else QbOutIndex.for_league(league),
+            sources=resolved_sources(league, sources),
         )
 
     def predict_game(self, matchup: Matchup) -> Prediction:
@@ -94,7 +99,7 @@ class EloPredictor(Predictor):
             "league": self._league,
             "home_advantage": self._home_advantage,
             "k": self._k,
-            "rest_advantage": self._adjustments.rest.points,
+            "rest_advantage": self._adjustments.rest_advantage,
             "travel_advantage": self._adjustments.travel_advantage,
             "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,
