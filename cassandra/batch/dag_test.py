@@ -460,10 +460,14 @@ def test_the_sweeps_refresh_rather_than_rebuild_by_default(
     plain = _submitted_requests(monkeypatch, leagues=["ncaafb"])
     assert _command(plain, "game_control") == ["game_control"]
     assert _command(plain, "epa") == ["epa"]
+    assert _command(plain, "qb_out") == ["qb_out"]
 
     rebuilt = _submitted_requests(monkeypatch, leagues=["ncaafb"], rebuild_sweeps=True)
     assert _command(rebuilt, "game_control") == ["game_control", "--rebuild"]
     assert _command(rebuilt, "epa") == ["epa", "--rebuild"]
+    # No flag to take: it rebuilds whole every time, and fire exits on an
+    # argument it can't consume, which took a whole run down once.
+    assert _command(rebuilt, "qb_out") == ["qb_out"]
 
 
 def test_each_sweep_child_gets_the_list_its_array_was_sized_against(

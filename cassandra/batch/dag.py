@@ -198,31 +198,40 @@ async def submit(
         # Both sweeps, submitted alongside anchors rather than after it: an
         # index has nothing to do with the scale a rating sits on, so making
         # either wait would serialize two independent hours.
+        #
+        # The last field is whether the sweep has a `--rebuild` to take.
+        # `qb_out` rebuilds whole every time and has no such flag, and fire
+        # exits on an argument it can't consume -- run 20260913-002406 died
+        # at qb-out with `Could not consume arg: --rebuild` and took every
+        # stage behind it down.
         sweep_jobs: list[Submitted] = []
-        for stem, definition, command, sweep_leagues, env_var in (
+        for stem, definition, command, sweep_leagues, env_var, rebuildable in (
             (
                 "game-control",
                 game_control_job_definition,
                 "game_control",
                 control_leagues,
                 _CONTROL_LEAGUES_ENV_VAR,
+                True,
             ),
-            ("epa", epa_job_definition, "epa", epa_leagues, _EPA_LEAGUES_ENV_VAR),
+            ("epa", epa_job_definition, "epa", epa_leagues, _EPA_LEAGUES_ENV_VAR, True),
             (
                 "qb-out",
                 qb_out_job_definition,
                 "qb_out",
                 qb_out_leagues,
                 _QB_OUT_LEAGUES_ENV_VAR,
+                False,
             ),
         ):
             if not (sweep_leagues and run_sweeps):
                 continue
+            rebuild = ["--rebuild"] if rebuild_sweeps and rebuildable else []
             sweep_jobs.append(
                 await submitter.run(
                     name=_job_name(stem),
                     job_definition=definition,
-                    command=[command] + (["--rebuild"] if rebuild_sweeps else []),
+                    command=[command] + rebuild,
                     size=len(sweep_leagues),
                     environment={env_var: ",".join(sweep_leagues)},
                 )
