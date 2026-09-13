@@ -587,7 +587,12 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
     out = [f"RUN  {payload['run_id']}   ({cache_dir})"]
     out.append(f"submitted  {_stamp(payload['created_at'])}")
 
-    statuses = {entry["record"]["status"] for entry in stages.values()}
+    # The children's statuses as well as the stage records': an array's
+    # parent job sits at PENDING until its last child finishes, so a run
+    # with thirty children running read as "nothing placed yet" for hours.
+    statuses = {entry["record"]["status"] for entry in stages.values()} | {
+        child.status for entry in stages.values() for child in entry["children"]
+    }
     if statuses <= {"SUCCEEDED"}:
         state = "COMPLETE"
     elif statuses & {"RUNNING", "STARTING"}:
