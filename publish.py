@@ -32,6 +32,11 @@ and predicts live for an unplayed one, and a release without its
 predictions silently turns the first case back into hindsight. See
 `build_artifacts` and `cassandra.serving.predictions`.
 
+A football league also gets `models/{league}/qb_out.json`: the quarterback
+index the models were replayed with, as a fact table beside them, so a
+consumer can say of a played game what the model priced. See
+`qb_out_artifact`.
+
 The one judgment call it does make is *when* the offseason rollover lands in
 a release, since publishing is the only caller that reads a predictor's
 ratings after the replay rather than its predictions during one. See
@@ -62,11 +67,13 @@ from cassandra.model_eval import (
 )
 from cassandra.odds import OddsDatabase
 from cassandra.predictor import (
+    QB_LEAGUES,
     Predictor,
     PredictorConfig,
     RatingsUnsupported,
     load_predictor_class,
 )
+from cassandra.predictor.qb_out import read_qb_out_file
 from cassandra.save_predictions import join_with_odds, read_all_seasons
 from cassandra.serving import (
     ModelRelease,
@@ -82,6 +89,7 @@ from cassandra.serving import (
     predictions_bytes,
     predictions_frame,
     predictions_path,
+    qb_out_artifact_path,
     ratings_from_predictor,
     tally,
     write_artifact_bytes,
@@ -511,6 +519,57 @@ async def _publish_one(
         print(f"  uploaded s3://{bucket}/{key}")
 
 
+def qb_out_artifact(league: str) -> bytes | None:
+    """A league's quarterback index as the bucket should carry it, or None.
+
+    The same `QbOutFile` the sweep wrote and the models replay with, byte
+    for byte the same object on disk and in the bucket, so a consumer can
+    validate it with cassandra's own model. None for a league with no index
+    -- not football, or the sweep hasn't run -- and None means *don't write*:
+    an empty file would tell a reader nobody was ever out, which is the
+    claim this artifact exists to stop.
+    """
+    if league not in QB_LEAGUES:
+        return None
+    stored = read_qb_out_file(league)
+    if stored is None:
+        return None
+    return stored.model_dump_json(indent=4).encode()
+
+
+def write_qb_out_artifact(league: str, out: Path) -> Path | None:
+    """Write the league's index into the layout, rooted at `out`."""
+    payload = qb_out_artifact(league)
+    if payload is None:
+        return None
+    path = qb_out_artifact_path(out, league)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+async def upload_qb_out_artifact(league: str, bucket: str) -> str | None:
+    """Put the same bytes in s3, under the same layout."""
+    payload = qb_out_artifact(league)
+    if payload is None:
+        return None
+    key = f"models/{league}/qb_out.json"
+    await save_data_to_s3(bucket, key, payload)
+    return key
+
+
+async def _publish_qb_out(league: str, out: Path, upload: bool, bucket: str) -> None:
+    """The league's index beside its models, on disk and then in the bucket."""
+    path = write_qb_out_artifact(league, out)
+    if path is None:
+        return
+    print(f"=== {league}/qb_out ===\n  wrote {path}")
+    if not upload:
+        return
+    key = await upload_qb_out_artifact(league, bucket)
+    print(f"  uploaded s3://{bucket}/{key}")
+
+
 def _by_league(jobs: Sequence[_Job]) -> Iterator[tuple[str, list[_Job]]]:
     ordered = sorted(jobs, key=lambda j: (j.league, j.model))
     for league, group in groupby(ordered, key=lambda j: j.league):
@@ -549,6 +608,11 @@ async def _publish(
             print(f"  FAILED {league}: no seasons in s3://{bucket}/seasons/")
             failures.extend(f"{league}/{job.model}" for job in league_jobs)
             continue
+        # A fact about the league's games rather than any model's output, so
+        # it goes up once per league and before the models: nothing serves
+        # it as a pointer, and a page reading it beside an older release is
+        # reading the same index that release was replayed with.
+        await _publish_qb_out(league, out, upload, upload_bucket)
         for job in league_jobs:
             try:
                 await _publish_one(job, seasons, odds_db, out, upload, upload_bucket)
