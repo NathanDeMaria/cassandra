@@ -800,3 +800,89 @@ def test_the_bucket_gets_the_same_bytes_as_the_disk(
     assert put[f"{prefix}/history.parquet"] == history_file.read_bytes()
     assert put[f"{prefix}/predictions.parquet"] == predictions_file.read_bytes()
     assert put[f"{prefix}/latest.json"] == latest_path.read_bytes()
+
+
+class TestTheQuarterbackIndexIsPublishedBesideTheModels:
+    """The index is a fact about games, not a model's output, so it goes up
+    once per league at the league level -- and only when there is one. An
+    app that read it off the machine (`QbOutIndex.for_league`) found nothing
+    in its own container and told every page both quarterbacks had started.
+    """
+
+    def _index(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, league: str):
+        path = tmp_path / "data" / f"{league}_qb_out.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            "cassandra.predictor.qb_out.qb_out_path",
+            lambda name: tmp_path / "data" / f"{name}_qb_out.json",
+        )
+        return path
+
+    def test_a_league_with_an_index_writes_it_into_the_layout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._index(monkeypatch, tmp_path, "nfl").write_text(
+            '{"league": "nfl", "games": {"401752895": ["Nebraska Cornhuskers"]}}'
+        )
+
+        path = publish.write_qb_out_artifact("nfl", tmp_path / "releases")
+
+        assert path == tmp_path / "releases" / "models" / "nfl" / "qb_out.json"
+        written = json.loads(
+            (tmp_path / "releases" / "models" / "nfl" / "qb_out.json").read_text()
+        )
+        assert written["games"] == {"401752895": ["Nebraska Cornhuskers"]}
+        assert written["league"] == "nfl"
+
+    def test_a_league_without_an_index_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Nothing rather than an empty file: "no index" and "nobody was ever
+        out" are different claims, and only the second is a lie."""
+        self._index(monkeypatch, tmp_path, "nfl")  # the path, with no file at it
+        assert publish.write_qb_out_artifact("nfl", tmp_path / "releases") is None
+        assert publish.write_qb_out_artifact("mens", tmp_path / "releases") is None
+        assert not (tmp_path / "releases").exists()
+
+    def test_the_upload_is_the_same_bytes_at_the_league_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._index(monkeypatch, tmp_path, "ncaafb").write_text(
+            '{"league": "ncaafb", "games": {"g1": ["LSU Tigers"]}}'
+        )
+        put: list[tuple[str, str, bytes]] = []
+
+        async def _fake_save(bucket: str, key: str, data: bytes) -> None:
+            put.append((bucket, key, data))
+
+        monkeypatch.setattr(publish, "save_data_to_s3", _fake_save)
+
+        key = asyncio.run(publish.upload_qb_out_artifact("ncaafb", "a-bucket"))
+        local = publish.write_qb_out_artifact("ncaafb", tmp_path / "releases")
+
+        assert key == "models/ncaafb/qb_out.json"
+        assert local is not None
+        assert put == [("a-bucket", key, local.read_bytes())]
+
+    def test_a_whole_publish_puts_the_index_beside_the_leagues_models(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._index(monkeypatch, tmp_path, "nfl").write_text(
+            '{"league": "nfl", "games": {"g1": ["Chicago Bears"]}}'
+        )
+        listing = _write_configs(
+            tmp_path / "configs",
+            {
+                ("nfl", "elo"): _config("EloPredictor", league="nfl"),
+                ("mens", "elo"): _config("EloPredictor", league="mens"),
+            },
+        )
+        monkeypatch.setattr(publish, "_models", lambda leagues: listing)
+        _Bucket().install(monkeypatch, tmp_path / "home")
+
+        out = tmp_path / "releases"
+        assert asyncio.run(publish._publish(None, [], out, upload=False)) == []
+
+        assert (out / "models" / "nfl" / "qb_out.json").exists()
+        assert (out / "models" / "nfl" / "elo" / "latest.json").exists()
+        assert not (out / "models" / "mens" / "qb_out.json").exists()

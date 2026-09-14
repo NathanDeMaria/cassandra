@@ -12,7 +12,7 @@ from .history import (
     upsert_history,
     write_history,
 )
-from .layout import model_dir
+from .layout import league_dir, model_dir, qb_out_artifact_path
 from .predictions import (
     PREDICTION_COLUMNS,
     PREDICTIONS_KEY,
