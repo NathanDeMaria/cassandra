@@ -13,7 +13,10 @@
 #
 # The line is the report's own status/STAGES/INFRASTRUCTURE/FAILURES blocks
 # squashed onto one row with `|` between fields. It is built from
-# `make report`, so it says what Batch says, not what the logs say.
+# `make report`, so it says what Batch says, not what the logs say. Durations
+# are blanked out of the INFRASTRUCTURE lines: a reclaimed child that is still
+# running reports how long its current attempt has been going, and a clock
+# ticking is not a change.
 set -u
 run_id="${1:?usage: watch_run.sh <run-id> [poll-seconds]}"
 poll="${2:-600}"
@@ -26,7 +29,7 @@ condense() {
     st && /^  [a-z-]+ +[A-Z]/ {gsub(/^ +/,""); gsub(/ +/," "); stages=stages "| " $0}
     st && /^$/ {st=0}
     /^INFRASTRUCTURE/ {inf=1; next}
-    inf && /^  / {gsub(/^ +/,""); infra=infra "| " $0}
+    inf && /^  / {gsub(/^ +/,""); gsub(/[0-9]+h[0-9]+m[0-9]+s|[0-9]+m[0-9]+s|[0-9]+s/,"_"); infra=infra "| " $0}
     inf && /^$/ {inf=0}
     /^FAILURES \([1-9]/ {fl=1; next}
     fl && /^  / {gsub(/^ +/,""); fails=fails "| " $0}
