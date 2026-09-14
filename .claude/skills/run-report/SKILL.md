@@ -99,6 +99,13 @@ of line come out:
   hand-chosen and have no source to check. Only raise it if someone is about to copy a
   value out of another model's result — that is the pin that needs the field set.
 
+A source searched in the points frame (`"frame": "points"` in its config; see
+`cassandra/predictor/frame.py`) probes knobs like `hfa_pts` and `rd_total`, not the
+rating-unit arguments its children pin. The check still works: such a child prints a
+`[fitted]` line with the constructor arguments, and the drift is measured against
+those. A bound hit for a framed model names the knob, so the edit goes to the knob's
+pair in the config — `"hfa_pts": [0, 8]`, not `home_advantage`.
+
 **Tuning diagnostics** are already actionable sentences from `optimize.py`, with the
 widened range to paste. Turn each into a concrete edit to `models/<league>/<model>.json`
 under `"parameters"` — name the file, the key, and the new pair. A *lower*-bound hit at a

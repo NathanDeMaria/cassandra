@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from cassandra.objective import DEFAULT_OBJECTIVE, get_objective
 
+from . import frame as frames
 from .base_predictor import Predictor
 
 
@@ -69,6 +70,13 @@ class OptimizationConfig(BaseModel):
     # Glicko family, so the cross-family pairs are noise that buries the one
     # comparison that means anything.
     fixed_from: str | None = None
+    # The units `parameters` and `fixed` are written in; see
+    # `cassandra.predictor.frame`. "rating" is the constructor's own, and
+    # what every config before frames existed searched in. "points" is the
+    # Glicko family's better-conditioned box: matchup terms in points of
+    # margin, the prediction scale as a margin, the deviation increases as a
+    # per-season budget and its offseason share.
+    frame: str = frames.RATING
     n_iter: int = 100
     # Which number the search maximizes; see `cassandra.objective`. Defaulted
     # to brier so every config written before this existed keeps searching
@@ -101,6 +109,40 @@ class OptimizationConfig(BaseModel):
             )
         return self
 
+    @field_validator("frame")
+    @classmethod
+    def _known_frame(cls, name: str) -> str:
+        frames.knobs_of(name)
+        return name
+
+    @model_validator(mode="after")
+    def _frame_is_consistent(self) -> "OptimizationConfig":
+        """A framed config names each quantity once, in the frame's terms.
+
+        Caught at load for the same reason a bad objective is: the manifest
+        reads every config before anything is launched. The points frame
+        needs `sigmoid_scale` to price a point, and a constructor argument it
+        derives -- `home_advantage` next to `hfa_pts` -- would be set twice.
+        """
+        named = set(self.parameters) | set(self.fixed)
+        if self.frame == frames.POINTS and "sigmoid_scale" not in named:
+            raise ValueError(
+                "frame 'points' needs sigmoid_scale in `parameters` or `fixed`"
+            )
+        # A probe is a full set of knobs, so the derivation's own checks run
+        # on a representative one; any conflict shows up here, not an hour in.
+        probe = {name: 1.0 for name in self.parameters if name != "sigmoid_scale"}
+        if "sigmoid_scale" in self.parameters:
+            probe["sigmoid_scale"] = 1.0
+        if "rd_offseason_share" in probe:
+            probe["rd_offseason_share"] = 0.5
+        frames.to_params(self.frame, {**self.fixed, **probe}, weeks_per_season=1)
+        return self
+
+    def searched_params(self) -> frozenset[str]:
+        """The constructor arguments this search moves; see `frame.searched_params`."""
+        return frames.searched_params(self.frame, set(self.parameters))
+
     @model_validator(mode="after")
     def _no_parameter_is_both(self) -> "OptimizationConfig":
         """A name can be searched or pinned, not both.
@@ -120,11 +162,28 @@ class OptimizationConfig(BaseModel):
         return self
 
 
+class SearchRecord(BaseModel):
+    """How a result's `params` were searched, when not in their own units.
+
+    `knobs` are the searched values plus the pins, in the frame's terms, and
+    `weeks_per_season` is what `frame.to_params` turned them into `params`
+    with. Recorded so a fit can be read in the units it was found in, and so
+    a re-search can start from where the last one ended.
+    """
+
+    frame: str
+    weeks_per_season: float
+    knobs: dict[str, float | str]
+
+
 class PredictorConfig(BaseModel):
     predictor_class: str
     league: str
     target: float
+    # Always constructor arguments, whatever the search moved: this is what
+    # `load_predictor` rebuilds from and what a pin copies.
     params: dict[str, float | str]
+    search: SearchRecord | None = None
     # Which objective `target` is a score on, so two results are only
     # compared when they mean the same thing -- a brier target and a margin
     # target are both "higher is better" and are otherwise unrelated

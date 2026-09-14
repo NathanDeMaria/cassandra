@@ -15,6 +15,9 @@ it asks for, done the same way for every pin at once instead of by hand.
 The rule is the report's rule. For every config whose `fixed_from` names
 the source: a pinned parameter the source *searches* takes the source's
 fitted value, and one the source itself *fixes* takes that fixed value.
+"Searches" is read in constructor terms -- a source in the points frame
+(`cassandra.predictor.frame`) that searches `hfa_pts` and `sigmoid_scale`
+moves `home_advantage`, so a pin of it takes the fitted value.
 A pin the source knows nothing about -- `mov_scale`, say -- is the target's
 own and is left alone, and nothing is added that the target did not already
 pin. Parameters the target searches are never touched, even when the source
@@ -36,6 +39,7 @@ from endgame_aws import Config
 from cassandra.batch import artifacts
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.predictor import OptimizationConfig, PredictorConfig
+from cassandra.predictor import frame as frames
 
 MODELS_DIR = Path(__file__).parent / "models"
 
@@ -52,7 +56,21 @@ def sync(league: str, source: str) -> list[str]:
             f"{result_path} -- no fit for {league}/{source} on disk; "
             "pass --download, or run the search"
         )
-    fitted = PredictorConfig.model_validate_json(result_path.read_text()).params
+    result = PredictorConfig.model_validate_json(result_path.read_text())
+    fitted = result.params
+    # The arguments the source's own pins fix, in constructor terms. A pin
+    # the source fixes by name is that value; one it fixes through its frame
+    # -- `hfa_pts` with `sigmoid_scale` -- is what the frame makes of it.
+    weeks = result.search.weeks_per_season if result.search else 1.0
+    source_fixed = frames.to_params(source_config.frame, source_config.fixed, weeks)
+    if source_config.frame != frames.RATING and result.search is None:
+        # The fit on disk is from before the source moved to this frame; the
+        # arguments the frame derives are all "not in the fit yet".
+        fitted = {
+            name: value
+            for name, value in fitted.items()
+            if name not in frames.derived_params(source_config.frame)
+        }
 
     lines = []
     for path in sorted(league_dir.glob("*.json")):
@@ -63,8 +81,12 @@ def sync(league: str, source: str) -> list[str]:
             continue
         changed = []
         waiting = []
+        # In the source's constructor terms, whatever frame it searched in:
+        # a `glicko_full` that searches `hfa_pts` still moves `home_advantage`,
+        # and that is the name the pin here carries.
+        searched = source_config.searched_params()
         for name, pinned in raw["fixed"].items():
-            if name in source_config.parameters:
+            if name in searched:
                 if name not in fitted:
                     # The source searches it and the fit on disk predates the
                     # dimension -- a parameter added to the search that has
@@ -74,8 +96,8 @@ def sync(league: str, source: str) -> list[str]:
                     waiting.append(name)
                     continue
                 current = fitted[name]
-            elif name in source_config.fixed:
-                current = source_config.fixed[name]
+            elif name in source_fixed:
+                current = source_fixed[name]
             else:
                 continue
             if current != pinned:

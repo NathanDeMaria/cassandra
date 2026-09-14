@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from . import frame
 from .config import (
     OptimizationConfig,
     PredictorConfig,
@@ -69,7 +70,11 @@ def test_every_checked_in_config_pins_arguments_its_predictor_takes(
     """
     config = OptimizationConfig.model_validate_json(config_path.read_text())
 
-    load_predictor_class(config.predictor_class)(config.league, **config.fixed)
+    # The pins as the priors pass hands them over: through the config's
+    # frame, so a framed pin (`travel_pts`) reaches the constructor under the
+    # name it takes.
+    pinned = frame.to_params(config.frame, config.fixed, weeks_per_season=17)
+    load_predictor_class(config.predictor_class)(config.league, **pinned)
 
 
 def test_a_config_that_names_no_objective_searches_brier() -> None:

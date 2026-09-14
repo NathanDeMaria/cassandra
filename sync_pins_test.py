@@ -139,3 +139,93 @@ def test_a_pin_the_fit_predates_waits_for_the_next_search(league: Path) -> None:
     ]
     after = json.loads((league / "glicko_blend.json").read_text())
     assert after["fixed"]["prediction_scale"] == 400
+
+
+def _framed_source(league: Path, tmp_path: Path, *, with_search_record: bool) -> None:
+    """Move the source into the points frame; its fit is still in rating units."""
+    _write(
+        league / "glicko_full.json",
+        {
+            "predictor_class": "GlickoPredictor",
+            "league": "mens",
+            "frame": "points",
+            "parameters": {
+                "sigmoid_scale": [2, 30],
+                "hfa_pts": [0, 8],
+                "rd_total": [20, 800],
+            },
+            "fixed": {
+                "scoring_method": "sigmoid",
+                "travel_pts": 0,
+                "rd_offseason_share": 0.25,
+                "initial_rd": 300.0,
+            },
+        },
+    )
+    result = {
+        "predictor_class": "GlickoPredictor",
+        "league": "mens",
+        "target": -0.17,
+        "params": {
+            "home_advantage": 61.5,
+            "initial_rd": 300.0,
+            "scoring_method": "sigmoid",
+            "sigmoid_scale": 8.5,
+            "travel_advantage": 0.0,
+            "weekly_rd_increase": 30.0,
+            "season_rd_increase": 80.0,
+        },
+    }
+    if with_search_record:
+        result["search"] = {
+            "frame": "points",
+            "weeks_per_season": 20,
+            "knobs": {"sigmoid_scale": 8.5, "hfa_pts": 3.0, "rd_total": 170.0},
+        }
+    _write(tmp_path / "home" / "models" / "mens" / "glicko_full_result.json", result)
+
+
+def test_a_pin_of_what_a_framed_source_derives_takes_the_fit(
+    league: Path, tmp_path: Path
+) -> None:
+    """The child pins `home_advantage`; the source searches `hfa_pts` and
+    `sigmoid_scale`, which is what moves it. Same rule, read in the
+    constructor's terms rather than by name."""
+    _framed_source(league, tmp_path, with_search_record=True)
+    child = json.loads((league / "glicko_blend.json").read_text())
+    child["fixed"]["weekly_rd_increase"] = 10.0
+    child["fixed"]["travel_advantage"] = 5.0
+    _write(league / "glicko_blend.json", child)
+
+    lines = sync_pins.sync("mens", "glicko_full")
+
+    after = json.loads((league / "glicko_blend.json").read_text())["fixed"]
+    assert after["home_advantage"] == 61.5
+    assert after["weekly_rd_increase"] == 30.0
+    # Fixed through the frame (`travel_pts` 0), so the pin takes what the
+    # frame makes of it, not the knob's name.
+    assert after["travel_advantage"] == 0.0
+    assert after["mov_scale"] == 10.0
+    assert lines == [
+        "mens/glicko_blend: home_advantage 46.0 -> 61.5, "
+        "scoring_method 'binary' -> 'sigmoid', "
+        "weekly_rd_increase 10.0 -> 30.0, travel_advantage 5.0 -> 0.0"
+    ]
+
+
+def test_a_fit_from_before_the_frame_leaves_derived_pins_waiting(
+    league: Path, tmp_path: Path
+) -> None:
+    """The source moved to the points frame but the result on disk was
+    searched in rating units: what its frame derives is not in that fit."""
+    _framed_source(league, tmp_path, with_search_record=False)
+
+    lines = sync_pins.sync("mens", "glicko_full")
+
+    after = json.loads((league / "glicko_blend.json").read_text())["fixed"]
+    assert after["home_advantage"] == 46.0
+    assert lines == [
+        "mens/glicko_blend: scoring_method 'binary' -> 'sigmoid'",
+        "mens/glicko_blend: home_advantage not in the fit yet; "
+        "re-run after the next glicko_full search",
+    ]

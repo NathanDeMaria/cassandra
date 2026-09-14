@@ -53,6 +53,13 @@ _UPLOADED = re.compile(r"^\s+uploaded (?P<key>s3://\S+)$")
 # the fetch doesn't pull, so the report counts them from this line.
 _RESUMED = re.compile(r"^\[optimize\] resumed at probe (?P<done>\d+) of (?P<total>\d+)$")
 _DIAGNOSTIC = re.compile(r"^\[optimize\] (?P<message>.+)$")
+# The winning constructor arguments, as `optimize.py` prints them once the
+# search is done: `[fitted] {"home_advantage": 60.19, ...}`. In a framed
+# search (`cassandra.predictor.frame`) the probe table is in the search's
+# own knobs -- points, a deviation budget -- and this line is the only place
+# the log says what the predictor was actually built with, which is what a
+# pin copied from this fit has to be checked against.
+_FITTED = re.compile(r"^\[fitted\] (?P<params>\{.*\})$")
 _WARNING = re.compile(r"^(?P<origin>\S+?:\d+): (?P<kind>\w*Warning): (?P<message>.+)$")
 _EXCEPTION = re.compile(
     r"^(?P<type>[\w.]+(?:Error|Exception|Exit|Interrupt)):\s?(?P<message>.*)$"
@@ -93,6 +100,7 @@ class Child:
         self.diagnostics = []
         self.error = None
         self.uploaded = None
+        self.fitted = None
 
     @property
     def league(self):
@@ -194,6 +202,14 @@ def _parse_log(child, lines, warnings):
         uploaded = _UPLOADED.match(line)
         if uploaded:
             child.uploaded = uploaded["key"]
+            continue
+
+        fitted = _FITTED.match(line)
+        if fitted:
+            try:
+                child.fitted = json.loads(fitted["params"])
+            except ValueError:
+                child.fitted = None
             continue
 
         diagnostic = _DIAGNOSTIC.match(line)
@@ -520,7 +536,10 @@ def _frozen_parameters(stages):
         config = configs.get((entry.league, model))
         if config is None:
             continue
-        params = entry.best_params(list(config["parameters"]))
+        # The `[fitted]` line is the constructor arguments whatever the
+        # search's frame; the probe row is only those for a config searched
+        # in rating units, and is what a log from before the line has.
+        params = entry.fitted or entry.best_params(list(config["parameters"]))
         if params:
             fitted[(entry.league, model)] = params
 
@@ -551,11 +570,19 @@ def _frozen_parameters(stages):
             continue
 
         for name, pinned in sorted(pins.items()):
-            bounds = source_config["parameters"].get(name)
-            if not bounds or len(bounds) != 2 or name not in measured:
+            if name not in measured or not isinstance(measured[name], (int, float)):
                 continue
-            low, high = bounds
-            if abs(measured[name] - pinned) > _PIN_DRIFT * (high - low):
+            bounds = source_config["parameters"].get(name)
+            if bounds and len(bounds) == 2:
+                low, high = bounds
+                tolerance = _PIN_DRIFT * (high - low)
+            elif source_config.get("frame", "rating") != "rating":
+                # Derived from searched knobs, so it has no box of its own:
+                # the same 2%, of the value instead of the range.
+                tolerance = _PIN_DRIFT * max(abs(pinned), abs(measured[name]))
+            else:
+                continue
+            if abs(measured[name] - pinned) > tolerance:
                 drifted.append(
                     f"  {league}/{model}: pins {name}={pinned:g}, but "
                     f"{league}/{source} fitted {measured[name]:g} this run "

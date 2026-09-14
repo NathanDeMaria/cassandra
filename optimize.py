@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -14,8 +15,10 @@ from cassandra.predictor import (
     OptimizationConfig,
     Predictor,
     PredictorConfig,
+    SearchRecord,
     load_predictor_class,
 )
+from cassandra.predictor import frame as frames
 from cassandra.save_predictions import (
     Config,
     OddsDatabase,
@@ -31,16 +34,22 @@ def _score_probe(
     odds_db: OddsDatabase,
     predictor_class: type[Predictor],
     objective: Objective,
-    **kwargs,
+    frame: str,
+    weeks_per_season: float,
+    fixed: dict[str, float | str],
+    **probe,
 ) -> float:
-    """Replay the league with one set of parameters and score the result.
+    """Replay the league with one set of knobs and score the result.
 
     The replay is the whole cost of a probe; the objective on top of it is a
     fit and a mean. So which number the search maximizes is a choice that
     costs nothing to make -- see `cassandra.objective` for what the choices
-    mean.
+    mean. The knobs are the config's, in its frame; the pinned ones reach the
+    constructor the same way a searched one does, the optimizer simply never
+    varies them and is not told about them, so they cost no dimension.
     """
-    predictor = predictor_class(league, **kwargs)  # type: ignore[call-arg]
+    params = frames.to_params(frame, {**fixed, **probe}, weeks_per_season)
+    predictor = predictor_class(league, **params)  # type: ignore[call-arg]
     prediction_results = join_with_odds(
         predictor, seasons, odds_db, post_callbacks=False
     )
@@ -91,8 +100,15 @@ async def _run_optimization(config_file: str) -> None:
         )
     odds_db = await OddsDatabase.from_s3(aws_config.bucket)
 
-    # Run once to make things like team priors
-    predictor = predictor_class(league, **config_model.fixed)
+    # What a per-season deviation budget is spread over; see `frame.to_params`.
+    weeks = frames.weeks_per_season([len(season.weeks) for season in seasons])
+    if config_model.frame != frames.RATING:
+        print(f"[optimize] frame {config_model.frame!r}, {weeks:g} weeks per season")
+
+    # Run once to make things like team priors. The pins alone: a knob the
+    # search owns takes the constructor default here, as it always has.
+    priors_params = frames.to_params(config_model.frame, config_model.fixed, weeks)
+    predictor = predictor_class(league, **priors_params)
     for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
         pass
 
@@ -109,10 +125,9 @@ async def _run_optimization(config_file: str) -> None:
         odds_db=odds_db,
         predictor_class=predictor_class,
         objective=get_objective(config_model.objective),
-        # The pinned arguments reach the constructor the same way a searched
-        # one does; the optimizer simply never varies them. It is not told
-        # about them at all, so they cost no dimension and appear in no probe.
-        **config_model.fixed,
+        frame=config_model.frame,
+        weeks_per_season=weeks,
+        fixed=config_model.fixed,
     )
     # Inside Batch the search saves itself under this job's id and a retry
     # after a spot reclaim resumes from the save; anywhere else there is no
@@ -127,6 +142,18 @@ async def _run_optimization(config_file: str) -> None:
         checkpoint=checkpoint,
     )
 
+    # Merged, not just recorded: `load_predictor` rebuilds from `params`
+    # alone, so a pinned argument left out here is one the published model
+    # silently takes the constructor default for -- which for
+    # `scoring_method` is `binary`, a different model than the one that
+    # scored `target`. The two dicts are disjoint by construction; see
+    # `OptimizationConfig._no_parameter_is_both`.
+    knobs = {**config_model.fixed, **params}
+    fitted = frames.to_params(config_model.frame, knobs, weeks)
+    # The constructor arguments, on one line the run report can read: in a
+    # framed search the probe table is in knobs, and the report checks the
+    # pins other configs copied from this fit against these.
+    print(f"[fitted] {json.dumps(fitted, sort_keys=True)}")
     result_model = PredictorConfig(
         predictor_class=config_model.predictor_class,
         league=config_model.league,
@@ -135,13 +162,10 @@ async def _run_optimization(config_file: str) -> None:
         # whether -0.19 is a brier score or an average margin miss, and the
         # two results sit in the same directory under the same name.
         objective=config_model.objective,
-        # Merged, not just recorded: `load_predictor` rebuilds from `params`
-        # alone, so a pinned argument left out here is one the published
-        # model silently takes the constructor default for -- which for
-        # `scoring_method` is `binary`, a different model than the one that
-        # scored `target`. The two dicts are disjoint by construction; see
-        # `OptimizationConfig._no_parameter_is_both`.
-        params={**config_model.fixed, **params},
+        params=fitted,
+        search=SearchRecord(
+            frame=config_model.frame, weeks_per_season=weeks, knobs=knobs
+        ),
     )
 
     # The config is a checked-in input; its result is generated, so it lands
