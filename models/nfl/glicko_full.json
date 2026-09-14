@@ -1,47 +1,42 @@
 {
     "predictor_class": "GlickoPredictor",
     "league": "nfl",
+    "frame": "points",
     "parameters": {
-        "home_advantage": [
-            0,
-            200
-        ],
-        "initial_rd": [
-            80,
-            350
-        ],
-        "weekly_rd_increase": [
-            0,
-            120
-        ],
-        "season_rd_increase": [
-            0,
-            250
-        ],
-        "season_regression": [
-            0,
-            0.75
-        ],
         "sigmoid_scale": [
             2,
             30
         ],
-        "prediction_scale": [
-            200,
-            600
-        ],
-        "rest_advantage": [
+        "hfa_pts": [
             0,
-            40
+            8
         ],
-        "qb_out_penalty": [
+        "rest_pts": [
             0,
-            300
+            3
+        ],
+        "qb_pts": [
+            0,
+            12
+        ],
+        "pred_margin_scale": [
+            3,
+            30
+        ],
+        "rd_total": [
+            20,
+            800
+        ],
+        "rd_offseason_share": [
+            0,
+            1
         ]
     },
     "fixed": {
         "scoring_method": "sigmoid",
-        "travel_advantage": 0
+        "travel_pts": 0,
+        "initial_rd": 251.58686450937677,
+        "season_regression": 0.1151108598194098
     },
     "n_iter": 680
 }

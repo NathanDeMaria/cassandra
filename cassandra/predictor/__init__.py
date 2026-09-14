@@ -10,6 +10,7 @@ from .compound import CompoundGlickoPredictor
 from .config import (
     OptimizationConfig,
     PredictorConfig,
+    SearchRecord,
     UnknownPredictorClass,
     load_predictor,
     load_predictor_class,

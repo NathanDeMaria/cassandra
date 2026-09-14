@@ -1,44 +1,45 @@
 {
     "predictor_class": "GlickoPredictor",
     "league": "ncaafb",
+    "frame": "points",
     "parameters": {
-        "home_advantage": [
-            0,
-            200
-        ],
         "initial_rd": [
             80,
             1240
-        ],
-        "weekly_rd_increase": [
-            0,
-            120
-        ],
-        "season_rd_increase": [
-            0,
-            500
         ],
         "sigmoid_scale": [
             2,
             60
         ],
-        "prediction_scale": [
-            100,
-            600
-        ],
-        "rest_advantage": [
+        "hfa_pts": [
             0,
-            50
+            8
         ],
-        "qb_out_penalty": [
+        "rest_pts": [
             0,
-            150
+            5
+        ],
+        "qb_pts": [
+            0,
+            12
+        ],
+        "pred_margin_scale": [
+            4,
+            40
+        ],
+        "rd_total": [
+            20,
+            1000
+        ],
+        "rd_offseason_share": [
+            0,
+            1
         ]
     },
     "fixed": {
         "scoring_method": "sigmoid",
         "season_regression": 0,
-        "travel_advantage": 0
+        "travel_pts": 0
     },
     "n_iter": 1000
 }
