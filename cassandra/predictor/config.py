@@ -3,6 +3,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, field_validator, model_validator
 
+from cassandra.box import misplaced
 from cassandra.objective import DEFAULT_OBJECTIVE, get_objective
 
 from . import frame as frames
@@ -77,6 +78,14 @@ class OptimizationConfig(BaseModel):
     # margin, the prediction scale as a margin, the deviation increases as a
     # per-season budget and its offseason share.
     frame: str = frames.RATING
+    # Points to score before the random start, in the frame's terms: one
+    # value per searched parameter. A seed is a probe the search can't lose
+    # -- the fit can't end below it -- and the surrogate starts out knowing
+    # where it is. `optimize.py` adds the model's previous result to these
+    # on its own, so a seed written here is for a point that is *not* the
+    # previous result: a fit an earlier search found and a later one lost,
+    # which is how ncaafb/glicko_full's 2026-09-12 point came to be one.
+    seeds: list[dict[str, float | str]] = []
     n_iter: int = 100
     # Which number the search maximizes; see `cassandra.objective`. Defaulted
     # to brier so every config written before this existed keeps searching
@@ -137,6 +146,19 @@ class OptimizationConfig(BaseModel):
         if "rd_offseason_share" in probe:
             probe["rd_offseason_share"] = 0.5
         frames.to_params(self.frame, {**self.fixed, **probe}, weeks_per_season=1)
+        return self
+
+    @model_validator(mode="after")
+    def _seeds_are_in_the_box(self) -> "OptimizationConfig":
+        """A seed the search can't probe fails at load, with the others.
+
+        `optimize` would refuse it too, but an hour into the array rather
+        than before the launcher submits anything.
+        """
+        for seed in self.seeds:
+            problem = misplaced(seed, self.parameters)
+            if problem is not None:
+                raise ValueError(f"seed {seed}: {problem}")
         return self
 
     def searched_params(self) -> frozenset[str]:

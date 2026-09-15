@@ -193,3 +193,38 @@ def test_the_temp_bucket_comes_from_the_environment_first(
     monkeypatch.setattr("cassandra.constants._OUTPUTS_FILE", tmp_path / "missing.json")
     with pytest.raises(FileNotFoundError, match="CASSANDRA_TEMP_BUCKET"):
         temp_bucket()
+
+
+def test_a_resumed_search_does_not_score_its_seeds_again(tmp_path: Path) -> None:
+    """The seeds are in the save with the random start; neither is redrawn."""
+    seeds = [{"x": 1.0, "y": -1.0}, {"x": -2.0, "y": 2.0}]
+    unbroken = _Recording()
+    optimize(unbroken, BOUNDS, iterations=10, seeds=seeds)
+
+    # Saves after probe 8 -- the two seeds, the random start and one more --
+    # and the reclaim lands two probes later.
+    checkpoint = FileCheckpoint(tmp_path / "search.json")
+    first = _Recording(fail_at=10)
+    with pytest.raises(RuntimeError):
+        optimize(
+            first,
+            BOUNDS,
+            iterations=10,
+            checkpoint=checkpoint,
+            checkpoint_every=8,
+            seeds=seeds,
+        )
+    resumed = _Recording()
+    optimize(
+        resumed,
+        BOUNDS,
+        iterations=10,
+        checkpoint=checkpoint,
+        checkpoint_every=8,
+        seeds=seeds,
+    )
+
+    assert first.probes[:2] == [(1.0, -1.0), (-2.0, 2.0)]
+    assert (1.0, -1.0) not in resumed.probes
+    assert first.probes[:8] + resumed.probes == unbroken.probes
+    assert len(unbroken.probes) == len(seeds) + INIT_POINTS + 10

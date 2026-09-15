@@ -67,9 +67,22 @@ the two rank against each other only by accident. It is meaningless across leagu
 (different games, different sample). Rank within league and within objective; never say a
 model "beats" one in another league.
 
-**`gain`** is best-minus-first-probe. A gain under ~1e-4 means the search never found
-anything: more iterations won't help, and the reported params are barely better than a
-random draw. Say so rather than recommending a longer run.
+**`gain`** is best-minus-first-probe. What the first probe *is* depends on whether the
+search was seeded, which the tuning diagnostics say (`seeded with the previous fit: {...}`,
+`seeded with seed 1 of the config: {...}`):
+
+- Unseeded (no such line — every run before seeding existed, and a model with no result
+  in the bucket yet), the first probe is a random draw. A gain under ~1e-4 means the
+  search never found anything: more iterations won't help, and the reported params are
+  barely better than random. Say so rather than recommending a longer run.
+- Seeded, the first probes are the previous fit and any config seeds, so gain is the
+  improvement *on the previous fit* and a gain of 0 is `seed held` in the table: the
+  search kept the fit it started from, which is the guarantee seeding exists to give,
+  not a failure. Report it as "no improvement this week" and look at the bound hits and
+  `last+` for whether the box or the budget is the reason. A `not seeded with the
+  previous fit: ...` line means that guarantee was off for this child — say why (the
+  fit fell outside the box, the class changed) because a search that can regress is
+  back to the old behaviour.
 
 **`last+@N` of `probes=M`.** `last+` is the last probe that raised the best-so-far. Near
 M means the search was still climbing when it ran out — recommend doubling `n_iter`.

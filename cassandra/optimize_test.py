@@ -2,7 +2,7 @@ from typing import Any, Sequence
 
 import pytest
 
-from .optimize import _DOMAINS, _diagnose, optimize
+from .optimize import _DOMAINS, INIT_POINTS, _diagnose, misplaced, optimize
 
 
 def _results(
@@ -248,3 +248,90 @@ def test_diagnose__a_deviation_floor_is_computable() -> None:
     # ... and anything below it is not.
     with pytest.raises(ZeroDivisionError):
         GlickoPredictor("wnba", initial_rd=0.0).update_game(game)
+
+
+# --- seeds -------------------------------------------------------------------
+#
+# A seed is a point the search is handed before its random start. The
+# guarantee is that the search cannot finish below it, and the mechanism is
+# that it is scored first, as an ordinary probe.
+
+
+def _seeded_bowl(x: float, c: str) -> float:
+    return -((x - 0.3) ** 2) + (1.0 if c == "b" else 0.0)
+
+
+_SEEDED_BOUNDS: dict[str, Any] = {"x": (0.0, 1.0), "c": ["a", "b"]}
+
+
+def test_optimize__seeds_are_scored_first_and_on_top_of_the_budget() -> None:
+    probes: list[tuple[float, str]] = []
+
+    def recording(x: float, c: str) -> float:
+        probes.append((float(x), c))
+        return _seeded_bowl(x, c)
+
+    seeds = [{"x": 0.9, "c": "a"}, {"x": 0.1, "c": "b"}]
+    optimize(recording, _SEEDED_BOUNDS, iterations=4, seeds=seeds)
+
+    assert probes[:2] == [(0.9, "a"), (0.1, "b")]
+    assert len(probes) == len(seeds) + INIT_POINTS + 4
+
+
+def test_optimize__cannot_finish_below_its_seed() -> None:
+    """The point of seeding: a fit the last search found can't be lost."""
+    target, params = optimize(
+        _seeded_bowl, _SEEDED_BOUNDS, iterations=2, seeds=[{"x": 0.3, "c": "b"}]
+    )
+
+    # The seed is the true optimum, so two iterations can only tie it.
+    assert target == pytest.approx(1.0)
+    assert params["c"] == "b"
+    assert float(params["x"]) == pytest.approx(0.3)
+
+
+def test_optimize__a_seed_outside_the_box_is_refused_before_anything_runs() -> None:
+    with pytest.raises(ValueError, match=r"x=2\.0 is outside \[0, 1\]"):
+        optimize(
+            _seeded_bowl, _SEEDED_BOUNDS, iterations=2, seeds=[{"x": 2.0, "c": "b"}]
+        )
+
+
+def test_diagnose__says_when_the_seed_was_never_beaten() -> None:
+    targets = [5.0, 1.0, 2.0, 4.0, 3.0]
+    diagnostics = _diagnose(_results(targets, x=[0.5] * 5), {"x": (0.0, 1.0)}, seeded=1)
+
+    assert diagnostics.seed_held
+    assert any("seeded with" in w and "stands" in w for w in diagnostics.warnings())
+
+
+def test_diagnose__a_beaten_seed_is_nothing_to_report() -> None:
+    targets = [1.0, 5.0, 2.0, 4.0, 3.0]
+    diagnostics = _diagnose(_results(targets, x=[0.5] * 5), {"x": (0.0, 1.0)}, seeded=1)
+
+    assert not diagnostics.seed_held
+    assert not any("seeded" in w for w in diagnostics.warnings())
+
+
+def test_diagnose__an_unseeded_search_never_held_a_seed() -> None:
+    diagnostics = _diagnose(_results([5.0, 1.0], x=[0.5] * 2), {"x": (0.0, 1.0)})
+
+    assert not diagnostics.seed_held
+
+
+@pytest.mark.parametrize(
+    ("seed", "problem"),
+    [
+        ({"x": 0.5, "c": "a"}, None),
+        ({"x": 0.0, "c": "b"}, None),  # a bound is inside the box
+        ({"x": 0.5}, "missing c"),
+        ({"x": 0.5, "c": "a", "z": 1.0}, "not searched: z"),
+        ({"x": 1.5, "c": "a"}, "x=1.5 is outside [0, 1]"),
+        ({"x": "0.5", "c": "a"}, "x='0.5' is outside [0, 1]"),
+        ({"x": 0.5, "c": "z"}, "c='z' is not one of a, b"),
+    ],
+)
+def test_misplaced__names_what_keeps_a_seed_out_of_the_box(
+    seed: dict[str, Any], problem: str | None
+) -> None:
+    assert misplaced(seed, _SEEDED_BOUNDS) == problem

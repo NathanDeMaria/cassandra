@@ -156,6 +156,41 @@ def to_params(
     return out
 
 
+def to_knobs(
+    frame: str, params: Mapping[str, float | str], weeks_per_season: float
+) -> dict[str, float | str]:
+    """The knobs one set of constructor arguments is, in `frame`.
+
+    `to_params` run backwards, so a fit recorded in rating units -- every
+    result from before frames existed, or one searched in a different frame
+    -- can be put in front of a search in this one. A `weekly_rd_increase`
+    and `season_rd_increase` that are both zero have no share to speak of
+    and get 0; `to_params` gives the same two zeros back for any share.
+    """
+    _check(frame)
+    if frame == RATING:
+        return dict(params)
+
+    out = dict(params)
+    sigmoid_scale = float(out.get("sigmoid_scale", DEFAULT_SIGMOID_SCALE))
+    per_point = rating_units_per_point(sigmoid_scale)
+
+    for knob, param in _POINT_TERMS.items():
+        if param in out:
+            out[knob] = float(out.pop(param)) / per_point
+    if "prediction_scale" in out:
+        out["pred_margin_scale"] = (
+            float(out.pop("prediction_scale")) * sigmoid_scale / _UPDATE_SCALE
+        )
+    if "weekly_rd_increase" in out or "season_rd_increase" in out:
+        weekly = float(out.pop("weekly_rd_increase", 0.0))
+        season = float(out.pop("season_rd_increase", 0.0))
+        total = weeks_per_season * weekly**2 + season**2
+        out["rd_total"] = math.sqrt(total)
+        out["rd_offseason_share"] = season**2 / total if total else 0.0
+    return out
+
+
 def weeks_per_season(week_counts: list[int]) -> float:
     """The `weeks_per_season` a league replays with: the median season's."""
     if not week_counts:

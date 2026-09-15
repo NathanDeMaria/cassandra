@@ -51,7 +51,13 @@ _UPLOADED = re.compile(r"^\s+uploaded (?P<key>s3://\S+)$")
 # A retried attempt picking up a checkpoint: `[optimize] resumed at probe 340
 # of 1005`. The probes before it are in an earlier attempt's stream, which
 # the fetch doesn't pull, so the report counts them from this line.
-_RESUMED = re.compile(r"^\[optimize\] resumed at probe (?P<done>\d+) of (?P<total>\d+)$")
+_RESUMED = re.compile(
+    r"^\[optimize\] resumed at probe (?P<done>\d+) of (?P<total>\d+)$"
+)
+# A point the search was handed before its random start -- the previous fit,
+# or a seed written into the config. They are the first probes in the table,
+# so `gain` and `best@` read against them.
+_SEEDED = re.compile(r"^\[optimize\] seeded with (?P<origin>.+?): \{")
 _DIAGNOSTIC = re.compile(r"^\[optimize\] (?P<message>.+)$")
 # The winning constructor arguments, as `optimize.py` prints them once the
 # search is done: `[fitted] {"home_advantage": 60.19, ...}`. In a framed
@@ -97,6 +103,8 @@ class Child:
         # Probes an earlier attempt of this job scored, when this stream is a
         # resumed one; they precede `targets` and are not in it.
         self.resumed_from = 0
+        # How many of the first probes were seeds rather than the search's.
+        self.seeded = 0
         self.diagnostics = []
         self.error = None
         self.uploaded = None
@@ -158,6 +166,15 @@ class Child:
         return None if not self.targets else self.best - self.targets[0]
 
     @property
+    def seed_held(self):
+        """True when nothing the search tried beat the point it was seeded with."""
+        return (
+            bool(self.seeded)
+            and self.best_iteration is not None
+            and self.best_iteration <= self.seeded
+        )
+
+    @property
     def failed(self):
         return self.status == "FAILED"
 
@@ -183,6 +200,11 @@ def _parse_log(child, lines, warnings):
         if resumed:
             child.resumed_from = int(resumed["done"])
             continue
+
+        if _SEEDED.match(line):
+            child.seeded += 1
+            # Falls through: the line is a diagnostic too, so the report's
+            # tuning section says what the seed was.
 
         probe = _PROBE.match(line)
         if probe:
@@ -665,6 +687,8 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
             )
             converged = f"best@{child.best_iteration} last+@{child.last_improvement}"
             gain = f"{child.gain:+.6f}"
+            if child.seed_held:
+                converged += " (seed held)"
         else:
             best = probes = converged = gain = "-"
         rows.append(
@@ -689,6 +713,15 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
         out.append(
             "   the best-so-far, so last+ near the end means it was still climbing)"
         )
+        if any(child.seeded for child in optimize):
+            out.append(
+                "  (a seeded search's first probes are the previous fit and the "
+                "config's seeds, so its gain is"
+            )
+            out.append(
+                "   the improvement on them; 'seed held' means none of the search's "
+                "own probes beat them)"
+            )
     else:
         out.append("  none -- this run submitted no optimize stage")
 

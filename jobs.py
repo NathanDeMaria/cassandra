@@ -264,6 +264,17 @@ async def _optimize(
     if download:
         pulled = await artifacts.download_predictor_data(_bucket())
         print(f"  {len(pulled)} predictor data file(s) from s3://{_bucket()}")
+        # And the last fit of this config, which `optimize.py` puts in front
+        # of the search so it can't end up below where the last one did. Just
+        # this model's result: the rest of `models/` is what evaluate reads,
+        # and a search has no use for it.
+        previous = await artifacts.download(
+            _bucket(), f"models/{work.league}/{work.model}_result.json"
+        )
+        if previous:
+            print(f"  previous fit: {previous[0]}")
+        else:
+            print(f"  no previous fit for {work.name} in s3://{_bucket()}")
 
     # `optimize.py` does a warm-up pass with post_callbacks=True to build the
     # opponent priors the search starts from, and OpponentPriorManager refuses
