@@ -41,5 +41,17 @@
         "season_regression": 0,
         "travel_pts": 0
     },
-    "n_iter": 1000
+    "n_iter": 1000,
+    "seeds": [
+        {
+            "initial_rd": 429.91383,
+            "sigmoid_scale": 26.236081,
+            "hfa_pts": 1.6979731029831122,
+            "rest_pts": 0.0,
+            "qb_pts": 0.0,
+            "pred_margin_scale": 13.1180405,
+            "rd_total": 266.68055303287855,
+            "rd_offseason_share": 0.5957570252443793
+        }
+    ]
 }

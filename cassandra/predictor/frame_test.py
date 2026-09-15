@@ -72,6 +72,37 @@ def test_the_points_frame_round_trips_a_real_fit() -> None:
         assert params[name] == pytest.approx(value), name
 
 
+def test_a_real_fit_reads_back_into_the_knobs_it_was_searched_in() -> None:
+    """`to_knobs` is `to_params` backwards, on the nfl fit both ways round."""
+    knobs = frame.to_knobs(frame.POINTS, _NFL_FIT, weeks_per_season=_NFL_WEEKS)
+
+    assert set(knobs) == set(_nfl_knobs())
+    for name, value in _nfl_knobs().items():
+        assert knobs[name] == pytest.approx(value), name
+    params = frame.to_params(frame.POINTS, knobs, weeks_per_season=_NFL_WEEKS)
+    for name, value in _NFL_FIT.items():
+        assert params[name] == pytest.approx(value), name
+
+    assert frame.to_knobs(frame.RATING, _NFL_FIT, weeks_per_season=1) == _NFL_FIT
+
+
+def test_a_fit_with_no_deviation_increase_reads_back_as_no_budget() -> None:
+    """Two zeros have no split, so the share is 0 rather than 0/0."""
+    knobs = frame.to_knobs(
+        frame.POINTS,
+        {"sigmoid_scale": 10.0, "weekly_rd_increase": 0.0, "season_rd_increase": 0.0},
+        weeks_per_season=17,
+    )
+
+    assert knobs["rd_total"] == 0.0
+    assert knobs["rd_offseason_share"] == 0.0
+    assert frame.to_params(frame.POINTS, knobs, weeks_per_season=17) == {
+        "sigmoid_scale": 10.0,
+        "weekly_rd_increase": 0.0,
+        "season_rd_increase": 0.0,
+    }
+
+
 def test_a_point_is_priced_off_the_update_scale() -> None:
     """Why the exchange rate is what it is.
 
@@ -185,6 +216,27 @@ def test_a_config_in_the_points_frame_names_its_scale() -> None:
             frame="points",
             parameters={"hfa_pts": (0, 8)},
         )
+
+
+def test_a_config_seed_has_to_sit_in_its_own_box() -> None:
+    """Caught with the other config errors, before a launcher submits it."""
+    def config(seed: dict[str, float]) -> OptimizationConfig:
+        return OptimizationConfig.model_validate(
+            {
+                "predictor_class": "GlickoPredictor",
+                "league": "nfl",
+                "frame": frame.POINTS,
+                "parameters": {"sigmoid_scale": (2, 30), "hfa_pts": (0, 8)},
+                "seeds": [seed],
+            }
+        )
+
+    config({"sigmoid_scale": 21.0, "hfa_pts": 2.8})
+
+    with pytest.raises(ValidationError, match=r"hfa_pts=9\.0 is outside \[0, 8\]"):
+        config({"sigmoid_scale": 21.0, "hfa_pts": 9.0})
+    with pytest.raises(ValidationError, match="missing hfa_pts"):
+        config({"sigmoid_scale": 21.0})
 
 
 def test_a_config_cannot_search_a_knob_and_pin_what_it_derives() -> None:

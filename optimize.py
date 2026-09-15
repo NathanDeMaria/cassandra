@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import fire
 import pandas as pd
 
+from cassandra.box import Seed, misplaced
 from cassandra.checkpoint import S3Checkpoint
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.objective import Objective, get_objective
@@ -80,6 +82,83 @@ def _pinned_notice(fixed: dict[str, float | str], config_name: str) -> str | Non
     )
 
 
+def _seeds(
+    config: OptimizationConfig,
+    previous: PredictorConfig | None,
+    weeks_per_season: float,
+) -> tuple[list[Seed], list[str]]:
+    """The points the search scores first, and the `[optimize]` lines saying so.
+
+    The previous result, then the config's own seeds. The previous fit goes
+    in front whether it was searched in this frame or not: its record says
+    which, and `frame.to_knobs` reads a rating-unit fit into a points box.
+    Only the searched names are taken from it -- the pins come from the
+    config, as for any probe -- so a re-pinned config still starts from
+    where the last search ended, just with the new pins under it.
+
+    A previous fit that doesn't fit the box is left out and said so, rather
+    than clamped: a clamped point is a different point, and a box that was
+    drawn to exclude the old fit meant to. A seed that repeats an earlier
+    one is dropped too; bayes_opt would score the duplicate from its cache
+    and log nothing, which reads as a probe that vanished.
+    """
+    seeds: list[Seed] = []
+    lines: list[str] = []
+
+    def offer(origin: str, seed: Seed) -> None:
+        problem = misplaced(seed, config.parameters)
+        if problem is not None:
+            lines.append(f"[optimize] not seeded with {origin}: {problem}")
+        elif any(_same_point(seed, taken) for taken in seeds):
+            lines.append(f"[optimize] not seeded with {origin}: already a seed")
+        else:
+            seeds.append(seed)
+            lines.append(
+                f"[optimize] seeded with {origin}: "
+                f"{json.dumps(dict(seed), sort_keys=True)}"
+            )
+
+    if previous is not None:
+        if previous.predictor_class != config.predictor_class:
+            lines.append(
+                f"[optimize] not seeded with the previous fit: it is a "
+                f"{previous.predictor_class}, not a {config.predictor_class}"
+            )
+        else:
+            if previous.search is not None and previous.search.frame == config.frame:
+                knobs = previous.search.knobs
+            else:
+                knobs = frames.to_knobs(config.frame, previous.params, weeks_per_season)
+            offer(
+                "the previous fit",
+                {name: knobs[name] for name in config.parameters if name in knobs},
+            )
+    for index, seed in enumerate(config.seeds, start=1):
+        offer(f"seed {index} of the config", seed)
+    return seeds, lines
+
+
+def _same_point(one: Seed, other: Seed) -> bool:
+    return all(
+        (one[name] == other[name])
+        if isinstance(one[name], str) or isinstance(other[name], str)
+        else math.isclose(float(one[name]), float(other[name]), rel_tol=1e-9)
+        for name in one
+    )
+
+
+def _previous_result(path: Path) -> PredictorConfig | None:
+    """The last fit of this config, when one is on disk.
+
+    In a Batch container that is the copy `jobs.py` pulled from the bucket
+    before the search; on a laptop it is whatever the last local run or
+    `sync_pins.py --download` left. Either way it is the point to start from.
+    """
+    if not path.exists():
+        return None
+    return PredictorConfig.model_validate_json(path.read_text())
+
+
 async def _run_optimization(config_file: str) -> None:
     config_path = Path(config_file)
     with open(config_path, "r") as f:
@@ -135,11 +214,21 @@ async def _run_optimization(config_file: str) -> None:
     checkpoint = S3Checkpoint.for_this_job()
     if checkpoint is not None:
         print(f"[optimize] checkpointing to s3://{checkpoint.bucket}/{checkpoint.key}")
+
+    # The config is a checked-in input; its result is generated, so it lands
+    # under CASSANDRA_HOME with the rest of the run's output -- and the
+    # previous one, if it is there, is where this search starts.
+    output_path = CASSANDRA_HOME / "models" / league / f"{config_path.stem}_result.json"
+    seeds, seed_lines = _seeds(config_model, _previous_result(output_path), weeks)
+    for line in seed_lines:
+        print(line)
+
     target, params = optimize(
         target_function,
         config_model.parameters,
         config_model.n_iter,
         checkpoint=checkpoint,
+        seeds=seeds,
     )
 
     # Merged, not just recorded: `load_predictor` rebuilds from `params`
@@ -168,9 +257,6 @@ async def _run_optimization(config_file: str) -> None:
         ),
     )
 
-    # The config is a checked-in input; its result is generated, so it lands
-    # under CASSANDRA_HOME with the rest of the run's output.
-    output_path = CASSANDRA_HOME / "models" / league / f"{config_path.stem}_result.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(result_model.model_dump_json(indent=4, by_alias=True))
 

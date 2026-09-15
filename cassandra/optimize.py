@@ -10,9 +10,9 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 
 from bayes_opt import BayesianOptimization
 
+from .box import ParameterBound as _ParameterBound
+from .box import Seed, misplaced
 from .checkpoint import Checkpoint
-
-type _ParameterBound = tuple[float, float] | Sequence[str]
 
 # What each searchable parameter can be, whatever range a config asks for.
 # Only `_widen` reads this, to keep the bound it suggests inside the values
@@ -112,9 +112,17 @@ class _Diagnostics:
     # An n_iter to try, when the caller said what the run used.
     suggested_iterations: int | None
     bound_hits: tuple[_BoundHit, ...]
+    # True when the best probe was one of the seeds the search was handed,
+    # so nothing the search itself tried was an improvement on them.
+    seed_held: bool
 
     def warnings(self) -> list[str]:
         messages = []
+        if self.seed_held:
+            messages.append(
+                "nothing the search tried beat the point it was seeded with, so "
+                "the fit it started from stands"
+            )
         if self.still_improving:
             advice = (
                 f'try "n_iter": {self.suggested_iterations}'
@@ -136,6 +144,7 @@ def _diagnose(
     param_bounds: Mapping[str, _ParameterBound],
     *,
     iterations: int | None = None,
+    seeded: int = 0,
     tail_fraction: float = _TAIL_FRACTION,
     edge_fraction: float = _EDGE_FRACTION,
     min_tail_share: float = _MIN_TAIL_SHARE,
@@ -145,7 +154,8 @@ def _diagnose(
     `results` is the optimizer's probe log, in the order the probes were run:
     one mapping per evaluation with a "target" score and its "params".
     `iterations` is the n_iter the run was given, which turns "it needed longer"
-    into a number to paste back into the model config.
+    into a number to paste back into the model config. `seeded` is how many
+    of the first probes were points the search was handed rather than found.
     """
     if not results:
         raise ValueError("Cannot diagnose an optimization with no results")
@@ -190,6 +200,7 @@ def _diagnose(
                 edge_fraction,
             )
         ),
+        seed_held=ranked[0] < seeded,
     )
 
 
@@ -212,8 +223,16 @@ def optimize(
     iterations: int,
     checkpoint: Checkpoint | None = None,
     checkpoint_every: int = CHECKPOINT_EVERY,
+    seeds: Sequence[Seed] = (),
 ) -> tuple[float, dict[str, float | str]]:
     """Search `param_bounds` for `iterations` probes past the random start.
+
+    `seeds` are points to score before anything else: one per searched
+    name, inside the box (`misplaced` says when one isn't). A seed is a
+    probe like any other once scored, so the search can never finish below
+    the best of them, and the surrogate starts out knowing where they are
+    rather than finding out by luck. They are on top of the budget: a run
+    is `len(seeds) + INIT_POINTS + iterations` probes.
 
     With a `checkpoint`, the search saves itself after every
     `checkpoint_every` probes and on SIGTERM, and starts by loading whatever
@@ -223,6 +242,11 @@ def optimize(
     probing with a reload between chunks reproduces a single `maximize`
     exactly, which `optimize_test` asserts.
     """
+    for seed in seeds:
+        problem = misplaced(seed, param_bounds)
+        if problem is not None:
+            raise ValueError(f"seed {dict(seed)}: {problem}")
+
     optimizer = BayesianOptimization(
         f=function,
         # The docs confirm list-of-str is how you do categorical
@@ -230,7 +254,7 @@ def optimize(
         pbounds=param_bounds,
         random_state=1,
     )
-    total = INIT_POINTS + iterations
+    total = len(seeds) + INIT_POINTS + iterations
 
     resumed = _load(optimizer, checkpoint)
     if resumed:
@@ -238,17 +262,29 @@ def optimize(
     with _saving_on_sigterm(optimizer, checkpoint):
         while len(optimizer.res) < total:
             done = len(optimizer.res)
-            # The random start only once, and never on a resumed search:
-            # a reload carries those probes with it.
+            # The seeds and the random start only once, and never on a
+            # resumed search: a reload carries those probes with it.
+            handed = 0
+            if done == 0:
+                for seed in seeds:
+                    # Queued, so maximize scores them first: it drains the
+                    # queue before it draws the random start.
+                    optimizer.probe(params=dict(seed), lazy=True)
+                handed = len(seeds) + INIT_POINTS
             init_points = INIT_POINTS if done == 0 else 0
             step = min(checkpoint_every, total - done)
-            optimizer.maximize(init_points=init_points, n_iter=step - init_points)
+            # maximize drains its queue -- the seeds and the random start --
+            # before it counts iterations, so a chunk smaller than the start
+            # runs the start and no more.
+            optimizer.maximize(init_points=init_points, n_iter=step - handed)
             _save(optimizer, checkpoint)
 
     if optimizer.max is None:
         raise ValueError("Optimizer did not find a maximum")
 
-    diagnostics = _diagnose(optimizer.res, param_bounds, iterations=iterations)
+    diagnostics = _diagnose(
+        optimizer.res, param_bounds, iterations=iterations, seeded=len(seeds)
+    )
     for warning in diagnostics.warnings():
         print(f"[optimize] {warning}")
 
