@@ -3,7 +3,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, field_validator, model_validator
 
-from cassandra.box import misplaced
+from cassandra.box import ParameterBound, misplaced
 from cassandra.objective import DEFAULT_OBJECTIVE, get_objective
 
 from . import frame as frames
@@ -46,7 +46,10 @@ class OptimizationConfig(BaseModel):
 
     predictor_class: str
     league: str
-    parameters: dict[str, tuple[float, float] | list[str]]
+    # A numeric range, a numeric range that searches whole numbers
+    # (`[1, 4, "int"]`; see `cassandra.box.INTEGER`), or the choices of a
+    # categorical.
+    parameters: dict[str, ParameterBound]
     # Constructor arguments held at one value rather than searched, and
     # written into the result so the published predictor is rebuilt with
     # them. A categorical whose answer is already known belongs here and not

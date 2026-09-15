@@ -112,3 +112,15 @@ def test_a_result_records_which_objective_its_target_scores() -> None:
     )
 
     assert json.loads(result.model_dump_json())["objective"] == "margin_mae"
+
+
+def test_a_bound_can_search_whole_numbers() -> None:
+    """`[1, 4, "int"]` is a range that bayes_opt probes at integers; see `cassandra.box`."""
+    config = OptimizationConfig(
+        predictor_class="GlickoPredictor",
+        league="ncaafb",
+        parameters={"passes": (1, 4, "int"), "sigmoid_scale": (2.0, 30.0)},
+    )
+
+    assert config.parameters["passes"] == (1, 4, "int")
+    assert config.searched_params() == {"passes", "sigmoid_scale"}

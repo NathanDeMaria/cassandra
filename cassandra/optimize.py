@@ -11,7 +11,7 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 from bayes_opt import BayesianOptimization
 
 from .box import ParameterBound as _ParameterBound
-from .box import Seed, misplaced
+from .box import Seed, continuous_range, for_bayes_opt, is_integer, misplaced
 from .checkpoint import Checkpoint
 
 # What each searchable parameter can be, whatever range a config asks for.
@@ -68,6 +68,9 @@ class _BoundHit:
     # A wider bound to try, ready to paste into the model config. None when the
     # hit edge can't be widened.
     suggestion: tuple[float, float] | None
+    # Whether the bound searches whole numbers, so the suggestion keeps the
+    # marker: pasted without it, an int parameter turns into a float one.
+    integer: bool = False
 
     def __str__(self) -> str:
         low, high = self.bounds
@@ -91,8 +94,10 @@ class _BoundHit:
                 "the search is asking for something the model can't do"
             )
         new_low, new_high = self.suggestion
+        marker = ', "int"' if self.integer else ""
         return (
-            f'{head}: try "{self.parameter}": [{_number(new_low)}, {_number(new_high)}]'
+            f'{head}: try "{self.parameter}": '
+            f"[{_number(new_low)}, {_number(new_high)}{marker}]"
         )
 
 
@@ -251,7 +256,7 @@ def optimize(
         f=function,
         # The docs confirm list-of-str is how you do categorical
         # https://bayesian-optimization.github.io/BayesianOptimization/3.2.0/parameter_types.html#3.-Categorical-variables
-        pbounds=param_bounds,
+        pbounds=for_bayes_opt(param_bounds),
         random_state=1,
     )
     total = len(seeds) + INIT_POINTS + iterations
@@ -380,6 +385,7 @@ def _find_bound_hits(
             bounds=(low, high),
             top_share=in_zone / len(top_params),
             suggestion=_widen(name, (low, high), edge),
+            integer=is_integer(param_bounds[name]),
         )
 
 
@@ -417,10 +423,9 @@ def _continuous_bounds(
     for name, bound in param_bounds.items():
         # Categoricals are the list of allowed strings: there's no "wider" for
         # them to go, so they can't be the reason a search came up short.
-        if len(bound) != 2 or any(isinstance(value, str) for value in bound):
-            continue
-        low, high = bound
-        yield name, (float(low), float(high))
+        span = continuous_range(bound)
+        if span is not None:
+            yield name, span
 
 
 def _number(value: float) -> str:

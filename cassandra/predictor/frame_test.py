@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from ..box import continuous_range, is_integer
 from ..scoring import DEFAULT_SIGMOID_SCALE
 from . import frame
 from .config import OptimizationConfig
@@ -220,6 +221,7 @@ def test_a_config_in_the_points_frame_names_its_scale() -> None:
 
 def test_a_config_seed_has_to_sit_in_its_own_box() -> None:
     """Caught with the other config errors, before a launcher submits it."""
+
     def config(seed: dict[str, float]) -> OptimizationConfig:
         return OptimizationConfig.model_validate(
             {
@@ -292,10 +294,12 @@ def test_every_framed_config_derives_a_full_probe(config_path: Path) -> None:
 
     probe: dict[str, float | str] = {}
     for name, bounds in config.parameters.items():
-        low, high = bounds[0], bounds[1]
-        if isinstance(low, str) or isinstance(high, str):
-            probe[name] = low
+        span = continuous_range(bounds)
+        if span is None:
+            probe[name] = bounds[0]
+        elif is_integer(bounds):
+            probe[name] = int(sum(span) // 2)
         else:
-            probe[name] = (low + high) / 2
+            probe[name] = sum(span) / 2
     params = frame.to_params(config.frame, {**config.fixed, **probe}, 17)
     load_predictor_class(config.predictor_class)(config.league, **params)

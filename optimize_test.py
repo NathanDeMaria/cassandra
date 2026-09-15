@@ -244,3 +244,21 @@ def test_a_previous_result_is_read_from_where_the_search_writes(tmp_path):
     previous = optimize._previous_result(path)
 
     assert previous is not None and previous.target == -0.22
+
+
+def test_seeds__a_knob_the_previous_fit_predates_takes_the_constructor_default():
+    """`passes` was 1 for every fit before it existed, so the fit is still a point."""
+    config = _points_config(
+        parameters={
+            "sigmoid_scale": (2, 30),
+            "hfa_pts": (0, 8),
+            "passes": (1, 4, "int"),
+        }
+    )
+
+    seeds, lines = optimize._seeds(config, _fit(), weeks_per_season=22)
+
+    assert seeds == [
+        {"sigmoid_scale": 10.0, "hfa_pts": pytest.approx(3.0), "passes": 1}
+    ]
+    assert lines[0].startswith("[optimize] seeded with the previous fit")

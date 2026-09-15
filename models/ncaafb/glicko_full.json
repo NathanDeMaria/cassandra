@@ -34,6 +34,11 @@
         "rd_offseason_share": [
             0,
             1
+        ],
+        "passes": [
+            1,
+            3,
+            "int"
         ]
     },
     "fixed": {
@@ -51,7 +56,8 @@
             "qb_pts": 0.0,
             "pred_margin_scale": 13.1180405,
             "rd_total": 266.68055303287855,
-            "rd_offseason_share": 0.5957570252443793
+            "rd_offseason_share": 0.5957570252443793,
+            "passes": 1
         }
     ]
 }

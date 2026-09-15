@@ -397,6 +397,10 @@ class BlendedGlickoPredictor(GlickoPredictor):
         season_rd_increase: float = 120,
         initial_rd: float = 216,
         prediction_scale: float = DEFAULT_PREDICTION_SCALE,
+        # Forwarded to the parent, where the smoothing happens. The smoother
+        # replays the actuals the forward pass recorded, which are this
+        # class's blend of the three sources. See `GlickoPredictor.passes`.
+        passes: int = 1,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
@@ -426,6 +430,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
             prediction_scale=prediction_scale,
+            passes=passes,
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
             qb_out_penalty=qb_out_penalty,

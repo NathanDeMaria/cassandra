@@ -334,6 +334,10 @@ class CompoundGlickoPredictor(GlickoPredictor):
         scoring_method: str = "binary",
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
         prediction_scale: float = DEFAULT_PREDICTION_SCALE,
+        # Forwarded to the parent, where the smoothing happens, on the team
+        # ratings only: the units are offsets around them and stay as the
+        # forward pass built them. See `GlickoPredictor.passes`.
+        passes: int = 1,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
@@ -373,6 +377,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
             scoring_method=scoring_method,
             sigmoid_scale=sigmoid_scale,
             prediction_scale=prediction_scale,
+            passes=passes,
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
             qb_out_penalty=qb_out_penalty,
