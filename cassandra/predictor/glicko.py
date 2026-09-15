@@ -29,6 +29,21 @@ class _Rating(NamedTuple):
     rating_deviation: float
 
 
+class _Played(NamedTuple):
+    """One game as the forward update saw it, for the smoother to replay.
+
+    The actual and the home edge are kept rather than re-derived: both read
+    state that has moved on by the time the season is replayed -- rest is a
+    differential built from each team's *last* game, and a replay of week 1
+    after week 6 would price week 1 against week 5's rest.
+    """
+
+    home: str
+    away: str
+    actual: float
+    home_adjustment: float
+
+
 _Q = math.log(10) / 400
 
 # The rating gap that reads as a 10-to-1 favorite when a game is *predicted*.
@@ -83,6 +98,23 @@ class GlickoPredictor(Predictor):
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
         season_regression: float = 0.0,
+        # How many times each week's games are rated. 1 is Glicko as a
+        # filter: a result is priced once, against what the opponent's
+        # rating was that day, and never revisited. Above 1 the season so
+        # far is re-rated from its preseason state after every week, each
+        # team's own rating evolving from preseason while every opponent is
+        # priced at the mean the previous pass ended with -- so a week-1
+        # win over a team that week 2 exposed is worth what it turned out
+        # to be worth, and a preseason favourite that was blown out by a
+        # scrub gives back the credit it took. See `_smooth`.
+        #
+        # Worth +0.0006 brier on ncaafb at 3 passes, over 24 of 25 seasons
+        # and every week of the season, with the 2026-09-12 fit's other
+        # parameters held where the filter tuned them; a rounding error on
+        # nfl, where 17 games in a tight league leave the filter little to
+        # learn from the second look. Defaulted to 1 so every model
+        # published before this existed replays exactly as it did.
+        passes: int = 1,
         opponent_prior_manager: OpponentPriorManager | None = None,
         # Where the matchup terms read their facts. Defaulted rather than
         # required, like the prior manager: a replay wants the league's own,
@@ -122,6 +154,14 @@ class GlickoPredictor(Predictor):
                 team: _Rating(rating, self._initial_rd)
                 for team, rating in prior_ratings.items()
             }
+        self._passes = validated_passes(passes)
+        # What the smoother replays from and over: the ratings the season
+        # opened with, and the season's games so far, a list per week. In-
+        # season state, not part of `state_dict` -- a restored predictor is
+        # read, not trained further (see `serving.release`).
+        self._preseason = dict(self._ratings)
+        self._weeks: list[list[_Played]] = []
+        self._this_week: list[_Played] = []
 
     def predict_game(self, matchup: Matchup) -> Prediction:
         home_rating = self.get_rating(matchup.home)
@@ -169,6 +209,7 @@ class GlickoPredictor(Predictor):
         self._update_rating(
             game.away, away_rating, home_rating, 1 - actual, home_adjustment=-home_adj
         )
+        self._this_week.append(_Played(game.home, game.away, actual, home_adj))
 
         self._prior_manager.add_game(game)
         # After the prediction, so a game never contributes to its own rest.
@@ -206,13 +247,75 @@ class GlickoPredictor(Predictor):
         return self._ratings.get(team, _Rating(self.anchor(team), self._initial_rd))
 
     def pass_week(self) -> None:
-        self._ratings = {
+        self._weeks.append(self._this_week)
+        self._this_week = []
+        self._ratings = self._aged(self._ratings, self._weekly_rd_increase)
+        for _ in range(self._passes - 1):
+            self._smooth()
+
+    def _aged(
+        self, ratings: Mapping[str, _Rating], increase: float
+    ) -> dict[str, _Rating]:
+        """Every deviation widened by `increase`, capped at `initial_rd`."""
+        return {
             team: _Rating(
                 rating.rating,
                 min(
                     self._initial_rd,
-                    math.sqrt(rating.rating_deviation**2 + self._weekly_rd_increase**2),
+                    math.sqrt(rating.rating_deviation**2 + increase**2),
                 ),
+            )
+            for team, rating in ratings.items()
+        }
+
+    def _smooth(self) -> None:
+        """One more pass over the season so far; see `passes`.
+
+        A Gauss-Seidel sweep, in effect: each team's rating is re-walked
+        from preseason through its games in order, and the opponent it is
+        measured against in each is held at the mean the previous pass
+        finished with. Only the means come out of it. The deviations are
+        the forward pass's, kept as they stand -- `glicko_step` shrinks a
+        deviation every time it sees a game, and a pass that re-saw the
+        whole season would leave every team looking measured three times
+        over. The opponent's deviation inside the replay is its replayed
+        one, so `g` discounts an early opponent the way the filter did.
+
+        Passes converge quickly and wobble a little past three (five was a
+        hair worse on ncaafb), which is a fixed-point iteration doing what
+        they do; nothing here damps it because nothing has needed to.
+        """
+        settled = {team: rating.rating for team, rating in self._ratings.items()}
+        replay = dict(self._preseason)
+
+        def rating_of(team: str) -> _Rating:
+            return replay.get(team, _Rating(self.anchor(team), self._initial_rd))
+
+        for week in self._weeks:
+            for played in week:
+                home, away = rating_of(played.home), rating_of(played.away)
+                replay[played.home] = glicko_step(
+                    home,
+                    _Rating(
+                        settled.get(played.away, away.rating), away.rating_deviation
+                    ),
+                    played.actual,
+                    played.home_adjustment,
+                )
+                replay[played.away] = glicko_step(
+                    away,
+                    _Rating(
+                        settled.get(played.home, home.rating), home.rating_deviation
+                    ),
+                    1 - played.actual,
+                    -played.home_adjustment,
+                )
+            replay = self._aged(replay, self._weekly_rd_increase)
+
+        self._ratings = {
+            team: _Rating(
+                replay[team].rating if team in replay else rating.rating,
+                rating.rating_deviation,
             )
             for team, rating in self._ratings.items()
         }
@@ -228,6 +331,11 @@ class GlickoPredictor(Predictor):
             )
             for team, rating in self._ratings.items()
         }
+        # The season the smoother replays from starts here: after the
+        # regression and the offseason widening, with no games yet.
+        self._preseason = dict(self._ratings)
+        self._weeks = []
+        self._this_week = []
 
     def postrun_callback(self) -> None:
         self._prior_manager.save(
@@ -249,6 +357,7 @@ class GlickoPredictor(Predictor):
             "travel_advantage": self._adjustments.travel_advantage,
             "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,
+            "passes": self._passes,
             "ratings": {
                 team: [r.rating, r.rating_deviation]
                 for team, r in self._ratings.items()
@@ -289,6 +398,18 @@ class GlickoPredictor(Predictor):
             for team, r in ratings.items()
         }
         return predictor
+
+
+def validated_passes(passes: int) -> int:
+    """`passes` as an int of at least 1, which is the filter.
+
+    A search hands over a float, so 2.0 is 2 rather than a type error, but
+    2.5 passes is not a thing and neither is 0: the first pass is the update
+    itself, and a model with none of it isn't rating anything.
+    """
+    if passes != int(passes) or int(passes) < 1:
+        raise ValueError(f"passes must be a whole number of at least 1, not {passes}")
+    return int(passes)
 
 
 def glicko_step(

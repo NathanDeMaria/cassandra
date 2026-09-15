@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import math
 from dataclasses import asdict
@@ -129,13 +130,35 @@ def _seeds(
                 knobs = previous.search.knobs
             else:
                 knobs = frames.to_knobs(config.frame, previous.params, weeks_per_season)
+            # A knob the previous fit never had is one the constructor
+            # defaulted for it -- `passes` was 1 for every fit before it
+            # existed -- so that fit is still a point in the new box, at the
+            # default. A name with no default is left out, and `misplaced`
+            # says so.
+            defaults = _constructor_defaults(config.predictor_class)
             offer(
                 "the previous fit",
-                {name: knobs[name] for name in config.parameters if name in knobs},
+                {
+                    name: knobs[name] if name in knobs else defaults[name]
+                    for name in config.parameters
+                    if name in knobs or name in defaults
+                },
             )
     for index, seed in enumerate(config.seeds, start=1):
         offer(f"seed {index} of the config", seed)
     return seeds, lines
+
+
+def _constructor_defaults(predictor_class: str) -> dict[str, float | str]:
+    """The constructor's defaults, for the knobs a fit predates."""
+    signature = inspect.signature(load_predictor_class(predictor_class))
+    return {
+        name: parameter.default
+        for name, parameter in signature.parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+        and isinstance(parameter.default, (int, float, str))
+        and not isinstance(parameter.default, bool)
+    }
 
 
 def _same_point(one: Seed, other: Seed) -> bool:

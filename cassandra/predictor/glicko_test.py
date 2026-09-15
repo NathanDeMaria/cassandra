@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from ..scoring import DEFAULT_SIGMOID_SCALE
@@ -161,3 +163,112 @@ def test_the_prediction_scale_round_trips_through_the_state() -> None:
 def test_a_prediction_scale_of_zero_or_less_is_refused(scale: float) -> None:
     with pytest.raises(ValueError, match="prediction_scale must be positive"):
         GlickoPredictor("test_league", prediction_scale=scale)
+
+
+# --- passes: the season re-rated in hindsight ---------------------------------
+
+
+def _week(predictor: GlickoPredictor, game: GameFactory, *games: tuple) -> None:
+    for index, (home, away, home_score, away_score) in enumerate(games):
+        predictor.update_game(
+            game(home, away, home_score, away_score, game_id=str(index))
+        )
+    predictor.pass_week()
+
+
+def test_one_pass_is_the_filter(game: GameFactory) -> None:
+    """The default replays every published model exactly as before."""
+    filter_ = GlickoPredictor("test_league", scoring_method="binary")
+    smoothed = GlickoPredictor("test_league", scoring_method="binary", passes=1)
+    for predictor in (filter_, smoothed):
+        _week(predictor, game, ("A", "B", 28, 7), ("C", "D", 10, 3))
+        _week(predictor, game, ("B", "C", 3, 31), ("D", "A", 0, 14))
+
+    assert smoothed.ratings == filter_.ratings
+
+
+def test_a_win_over_a_team_that_was_then_exposed_gives_credit_back(
+    game: GameFactory,
+) -> None:
+    """The case the knob is for.
+
+    A beats B in week 1: a good win, priced against B's rating that day. In
+    week 2 B is blown out by D, a nobody. The filter leaves A's week-1 credit
+    where it was; the smoother re-rates A's win against what B turned out
+    to be and takes some of it back.
+    """
+    filter_ = GlickoPredictor("test_league", scoring_method="binary", passes=1)
+    smoothed = GlickoPredictor("test_league", scoring_method="binary", passes=3)
+    for predictor in (filter_, smoothed):
+        _week(predictor, game, ("A", "B", 21, 20))
+        _week(predictor, game, ("D", "B", 49, 0))
+
+    assert smoothed.get_rating("A").rating < filter_.get_rating("A").rating
+    assert smoothed.get_rating("A").rating > filter_.anchor("A")
+
+
+def test_only_the_means_move(game: GameFactory) -> None:
+    """Every pass re-sees every game; the deviations must not shrink for it."""
+    filter_ = GlickoPredictor("test_league", passes=1, initial_rd=300)
+    smoothed = GlickoPredictor("test_league", passes=4, initial_rd=300)
+    for predictor in (filter_, smoothed):
+        _week(predictor, game, ("A", "B", 21, 20), ("C", "D", 3, 0))
+        _week(predictor, game, ("D", "B", 49, 0), ("A", "C", 7, 6))
+
+    for team in "ABCD":
+        assert smoothed.get_rating(team).rating_deviation == pytest.approx(
+            filter_.get_rating(team).rating_deviation
+        )
+
+
+def test_the_prediction_the_update_scores_is_the_filters(game: GameFactory) -> None:
+    """A game is predicted before it is played, from the ratings as they stand.
+
+    Smoothing runs after the week, so the first week's predictions are the
+    same under any number of passes; only what the *next* week is predicted
+    from differs.
+    """
+    filter_ = GlickoPredictor("test_league", passes=1)
+    smoothed = GlickoPredictor("test_league", passes=3)
+    first = game("A", "B", 21, 20)
+
+    assert smoothed.update_game(first) == filter_.update_game(first)
+
+
+def test_a_new_season_replays_from_its_own_opening(game: GameFactory) -> None:
+    """Last season's games are not re-rated this season.
+
+    The smoother replays from the ratings the season opened with -- after
+    the rollover -- and only over this season's games; otherwise a team's
+    rating in week 3 would carry a fresh re-reading of last October.
+    """
+    predictor = GlickoPredictor("test_league", passes=3, season_regression=0.5)
+    _week(predictor, game, ("A", "B", 21, 20), ("C", "D", 3, 0))
+    predictor.pass_season()
+    opened = predictor.ratings
+
+    assert predictor._weeks == [] and predictor._this_week == []
+    assert predictor._preseason == predictor._ratings
+    # A week with no games re-rates nothing: the opening stands.
+    predictor.pass_week()
+    for team, rating in opened.items():
+        assert predictor.get_rating(team).rating == pytest.approx(rating.rating)
+
+
+def test_passes_round_trips_through_the_state(tmp_path) -> None:
+    predictor = GlickoPredictor("test_league", passes=3)
+    save_path = tmp_path / "glicko.json"
+    predictor.save_state(save_path)
+
+    assert GlickoPredictor.load_state(save_path)._passes == 3
+
+
+def test_a_search_can_hand_over_a_whole_float() -> None:
+    passes: Any = 2.0
+    assert GlickoPredictor("test_league", passes=passes)._passes == 2
+
+
+@pytest.mark.parametrize("passes", [0, -1, 2.5])
+def test_a_fraction_of_a_pass_or_none_at_all_is_refused(passes: Any) -> None:
+    with pytest.raises(ValueError, match="passes"):
+        GlickoPredictor("test_league", passes=passes)

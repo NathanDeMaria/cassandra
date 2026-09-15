@@ -1,5 +1,7 @@
+from pathlib import Path
 from typing import Any, Sequence
 
+import numpy as np
 import pytest
 
 from .optimize import _DOMAINS, INIT_POINTS, _diagnose, misplaced, optimize
@@ -335,3 +337,56 @@ def test_misplaced__names_what_keeps_a_seed_out_of_the_box(
     seed: dict[str, Any], problem: str | None
 ) -> None:
     assert misplaced(seed, _SEEDED_BOUNDS) == problem
+
+
+# --- whole-number parameters --------------------------------------------------
+
+
+def test_optimize__an_int_bound_is_probed_at_whole_numbers() -> None:
+    """`[1, 4, "int"]` in a config reaches bayes_opt as its integer type."""
+    seen: list[Any] = []
+
+    def f(x: float, n: int) -> float:
+        seen.append(n)
+        return -((x - 0.5) ** 2) - (n - 2) ** 2
+
+    bounds: dict[str, Any] = {"x": (0.0, 1.0), "n": (1, 4, "int")}
+    _, params = optimize(f, bounds, iterations=4)
+
+    assert all(isinstance(n, (int, np.integer)) for n in seen)
+    assert params["n"] == 2
+
+
+def test_optimize__an_int_bound_survives_a_checkpoint(tmp_path: Path) -> None:
+    from .checkpoint import FileCheckpoint
+
+    def f(x: float, n: int) -> float:
+        return -((x - 0.5) ** 2) - (n - 2) ** 2
+
+    bounds: dict[str, Any] = {"x": (0.0, 1.0), "n": (1, 4, "int")}
+    unbroken = optimize(f, bounds, iterations=6)
+    chunked = optimize(
+        f,
+        bounds,
+        iterations=6,
+        checkpoint=FileCheckpoint(tmp_path / "s.json"),
+        checkpoint_every=4,
+    )
+
+    assert chunked == unbroken
+
+
+def test_diagnose__an_int_bound_hit_keeps_its_marker() -> None:
+    results = _results([1.0, 2.0, 3.0, 4.0], n=[4, 4, 4, 4], x=[0.5] * 4)
+    bounds: dict[str, Any] = {"n": (1, 4, "int"), "x": (0.0, 1.0)}
+    diagnostics = _diagnose(results, bounds)
+
+    (hit,) = diagnostics.bound_hits
+    assert hit.parameter == "n" and hit.edge == "upper"
+    assert 'try "n": [1, 7, "int"]' in str(hit)
+
+
+def test_optimize__a_seed_for_an_int_bound_has_to_be_whole() -> None:
+    bounds: dict[str, Any] = {"x": (0.0, 1.0), "n": (1, 4, "int")}
+    with pytest.raises(ValueError, match="not a whole number"):
+        optimize(lambda x, n: 0.0, bounds, iterations=1, seeds=[{"x": 0.5, "n": 2.5}])

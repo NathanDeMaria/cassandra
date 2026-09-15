@@ -219,6 +219,10 @@ class ControlGlickoPredictor(GlickoPredictor):
         # can search rather than inherit.
         sigmoid_scale: float = DEFAULT_SIGMOID_SCALE,
         prediction_scale: float = DEFAULT_PREDICTION_SCALE,
+        # Forwarded to the parent, where the smoothing happens. The smoother
+        # replays the actuals the forward pass recorded, and those already
+        # have this class's control blended in. See `GlickoPredictor.passes`.
+        passes: int = 1,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
@@ -240,6 +244,7 @@ class ControlGlickoPredictor(GlickoPredictor):
             scoring_method=scoring_method,
             sigmoid_scale=sigmoid_scale,
             prediction_scale=prediction_scale,
+            passes=passes,
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
             qb_out_penalty=qb_out_penalty,

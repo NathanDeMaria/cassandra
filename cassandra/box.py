@@ -7,10 +7,39 @@ not drag bayes_opt and sklearn in behind it (`release_test` checks).
 """
 
 from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
-type ParameterBound = tuple[float, float] | Sequence[str]
+#: The marker a config puts third in a bound to search whole numbers:
+#: `"passes": [1, 4, "int"]`. bayes_opt takes the type `int` there, which
+#: JSON can't carry, so the config spells it and `for_bayes_opt` translates.
+INTEGER: Literal["int"] = "int"
+
+type ParameterBound = (
+    tuple[float, float] | tuple[int, int, Literal["int"]] | Sequence[str]
+)
 #: A point in a search's box: one value per searched parameter.
 type Seed = Mapping[str, float | str]
+
+
+def continuous_range(bound: ParameterBound) -> tuple[float, float] | None:
+    """The `(low, high)` of a numeric bound, whole-numbered or not; None for a categorical."""
+    if len(bound) == 3 and bound[2] == INTEGER:
+        return float(bound[0]), float(bound[1])  # type: ignore[arg-type]
+    if len(bound) == 2 and not any(isinstance(value, str) for value in bound):
+        return float(bound[0]), float(bound[1])  # type: ignore[arg-type]
+    return None
+
+
+def is_integer(bound: ParameterBound) -> bool:
+    return len(bound) == 3 and bound[2] == INTEGER
+
+
+def for_bayes_opt(param_bounds: Mapping[str, ParameterBound]) -> dict[str, Any]:
+    """The box as `BayesianOptimization(pbounds=)` takes it."""
+    return {
+        name: (bound[0], bound[1], int) if is_integer(bound) else bound
+        for name, bound in param_bounds.items()
+    }
 
 
 def misplaced(seed: Seed, param_bounds: Mapping[str, ParameterBound]) -> str | None:
@@ -30,11 +59,14 @@ def misplaced(seed: Seed, param_bounds: Mapping[str, ParameterBound]) -> str | N
         return f"not searched: {', '.join(extra)}"
     for name, bound in param_bounds.items():
         value = seed[name]
-        if len(bound) != 2 or any(isinstance(choice, str) for choice in bound):
+        span = continuous_range(bound)
+        if span is None:
             if value not in bound:
                 return f"{name}={value!r} is not one of {', '.join(map(str, bound))}"
             continue
-        low, high = bound
-        if isinstance(value, str) or not float(low) <= float(value) <= float(high):
-            return f"{name}={value!r} is outside [{float(low):g}, {float(high):g}]"
+        low, high = span
+        if isinstance(value, str) or not low <= float(value) <= high:
+            return f"{name}={value!r} is outside [{low:g}, {high:g}]"
+        if is_integer(bound) and not float(value).is_integer():
+            return f"{name}={value!r} is not a whole number"
     return None
