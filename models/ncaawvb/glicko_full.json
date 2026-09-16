@@ -26,6 +26,11 @@
         "sigmoid_scale": [
             0.05,
             6
+        ],
+        "passes": [
+            1,
+            3,
+            "int"
         ]
     },
     "fixed": {
