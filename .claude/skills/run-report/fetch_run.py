@@ -360,8 +360,8 @@ async def _job_record(logs, stage, index, name, job, cache_dir, gate):
         # `CannotPullImageManifestError` never reaches stdout.
         "container_reason": container.get("reason"),
         # More than one means Batch retried, which it only does on `Host EC2*`
-        # -- a spot reclaim. Nothing checkpoints, so the earlier attempt's work
-        # is gone rather than resumed.
+        # -- a spot reclaim. An optimize child resumes from its checkpoint;
+        # the sweeps restart, and are cheap enough that it doesn't matter.
         "attempts": len(attempts),
         "log": None,
     }

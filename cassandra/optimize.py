@@ -1,3 +1,4 @@
+import json
 import math
 import signal
 import tempfile
@@ -301,17 +302,36 @@ def optimize(
 
 
 def _load(optimizer: BayesianOptimization, checkpoint: Checkpoint | None) -> int:
-    """Restore a save into `optimizer`; the number of probes it carried, 0 if none."""
+    """Restore a save into `optimizer`; the number of probes it carried, 0 if none.
+
+    A save for a different box is left alone and said so. The retry after a
+    reclaim pulls whatever image is current, and a deploy in between can
+    have changed the config it runs -- 20260915-031115 was reclaimed five
+    minutes after a knob shipped, and its retry loaded eight parameters
+    into a nine-parameter search and died there. Starting over costs the
+    attempt's probes; dying costs the run.
+    """
     if checkpoint is None:
         return 0
     state = checkpoint.load()
     if state is None:
+        return 0
+    saved = json.loads(state)
+    if list(saved.get("keys", [])) != list(optimizer.space.keys):
+        print(
+            "[optimize] the save is for a different box "
+            f"({', '.join(saved.get('keys', []))}), not this one "
+            f"({', '.join(optimizer.space.keys)}): starting over"
+        )
         return 0
     # `load_state` wants a path, not bytes.
     with tempfile.NamedTemporaryFile(suffix=".json") as handle:
         handle.write(state)
         handle.flush()
         optimizer.load_state(handle.name)
+    # The same names with different bounds -- a bound widened between the
+    # attempts -- loads fine: `load_state` keeps the bounds this attempt was
+    # given and registers the saved probes as points, which they still are.
     return len(optimizer.res)
 
 
