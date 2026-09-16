@@ -54,6 +54,9 @@ _UPLOADED = re.compile(r"^\s+uploaded (?P<key>s3://\S+)$")
 _RESUMED = re.compile(
     r"^\[optimize\] resumed at probe (?P<done>\d+) of (?P<total>\d+)$"
 )
+# The retry found a save it could not use -- a knob shipped between the
+# attempts -- and started the search over rather than dying on it.
+_RESTARTED = re.compile(r"^\[optimize\] the save is for a different box .*: starting over$")
 # A point the search was handed before its random start -- the previous fit,
 # or a seed written into the config. They are the first probes in the table,
 # so `gain` and `best@` read against them.
@@ -101,8 +104,12 @@ class Child:
         self.targets = []
         self.probe_values = []
         # Probes an earlier attempt of this job scored, when this stream is a
-        # resumed one; they precede `targets` and are not in it.
+        # resumed one. bayes_opt echoes them as it loads the save, so they
+        # are usually in `targets` too: `echoed` is how many rows preceded
+        # the resume line, which says whether they were.
         self.resumed_from = 0
+        self.echoed = 0
+        self.restarted = False
         # How many of the first probes were seeds rather than the search's.
         self.seeded = 0
         self.diagnostics = []
@@ -162,6 +169,21 @@ class Child:
         return last
 
     @property
+    def probe_count(self):
+        """How many probes the search has scored, as the table prints it.
+
+        A resumed stream carries the save's probes twice over: bayes_opt
+        echoes them as it loads, then scores the rest. When the rows before
+        the resume line are the save, the table is the whole history and
+        counts once; a stream that didn't echo them (an older log) adds.
+        """
+        if not child_resumed(self):
+            return f"{len(self.targets)}"
+        if self.echoed == self.resumed_from:
+            return f"{len(self.targets)} ({self.resumed_from} from the save)"
+        return f"{self.resumed_from}+{len(self.targets)}"
+
+    @property
     def gain(self):
         return None if not self.targets else self.best - self.targets[0]
 
@@ -183,6 +205,10 @@ class Child:
         return self.status in _WAITING
 
 
+def child_resumed(child):
+    return bool(child.resumed_from)
+
+
 def _parse_log(child, lines, warnings):
     """Pull the interesting rows out of one container's stdout."""
     pending_frames = []
@@ -199,7 +225,12 @@ def _parse_log(child, lines, warnings):
         resumed = _RESUMED.match(line)
         if resumed:
             child.resumed_from = int(resumed["done"])
+            child.echoed = len(child.targets)
             continue
+
+        if _RESTARTED.match(line):
+            child.restarted = True
+            # Falls through: it is a diagnostic too.
 
         if _SEEDED.match(line):
             child.seeded += 1
@@ -433,24 +464,36 @@ def _infrastructure_notes(stages):
                 # eventually SUCCEEDED, which is why this can't be folded
                 # into the failure grouping.
                 reclaimed.append(
-                    (label, child.attempts, child.duration, child.resumed_from)
+                    (
+                        label,
+                        child.attempts,
+                        child.duration,
+                        child.resumed_from,
+                        child.restarted,
+                    )
                 )
             if child.container_reason:
                 unstartable.setdefault(child.container_reason, []).append(label)
 
     out = []
-    for label, attempts, duration, resumed_from in reclaimed:
+    for label, attempts, duration, resumed_from, restarted in reclaimed:
         if resumed_from:
             out.append(
                 f"  {label}: {attempts} attempts -- spot reclaim. Resumed from "
                 f"its checkpoint at probe {resumed_from}; only the probes "
                 "after the last save were paid for twice."
             )
+        elif restarted:
+            out.append(
+                f"  {label}: {attempts} attempts -- spot reclaim. The retry found "
+                "a save for a different box (a config change shipped between the "
+                "attempts) and started over; the earlier attempts' probes are gone."
+            )
         else:
             out.append(
-                f"  {label}: {attempts} attempts -- spot reclaim. Nothing "
-                f"checkpoints, so only the last attempt's "
-                f"{_duration(duration)} produced anything."
+                f"  {label}: {attempts} attempts -- spot reclaim. The last attempt "
+                f"({_duration(duration)}) shows no resume line: either nothing had "
+                "been saved yet, or its log has not flushed."
             )
     for reason, labels in unstartable.items():
         shown = ", ".join(labels[:4]) + (
@@ -680,11 +723,7 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
     for child in optimize:
         if child.targets:
             best = f"{child.best:.6f}"
-            probes = (
-                f"{child.resumed_from}+{len(child.targets)}"
-                if child.resumed_from
-                else f"{len(child.targets)}"
-            )
+            probes = child.probe_count
             converged = f"best@{child.best_iteration} last+@{child.last_improvement}"
             gain = f"{child.gain:+.6f}"
             if child.seed_held:

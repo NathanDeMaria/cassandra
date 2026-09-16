@@ -287,15 +287,16 @@ module "optimize" {
   # whole attempt. Only host failures retry; a config that genuinely fails
   # still fails once.
   #
-  # Six rather than three because three was measured to be too close: in the
-  # 20260903-230628 run, six of twenty-four children were reclaimed and four
-  # of those spent all three attempts, so the array came within one
-  # interruption of failing and taking evaluate and publish with it. That
-  # was before the checkpoint; with it each attempt only has to survive long
-  # enough to make progress, so six is now generous rather than tight -- but
-  # the count still caps how many reclaims a search can absorb, and the
-  # longest searches are the ones that keep getting hit.
-  retry_attempts = 6
+  # Ten, which is as many as Batch allows. Three was measured to be too
+  # close before the checkpoint existed: in the 20260903-230628 run, six of
+  # twenty-four children were reclaimed and four of those spent all three
+  # attempts. Six was then generous -- until 20260915-044450, when one
+  # ncaafb search was reclaimed six times in 3.4 hours, five of them inside
+  # fifty minutes, and failed with 597 saved probes it could have finished
+  # from. With the checkpoint a retry costs at most the probes since the
+  # last save, so the count is only ever a cap on how much spot churn a
+  # search can outlast, and there is no reason to hold it under the limit.
+  retry_attempts = 10
 
   environment_variables = local.job_environment
 }

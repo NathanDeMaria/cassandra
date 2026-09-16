@@ -228,3 +228,49 @@ def test_a_resumed_search_does_not_score_its_seeds_again(tmp_path: Path) -> None
     assert (1.0, -1.0) not in resumed.probes
     assert first.probes[:8] + resumed.probes == unbroken.probes
     assert len(unbroken.probes) == len(seeds) + INIT_POINTS + 10
+
+
+def test_a_save_for_a_different_box_is_left_alone(tmp_path: Path, capsys) -> None:
+    """The retry after a reclaim runs whatever image is current.
+
+    A knob that shipped between the attempts makes the save eight parameters
+    and the search nine; bayes_opt would die loading it. Starting over
+    costs the attempt's probes, dying costs the run.
+    """
+    checkpoint = FileCheckpoint(tmp_path / "search.json")
+    first = _Recording(fail_at=7)
+    with pytest.raises(RuntimeError):
+        optimize(first, BOUNDS, iterations=3, checkpoint=checkpoint, checkpoint_every=5)
+    assert checkpoint.load() is not None
+
+    wider_box = {**BOUNDS, "z": (0.0, 1.0)}
+    resumed = _Recording3()
+    optimize(
+        resumed, wider_box, iterations=3, checkpoint=checkpoint, checkpoint_every=5
+    )
+
+    assert len(resumed.probes) == INIT_POINTS + 3
+    assert "starting over" in capsys.readouterr().out
+
+
+class _Recording3:
+    def __init__(self) -> None:
+        self.probes: list[tuple[float, float, float]] = []
+
+    def __call__(self, x: float, y: float, z: float) -> float:
+        self.probes.append((x, y, z))
+        return _bowl(x, y) - z**2
+
+
+def test_a_save_with_the_same_names_and_wider_bounds_resumes(tmp_path: Path) -> None:
+    checkpoint = FileCheckpoint(tmp_path / "search.json")
+    first = _Recording(fail_at=7)
+    with pytest.raises(RuntimeError):
+        optimize(first, BOUNDS, iterations=5, checkpoint=checkpoint, checkpoint_every=5)
+
+    wider = {"x": (-6.0, 6.0), "y": (-3.0, 3.0)}
+    resumed = _Recording()
+    optimize(resumed, wider, iterations=5, checkpoint=checkpoint, checkpoint_every=5)
+
+    # Five saved, so the retry scores the five that were left and no more.
+    assert len(resumed.probes) == 5

@@ -45,9 +45,18 @@ node's real state. Three that don't exist locally and mean different things:
   nothing is being placed. This is a capacity story, not a hung job. Say how long it's
   been waiting; don't recommend model changes.
 - `INFRASTRUCTURE` entries for **spot reclaim** (`N attempts`) — Batch retries only on
-  `Host EC2*`, and nothing checkpoints. A child reclaimed at hour three restarted from
-  zero, so its wall time understates what it cost. Flag it against expensive configs
-  especially; a `glicko_full` that keeps getting reclaimed may never finish.
+  `Host EC2*`. An optimize child saves itself every 25 probes and on SIGTERM
+  (`cassandra.checkpoint`), so `Resumed from its checkpoint at probe N` is the retry
+  working: only the probes since the last save were paid for twice, and the table's
+  `probes=` counts the whole history once. Two other lines can appear. `started over`
+  means the retry found a save for a different box — a config change shipped between
+  the attempts — and the earlier attempts' probes are gone; say so, it's a deploy-timing
+  story, not a model one. `shows no resume line` is either a reclaim before the first
+  save (under 25 probes in) or a log that hasn't flushed yet — an in-flight container's
+  stdout can lag by a lot. The budget is 10 attempts, so a job that FAILED with
+  `Host EC2 terminated` as its own reason burned all of them: the save is still in the
+  temp bucket under the job id, and copying it to a resubmitted job's slot before its
+  optimize stage starts resumes it.
 - `container never started` — a `CannotPullImageManifestError` means the job definition
   points at an image tag that isn't in ECR. That is a deploy problem: nothing ran, there
   is no log, and no model is implicated.
