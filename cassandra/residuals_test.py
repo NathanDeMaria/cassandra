@@ -26,6 +26,7 @@ from .residuals import (
     home_field_table,
     rest_advantage,
     season_stage,
+    site_type,
     standard_axes,
 )
 
@@ -402,6 +403,56 @@ def test_favorite_size_keeps_the_sign():
     # innermost edge straddles zero on purpose, since splitting a coin flip
     # by which way it leaned is splitting noise.
     assert buckets.iloc[4] == "(-3.0, 3.0]"
+
+
+def test_site_type_labels_the_two_kinds():
+    df = pd.DataFrame({"neutral_site": [True, False, True]})
+    assert list(site_type(df)) == ["neutral", "home_site", "neutral"]
+
+
+def test_site_type_finds_a_planted_neutral_bias():
+    """The ncaafb shape: a big bias on a small slice.
+
+    Both halves are asserted, because reading either alone is the mistake
+    the module is built to prevent -- the axis is many sigma from its null
+    *and* a perfect correction of it is worth a fraction of a point, since
+    the games it applies to are a tenth of the schedule.
+    """
+    rng = np.random.default_rng(12)
+    n = 2000
+    neutral = np.arange(n) % 10 == 0
+    df = _frame(rng.normal(0, 14, n) + np.where(neutral, 6.0, 0.0), neutral=neutral)
+    report = axis_report(df, site_type(df), "site", permutations=PERMUTATIONS)
+
+    assert [s.label for s in report.slices] == ["home_site", "neutral"]
+    home, neutral_slice = report.slices
+    assert neutral_slice.n == 200
+    assert neutral_slice.margin_bias == pytest.approx(6.0, abs=1.5)
+    assert home.margin_bias == pytest.approx(0.0, abs=0.5)
+    assert report.sigma > 4
+
+    # And the half a reader skips. Six points on a tenth of the games buys
+    # about `share * bias^2 / (2 * sd)` = 0.1 * 36 / 28 ~ 0.13 points of the
+    # 11-point MAE, so the ceiling is positive, small, and nowhere near the
+    # bias that produced it.
+    assert 0.0 < report.mae_ceiling < 0.5
+
+
+def test_standard_axes_carries_the_site():
+    """Regression: the axis was in the frame for months and in no report.
+
+    `neutral_site` has been a column since `save_predictions` started
+    carrying it, and `home_field_report` has been excluding those games the
+    whole time, so the one axis nothing looked at was the one the exclusion
+    created.
+    """
+    rng = np.random.default_rng(13)
+    n = 400
+    neutral = np.arange(n) % 4 == 0
+    df = _frame(rng.normal(0, 14, n), neutral=neutral)
+    axes = standard_axes(df)
+    assert "site" in axes
+    assert set(axes["site"]) == {"home_site", "neutral"}
 
 
 def test_standard_axes_all_run():

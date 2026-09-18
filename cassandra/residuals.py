@@ -829,6 +829,43 @@ def rest_advantage(df: pd.DataFrame, edges: Sequence[float] = (2, 5)) -> pd.Seri
     return bucketed.where(difference.notna(), "unknown")
 
 
+def site_type(df: pd.DataFrame) -> pd.Series:
+    """Whether the model gave anybody a home advantage in this game.
+
+    The home advantage is all-or-nothing: `GlickoPredictor` applies
+    `0 if game.neutral_site else self._home_advantage`, and the margin and
+    Elo families do the same. So a league whose neutral sites are not quite
+    neutral has nowhere to put that error except the residual of the games it
+    happens in, and no other axis here looks at them -- `home_field_report`
+    excludes them on purpose, for the opposite reason: a game the model gave
+    no advantage to says nothing about how big the advantage should be.
+
+    That exclusion is what makes this axis worth its own line rather than a
+    footnote on that one. The two questions are "is the league constant
+    right for this team" and "is zero right for this kind of game", and only
+    the second is asked here.
+
+    On ncaafb the answer is that zero is not right. The nominal home team
+    beats expectation by 1.52 points across 1,650 neutral games, 4.6 sigma
+    off the shuffle null, which is about half the 3.06-point advantage the
+    same fit gives a real home game. That is what a bowl played in a team's
+    back yard looks like, and a conference championship at a stadium one of
+    the two schools buses to.
+
+    Read `mae_ceiling` before doing anything about it. Neutral games are
+    2.2% of an ncaafb schedule, and the payoff is quadratic in the bias, so
+    a correction worth 1.7 points on those games is worth 0.001 points of
+    margin MAE overall -- real, cleanly signed, several sigma, and still
+    below the bar three matchup terms failed to clear. The bias is large and
+    the slice is small, which is the combination `AxisReport` exists to keep
+    a reader from misreading in either direction.
+    """
+    return pd.Series(
+        np.where(df["neutral_site"].to_numpy(dtype=bool), "neutral", "home_site"),
+        index=df.index,
+    )
+
+
 #: What a game gets on a classification axis when nobody filed one of its
 #: teams for that season. Its own bucket rather than a dropped row, so the
 #: reader can see how much of the league it is -- and discount the axis when
@@ -956,6 +993,11 @@ def standard_axes(df: pd.DataFrame) -> Mapping[str, pd.Series]:
         "year": df["year"].astype(str),
         "favorite_size": favorite_size(df),
         "rest_advantage": rest_advantage(df),
+        # Unguarded, like `rest_advantage`'s `date` and `favorite_size`'s
+        # predicted margin: `neutral_site` is part of the frame
+        # `save_predictions` builds, and a replay old enough to be missing it
+        # is missing those too.
+        "site": site_type(df),
         # Not the home-field question -- `home_field_report` is that, and it
         # nets a team's home games against its away ones. This one is flatter
         # and asks whether some teams' games are harder to call than others
