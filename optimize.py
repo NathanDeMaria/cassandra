@@ -12,6 +12,7 @@ import pandas as pd
 from cassandra.box import Seed, misplaced
 from cassandra.checkpoint import S3Checkpoint
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.model_eval import rebuild_priors
 from cassandra.objective import Objective, get_objective
 from cassandra.optimize import optimize
 from cassandra.predictor import (
@@ -209,10 +210,18 @@ async def _run_optimization(config_file: str) -> None:
 
     # Run once to make things like team priors. The pins alone: a knob the
     # search owns takes the constructor default here, as it always has.
-    priors_params = frames.to_params(config_model.frame, config_model.fixed, weeks)
-    predictor = predictor_class(league, **priors_params)
-    for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
-        pass
+    #
+    # Shared with the scoring path rather than written twice: `model_eval.
+    # get_predictions` makes the same pass before it replays, and a search
+    # that warmed up differently from the evaluate that scores it is the
+    # exact mismatch this is here to close.
+    rebuild_priors(
+        predictor_class,
+        league,
+        frames.to_params(config_model.frame, config_model.fixed, weeks),
+        seasons,
+        odds_db,
+    )
 
     notice = _pinned_notice(config_model.fixed, config_path.name)
     if notice is not None:

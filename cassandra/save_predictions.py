@@ -254,15 +254,28 @@ async def build_predictions_df(
     return pd.DataFrame([asdict(result) async for result in prediction_results])
 
 
+async def read_league(league: str) -> tuple[list[Season], OddsDatabase]:
+    """The seasons and the odds a league's replay runs over, read once.
+
+    `build_predictions_df` reads these itself, which is right for a caller
+    making one pass and wrong for one making two over the same league --
+    the opponent-priors warm-up and the scoring replay that follows it.
+    `optimize.py` has always read them separately for exactly that reason;
+    this is that read, named, so `model_eval` can do the same thing without
+    a second copy of it.
+    """
+    config = Config.init_from_file()
+    seasons = [season async for season in read_all_seasons(league, config.bucket)]
+    odds_db = await OddsDatabase.from_s3(config.bucket)
+    return seasons, odds_db
+
+
 async def _get_results(
     predictor: Predictor, league: str, post_callbacks: bool
 ) -> AsyncIterator[_Prediction]:
-    config = Config.init_from_file()
-    seasons = read_all_seasons(league, config.bucket)
-    odds_db = await OddsDatabase.from_s3(config.bucket)
-    seasons_now = [s async for s in seasons]
+    seasons, odds_db = await read_league(league)
     predictions = join_with_odds(
-        predictor, seasons_now, odds_db, post_callbacks=post_callbacks
+        predictor, seasons, odds_db, post_callbacks=post_callbacks
     )
     for prediction in predictions:
         yield prediction
