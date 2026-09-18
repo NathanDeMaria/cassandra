@@ -1,11 +1,17 @@
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import NamedTuple
 
 import pandas as pd
+from endgame.types import Season
 
 from .brier import brier_score_df
 from .columns import GameDfColumns
-from .predictor import load_predictor
+from .odds import OddsDatabase
+from .predictor import OptimizationConfig, Predictor, load_predictor
+from .predictor import frame as frames
+from .predictor.config import load_predictor_class
 from .prob_to_margin import (
     BaseProbToMarginFitter,
     BaseProbToMarginPredictor,
@@ -13,7 +19,7 @@ from .prob_to_margin import (
     LogisticProbToMarginFitter,
     MaeLogisticProbToMarginFitter,
 )
-from .save_predictions import build_predictions_df
+from .save_predictions import build_predictions_df, join_with_odds, read_league
 
 DEFAULT_FITTERS: dict[str, BaseProbToMarginFitter] = {
     "isotonic": IsotonicProbToMarginFitter(),
@@ -27,16 +33,107 @@ DEFAULT_FITTERS: dict[str, BaseProbToMarginFitter] = {
 }
 
 
+def prior_path(predictor_class: type[Predictor], league: str) -> Path | None:
+    """Where `predictor_class` stashes its opponent priors for `league`.
+
+    `None` for a class that builds none, which is every predictor outside
+    the Glicko family. Read off a throwaway instance because the path
+    belongs to the manager and the manager is built in `__init__`;
+    `cassandra.batch.manifest` finds it the same way, and this is the copy
+    both callers share.
+    """
+    manager = getattr(predictor_class(league), "_prior_manager", None)
+    return None if manager is None else manager._prior_path
+
+
+def rebuild_priors(
+    predictor_class: type[Predictor],
+    league: str,
+    params: Mapping[str, float | str],
+    seasons: Sequence[Season],
+    odds_db: OddsDatabase,
+) -> bool:
+    """Replay once with callbacks on, so the priors a fit started from exist.
+
+    `GlickoPredictor.__init__` seeds its ratings from
+    `{league}_{class}_priors.json`, and `postrun_callback` is the only thing
+    that writes one. A search gets that file because `optimize.py` makes this
+    pass before it starts; a *scoring* replay never did, so a model was fit
+    from a warm start and then scored from a cold one, and the two numbers
+    differed by 0.0007 brier on ncaafb/glicko_full with nothing saying so.
+
+    `params` is the pins alone, for the same reason `optimize.py` passes
+    those: the priors a search started from were built before it had fitted
+    anything, so rebuilding them from the *fitted* values would produce a
+    different file than the one the fit actually used and leave the gap
+    open in the other direction.
+
+    Returns whether anything was built, so a caller can skip the second
+    replay for a class that has no priors to build.
+    """
+    path = prior_path(predictor_class, league)
+    if path is None:
+        return False
+    # `OpponentPriorManager.save` refuses to overwrite, so a rerun in a warm
+    # container -- or a second model of the same class in one evaluate --
+    # is an instant ValueError unless the old file goes first. `jobs.py`
+    # clears it for the same reason before an optimize child runs.
+    path.unlink(missing_ok=True)
+    predictor = predictor_class(league, **params)
+    for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
+        pass
+    return True
+
+
 async def get_predictions(
-    predictor_config_path: Path, league: str, state_path: Path
+    predictor_config_path: Path,
+    league: str,
+    state_path: Path,
+    priors_from: Path | None = None,
 ) -> pd.DataFrame:
     """Run a predictor over a league's games. The expensive, once-per-predictor step.
 
     `state_path` is explicit because the config can be a checked-in baseline,
     and the state it produces is generated output that doesn't belong there.
+
+    `priors_from` is the *optimization* config -- `models/<league>/<model>.
+    json`, not the result -- and asks for the replay to run under the same
+    opponent priors the search did. Without it the replay is cold, which is
+    what every scoring path did before and what makes a Glicko model's
+    evaluate number disagree with the target its own fit reported. `None`
+    keeps that old behaviour, for a caller replaying a config that no
+    search produced.
     """
+    if priors_from is None:
+        predictor = load_predictor(predictor_config_path)
+        df = await build_predictions_df(predictor, league, post_callbacks=False)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        predictor.save_state(state_path)
+        return df
+
+    # Two passes over one league, so the seasons and the odds are read once
+    # rather than per pass.
+    seasons, odds_db = await read_league(league)
+    config = OptimizationConfig.model_validate_json(priors_from.read_text())
+    weeks = frames.weeks_per_season([len(season.weeks) for season in seasons])
+    rebuild_priors(
+        load_predictor_class(config.predictor_class),
+        league,
+        frames.to_params(config.frame, config.fixed, weeks),
+        seasons,
+        odds_db,
+    )
+    # Constructed *after* the warm-up, because the priors are read in
+    # `__init__` and a predictor built before it would hold the old file.
     predictor = load_predictor(predictor_config_path)
-    df = await build_predictions_df(predictor, league, post_callbacks=False)
+    df = pd.DataFrame(
+        [
+            asdict(prediction)
+            for prediction in join_with_odds(
+                predictor, seasons, odds_db, post_callbacks=False
+            )
+        ]
+    )
     state_path.parent.mkdir(parents=True, exist_ok=True)
     predictor.save_state(state_path)
     return df

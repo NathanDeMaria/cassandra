@@ -46,10 +46,15 @@ async def _main(leagues: Collection[str] | None = None):
     for league, model_name, model_path in _models(leagues):
         print(f"Evaluating {league}: {model_name}")
         try:
+            # The optimization config next to it, when there is one, so the
+            # replay runs under the priors the search ran under. A baseline
+            # nobody searched has none, and scores cold as it always has.
+            authored = _AUTHORED_DIR / league / f"{model_name}.json"
             predictions_df = await get_predictions(
                 model_path,
                 league,
                 _GENERATED_DIR / league / f"{model_name}_state.json",
+                priors_from=authored if authored.exists() else None,
             )
         except Exception as e:
             # One unscoreable model shouldn't cost the whole run its table,

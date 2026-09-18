@@ -108,10 +108,17 @@ def _print_report(report: AxisReport, margin_mae: float) -> None:
 
 
 async def _main(league: str, model: str, permutations: int, top_teams: int) -> None:
+    # Under the search's own priors, like `evaluate_models`. Without this a
+    # diagnostic reads whichever priors file the machine happened to have --
+    # which on one laptop meant `GlickoPredictor` replayed warm and
+    # `CompoundGlickoPredictor` cold, and the residuals were compared across
+    # a difference in starting information rather than in modelling.
+    authored = _AUTHORED_DIR / league / f"{model}.json"
     predictions = await get_predictions(
         _config_path(league, model),
         league,
         _GENERATED_DIR / league / f"{model}_diagnose_state.json",
+        priors_from=authored if authored.exists() else None,
     )
     scored = add_residuals(predictions)
     margin_mae = scored["margin_residual"].abs().mean()

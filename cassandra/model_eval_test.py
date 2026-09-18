@@ -1,10 +1,21 @@
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
+from endgame.types import Season
 
-from .model_eval import score_predictions
+from .conftest import season_for
+from .model_eval import prior_path, rebuild_priors, score_predictions
+from .odds import OddsDatabase
+from .predictor import (
+    CompoundGlickoPredictor,
+    EloPredictor,
+    FlatPredictor,
+    GlickoPredictor,
+    opponent_prior,
+)
 from .prob_to_margin import BaseProbToMarginFitter, BaseProbToMarginPredictor
 
 
@@ -157,3 +168,94 @@ def test_an_empty_frame_fails_the_same_way_the_brier_does() -> None:
 
     with pytest.raises(ValueError, match="No games to score"):
         brier_score_df(pd.DataFrame([]))
+
+
+def _priors_dir(monkeypatch, tmp_path) -> Path:
+    """Point the prior manager at a temp directory instead of ~/.cassandra."""
+    directory = tmp_path / "predictor" / "data"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(opponent_prior, "_PREDICTOR_DATA_DIR", directory)
+    return directory
+
+
+def _one_season(n_games: int) -> list[Season]:
+    """One season of `n_games` between the same two teams.
+
+    Fifty or more because `OpponentPriorManager.save` drops a team with
+    fewer than that -- the guard against a small school that only ever
+    played a handful of games against good ones -- so a shorter season
+    writes a file with nothing in it and a warm start that isn't one.
+    """
+    return [season_for(2024, *(f"g{i}" for i in range(n_games)))]
+
+
+def test_prior_path_is_none_for_a_predictor_that_builds_none() -> None:
+    assert prior_path(FlatPredictor, "test_league") is None
+    assert prior_path(EloPredictor, "test_league") is None
+
+
+def test_prior_path_is_per_class_which_is_why_a_class_can_be_missing_one(
+    monkeypatch, tmp_path
+) -> None:
+    """The filename carries the class, so classes never share a warm start.
+
+    This is the shape of the ncaafb surprise: `GlickoPredictor` had a priors
+    file on disk and `CompoundGlickoPredictor` did not, so one replayed warm
+    and the other cold and the brier gap between them read as a modelling
+    result. Nothing is wrong with keying by class -- the ratings a compound
+    fit produces are not the ones a plain one does -- but a caller has to
+    know the files are separate, and that only the class that ran gets one.
+    """
+    _priors_dir(monkeypatch, tmp_path)
+    glicko = prior_path(GlickoPredictor, "test_league")
+    compound = prior_path(CompoundGlickoPredictor, "test_league")
+    assert glicko is not None and compound is not None
+    assert glicko != compound
+    assert "GlickoPredictor" in glicko.name
+    assert "CompoundGlickoPredictor" in compound.name
+
+
+def test_rebuild_priors_skips_a_class_with_nothing_to_build(
+    monkeypatch, tmp_path
+) -> None:
+    directory = _priors_dir(monkeypatch, tmp_path)
+    built = rebuild_priors(
+        FlatPredictor, "test_league", {}, _one_season(4), OddsDatabase({})
+    )
+    assert built is False
+    # And no replay was paid for: nothing landed in the directory.
+    assert list(directory.iterdir()) == []
+
+
+def test_rebuild_priors_leaves_a_warm_start_behind(monkeypatch, tmp_path) -> None:
+    """The point of the whole thing: a predictor built after this starts warm."""
+    _priors_dir(monkeypatch, tmp_path)
+    assert GlickoPredictor("test_league").ratings == {}
+
+    built = rebuild_priors(
+        GlickoPredictor, "test_league", {}, _one_season(60), OddsDatabase({})
+    )
+
+    assert built is True
+    path = prior_path(GlickoPredictor, "test_league")
+    assert path is not None and path.exists()
+    assert GlickoPredictor("test_league").ratings != {}
+
+
+def test_rebuild_priors_clears_the_file_save_refuses_to_overwrite(
+    monkeypatch, tmp_path
+) -> None:
+    """Twice in one process has to work, and used to be a ValueError.
+
+    `OpponentPriorManager.save` raises rather than overwrite, which is why
+    `jobs.py` unlinks before an optimize child runs. An evaluate replays
+    every model in turn and several of them are the same class, so the
+    second one hits the same guard inside a single process.
+    """
+    _priors_dir(monkeypatch, tmp_path)
+    seasons = _one_season(60)
+    rebuild_priors(GlickoPredictor, "test_league", {}, seasons, OddsDatabase({}))
+    rebuild_priors(GlickoPredictor, "test_league", {}, seasons, OddsDatabase({}))
+
+    path = prior_path(GlickoPredictor, "test_league")
+    assert path is not None and path.exists()
