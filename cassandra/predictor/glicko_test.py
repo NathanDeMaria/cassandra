@@ -1,4 +1,5 @@
-from typing import Any
+from datetime import datetime
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -105,6 +106,80 @@ def test_a_scale_of_zero_or_less_is_refused(scale: float) -> None:
     the same rule `validated_scale` already holds the blend's scales to."""
     with pytest.raises(ValueError, match="sigmoid_scale must be positive"):
         GlickoPredictor("test_league", sigmoid_scale=scale)
+
+
+def test_the_home_edge_grows_with_the_home_team_s_anchor(game: GameFactory) -> None:
+    """A tier above the mean gets more home advantage; a tier below, less.
+
+    Anchors at 1900 and 1100 are one Elo decade either side of the mean, so
+    at a slope of 10 the edges are 40 + 10 and 40 - 10. The away team's
+    anchor is nobody's business here: the crowd is the home team's.
+    """
+    predictor = GlickoPredictor(
+        "test_league",
+        home_advantage=40,
+        home_advantage_slope=10,
+        anchors={"Upper": 1900, "Lower": 1100},
+    )
+    assert predictor.home_edge(game("Upper", "Lower")) == pytest.approx(50)
+    assert predictor.home_edge(game("Lower", "Upper")) == pytest.approx(30)
+    assert predictor.home_edge(game("Nobody", "Upper")) == pytest.approx(40)
+
+
+def test_the_slope_reads_the_anchor_at_the_season_in_hand(game: GameFactory) -> None:
+    """A program that moved up gets the tier it moved to, like its anchor does."""
+    predictor = GlickoPredictor(
+        "test_league",
+        home_advantage=40,
+        home_advantage_slope=10,
+        anchors={"Riser": [(2010, 1100), (2015, 1900)]},
+    )
+    predictor.pass_season(2012)
+    assert predictor.home_edge(game("Riser", "Other")) == pytest.approx(30)
+    predictor.pass_season(2016)
+    assert predictor.home_edge(game("Riser", "Other")) == pytest.approx(50)
+
+
+def test_no_slope_is_the_constant_and_neutral_is_nothing(game: GameFactory) -> None:
+    """The default replays every published model exactly as before."""
+    predictor = GlickoPredictor("test_league", home_advantage=40, anchors={"A": 1900})
+    assert predictor.home_edge(game("A", "B")) == 40
+    sloped = GlickoPredictor(
+        "test_league", home_advantage=40, home_advantage_slope=10, anchors={"A": 1900}
+    )
+    assert sloped.home_edge(_neutral("A", "B")) == 0.0
+
+
+def test_the_slope_prices_the_update_as_well_as_the_prediction(
+    game: GameFactory,
+) -> None:
+    """The update measures the result against the edge the prediction gave.
+
+    Two upper-tier hosts win by the same score; the one whose model gives
+    it more home edge was expected to do more with it, so it earns less.
+    """
+    flat = GlickoPredictor("test_league", home_advantage=40, anchors={"A": 1900})
+    sloped = GlickoPredictor(
+        "test_league", home_advantage=40, home_advantage_slope=40, anchors={"A": 1900}
+    )
+    for predictor in (flat, sloped):
+        predictor.update_game(game("A", "B", 21, 14))
+    assert sloped.get_rating("A").rating < flat.get_rating("A").rating
+
+
+def test_the_slope_round_trips_through_the_state() -> None:
+    predictor = GlickoPredictor("test_league", home_advantage_slope=7.5)
+    state = predictor.state_dict()
+    assert state["home_advantage_slope"] == 7.5
+    assert GlickoPredictor.from_state_dict(state).state_dict() == state
+
+
+class _neutral(NamedTuple):
+    home: str
+    away: str
+    neutral_site: bool = True
+    date: datetime = datetime(2023, 1, 1)
+    game_id: str = "1"
 
 
 def test_a_model_that_never_named_a_prediction_scale_predicts_at_400() -> None:

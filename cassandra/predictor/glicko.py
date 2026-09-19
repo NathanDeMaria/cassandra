@@ -13,6 +13,7 @@ from .adjustments import (
     resolved_sources,
 )
 from .base_predictor import (
+    MEAN_RATING,
     Anchor,
     Predictor,
     resolved_anchors,
@@ -46,6 +47,12 @@ class _Played(NamedTuple):
 
 _Q = math.log(10) / 400
 
+#: Anchor points per unit of `home_advantage_slope`: the slope is quoted per
+#: 400 anchor points -- one Elo decade, and roughly the FBS-to-FCS gap on
+#: the ncaafb ladder -- so its value is a readable "how much more edge does
+#: the tier above get".
+_ANCHOR_SLOPE_SCALE = 400.0
+
 # The rating gap that reads as a 10-to-1 favorite when a game is *predicted*.
 # Elo's 400, which is also the scale the update learns at (`_Q`), so a model
 # that never named one predicts exactly as it always has.
@@ -62,6 +69,26 @@ class GlickoPredictor(Predictor):
         self,
         league: str,
         home_advantage: float = 95,
+        # How much more home advantage a team gets per 400 anchor points
+        # above the league mean, in rating units. The one knob a per-tier
+        # home advantage needs, and the anchors are the tiers the model
+        # already has: `division_anchors.py` fits a rating per division (and
+        # a conference offset inside it), so a team's anchor *is* its level,
+        # and a home advantage that scales with it is one per division
+        # without a classification lookup at prediction time or a parameter
+        # per tier to search.
+        #
+        # Measured on ncaafb `glicko_full`, own-side residual at home minus
+        # away, pooled by the home team's anchor: -0.3 points at anchors
+        # near 1200 (D-III), +1.0 at 1875-2100 (FBS), against one constant
+        # of 3.06 -- a weighted slope of +0.64 points per 400 anchor points
+        # (se 0.11) across teams, and flat *within* FBS (+0.04 +/- 0.65),
+        # so it is the tier that carries it and a line through the tiers is
+        # the right shape. See `reasoning/residual_sweep_2026-09.md`.
+        # Defaulted to 0 so every model published before this existed
+        # replays exactly as it did; a league with no anchors (nfl) has
+        # every team at the mean and the knob does nothing.
+        home_advantage_slope: float = 0.0,
         k: float = 65,
         # increase is 'c' in the paper
         weekly_rd_increase: float = 1,
@@ -128,6 +155,7 @@ class GlickoPredictor(Predictor):
         self._anchors = resolved_anchors(league, anchors)
         self._season_regression = validated_regression(season_regression)
         self._home_advantage = home_advantage
+        self._home_advantage_slope = home_advantage_slope
         self._k = k
         self._weekly_rd_increase = weekly_rd_increase
         self._season_rd_increase = season_rd_increase
@@ -163,11 +191,30 @@ class GlickoPredictor(Predictor):
         self._weeks: list[list[_Played]] = []
         self._this_week: list[_Played] = []
 
+    def home_edge(self, matchup: Matchup) -> float:
+        """Rating points the home side gets for being at home, before the matchup terms.
+
+        0 at a neutral site. Otherwise the league constant plus the anchor
+        slope -- see `home_advantage_slope` -- read at the home team's
+        anchor for the season in hand, so a program that moved up gets the
+        tier it moved to. Its own method because three places take the edge
+        (the prediction, the update and `CompoundGlickoPredictor`'s unit
+        contests) and they have to agree to the rating point.
+        """
+        if matchup.neutral_site:
+            return 0.0
+        edge = self._home_advantage
+        if self._home_advantage_slope:
+            edge += (
+                self._home_advantage_slope
+                * (self.anchor(matchup.home) - MEAN_RATING)
+                / _ANCHOR_SLOPE_SCALE
+            )
+        return edge
+
     def predict_game(self, matchup: Matchup) -> Prediction:
         home_rating = self.get_rating(matchup.home)
-        adjusted_home_rating = home_rating.rating
-        if not matchup.neutral_site:
-            adjusted_home_rating += self._home_advantage
+        adjusted_home_rating = home_rating.rating + self.home_edge(matchup)
         # Outside the neutral-site guard on purpose: nobody is at home in a
         # bowl and both teams still arrived on different rest, and neither
         # has its quarterback back because the game is neutral. The travel
@@ -199,9 +246,7 @@ class GlickoPredictor(Predictor):
         # charged a backup's loss to the rating in full and gave nothing to
         # a team that beat a rested one -- the prediction knew the odds were
         # different, and the update pretended it didn't.
-        home_adj = (
-            0 if game.neutral_site else self._home_advantage
-        ) + self.matchup_adjustment(game)
+        home_adj = self.home_edge(game) + self.matchup_adjustment(game)
 
         self._update_rating(
             game.home, home_rating, away_rating, actual, home_adjustment=home_adj
@@ -346,6 +391,7 @@ class GlickoPredictor(Predictor):
         return {
             "league": self._league,
             "home_advantage": self._home_advantage,
+            "home_advantage_slope": self._home_advantage_slope,
             "k": self._k,
             "weekly_rd_increase": self._weekly_rd_increase,
             "season_rd_increase": self._season_rd_increase,

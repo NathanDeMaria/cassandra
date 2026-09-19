@@ -327,6 +327,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         self,
         league: str,
         home_advantage: float = 95,
+        home_advantage_slope: float = 0.0,
         k: float = 65,
         weekly_rd_increase: float = 1,
         season_rd_increase: float = 120,
@@ -370,6 +371,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         super().__init__(
             league,
             home_advantage=home_advantage,
+            home_advantage_slope=home_advantage_slope,
             k=k,
             weekly_rd_increase=weekly_rd_increase,
             season_rd_increase=season_rd_increase,
@@ -582,9 +584,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         what guards the repetition.
         """
         home_rating = self._blended_rating(matchup.home)
-        if not matchup.neutral_site:
-            home_rating += self._home_advantage
-        home_rating += self.matchup_adjustment(matchup)
+        home_rating += self.home_edge(matchup) + self.matchup_adjustment(matchup)
         away_rating = self._blended_rating(matchup.away)
         return Prediction(team1_win_prob=self.win_prob(home_rating, away_rating))
 
@@ -604,9 +604,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         """
         home_parent = self.get_rating(game.home)
         away_parent = self.get_rating(game.away)
-        home_edge = (
-            0 if game.neutral_site else self._home_advantage
-        ) + self.matchup_adjustment(game)
+        home_edge = self.home_edge(game) + self.matchup_adjustment(game)
         prediction = super().update_game(game)
         self._update_units(game, home_parent, away_parent, home_edge)
         return prediction
