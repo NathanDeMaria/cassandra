@@ -32,8 +32,7 @@
         "travel_advantage": 0,
         "prediction_scale": 198.88645254189763,
         "epa_residual_beta": 0,
-        "passes": 2,
-        "unanchored_rating": 1500.0
+        "passes": 2
     },
     "fixed_from": "glicko_full",
     "n_iter": 500

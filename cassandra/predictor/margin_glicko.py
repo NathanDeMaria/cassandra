@@ -112,7 +112,7 @@ the prior -- so nothing is pinned from that fit but the matchup terms.
 """
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Self
 
 from endgame.types import Game
@@ -122,7 +122,7 @@ from .adjustments import (
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupSources,
 )
-from .base_predictor import MEAN_RATING, Anchor
+from .base_predictor import Anchor
 from .blend import validated_scale
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Played, _Rating
 from .opponent_prior import OpponentPriorManager
@@ -182,7 +182,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
-        unanchored_rating: float = MEAN_RATING,
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
     ) -> None:
         super().__init__(
             league,
@@ -207,7 +207,7 @@ class MarginGlickoPredictor(GlickoPredictor):
             sources=sources,
             ratings=ratings,
             anchors=anchors,
-            unanchored_rating=unanchored_rating,
+            unanchored_seen=unanchored_seen,
         )
         self._obs_sd = validated_scale("obs_sd", obs_sd)
         self._nu = None if nu is None else validated_scale("nu", nu)

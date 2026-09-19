@@ -260,7 +260,7 @@ so read the pair as one signal until something does.
 """
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Self
 
 from endgame.types import Game
@@ -271,7 +271,7 @@ from .adjustments import (
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupSources,
 )
-from .base_predictor import MEAN_RATING, Anchor
+from .base_predictor import Anchor
 from .blend import (
     DEFAULT_EPA_SHARE,
     DEFAULT_PLAY_WEIGHT,
@@ -416,7 +416,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
-        unanchored_rating: float = MEAN_RATING,
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         game_control: GameControlIndex | None = None,
         game_epa: EpaIndex | None = None,
     ) -> None:
@@ -442,7 +442,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
             anchors=anchors,
-            unanchored_rating=unanchored_rating,
+            unanchored_seen=unanchored_seen,
         )
         self._blend = PlayBlend.validated(play_weight, epa_share)
         self._mov_scale = validated_scale("mov_scale", mov_scale)

@@ -32,8 +32,7 @@
         "rest_advantage": 4.357195250747301,
         "qb_out_penalty": 12.671195192443767,
         "prediction_scale": 198.88645254189763,
-        "passes": 2,
-        "unanchored_rating": 1500.0
+        "passes": 2
     },
     "fixed_from": "glicko_full",
     "n_iter": 300
