@@ -122,7 +122,7 @@ from .adjustments import (
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupSources,
 )
-from .base_predictor import Anchor
+from .base_predictor import MEAN_RATING, Anchor
 from .blend import validated_scale
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Played, _Rating
 from .opponent_prior import OpponentPriorManager
@@ -182,6 +182,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
+        unanchored_rating: float = MEAN_RATING,
     ) -> None:
         super().__init__(
             league,
@@ -206,6 +207,7 @@ class MarginGlickoPredictor(GlickoPredictor):
             sources=sources,
             ratings=ratings,
             anchors=anchors,
+            unanchored_rating=unanchored_rating,
         )
         self._obs_sd = validated_scale("obs_sd", obs_sd)
         self._nu = None if nu is None else validated_scale("nu", nu)

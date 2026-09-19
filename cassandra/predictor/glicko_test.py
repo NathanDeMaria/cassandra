@@ -174,6 +174,38 @@ def test_the_slope_round_trips_through_the_state() -> None:
     assert GlickoPredictor.from_state_dict(state).state_dict() == state
 
 
+def test_a_team_without_an_anchor_enters_where_the_model_says(
+    game: GameFactory,
+) -> None:
+    """The unfiled tier: not the league mean, unless the model says so.
+
+    An anchored team is untouched, and the unanchored one both starts at the
+    knob and regresses toward it -- the anchor is one number for both jobs.
+    """
+    predictor = GlickoPredictor(
+        "test_league",
+        unanchored_rating=1100,
+        anchors={"Filed": 1800},
+        season_regression=1.0,
+    )
+    assert predictor.get_rating("Unfiled").rating == 1100
+    assert predictor.get_rating("Filed").rating == 1800
+    predictor.update_game(game("Unfiled", "Filed", 30, 0))
+    assert predictor.get_rating("Unfiled").rating > 1100
+    predictor.pass_season()
+    assert predictor.get_rating("Unfiled").rating == pytest.approx(1100)
+
+
+def test_the_unanchored_rating_defaults_to_the_mean_and_round_trips() -> None:
+    assert GlickoPredictor("test_league").anchor("Anyone") == 1500
+    predictor = GlickoPredictor("test_league", unanchored_rating=1234.5)
+    state = predictor.state_dict()
+    assert state["unanchored_rating"] == 1234.5
+    restored = GlickoPredictor.from_state_dict(state)
+    assert restored.anchor("Anyone") == 1234.5
+    assert restored.state_dict() == state
+
+
 class _neutral(NamedTuple):
     home: str
     away: str

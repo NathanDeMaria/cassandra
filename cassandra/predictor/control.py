@@ -169,7 +169,7 @@ from .adjustments import (
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupSources,
 )
-from .base_predictor import Anchor
+from .base_predictor import MEAN_RATING, Anchor
 from .game_control import GameControlIndex, validated_control_weight
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
@@ -233,6 +233,7 @@ class ControlGlickoPredictor(GlickoPredictor):
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
+        unanchored_rating: float = MEAN_RATING,
         game_control: GameControlIndex | None = None,
     ) -> None:
         super().__init__(
@@ -255,6 +256,7 @@ class ControlGlickoPredictor(GlickoPredictor):
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
             anchors=anchors,
+            unanchored_rating=unanchored_rating,
         )
         self._control_weight = validated_control_weight(control_weight)
         # Defaulted rather than required, like `opponent_prior_manager`: every

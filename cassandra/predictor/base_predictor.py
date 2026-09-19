@@ -162,6 +162,14 @@ class Predictor(ABC):
         # teams are effectively a separate closed pool: pulling them toward
         # the same 1500 as an SEC team is what the anchor exists to fix.
         self._anchors: dict[str, Anchor] = {}
+        # Where a team with no anchor enters and regresses toward. The league
+        # mean by default, which is right when the anchors are empty and
+        # wrong when they aren't: in ncaafb every FBS and FCS program is
+        # classified, so a team the registry has no tier for is almost
+        # always a D-II or D-III program -- or an exhibition opponent -- and
+        # 1500 puts it a division and a half above where it belongs. The
+        # subclasses that take anchors expose this as `unanchored_rating`.
+        self._unanchored_rating = MEAN_RATING
         # Rest, travel and quarterback availability. Inert here for the same
         # reason `_season_regression` is 0: a predictor that exposes none of
         # the weights gets a bundle whose `points` is always 0, rather than a
@@ -259,12 +267,19 @@ class Predictor(ABC):
         the replay far below the teams it now plays, and every offseason
         after the promotion pulls it back down there again.
 
-        Falls back to MEAN_RATING for a team with no anchor, which is every
-        team in a league whose divisions all play each other.
+        Falls back to `unanchored_rating` for a team with no anchor -- the
+        league mean unless a model says otherwise, which is every team in a
+        league whose divisions all play each other, and the wrong number in
+        one whose registry leaves a tier of programs unfiled. On ncaafb the
+        133 teams with no anchor entered at 1500 and lost their first game by
+        33 points more than predicted, their second by 10, and took eight
+        games to be rated where they belonged; entering them at 1100 instead
+        is worth 0.0004 brier and 0.036 points of margin over the whole
+        league, on 3% of its team-games.
         """
         found = self._anchors.get(team)
         if found is None:
-            return MEAN_RATING
+            return self._unanchored_rating
         return anchor_in(found, self._season)
 
     def regress(self, team: str, rating: float) -> float:

@@ -150,9 +150,16 @@ class GlickoPredictor(Predictor):
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
+        # Where a team the anchors don't name enters, and regresses toward.
+        # See `Predictor.anchor`. The league mean by default so every model
+        # published before this existed replays as it did; ncaafb's search
+        # moves it, since a program nobody filed a tier for is not an
+        # average one.
+        unanchored_rating: float = MEAN_RATING,
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
+        self._unanchored_rating = unanchored_rating
         self._season_regression = validated_regression(season_regression)
         self._home_advantage = home_advantage
         self._home_advantage_slope = home_advantage_slope
@@ -404,6 +411,7 @@ class GlickoPredictor(Predictor):
             "qb_out_penalty": self._adjustments.qb_out_penalty,
             "season_regression": self._season_regression,
             "passes": self._passes,
+            "unanchored_rating": self._unanchored_rating,
             "ratings": {
                 team: [r.rating, r.rating_deviation]
                 for team, r in self._ratings.items()
