@@ -154,9 +154,11 @@ def line_windows(predictions: pd.DataFrame, odds_db: OddsDatabase) -> pd.DataFra
     kickoff at all is dropped: there was nothing to bet into.
 
     The close is "last read before kickoff", which is only as close as the
-    pulls got. A game kicking off after the last hourly pull of the day
-    closes at the morning read, hours before the book's real close. The
-    read time is kept so a report can say how stale its closes are.
+    pulls got: an hour at best, since `today` runs hourly, and much longer
+    for any game the hourly pulls missed -- every 2026 Saturday before
+    09-19 came back cut to ESPN's default 25 events, so the later kickoffs
+    "closed" at the morning `near` read. The read time is kept so a report
+    can say how stale its closes are.
     """
     ends = previous_game_end(predictions)
     rows = []
