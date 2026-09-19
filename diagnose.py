@@ -29,6 +29,11 @@ What to read, in order:
 - **`market_gap` across the slices.** Where the model loses to the closing
   line, which is the closest thing available to a list of what the model
   doesn't know. Its shape across an axis is worth more than its level.
+- **`slope`**, where a slice's bias is flat and something still looks
+  wrong. The actual margin on the predicted one, within the slice: under 1
+  the predictions there are spread too wide, which a mean can't see because
+  the modest favorites' shortfall and the big ones' excess cancel. Cross-
+  division games are where it bites -- 0.85 for FBS hosting FCS on ncaafb.
 
 Nothing here is a decision. An axis with structure on it says the error is
 predictable *after* the game; whether it is predictable before one is the
@@ -49,6 +54,7 @@ from cassandra.residuals import (
     add_residuals,
     axis_report,
     classification_axes,
+    home_field_by,
     home_field_report,
     standard_axes,
 )
@@ -99,11 +105,45 @@ def _print_report(report: AxisReport, margin_mae: float) -> None:
                 f"{s.margin_bias:>13.3f}{s.win_prob_bias:>12.3f}"
             )
         return
-    print(f"  {'slice':<24}{'n':>8}{'bias':>9}{'mae':>8}{'n_lined':>9}{'mkt_gap':>9}")
+    print(
+        f"  {'slice':<24}{'n':>8}{'bias':>9}{'mae':>8}{'slope':>7}"
+        f"{'n_lined':>9}{'mkt_gap':>9}"
+    )
     for s in report.slices:
         print(
             f"  {s.label[:24]:<24}{s.n:>8}{s.margin_bias:>9.3f}{s.margin_mae:>8.2f}"
-            f"{s.n_lined:>9}{s.market_gap:>9.3f}"
+            f"{s.margin_slope:>7.3f}{s.n_lined:>9}{s.market_gap:>9.3f}"
+        )
+
+
+def _print_home_field_by(scored: pd.DataFrame, division: pd.Series) -> None:
+    """Home advantage pooled by the home team's division.
+
+    The one theme every classified league can be pooled on without a second
+    data source, and on ncaafb the one that decides whether a single
+    `home_advantage` is the right shape: FBS sits +0.8 over the constant
+    and D-II/D-III -0.4 under it. A team is filed under the division it
+    played most of its games in, so a program that moved up is counted once.
+    """
+    by_team = (
+        pd.DataFrame({"team": scored["home_team"], "division": division})
+        .groupby("team")["division"]
+        .agg(lambda s: s.mode().iloc[0])
+    )
+    rows = home_field_by(
+        scored, {str(team): str(label) for team, label in by_team.items()}
+    )
+    if not rows:
+        return
+    print("\nhome_field_by division   (excess = own residual at home minus away)")
+    print(
+        f"  {'division':<24}{'home':>7}{'away':>7}{'at_home':>9}{'away':>8}"
+        f"{'excess':>8}{'se':>6}"
+    )
+    for t in rows:
+        print(
+            f"  {t.label[:24]:<24}{t.home_games:>7}{t.away_games:>7}{t.at_home:>9.3f}"
+            f"{t.away:>8.3f}{t.excess:>8.3f}{t.se:>6.2f}"
         )
 
 
@@ -138,6 +178,8 @@ async def _main(league: str, model: str, permutations: int, top_teams: int) -> N
         for name, labels in axes.items()
     ]
     reports.append(home_field_report(scored, permutations=permutations))
+    if "division" in classified:
+        _print_home_field_by(scored, classified["division"])
 
     rows = []
     for report in reports:
