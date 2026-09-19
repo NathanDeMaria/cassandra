@@ -158,7 +158,7 @@ leagues and better motivated. What it is not is a reason to restore a
 `glicko_control` config.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from endgame.types import Game
@@ -169,7 +169,7 @@ from .adjustments import (
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupSources,
 )
-from .base_predictor import MEAN_RATING, Anchor
+from .base_predictor import Anchor
 from .game_control import GameControlIndex, validated_control_weight
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating
 from .opponent_prior import OpponentPriorManager
@@ -233,7 +233,7 @@ class ControlGlickoPredictor(GlickoPredictor):
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
-        unanchored_rating: float = MEAN_RATING,
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         game_control: GameControlIndex | None = None,
     ) -> None:
         super().__init__(
@@ -256,7 +256,7 @@ class ControlGlickoPredictor(GlickoPredictor):
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
             anchors=anchors,
-            unanchored_rating=unanchored_rating,
+            unanchored_seen=unanchored_seen,
         )
         self._control_weight = validated_control_weight(control_weight)
         # Defaulted rather than required, like `opponent_prior_manager`: every

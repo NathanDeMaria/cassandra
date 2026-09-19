@@ -232,7 +232,7 @@ that keeps updating; see `from_ratings`.
 """
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple, Self
 
 from endgame.types import Game
@@ -243,7 +243,7 @@ from .adjustments import (
     DEFAULT_TRAVEL_ADVANTAGE,
     MatchupSources,
 )
-from .base_predictor import MEAN_RATING, Anchor
+from .base_predictor import Anchor
 from .blend import validated_fraction, validated_scale
 from .epa import EpaIndex
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating, glicko_step
@@ -366,7 +366,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         # model keeps centering where the replay left it.
         epa_seen: tuple[float, int] = (0.0, 0),
         anchors: Mapping[str, Anchor] | None = None,
-        unanchored_rating: float = MEAN_RATING,
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         game_epa: EpaIndex | None = None,
     ) -> None:
         super().__init__(
@@ -389,7 +389,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
             opponent_prior_manager=opponent_prior_manager,
             ratings=ratings,
             anchors=anchors,
-            unanchored_rating=unanchored_rating,
+            unanchored_seen=unanchored_seen,
         )
         if unit_weight < 0:
             # 0 is the off switch and stays legal. Below it a unit's evidence

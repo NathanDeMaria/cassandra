@@ -1,9 +1,11 @@
+import math
 from datetime import datetime
 from typing import Any, NamedTuple
 
 import pytest
 
 from ..scoring import DEFAULT_SIGMOID_SCALE
+from .base_predictor import MEAN_RATING
 from .conftest import GameFactory
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating
 from .types import Rating
@@ -174,35 +176,106 @@ def test_the_slope_round_trips_through_the_state() -> None:
     assert GlickoPredictor.from_state_dict(state).state_dict() == state
 
 
-def test_a_team_without_an_anchor_enters_where_the_model_says(
+def _season_of_unfiled_losses(predictor: GlickoPredictor, game: GameFactory) -> None:
+    """Five unfiled teams each lose badly to a filed one, then the season rolls."""
+    for i in range(5):
+        predictor.update_game(game("Filed", f"Unfiled {i}", 49, 0))
+    predictor.pass_week()
+    predictor.pass_season()
+
+
+def test_an_unfiled_team_enters_where_the_last_ones_ended_up(
     game: GameFactory,
 ) -> None:
-    """The unfiled tier: not the league mean, unless the model says so.
+    """Nothing seen, the league mean; a season of unfiled teams seen, their level.
 
-    An anchored team is untouched, and the unanchored one both starts at the
-    knob and regresses toward it -- the anchor is one number for both jobs.
+    The estimate is the *end-of-season* rating of every unfiled team that
+    played, so after five of them were routed the sixth enters below the
+    mean, and an anchored team is untouched throughout.
     """
-    predictor = GlickoPredictor(
-        "test_league",
-        unanchored_rating=1100,
-        anchors={"Filed": 1800},
-        season_regression=1.0,
-    )
-    assert predictor.get_rating("Unfiled").rating == 1100
-    assert predictor.get_rating("Filed").rating == 1800
-    predictor.update_game(game("Unfiled", "Filed", 30, 0))
-    assert predictor.get_rating("Unfiled").rating > 1100
+    predictor = GlickoPredictor("test_league", anchors={"Filed": 1800})
+    assert predictor.get_rating("Unfiled 0").rating == MEAN_RATING
+    assert predictor.unanchored_rd() == predictor.get_rating("Anyone").rating_deviation
+
+    _season_of_unfiled_losses(predictor, game)
+
+    total, squares, count = predictor.state_dict()["unanchored_seen"]
+    assert count == 5
+    prior = predictor.unanchored_prior()
+    assert prior == pytest.approx(total / 5)
+    assert prior < MEAN_RATING
+    assert predictor.get_rating("Unfiled 5").rating == pytest.approx(prior)
+    assert predictor.get_rating("Filed").rating > 1800
+
+
+def test_the_estimate_waits_for_a_handful_of_teams(game: GameFactory) -> None:
+    """One routed team is one team, not the population."""
+    predictor = GlickoPredictor("test_league", anchors={"Filed": 1800})
+    predictor.update_game(game("Filed", "Unfiled", 49, 0))
+    predictor.pass_week()
     predictor.pass_season()
-    assert predictor.get_rating("Unfiled").rating == pytest.approx(1100)
+    assert predictor.state_dict()["unanchored_seen"][2] == 1
+    assert predictor.unanchored_prior() == MEAN_RATING
+    assert predictor.get_rating("Another").rating == MEAN_RATING
 
 
-def test_the_unanchored_rating_defaults_to_the_mean_and_round_trips() -> None:
-    assert GlickoPredictor("test_league").anchor("Anyone") == 1500
-    predictor = GlickoPredictor("test_league", unanchored_rating=1234.5)
+def test_an_unfiled_team_is_less_sure_than_a_filed_one(game: GameFactory) -> None:
+    """The spread of where unfiled teams landed rides on top of initial_rd."""
+    predictor = GlickoPredictor(
+        "test_league", initial_rd=200, anchors={"Filed": 1800, "Other": 1300}
+    )
+    # Two kinds of unfiled team, so the population has a spread.
+    for i in range(3):
+        predictor.update_game(game("Filed", f"Weak {i}", 49, 0))
+        predictor.update_game(game(f"Strong {i}", "Other", 49, 0))
+    predictor.pass_week()
+    predictor.pass_season()
+    total, squares, count = predictor.state_dict()["unanchored_seen"]
+    spread = math.sqrt(squares / count - (total / count) ** 2)
+    assert spread > 0
+    assert predictor.unanchored_rd() == pytest.approx(math.sqrt(200**2 + spread**2))
+    assert predictor.get_rating("New").rating_deviation == predictor.unanchored_rd()
+    # The filed team is back at initial_rd after the rollover; the unfiled
+    # one is wider than that.
+    assert predictor.get_rating("Filed").rating_deviation == 200
+
+
+def test_an_unfiled_team_regresses_toward_its_own_kind(game: GameFactory) -> None:
+    predictor = GlickoPredictor(
+        "test_league", anchors={"Filed": 1800}, season_regression=1.0
+    )
+    _season_of_unfiled_losses(predictor, game)
+    prior = predictor.unanchored_prior()
+    predictor.update_game(game("Unfiled 0", "Filed", 30, 0))
+    assert predictor.get_rating("Unfiled 0").rating > prior
+    predictor.pass_week()
+    predictor.pass_season()
+    # Back to what unfiled teams are (the estimate moved a little for the
+    # season just folded in), not to the league mean.
+    assert predictor.get_rating("Unfiled 0").rating == pytest.approx(
+        predictor.unanchored_prior()
+    )
+
+
+def test_a_team_is_counted_once_per_season_it_played(game: GameFactory) -> None:
+    """A 2007 one-off isn't folded in again every offseason after."""
+    predictor = GlickoPredictor("test_league", anchors={"Filed": 1800})
+    predictor.update_game(game("Filed", "Once", 49, 0))
+    predictor.pass_week()
+    predictor.pass_season()
+    predictor.update_game(game("Filed", "Someone Else", 49, 0))
+    predictor.pass_week()
+    predictor.pass_season()
+    assert predictor.state_dict()["unanchored_seen"][2] == 2
+
+
+def test_the_unanchored_estimate_round_trips(game: GameFactory) -> None:
+    predictor = GlickoPredictor("test_league", anchors={"Filed": 1800})
+    _season_of_unfiled_losses(predictor, game)
     state = predictor.state_dict()
-    assert state["unanchored_rating"] == 1234.5
     restored = GlickoPredictor.from_state_dict(state)
-    assert restored.anchor("Anyone") == 1234.5
+    assert restored.unanchored_prior() == predictor.unanchored_prior()
+    assert restored.unanchored_rd() == predictor.unanchored_rd()
     assert restored.state_dict() == state
 
 

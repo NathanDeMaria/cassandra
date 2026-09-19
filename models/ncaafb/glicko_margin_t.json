@@ -42,10 +42,6 @@
         "nu": [
             2,
             40
-        ],
-        "unanchored_rating": [
-            800,
-            1500
         ]
     },
     "fixed": {
@@ -65,8 +61,7 @@
             "rest_advantage": 4.357195250747301,
             "qb_out_penalty": 12.671195192443767,
             "nu": 30.0,
-            "prediction_scale": 170.0,
-            "unanchored_rating": 1100.0
+            "prediction_scale": 170.0
         }
     ]
 }
