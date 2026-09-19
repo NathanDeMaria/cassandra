@@ -376,18 +376,17 @@ class _Bucket:
             publish, "Config", type("Config", (), {"init_from_file": lambda: self})
         )
         monkeypatch.setattr(publish, "OddsDatabase", self)
-        monkeypatch.setattr(publish, "read_all_seasons", self._read_all_seasons)
+        monkeypatch.setattr(publish, "read_rated_seasons", self._read_rated_seasons)
 
     async def from_s3(self, bucket: str) -> OddsDatabase:
         assert bucket == self.bucket
         self.odds_reads += 1
         return OddsDatabase({})
 
-    async def _read_all_seasons(self, league: str, bucket: str):
+    async def _read_rated_seasons(self, league: str, bucket: str):
         assert bucket == self.bucket
         self.season_reads.append(league)
-        for season in _seasons():
-            yield season
+        return list(_seasons())
 
 
 def _write_configs(root: Path, configs: dict[tuple[str, str], PredictorConfig]) -> list:

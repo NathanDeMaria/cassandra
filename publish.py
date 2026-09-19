@@ -74,7 +74,7 @@ from cassandra.predictor import (
     load_predictor_class,
 )
 from cassandra.predictor.qb_out import read_qb_out_file
-from cassandra.save_predictions import join_with_odds, read_all_seasons
+from cassandra.save_predictions import join_with_odds, read_rated_seasons
 from cassandra.serving import (
     ModelRelease,
     RatingHistory,
@@ -601,7 +601,7 @@ async def _publish(
     failures = []
     for league, league_jobs in _by_league(jobs):
         print(f"Loading {league} seasons from s3://{bucket}")
-        seasons = [s async for s in read_all_seasons(league, bucket)]
+        seasons = await read_rated_seasons(league, bucket)
         if not seasons:
             # Same failure optimize.py guards: every model in the league would
             # otherwise die deep inside scoring on an empty set of games.
