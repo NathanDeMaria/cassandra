@@ -124,6 +124,7 @@ a signal with genuine per-game information (21 sd off its shuffle null) was
 still worth 1.1% of the gap between two models.
 """
 
+import math
 from collections.abc import Mapping, Sequence
 from functools import cache
 from typing import NamedTuple
@@ -149,6 +150,11 @@ DEFAULT_PERMUTATIONS = 400
 #: that mean something. Callers that want everything pass `min_games=1`.
 DEFAULT_MIN_GAMES = 20
 
+#: Fewer games than this and `SliceStats.margin_slope` is `nan`. A slope
+#: through twenty points has a standard error of a quarter or so, which is
+#: wide enough that the number would be read and shouldn't be.
+MIN_GAMES_FOR_SLOPE = 30
+
 #: Column names this module adds to a predictions frame.
 PREDICTED_MARGIN = "predicted_margin"
 MARGIN_RESIDUAL = "margin_residual"
@@ -172,6 +178,18 @@ class SliceStats(NamedTuple):
     so positive means the market did better. `nan` when the slice has no
     lined games, which is most of NCAAFB's history and every league before
     the odds database starts.
+
+    `margin_slope` is the slope of the actual margin on the predicted one
+    within the slice: 1 is a spread that is right on average at every size,
+    below 1 is a slice whose predictions are spread too wide, above 1 too
+    narrow. It catches a failure `margin_bias` is blind to. A slice can have
+    no bias at all and still be badly predicted if its modest favorites win
+    by more than they should and its big ones by less -- the two cancel in
+    the mean and show up only in the slope. On ncaafb every within-division
+    slice sits at 0.96-1.03 and FBS hosting FCS at 0.85 (se 0.02): the
+    cross-tier gap is over-dispersed by about a sixth, which is the division
+    *scale* being wrong where the anchors only fix the division *level*.
+    `nan` for a slice too small to fit a line through.
     """
 
     label: str
@@ -181,6 +199,7 @@ class SliceStats(NamedTuple):
     margin_mae: float
     n_lined: int
     market_gap: float
+    margin_slope: float = float("nan")
 
 
 class AxisReport(NamedTuple):
@@ -359,7 +378,27 @@ def _slice_stats(label: str, rows: pd.DataFrame) -> SliceStats:
         margin_mae=float(np.abs(residual).mean()),
         n_lined=len(lined),
         market_gap=market_gap,
+        margin_slope=_margin_slope(
+            rows[PREDICTED_MARGIN].to_numpy(), rows[GameDfColumns.TEAM1_MOV].to_numpy()
+        ),
     )
+
+
+def _margin_slope(predicted: np.ndarray, actual: np.ndarray) -> float:
+    """Least-squares slope of the actual margin on the predicted one.
+
+    `nan` under `MIN_GAMES_FOR_SLOPE` games or when every prediction in the
+    slice is the same number, which a slice cut *on* the predicted margin
+    can very nearly be -- `favorite_size`'s buckets are narrow enough that
+    the slope inside one says little, and that axis is read on its bias.
+    """
+    if len(predicted) < MIN_GAMES_FOR_SLOPE:
+        return float("nan")
+    centred = predicted - predicted.mean()
+    spread = float((centred**2).sum())
+    if spread == 0.0:
+        return float("nan")
+    return float((centred * (actual - actual.mean())).sum() / spread)
 
 
 def _dispersion(residual: np.ndarray, codes: np.ndarray, n_slices: int) -> float:
@@ -866,6 +905,207 @@ def site_type(df: pd.DataFrame) -> pd.Series:
     )
 
 
+def _own_side(df: pd.DataFrame) -> pd.DataFrame:
+    """The frame as two rows per game, one per team, residual signed to that team.
+
+    The shape every per-team question wants: a team's games in order,
+    whatever side it was on, with its residual positive when it beat the
+    model. Keyed by position the way `rest_advantage` is, so a caller's
+    sliced-and-reindexed frame can't turn the realignment into a cross join.
+    """
+    n = len(df)
+    residual = df[MARGIN_RESIDUAL].to_numpy()
+    dates = pd.to_datetime(df["date"]).to_numpy()
+    long = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "team": df["home_team"].to_numpy(),
+                    "year": df["year"].to_numpy(),
+                    "date": dates,
+                    "side": "home",
+                    "position": np.arange(n),
+                    "residual": residual,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "team": df["away_team"].to_numpy(),
+                    "year": df["year"].to_numpy(),
+                    "date": dates,
+                    "side": "away",
+                    "position": np.arange(n),
+                    "residual": -residual,
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    return long.sort_values(["date", "position"], kind="stable")
+
+
+def previous_surprise(
+    df: pd.DataFrame, edges: Sequence[float] = (2, 7, 14)
+) -> pd.Series:
+    """How much each side beat the model by in its *last* game, home minus away.
+
+    The autocorrelation of the residual, as an axis. Under an update that
+    takes everything a game has to say, the residual is white: what a team
+    did last week relative to expectation says nothing about what it does
+    this week, because the rating already moved by exactly that much. So a
+    slope here is a direct measurement of how much of a result the update is
+    leaving on the table, and its sign says which way.
+
+    Signed from each team's own side and differenced, so the label is about
+    the home team relative to the away one -- the same convention every
+    other axis uses, and the one that lets a positive bias in the top bucket
+    read as "the side coming off the better surprise beats the model again".
+
+    Within a season only. A team's first game of a year has no previous game
+    to be surprised in, and last year's finale is not a surprise the rating
+    has failed to absorb -- the offseason rollover has had its say since.
+    Those games are `unknown`, alongside anybody whose opponent has none.
+
+    On ncaafb `glicko_full` runs at +0.027 per point of previous surprise
+    (t = 9.9), the same in every division and at every rating deviation.
+    The mechanism turned out to be the shape of the season, not the update:
+    a team blown out by 35 more than expected runs 1.2 points under the
+    model for its next four games -- something changed -- while a team that
+    won by 35 more than expected is under-rated for exactly one game and
+    then isn't. See `reasoning/residual_sweep_2026-09.md`.
+    """
+    long = _own_side(df)
+    long["previous"] = long.groupby(["team", "year"], sort=False)["residual"].shift(1)
+    position = np.arange(len(df))
+    sides = {
+        side: rows.set_index("position")["previous"].reindex(position).to_numpy()
+        for side, rows in long.groupby("side")
+    }
+    difference = pd.Series(sides["home"] - sides["away"], index=df.index)
+    bucketed = pd.cut(
+        difference, bins=[-np.inf, *(-e for e in reversed(edges)), *edges, np.inf]
+    ).astype(str)
+    return bucketed.where(difference.notna(), "unknown")
+
+
+#: Where a kickoff is read as local time. One zone for every league because
+#: the axis is about the shape of a Saturday -- noon, afternoon, prime time --
+#: and Central is the zone most of a college football slate is played in; a
+#: Pacific night game lands in "20+" and an Eastern noon game in "<=13"
+#: either way.
+KICKOFF_TIMEZONE = "America/Chicago"
+
+
+def kickoff_hour(df: pd.DataFrame, tz: str = KICKOFF_TIMEZONE) -> pd.Series:
+    """When the game kicked off, in coarse local buckets.
+
+    Nothing in any model knows what time it is: a home advantage is one
+    constant whether the stands are half-full at 11am or the stadium has
+    been drinking since noon for a night game. If the advantage varies with
+    the slot, all of the variation is in the residual.
+
+    Four buckets rather than the hour, because the hours cluster -- ESPN's
+    windows are noon, 3:30, 7 and late -- and a per-hour table would be
+    mostly the same slot cut three ways.
+
+    Confounded with everything the slot is chosen for, and the reader should
+    hold that in mind: the night games are the televised ones, which are
+    the good teams', which is why `home_field_by` exists to ask the question
+    with a team's own road games as the control. On ncaafb FBS-vs-FBS the
+    noon slot runs -0.1 and the 8pm slot +0.9 for the home side, ~2 sigma on
+    its own and replicated in FCS.
+    """
+    when = pd.to_datetime(df["date"])
+    if when.dt.tz is None:
+        when = when.dt.tz_localize("UTC")
+    hour = when.dt.tz_convert(tz).dt.hour
+    return pd.cut(
+        hour, bins=[-1, 13, 16, 19, 24], labels=["<=13", "14-16", "17-19", "20+"]
+    ).astype(str)
+
+
+class ThemeHomeField(NamedTuple):
+    """Home advantage, pooled over every team that shares a label.
+
+    `at_home` and `away` are the mean residual from those teams' own side in
+    each half of their schedule, and `excess` is the difference: how much
+    more home advantage this kind of team has than the league constant gives
+    it, in points. The difference is the whole point. A team the model
+    under-rates beats it at home *and* on the road, and a pooled home
+    residual would report that as home field; the away half takes it back
+    out, exactly as `TeamHomeField.home_excess` does for one team.
+
+    `se` is the standard error of `excess` under the residual's own spread,
+    for reading rows against each other. It is not a permutation null: the
+    labels here are properties of a team, not of a game, so shuffling
+    residuals across games is not the null that matters and a team-level
+    shuffle over a handful of labels has too few teams to say much. Read a
+    two-sigma row as suggestive and a four-sigma one as a finding.
+    """
+
+    label: str
+    home_games: int
+    away_games: int
+    at_home: float
+    away: float
+    excess: float
+    se: float
+
+
+def home_field_by(
+    df: pd.DataFrame,
+    team_labels: Mapping[str, str],
+    min_games: int = DEFAULT_MIN_GAMES,
+) -> tuple[ThemeHomeField, ...]:
+    """Home advantage by a property of the home team, pooled honestly.
+
+    `home_field_table` is the per-team answer and on ncaafb it is 18%
+    reliable: the true spread of team home advantages is about a point, and a
+    team's estimate carries a two-point standard error, so the ranking is
+    noise (odd-season vs even-season correlation 0.09). Pooling teams by
+    something they share -- division, region, altitude, how far their
+    visitors travel -- averages that noise down to where a theme can be seen.
+    This is the tool the ncaafb home-field findings were made with: FBS
+    +0.8 over the constant against D-II and D-III at -0.4, and about 0.7
+    points per 1,000 km the visitor travelled.
+
+    `team_labels` maps a team to its label; a team absent from it is left
+    out rather than pooled under a made-up one. Neutral games are excluded
+    for the reason `home_field_table` gives. A label needs `min_games` on
+    each side before it gets a row.
+
+    Sorted by `excess`, descending.
+    """
+    if "neutral_site" not in df.columns:
+        raise ValueError(
+            "home_field_by needs a `neutral_site` column; re-run the "
+            "predictions through save_predictions to get one"
+        )
+    sided = df[~df["neutral_site"].astype(bool)]
+    long = _own_side(sided)
+    long["label"] = long["team"].map(team_labels)
+    long = long[long["label"].notna()]
+    spread = float(sided[MARGIN_RESIDUAL].std()) if len(sided) > 1 else float("nan")
+    rows = []
+    for label, group in long.groupby("label"):
+        home = group.loc[group["side"] == "home", "residual"]
+        away = group.loc[group["side"] == "away", "residual"]
+        if len(home) < min_games or len(away) < min_games:
+            continue
+        rows.append(
+            ThemeHomeField(
+                label=str(label),
+                home_games=len(home),
+                away_games=len(away),
+                at_home=float(home.mean()),
+                away=float(away.mean()),
+                excess=float(home.mean() - away.mean()),
+                se=spread * math.sqrt(1 / len(home) + 1 / len(away)),
+            )
+        )
+    return tuple(sorted(rows, key=lambda t: t.excess, reverse=True))
+
+
 #: What a game gets on a classification axis when nobody filed one of its
 #: teams for that season. Its own bucket rather than a dropped row, so the
 #: reader can see how much of the league it is -- and discount the axis when
@@ -975,7 +1215,29 @@ def classification_axes(df: pd.DataFrame, league: str) -> Mapping[str, pd.Series
             ],
             index=df.index,
         ),
+        # Whether the two sides share a conference. Conference games are the
+        # schedule the ratings were mostly built on; non-conference ones are
+        # the games a program chose, which is where a home team that booked a
+        # visitor from far away, or from a tier below, collects whatever the
+        # model doesn't know about that. On ncaafb the early-season home bias
+        # lives entirely here: FBS-vs-FBS non-conference games in weeks 1-4
+        # run +1.3, conference games in the same weeks -0.9.
+        "conference_game": pd.Series(
+            [_conference_game(h, a) for h, a in zip(home, away)], index=df.index
+        ),
     }
+
+
+def _conference_game(
+    home: tuple[str, str | None] | None, away: tuple[str, str | None] | None
+) -> str:
+    if home is None or away is None:
+        return UNCLASSIFIED
+    if home[0] != away[0]:
+        return "cross-division"
+    if home[1] is not None and home[1] == away[1]:
+        return "conference"
+    return "non-conference, same division"
 
 
 def standard_axes(df: pd.DataFrame) -> Mapping[str, pd.Series]:
@@ -998,6 +1260,11 @@ def standard_axes(df: pd.DataFrame) -> Mapping[str, pd.Series]:
         # `save_predictions` builds, and a replay old enough to be missing it
         # is missing those too.
         "site": site_type(df),
+        "kickoff_hour": kickoff_hour(df),
+        # The autocorrelation of the residual: whether last week's surprise
+        # predicts this week's. Reads the residual column itself, which is
+        # fine here -- `standard_axes` is only ever handed a scored frame.
+        "previous_surprise": previous_surprise(df),
         # Not the home-field question -- `home_field_report` is that, and it
         # nets a team's home games against its away ones. This one is flatter
         # and asks whether some teams' games are harder to call than others

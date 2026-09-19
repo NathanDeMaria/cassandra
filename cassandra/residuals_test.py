@@ -22,8 +22,11 @@ from .residuals import (
     axis_report,
     classification_axes,
     favorite_size,
+    home_field_by,
     home_field_report,
     home_field_table,
+    kickoff_hour,
+    previous_surprise,
     rest_advantage,
     season_stage,
     site_type,
@@ -563,7 +566,12 @@ def test_classification_axes_label_by_division_and_matchup():
         }
     )
     axes = classification_axes(df, "ncaafb")
-    assert set(axes) == {"division", "conference", "division_matchup"}
+    assert set(axes) == {
+        "division",
+        "conference",
+        "division_matchup",
+        "conference_game",
+    }
     division = axes["division"]
     # Both rows are the same home team, so both carry the same division, and
     # it is a real one rather than the fallback.
@@ -620,3 +628,162 @@ def test_the_spanning_label_is_filled_in_like_the_anchors_fill_it() -> None:
 
     assert axes["division"].iloc[0] != LUMPED_DIVISION
     assert LUMPED_DIVISION not in axes["division_matchup"].iloc[0]
+
+
+def test_margin_slope_reads_an_over_dispersed_slice():
+    """A slice whose predictions are spread too wide has a slope under 1.
+
+    Planted directly: the actual margin is 0.8 of the predicted one plus
+    noise, so every favorite wins by less than predicted and every dog loses
+    by less -- a bias of zero, and a slope of 0.8. The mean can't see it.
+    """
+    rng = np.random.default_rng(21)
+    n = 2000
+    predicted = np.linspace(-30, 30, n)
+    df = _frame(np.zeros(n))
+    df[PREDICTED_MARGIN] = predicted
+    df["team1_mov"] = 0.8 * predicted + rng.normal(0, 3, n)
+    df[MARGIN_RESIDUAL] = df["team1_mov"] - predicted
+    report = axis_report(df, pd.Series("all", index=df.index), "one", permutations=5)
+    (only,) = report.slices
+    assert only.margin_slope == pytest.approx(0.8, abs=0.02)
+    assert only.margin_bias == pytest.approx(0.0, abs=0.3)
+
+
+def test_margin_slope_is_nan_for_a_thin_slice():
+    df = _frame(np.zeros(10))
+    report = axis_report(
+        df, pd.Series("all", index=df.index), "one", min_games=1, permutations=5
+    )
+    assert np.isnan(report.slices[0].margin_slope)
+
+
+def _season_frame(games: list[tuple[str, str, float]]) -> pd.DataFrame:
+    """Games as (home, away, residual), one a week, all in one season."""
+    n = len(games)
+    return _frame(
+        np.array([r for _, _, r in games]),
+        home_teams=[h for h, _, _ in games],
+        away_teams=[a for _, a, _ in games],
+        weeks=np.arange(n) + 1,
+    ).assign(
+        date=pd.Timestamp("2020-09-05") + pd.to_timedelta(np.arange(n) * 7, unit="D")
+    )
+
+
+def test_previous_surprise_is_each_side_s_own_last_residual():
+    # Week 1: A beats the model by 10 at home. Week 2: B loses to the model by
+    # 6 at home against C. Week 3: A hosts B. A's previous surprise is +10,
+    # B's is -6, and the difference is +16.
+    df = _season_frame([("A", "X", 10.0), ("B", "C", -6.0), ("A", "B", 0.0)])
+    labels = previous_surprise(df, edges=(2, 7, 14))
+    assert labels.iloc[0] == "unknown"
+    assert labels.iloc[1] == "unknown"
+    assert labels.iloc[2] == "(14.0, inf]"
+
+
+def test_previous_surprise_reads_the_away_side_from_its_own_view():
+    # Week 1: B is *away* and the home side beats the model by 8, so B's own
+    # surprise is -8. Week 2: A hosts C on A's first game -- unknown, one side
+    # has nothing to be surprised about yet. Week 3: B hosts A after both have
+    # played: B's last was -8, A's was 0.
+    df = _season_frame([("X", "B", 8.0), ("A", "C", 0.0), ("B", "A", 0.0)])
+    labels = previous_surprise(df, edges=(2, 7, 14))
+    assert labels.iloc[1] == "unknown"
+    assert labels.iloc[2] == "(-14.0, -7.0]"
+
+
+def test_previous_surprise_forgets_across_seasons():
+    df = _season_frame([("A", "X", 20.0), ("A", "Y", 0.0)])
+    df["year"] = [2019, 2020]
+    assert previous_surprise(df).iloc[1] == "unknown"
+
+
+def test_kickoff_hour_buckets_local_time():
+    df = _frame(np.zeros(4)).assign(
+        date=pd.to_datetime(
+            # 11:00, 14:30, 18:00 and 21:00 Central, written in UTC (CDT is -5).
+            [
+                "2020-09-05 16:00",
+                "2020-09-05 19:30",
+                "2020-09-05 23:00",
+                "2020-09-06 02:00",
+            ],
+            utc=True,
+        )
+    )
+    assert list(kickoff_hour(df)) == ["<=13", "14-16", "17-19", "20+"]
+
+
+def test_kickoff_hour_takes_a_naive_date_as_utc():
+    df = _frame(np.zeros(1)).assign(date=pd.to_datetime(["2020-09-05 16:00"]))
+    assert list(kickoff_hour(df)) == ["<=13"]
+
+
+def test_home_field_by_pools_the_difference_not_the_home_half():
+    """A theme of under-rated teams is not a theme of home field.
+
+    Teams a0..a3 all carry a rating error and no home edge; b0..b3 carry a
+    real home edge and no rating error. Pooled on the home half alone both
+    themes would read as home field; on the difference only the second does.
+    """
+    rng = np.random.default_rng(31)
+    teams = [f"a{i}" for i in range(4)] + [f"b{i}" for i in range(4)]
+    df = _home_and_away(
+        rng,
+        teams,
+        40,
+        home_edge={f"b{i}": 6.0 for i in range(4)},
+        rating_error={f"a{i}": 6.0 for i in range(4)},
+    )
+    labels = {t: t[0] for t in teams}
+    rows = {r.label: r for r in home_field_by(df, labels)}
+    # `_home_and_away` plants an edge as half of each side's, so a b at home
+    # against another b carries 6 and against an a carries 3: three of its
+    # seven opponents are b's, each half averages (3 * 6 + 4 * 3) / 7, and the
+    # difference doubles it.
+    expected_b = 2 * (3 * 6.0 + 4 * 3.0) / 7
+    assert rows["b"].excess == pytest.approx(expected_b, abs=1.0)
+    # The a's have no edge of their own; what they show is the half of the
+    # b's edge the fixture leaves in every game against one -- four of seven
+    # opponents -- and none of their six-point rating error.
+    expected_a = 2 * (4 * 3.0) / 7
+    assert rows["a"].excess == pytest.approx(expected_a, abs=1.0)
+    # The rating error went into both halves rather than the difference: the
+    # a's beat the model at home *and* away (against the b's, where it doesn't
+    # cancel against another a's).
+    assert rows["a"].at_home > 3.0
+    assert rows["a"].away > 0.0
+    assert rows["b"].home_games == rows["b"].away_games
+
+
+def test_home_field_by_leaves_unlabelled_teams_and_thin_labels_out():
+    rng = np.random.default_rng(32)
+    teams = [f"t{i}" for i in range(6)]
+    df = _home_and_away(rng, teams, 10, {})
+    # t3..t5 have no label; y is one team, under the threshold on its own.
+    labels = {"t0": "x", "t1": "x", "t2": "y"}
+    rows = home_field_by(df, labels, min_games=60)
+    assert [r.label for r in rows] == ["x"]
+
+
+def test_home_field_by_wants_a_neutral_site_column():
+    df = _frame(np.zeros(20)).drop(columns=["neutral_site"])
+    with pytest.raises(ValueError, match="neutral_site"):
+        home_field_by(df, {})
+
+
+def test_classification_axes_say_whether_a_game_is_in_conference():
+    df = pd.DataFrame(
+        {
+            "year": [2015, 2015, 2015],
+            "home_team": ["Alabama Crimson Tide"] * 3,
+            "away_team": ["Auburn Tigers", "Wisconsin Badgers", "not a team at all"],
+        }
+    )
+    axes = classification_axes(df, "ncaafb")
+    assert list(axes["conference_game"]) == [
+        "conference",
+        "non-conference, same division",
+        UNCLASSIFIED,
+    ]
