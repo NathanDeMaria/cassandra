@@ -6,6 +6,10 @@
             6,
             30
         ],
+        "prediction_scale": [
+            80,
+            500
+        ],
         "initial_rd": [
             30,
             500
@@ -56,7 +60,8 @@
             "home_advantage": 23.11,
             "rest_advantage": 24.83,
             "qb_out_penalty": 40.84,
-            "nu": 30.0
+            "nu": 30.0,
+            "prediction_scale": 170.0
         }
     ]
 }
