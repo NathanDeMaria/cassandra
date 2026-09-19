@@ -165,6 +165,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         self,
         league: str,
         home_advantage: float = 95,
+        home_advantage_slope: float = 0.0,
         weekly_rd_increase: float = 1,
         season_rd_increase: float = 120,
         initial_rd: float = 216,
@@ -185,6 +186,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         super().__init__(
             league,
             home_advantage=home_advantage,
+            home_advantage_slope=home_advantage_slope,
             weekly_rd_increase=weekly_rd_increase,
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
@@ -264,9 +266,7 @@ class MarginGlickoPredictor(GlickoPredictor):
             return super().predict_game(matchup)
         home = self.get_rating(matchup.home)
         away = self.get_rating(matchup.away)
-        edge = (
-            0 if matchup.neutral_site else self._home_advantage
-        ) + self.matchup_adjustment(matchup)
+        edge = self.home_edge(matchup) + self.matchup_adjustment(matchup)
         expected = self._points_per_rating * (home.rating + edge - away.rating)
         return Prediction(
             team1_win_prob=_normal_cdf(expected / self._margin_sd(home, away))
@@ -285,9 +285,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         home = self.get_rating(game.home)
         away = self.get_rating(game.away)
         margin = float(game.home_score - game.away_score)
-        home_adj = (
-            0 if game.neutral_site else self._home_advantage
-        ) + self.matchup_adjustment(game)
+        home_adj = self.home_edge(game) + self.matchup_adjustment(game)
         self._ratings[game.home] = self._step(home, away, margin, home_adj)
         self._ratings[game.away] = self._step(away, home, -margin, -home_adj)
         self._this_week.append(_Played(game.home, game.away, margin, home_adj))
