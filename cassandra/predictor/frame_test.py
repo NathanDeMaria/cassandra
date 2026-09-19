@@ -118,6 +118,17 @@ def test_a_point_is_priced_off_the_update_scale() -> None:
     assert params["home_advantage"] == pytest.approx(3 * 17.3718, abs=0.01)
 
 
+def test_the_slope_of_the_home_advantage_is_priced_like_the_advantage() -> None:
+    """Points per 400 anchor units: only the points side needs the exchange rate."""
+    params = frame.to_params(
+        frame.POINTS, {"sigmoid_scale": 10.0, "hfa_slope_pts": 0.5}, 17
+    )
+    assert params["home_advantage_slope"] == pytest.approx(0.5 * 17.3718, abs=0.01)
+    assert "hfa_slope_pts" not in params
+    knobs = frame.to_knobs(frame.POINTS, params, 17)
+    assert knobs["hfa_slope_pts"] == pytest.approx(0.5)
+
+
 def test_the_deviation_budget_is_spread_over_the_season() -> None:
     params = frame.to_params(
         frame.POINTS,
@@ -180,6 +191,7 @@ def test_searching_the_scale_moves_every_priced_argument() -> None:
     assert moved == {
         "sigmoid_scale",
         "home_advantage",
+        "home_advantage_slope",
         "travel_advantage",
         "rest_advantage",
         "qb_out_penalty",

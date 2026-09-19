@@ -45,6 +45,10 @@ _UPDATE_SCALE = 400.0
 #: A matchup term in points and the constructor argument it sets.
 _POINT_TERMS = {
     "hfa_pts": "home_advantage",
+    # Points of extra home advantage per 400 anchor points; the anchor side
+    # of the ratio is already in rating units, so only the points side is
+    # priced. See `GlickoPredictor.home_advantage_slope`.
+    "hfa_slope_pts": "home_advantage_slope",
     "travel_pts": "travel_advantage",
     "rest_pts": "rest_advantage",
     "qb_pts": "qb_out_penalty",

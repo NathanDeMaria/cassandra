@@ -21,6 +21,7 @@
     },
     "fixed": {
         "home_advantage": 21.834188764525667,
+        "home_advantage_slope": 0.0,
         "initial_rd": 663.2163819489011,
         "weekly_rd_increase": 21.741404860753068,
         "season_rd_increase": 235.0636902095636,

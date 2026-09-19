@@ -392,6 +392,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         self,
         league: str,
         home_advantage: float = 95,
+        home_advantage_slope: float = 0.0,
         k: float = 65,
         weekly_rd_increase: float = 1,
         season_rd_increase: float = 120,
@@ -425,6 +426,7 @@ class BlendedGlickoPredictor(GlickoPredictor):
         super().__init__(
             league,
             home_advantage=home_advantage,
+            home_advantage_slope=home_advantage_slope,
             k=k,
             weekly_rd_increase=weekly_rd_increase,
             season_rd_increase=season_rd_increase,
