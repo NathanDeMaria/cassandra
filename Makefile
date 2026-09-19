@@ -27,6 +27,14 @@ diagnose:
 	poetry run python diagnose.py $(ARGS)
 
 
+# Grade one model's picks the way a bettor would: closing line value from
+# the first line after each team's previous game, and moneyline strategies
+# against the model's win probability. `make betting ARGS="--league ncaafb
+# --model glicko_full"`. One replay plus the odds history, so a few minutes.
+betting:
+	poetry run python betting.py $(ARGS)
+
+
 # Build a release for every model in every league, locally. Reads the seasons
 # and odds once for the whole run, so it's minutes rather than the half hour a
 # process per model would spend re-reading s3.
