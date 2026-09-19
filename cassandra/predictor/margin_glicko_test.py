@@ -149,8 +149,8 @@ def test_a_scale_of_zero_or_less_is_refused(value: float) -> None:
         MarginGlickoPredictor("test_league", nu=value)
     with pytest.raises(ValueError, match="points_per_rating"):
         MarginGlickoPredictor("test_league", points_per_rating=value)
-    with pytest.raises(ValueError, match="prediction_sd"):
-        MarginGlickoPredictor("test_league", prediction_sd=value)
+    with pytest.raises(ValueError, match="prediction_scale"):
+        MarginGlickoPredictor("test_league", prediction_scale=value)
 
 
 def test_the_prediction_is_the_gaussian_win_probability(game: GameFactory) -> None:
@@ -178,13 +178,20 @@ def test_an_unsure_rating_predicts_closer_to_even(game: GameFactory) -> None:
     )
 
 
-def test_a_fixed_prediction_sd_ignores_the_deviations(game: GameFactory) -> None:
-    fixed = _predictor(
-        prediction_sd=16, ratings={"A": _Rating(1600, 200), "B": _Rating(1500, 200)}
-    )
-    expected = 0.5 * (1 + math.erf(10 / 16 / math.sqrt(2)))
+def test_a_prediction_scale_is_the_parents_logistic(game: GameFactory) -> None:
+    """The configs' choice: one curve the pipeline's prob->margin fit inverts.
 
-    assert fixed.predict_game(game("A", "B")).team1_win_prob == pytest.approx(expected)
+    A 100-point gap at a scale of 100 is a 10-to-1 favorite, whatever the
+    deviations say -- the same reading `GlickoPredictor.win_prob` gives.
+    """
+    logistic = _predictor(
+        prediction_scale=100, ratings={"A": _Rating(1600, 200), "B": _Rating(1500, 200)}
+    )
+    assert logistic.predict_game(game("A", "B")).team1_win_prob == pytest.approx(
+        10 / 11
+    )
+    implied = _predictor(ratings={"A": _Rating(1600, 200), "B": _Rating(1500, 200)})
+    assert implied.predict_game(game("A", "B")).team1_win_prob != pytest.approx(10 / 11)
 
 
 def test_neutral_sites_get_no_edge(game: GameFactory) -> None:
@@ -244,15 +251,15 @@ def test_the_smoother_moves_only_the_means(game: GameFactory) -> None:
 def test_the_state_carries_this_models_knobs_and_not_the_parents(
     game: GameFactory,
 ) -> None:
-    predictor = _predictor(nu=6, prediction_sd=15, passes=2)
+    predictor = _predictor(nu=6, prediction_scale=150, passes=2)
     predictor.update_game(game("A", "B", 20, 3))
 
     state = predictor.state_dict()
-    for parents in ("k", "scoring_method", "sigmoid_scale", "prediction_scale"):
+    for parents in ("k", "scoring_method", "sigmoid_scale"):
         assert parents not in state
     assert state["obs_sd"] == 10
     assert state["nu"] == 6
-    assert state["prediction_sd"] == 15
+    assert state["prediction_scale"] == 150
     assert state["points_per_rating"] == 0.1
 
     restored = MarginGlickoPredictor.from_state_dict(state)
@@ -262,8 +269,15 @@ def test_the_state_carries_this_models_knobs_and_not_the_parents(
     )
 
 
-def test_a_gaussian_round_trips_its_absent_nu(game: GameFactory) -> None:
+def test_a_gaussian_round_trips_its_absent_nu_and_scale(game: GameFactory) -> None:
     predictor = _predictor()
+    predictor.update_game(game("A", "B", 20, 3))
     state = predictor.state_dict()
     assert state["nu"] is None
-    assert MarginGlickoPredictor.from_state_dict(state).nu is None
+    assert state["prediction_scale"] is None
+    restored = MarginGlickoPredictor.from_state_dict(state)
+    assert restored.nu is None
+    # Still the implied prediction, deviations and all, after the round trip.
+    assert restored.predict_game(game("A", "B")).team1_win_prob == pytest.approx(
+        predictor.predict_game(game("A", "B")).team1_win_prob
+    )

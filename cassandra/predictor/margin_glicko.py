@@ -62,11 +62,22 @@ What it predicts
 
 Under Gaussian noise the win is implied: `P(home) = Phi(mu / sd)`, with
 `sd^2 = sigma^2 + c^2 (d^2 + d'^2)` -- the same innovation variance the
-update uses. There is no `prediction_scale`: the sharpness of a prediction
-is the noise the margin was fit with plus how unsure the two ratings are,
-and a search moves it by moving `obs_sd`. `prediction_sd` is the escape
-hatch, a fixed sd for the prediction alone, for a search that finds the
-implied one miscalibrated; `None` is the implied one.
+update uses, so a game between two unmeasured teams is called closer than
+one between two known ones. That is what `prediction_scale = None` does, and
+on ncaafb it is the best brier of any prediction tried (0.154282 against
+0.154528 for the best constant sd).
+
+The configs search `prediction_scale` instead -- the parent's logistic of
+the rating gap -- for a reason that is about the pipeline rather than the
+model. A prediction leaves here as one number, a win probability, and every
+margin metric downstream (`margin_mae`, the spread record, `residuals`)
+recovers a margin from it through one fitted prob->margin curve. A per-game
+sd puts the same expected margin at different probabilities, and one curve
+cannot undo that: the fitted t model's margin read straight off `mu` is MAE
+12.83, and read back through its implied-sd probability 12.95. A constant
+logistic scale round-trips exactly, the way the parent's does, and costs
+about 0.0001 brier once searched. Until a prediction can carry its margin,
+the logistic is the one to publish.
 
 Ratings stay on the league-wide Elo scale, for the reason `MarginEloPredictor`
 gives: a release's ratings read next to any other model's, and the anchors
@@ -113,7 +124,7 @@ from .adjustments import (
 )
 from .base_predictor import Anchor
 from .blend import validated_scale
-from .glicko import GlickoPredictor, _Played, _Rating
+from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Played, _Rating
 from .opponent_prior import OpponentPriorManager
 from .rest import DEFAULT_REST_ADVANTAGE
 from .types import Matchup, Prediction
@@ -140,14 +151,14 @@ class MarginGlickoPredictor(GlickoPredictor):
 
     The parent's every method does what it did except the two that touch
     the observation: `update_game` steps both ratings on the margin, and
-    `_smooth` replays the season with the same step. `predict_game` reads
-    the gap as a Gaussian win probability rather than the parent's logistic.
-    The parent's `scoring_method`, `sigmoid_scale` and `prediction_scale`
-    are not taken: there is no score to squash and no second scale to read
-    a gap at.
+    `_smooth` replays the season with the same step. The parent's
+    `scoring_method` and `sigmoid_scale` are not taken: there is no score to
+    squash.
 
     `nu` is `None` for the Gaussian; a number is the degrees of freedom of a
-    t. `prediction_sd` is `None` for the implied one.
+    t. `prediction_scale` is `None` for the implied Gaussian win probability
+    and a rating gap for the parent's logistic; see the module docstring for
+    why the configs search the second.
     """
 
     def __init__(
@@ -160,7 +171,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         obs_sd: float = DEFAULT_OBS_SD,
         nu: float | None = None,
         points_per_rating: float = DEFAULT_POINTS_PER_RATING,
-        prediction_sd: float | None = None,
+        prediction_scale: float | None = None,
         passes: int = 1,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
@@ -177,6 +188,13 @@ class MarginGlickoPredictor(GlickoPredictor):
             weekly_rd_increase=weekly_rd_increase,
             season_rd_increase=season_rd_increase,
             initial_rd=initial_rd,
+            # The parent validates and stores it; `None` is this model's
+            # "predict from the noise" and is remembered separately.
+            prediction_scale=(
+                DEFAULT_PREDICTION_SCALE
+                if prediction_scale is None
+                else prediction_scale
+            ),
             passes=passes,
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
@@ -192,11 +210,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         self._points_per_rating = validated_scale(
             "points_per_rating", points_per_rating
         )
-        self._prediction_sd = (
-            None
-            if prediction_sd is None
-            else validated_scale("prediction_sd", prediction_sd)
-        )
+        self._implied_prediction = prediction_scale is None
 
     @property
     def obs_sd(self) -> float:
@@ -237,8 +251,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         )
 
     def _margin_sd(self, home: _Rating, away: _Rating) -> float:
-        if self._prediction_sd is not None:
-            return self._prediction_sd
+        """The innovation sd of a game between these two, in points."""
         return math.sqrt(
             self._obs_sd**2
             + self._points_per_rating**2
@@ -246,7 +259,9 @@ class MarginGlickoPredictor(GlickoPredictor):
         )
 
     def predict_game(self, matchup: Matchup) -> Prediction:
-        """The gap in points, as the probability a Gaussian margin is positive."""
+        """The parent's logistic at `prediction_scale`, or the Gaussian's own answer."""
+        if not self._implied_prediction:
+            return super().predict_game(matchup)
         home = self.get_rating(matchup.home)
         away = self.get_rating(matchup.away)
         edge = (
@@ -320,14 +335,16 @@ class MarginGlickoPredictor(GlickoPredictor):
     def state_dict(self) -> dict[str, Any]:
         """The parent's state without the scales this model has no use for."""
         state = super().state_dict()
-        for unused in ("k", "scoring_method", "sigmoid_scale", "prediction_scale"):
+        for unused in ("k", "scoring_method", "sigmoid_scale"):
             state.pop(unused, None)
         return {
             **state,
+            "prediction_scale": (
+                None if self._implied_prediction else self._prediction_scale
+            ),
             "obs_sd": self._obs_sd,
             "nu": self._nu,
             "points_per_rating": self._points_per_rating,
-            "prediction_sd": self._prediction_sd,
         }
 
     @classmethod
