@@ -30,6 +30,7 @@ from .glicko import GlickoPredictor
 from .glicko_blend import BlendedGlickoPredictor
 from .margin_blend import BlendedMarginEloPredictor
 from .margin_elo import MarginEloPredictor
+from .margin_glicko import MarginGlickoPredictor
 from .matchup import predict_matchup
 from .qb_out import QB_LEAGUES, QbOutIndex, qb_out_path
 from .rest import RestLedger, RestSource, StatedRest
