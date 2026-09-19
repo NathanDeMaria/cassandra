@@ -1,0 +1,67 @@
+{
+    "predictor_class": "VectorMarginGlickoPredictor",
+    "league": "ncaafb",
+    "parameters": {
+        "obs_sd": [
+            6,
+            30
+        ],
+        "prediction_scale": [
+            80,
+            500
+        ],
+        "initial_rd": [
+            30,
+            500
+        ],
+        "weekly_rd_increase": [
+            0,
+            40
+        ],
+        "season_rd_increase": [
+            0,
+            250
+        ],
+        "home_advantage": [
+            0,
+            60
+        ],
+        "rest_advantage": [
+            0,
+            36
+        ],
+        "qb_out_penalty": [
+            0,
+            86
+        ],
+        "passes": [
+            1,
+            3,
+            "int"
+        ],
+        "control_scale": [
+            8,
+            40
+        ]
+    },
+    "fixed": {
+        "points_per_rating": 0.1403,
+        "travel_advantage": 0,
+        "season_regression": 0
+    },
+    "n_iter": 1000,
+    "seeds": [
+        {
+            "obs_sd": 13.0,
+            "initial_rd": 200.0,
+            "weekly_rd_increase": 5.0,
+            "season_rd_increase": 60.0,
+            "passes": 2,
+            "home_advantage": 21.834188764525667,
+            "rest_advantage": 4.357195250747301,
+            "qb_out_penalty": 12.671195192443767,
+            "prediction_scale": 170.0,
+            "control_scale": 17.0
+        }
+    ]
+}
