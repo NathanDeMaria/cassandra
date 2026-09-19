@@ -33,6 +33,77 @@ DEFAULT_FITTERS: dict[str, BaseProbToMarginFitter] = {
 }
 
 
+#: How far a league's lined-game count may fall between evaluations before
+#: the run is treated as broken rather than quiet. Generous, because the
+#: number legitimately moves: a replay picks up games as a season goes on,
+#: and the odds database only covers the seasons a book was quoted for.
+#: Losing a third of a league's lines between two runs is not that.
+SPREAD_COVERAGE_FLOOR = 0.67
+
+#: Below this a league has too few lines to say anything. ncaafb sat at 184
+#: of 75,111 games for most of a season; a handful either way there is the
+#: odds history growing, not a pipeline breaking.
+SPREAD_COVERAGE_MIN_GAMES = 20
+
+
+class SpreadCoverageDropped(Exception):
+    """A league lost most of the lines it had at the last evaluation.
+
+    The backstop, and deliberately the least specific check in the stack. It
+    knows nothing about ESPN, horizons, or page limits -- only that cassandra
+    scored fewer games against the market than it did last time, which is
+    what *every* upstream odds failure eventually looks like from here,
+    including the ones nobody has thought of yet.
+
+    It is the last line rather than the first because it is also the slowest
+    to fire: a truncated pull is visible in the odds job within minutes, and
+    only reaches this once an evaluate has replayed every model. The value
+    is that it catches breakage originating in a repo cassandra doesn't
+    control, which is where this class of bug has actually come from.
+    """
+
+
+def spread_coverage_drops(
+    previous: pd.DataFrame, current: pd.DataFrame
+) -> list[str]:
+    """Leagues whose lined-game count collapsed since the last evaluation.
+
+    Per league rather than overall: one league losing its odds is invisible
+    in a total dominated by another, and the leagues are fetched by separate
+    jobs that fail separately.
+
+    Compared at the maximum over a league's models, not the mean. Models
+    disagree about `n_spread_games` when one of them replays a shorter
+    history, and the question here is "did the odds database lose games",
+    which the best-covered model answers.
+    """
+    if previous.empty or current.empty:
+        return []
+
+    def by_league(frame: pd.DataFrame) -> Mapping[str, int]:
+        if not {"league", "n_spread_games"} <= set(frame.columns):
+            return {}
+        counts = frame.groupby("league")["n_spread_games"].max()
+        return {str(k): int(v) for k, v in counts.items() if pd.notna(v)}
+
+    was, now = by_league(previous), by_league(current)
+    problems = []
+    for league, had in sorted(was.items()):
+        if had < SPREAD_COVERAGE_MIN_GAMES:
+            continue
+        # A league that dropped out of this run entirely is not a coverage
+        # problem -- `--league` scopes an evaluate, and an unscored league
+        # has no number to compare.
+        if league not in now:
+            continue
+        has = now[league]
+        if has < had * SPREAD_COVERAGE_FLOOR:
+            problems.append(
+                f"{league}: {had} lined games at the last evaluation, {has} now"
+            )
+    return problems
+
+
 def prior_path(predictor_class: type[Predictor], league: str) -> Path | None:
     """Where `predictor_class` stashes its opponent priors for `league`.
 

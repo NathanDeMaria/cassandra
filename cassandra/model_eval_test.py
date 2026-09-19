@@ -7,7 +7,12 @@ import pytest
 from endgame.types import Season
 
 from .conftest import season_for
-from .model_eval import prior_path, rebuild_priors, score_predictions
+from .model_eval import (
+    prior_path,
+    rebuild_priors,
+    score_predictions,
+    spread_coverage_drops,
+)
 from .odds import OddsDatabase
 from .predictor import (
     CompoundGlickoPredictor,
@@ -259,3 +264,52 @@ def test_rebuild_priors_clears_the_file_save_refuses_to_overwrite(
 
     path = prior_path(GlickoPredictor, "test_league")
     assert path is not None and path.exists()
+
+
+def _eval_rows(league: str, n_spread: int, models=("a", "b")) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"league": league, "model": m, "n_spread_games": n_spread}
+            for m in models
+        ]
+    )
+
+
+def test_a_league_losing_most_of_its_lines_is_reported() -> None:
+    """Every upstream odds failure eventually looks like this from here."""
+    drops = spread_coverage_drops(_eval_rows("ncaafb", 184), _eval_rows("ncaafb", 40))
+    assert len(drops) == 1
+    assert "ncaafb" in drops[0] and "184" in drops[0] and "40" in drops[0]
+
+
+def test_coverage_growing_is_not_a_drop() -> None:
+    assert spread_coverage_drops(_eval_rows("ncaafb", 184), _eval_rows("ncaafb", 260)) == []
+
+
+def test_a_league_with_barely_any_lines_is_not_evidence() -> None:
+    """ncaafb sat at a handful of lines for a season; that is history, not a bug."""
+    assert spread_coverage_drops(_eval_rows("nfl", 4), _eval_rows("nfl", 0)) == []
+
+
+def test_a_league_left_out_of_this_run_is_not_a_drop() -> None:
+    """`--league` scopes an evaluate, and an unscored league has no number."""
+    assert spread_coverage_drops(_eval_rows("ncaafb", 184), _eval_rows("nfl", 90)) == []
+
+
+def test_the_best_covered_model_answers_for_the_league() -> None:
+    """
+    Models disagree when one replays a shorter history; the question is
+    whether the odds database lost games, not which model saw fewest.
+    """
+    previous = pd.DataFrame(
+        [
+            {"league": "ncaafb", "model": "a", "n_spread_games": 184},
+            {"league": "ncaafb", "model": "b", "n_spread_games": 20},
+        ]
+    )
+    assert spread_coverage_drops(previous, _eval_rows("ncaafb", 180)) == []
+
+
+def test_an_empty_table_has_nothing_to_compare() -> None:
+    assert spread_coverage_drops(pd.DataFrame([]), _eval_rows("ncaafb", 1)) == []
+    assert spread_coverage_drops(_eval_rows("ncaafb", 184), pd.DataFrame([])) == []

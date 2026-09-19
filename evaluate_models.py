@@ -9,7 +9,13 @@ from typing import Iterator
 import pandas as pd
 
 from cassandra.constants import CASSANDRA_HOME
-from cassandra.model_eval import DEFAULT_FITTERS, get_predictions, score_predictions
+from cassandra.model_eval import (
+    DEFAULT_FITTERS,
+    SpreadCoverageDropped,
+    get_predictions,
+    score_predictions,
+    spread_coverage_drops,
+)
 
 # Hand-written baselines are checked in next to the optimization configs they
 # sit alongside; everything optimize.py produces lands under CASSANDRA_HOME.
@@ -82,9 +88,23 @@ async def _main(leagues: Collection[str] | None = None):
 
     df = pd.DataFrame(all_evaluations)
 
+    # The previous table, before this run's lands next to it.
+    earlier = sorted(_METRICS_DIR.glob("*.csv"))
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     _METRICS_DIR.mkdir(exist_ok=True, parents=True)
     df.to_csv(_METRICS_DIR / f"{timestamp}.csv", index=False)
+
+    # Written first, then checked. The table is worth keeping either way --
+    # it is the evidence for what went wrong -- and raising before the write
+    # would throw away the run that noticed.
+    if earlier:
+        drops = spread_coverage_drops(pd.read_csv(earlier[-1]), df)
+        if drops:
+            raise SpreadCoverageDropped(
+                "the odds database lost most of a league's lines since "
+                f"{earlier[-1].name}: " + "; ".join(drops)
+            )
 
 
 if __name__ == "__main__":
