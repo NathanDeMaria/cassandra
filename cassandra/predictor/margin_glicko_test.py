@@ -281,3 +281,19 @@ def test_a_gaussian_round_trips_its_absent_nu_and_scale(game: GameFactory) -> No
     assert restored.predict_game(game("A", "B")).team1_win_prob == pytest.approx(
         predictor.predict_game(game("A", "B")).team1_win_prob
     )
+
+
+def test_the_margin_model_takes_the_tiered_home_edge(game: GameFactory) -> None:
+    """`home_advantage_slope` reaches the margin step and the prediction alike."""
+    flat = _predictor(home_advantage=40, anchors={"A": 1900})
+    sloped = _predictor(home_advantage=40, home_advantage_slope=40, anchors={"A": 1900})
+    assert sloped.home_edge(game("A", "B")) == pytest.approx(80)
+    # Before the game, more edge is a likelier home win...
+    assert (
+        sloped.predict_game(game("A", "B")).team1_win_prob
+        > flat.predict_game(game("A", "B")).team1_win_prob
+    )
+    # ...and more was expected of A at home, so the same result earns it less.
+    for predictor in (flat, sloped):
+        predictor.update_game(game("A", "B", 21, 14))
+    assert sloped.get_rating("A").rating < flat.get_rating("A").rating
