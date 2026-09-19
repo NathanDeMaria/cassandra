@@ -47,7 +47,7 @@ from cassandra.constants import CASSANDRA_HOME
 from cassandra.model_eval import DEFAULT_FITTERS, score_predictions
 from cassandra.odds import OddsDatabase
 from cassandra.predictor import load_predictor
-from cassandra.save_predictions import join_with_odds, read_all_seasons
+from cassandra.save_predictions import join_with_odds, read_rated_seasons
 
 # The same two directories `evaluate_models` and `diagnose` read, and the
 # same precedence: a freshly optimized model wins over the checked-in
@@ -148,7 +148,7 @@ async def _main(league: str, model: str, season: int | None) -> None:
     print(f"{league}/{model} from {config}")
     print(f"loading odds and {league} seasons from s3://{bucket}")
     odds_db = await OddsDatabase.from_s3(bucket)
-    seasons = [s async for s in read_all_seasons(league, bucket)]
+    seasons = await read_rated_seasons(league, bucket)
     predictor = load_predictor(config)
     predictions = pd.DataFrame(
         [

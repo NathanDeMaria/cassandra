@@ -28,7 +28,7 @@ from cassandra.save_predictions import (
     OddsDatabase,
     Season,
     join_with_odds,
-    read_all_seasons,
+    read_rated_seasons,
 )
 
 
@@ -193,7 +193,7 @@ async def _run_optimization(config_file: str) -> None:
     league = config_model.league
 
     aws_config = Config.init_from_file()
-    seasons = [s async for s in read_all_seasons(league, aws_config.bucket)]
+    seasons = await read_rated_seasons(league, aws_config.bucket)
     if not seasons:
         # Otherwise every probe scores an empty set of games and the search
         # dies inside the objective, well away from the actual problem.

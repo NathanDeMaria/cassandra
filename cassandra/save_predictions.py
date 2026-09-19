@@ -12,6 +12,7 @@ from call_it_what_you_want import TeamNamer
 from endgame.types import Season, iter_weeks
 from endgame_aws import Config, list_all_keys, read_seasons
 
+from .exhibitions import without_exhibitions
 from .odds import Odds, OddsDatabase
 from .predictor import GameResult, Predictor, RatingsUnsupported
 from .serving.history import WeekObserver, WeekSnapshot, tally
@@ -88,9 +89,7 @@ def generate_predictions(
     # placeholders, which would read as "this model rates everyone the
     # same" rather than "this model rates nobody".
     observer = (
-        week_observer
-        if week_observer is not None and _rates_teams(predictor)
-        else None
+        week_observer if week_observer is not None and _rates_teams(predictor) else None
     )
     # Chronological order matters here: update_game feeds each result back
     # into the predictor, so replaying games out of order trains it on
@@ -164,9 +163,7 @@ def generate_predictions(
             # played, and the anchors -- fit from played seasons -- have
             # nothing for it; `anchor_in` holds the last one it does have.
             following = (
-                ordered[index + 1].year
-                if index + 1 < len(ordered)
-                else season.year + 1
+                ordered[index + 1].year if index + 1 < len(ordered) else season.year + 1
             )
             predictor.pass_season(following)
     if post_callbacks:
@@ -254,6 +251,20 @@ async def build_predictions_df(
     return pd.DataFrame([asdict(result) async for result in prediction_results])
 
 
+async def read_rated_seasons(league: str, bucket: str) -> list[Season]:
+    """Every stored season of `league`, less the games nobody should rate.
+
+    `read_all_seasons` is the pickle as stored; this is what a rating replay
+    should see -- see `cassandra.exhibitions` for what comes out and why.
+    The one read every rating path shares (`read_league`, `optimize.py`,
+    `publish.py`, `betting.py`), so a game is an exhibition in all of them
+    or none. The index builders keep reading the raw seasons: they key on
+    game ids and lose nothing by knowing about a game nobody rated.
+    """
+    seasons = [season async for season in read_all_seasons(league, bucket)]
+    return without_exhibitions(seasons, league)
+
+
 async def read_league(league: str) -> tuple[list[Season], OddsDatabase]:
     """The seasons and the odds a league's replay runs over, read once.
 
@@ -265,7 +276,7 @@ async def read_league(league: str) -> tuple[list[Season], OddsDatabase]:
     a second copy of it.
     """
     config = Config.init_from_file()
-    seasons = [season async for season in read_all_seasons(league, config.bucket)]
+    seasons = await read_rated_seasons(league, config.bucket)
     odds_db = await OddsDatabase.from_s3(config.bucket)
     return seasons, odds_db
 
