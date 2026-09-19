@@ -44,3 +44,4 @@ from .types import (
     Unit,
     Units,
 )
+from .vector_glicko import VectorMarginGlickoPredictor
