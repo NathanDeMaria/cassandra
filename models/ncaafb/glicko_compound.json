@@ -59,7 +59,8 @@
         "travel_advantage": 0,
         "prediction_scale": 198.88645254189763,
         "offense_season_rd_increase": 0,
-        "passes": 2
+        "passes": 2,
+        "unanchored_rating": 1500.0
     },
     "fixed_from": "glicko_full",
     "n_iter": 1000
