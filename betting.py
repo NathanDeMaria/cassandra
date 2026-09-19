@@ -11,9 +11,10 @@ for what each number means and why it's there; the short version:
   read after both teams' previous game, and compared with the *close*. A
   model that's ahead of the market gets positive CLV on average; the ATS
   record at the entry line is what betting it would actually have done.
-  `close lead` says how far before kickoff the close was read -- a game
-  that kicks off after the last hourly pull "closes" at that morning's
-  read, and its CLV is measured against a line hours stale.
+  `close lead` says how far before kickoff the close was read -- an hour
+  at best, and a game the hourly pulls missed (every 2026 Saturday before
+  09-19 came back cut to 25 events) "closes" at that morning's read, so
+  its CLV is measured against a line hours stale.
 
 - **Moneyline.** The model's win probability against DraftKings' no-vig
   probability: whose Brier is lower, and what the simple strategies on the
