@@ -14,12 +14,19 @@ python = "^3.14"
 # Pinned to the rev `endgame_aws` resolves it at, so the two never disagree
 # about what a Game is. Bump them together.
 #
-# This rev is the one that adds ncaawvb -- women's college volleyball,
-# `models/ncaawvb/`. It is a `DailyLeague`, so a season pickle arrives as a
-# single Week and `iter_weeks` rebuilds ~17 calendar weeks out of the game
-# dates; nothing here had to change for that, but it is the reason the raw
-# `.weeks` count looks wrong if you go looking.
-endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "b15f504fbef74459aaf3aea0526f3a6dc11a4f9e", subdirectory = "py-endgame"}
+# Still carries ncaawvb -- women's college volleyball, `models/ncaawvb/`. It
+# is a `DailyLeague`, so a season pickle arrives as a single Week and
+# `iter_weeks` rebuilds ~17 calendar weeks out of the game dates; nothing
+# here had to change for that, but it is the reason the raw `.weeks` count
+# looks wrong if you go looking.
+#
+# Moved forward for the odds fetch, which cassandra never calls -- it reads
+# the snapshots out of the bucket rather than asking ESPN. It is bumped
+# anyway because the rule above says so: `endgame_aws` resolves `endgame` at
+# this rev now, and the two disagreeing about what a Game is would be a much
+# worse problem than a pin nobody needed. EndGame #85 and #86; the fix is
+# why the odds database stops being three-quarters empty.
+endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "9ec6c0f43018f43b5eb037ad8856aefaff6bd93c", subdirectory = "py-endgame"}
 # Team knowledge: which names are the same team, and what division and
 # conference each played in. Pure python apart from its extras, so it costs a
 # serving install one dependency it already has.
@@ -83,11 +90,19 @@ bayesian-optimization = "^3.2.1"
 # `lucky-ones` pins below about `PLAY_SCHEMA`, rather than the two packages
 # that read that layer each having their own idea of it.
 #
-# Moved forward to pick up ncaawvb. `PLAY_SCHEMA` is untouched between the
-# two revs, so that agreement still holds; what did change on the way is the
-# write side (a yardline clamp now rejects a negative start, not just a
-# zero) and the odds fetch, neither of which cassandra does.
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "3347c8202f253f2b450babfea175e3540125b8f9", subdirectory = "py-endgame-aws"}
+# Moved forward for the odds pull. `PLAY_SCHEMA` is byte-identical between
+# this rev and the last one, so the agreement that matters still holds; what
+# did change on the way is the write side (a blank start yardline is filled
+# from the previous play's end) and the odds fetch, neither of which
+# cassandra does.
+#
+# What cassandra does get is a bucket that stops being quietly short. The
+# `today` pull was asking ESPN for a page of 1000 and being handed its
+# default of 25, so an FBS Saturday arrived cut from 80 priced games to 25 --
+# which is most of why `market_gap` has 184 lined games to work with across
+# 75,111. EndGame #85 fixes the limit and fails the pull on the shapes that
+# would hide the next one; #86 is the pin that makes the fix reach the job.
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "78f76618b2b81cebb4a161775e057fb97d691d18", subdirectory = "py-endgame-aws"}
 # In-game win probability, and the `game_control` number cassandra turns into
 # an alternate score line. The fits ship inside the package, so pinning the
 # rev pins the model: which win probability curve a rating was built against
