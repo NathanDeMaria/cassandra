@@ -15,11 +15,13 @@ import pytest
 from .conftest import GameFactory
 from .epa import EpaIndex
 from .game_control import GameControlIndex
+from .glicko import _Rating
 from .margin_glicko import MarginGlickoPredictor
 from .types import GameControl, GameEpa
 from .vector_glicko import (
     MIN_COVARIANCE_GAMES,
     VectorMarginGlickoPredictor,
+    _Readings,
 )
 
 _KNOBS: dict[str, Any] = dict(
@@ -145,6 +147,39 @@ def test_a_measured_reading_that_agrees_pulls_harder_and_one_that_doesnt_pulls_l
     # Readings that say the game was even: the scoreboard flattered them.
     disagree = move(0.5, 0.0)
     assert agree > margin_move > disagree > 0
+
+
+def test_the_step_is_the_solve_it_stands_in_for(game: GameFactory) -> None:
+    """The Sherman-Morrison form agrees with `S^-1 1` solved outright, every subset."""
+    predictor, games = _measured()
+    _play(predictor, games, game)
+    r, b = predictor.noise_covariance(), predictor.intercepts()
+    c = predictor.points_per_rating
+    my, opp = _Rating(1530.0, 80.0), _Rating(1490.0, 120.0)
+    for readings in (
+        _Readings(20.0, 10.0, 24.0),
+        _Readings(20.0, 10.0, None),
+        _Readings(20.0, None, 24.0),
+        _Readings(20.0, None, None),
+    ):
+        present = [i for i, v in enumerate(readings) if v is not None]
+        expected = c * (my.rating + 2.0 - opp.rating)
+        v = np.array([-(readings[i] - b[i]) - expected for i in present])
+        ones = np.ones(len(present))
+        s = (
+            c**2
+            * (my.rating_deviation**2 + opp.rating_deviation**2)
+            * np.outer(ones, ones)
+            + r[np.ix_(present, present)]
+        )
+        weights = np.linalg.solve(s, ones)
+        gain = my.rating_deviation**2 * c * weights
+        shrink = my.rating_deviation**2 * c**2 * float(ones @ weights)
+        stepped = predictor._vector_step(my, opp, readings, 2.0, -1)
+        assert stepped.rating == pytest.approx(my.rating + float(gain @ v))
+        assert stepped.rating_deviation == pytest.approx(
+            math.sqrt(my.rating_deviation**2 * (1 - shrink))
+        )
 
 
 def test_the_measurement_round_trips(game: GameFactory) -> None:

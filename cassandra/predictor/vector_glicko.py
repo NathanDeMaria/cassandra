@@ -23,7 +23,10 @@ the multivariate one:
     r += K v                                  v = y - mu - b
     d^2 *= 1 - d^2 c^2 1^T S^-1 1
 
-With only the margin present that is the parent's scalar step exactly. The
+With only the margin present that is the parent's scalar step exactly. `S`
+depends on the game only through the scalar `c^2 (d^2 + d'^2)`, so by
+Sherman-Morrison `S^-1 1 = R^-1 1 / (1 + c^2 (d^2 + d'^2) 1^T R^-1 1)`: `R`
+is solved once each time it changes and the step itself is arithmetic. The
 correlation is what makes this the right way to combine them: three readings
 whose errors move together are worth less than three independent ones, and
 a blend that averaged them with searched weights had to learn that or
@@ -91,7 +94,8 @@ sibling lets the search say whether EPA at some other rate is any better.
 """
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from itertools import combinations
 from typing import Any, NamedTuple, Self
 
 import numpy as np
@@ -147,6 +151,18 @@ class _Readings(NamedTuple):
     margin: float
     control: float | None
     epa: float | None
+
+
+class _Solved(NamedTuple):
+    """`R^-1 1` over one subset of the readings, which is all the step needs of `R`.
+
+    `kept` is the subset actually read: a present reading whose noise is not
+    yet known is dropped, and contributes nothing.
+    """
+
+    kept: tuple[int, ...]
+    weights: tuple[float, ...]  # R^-1 1
+    total: float  # 1^T R^-1 1
 
 
 class ObservationStats(NamedTuple):
@@ -253,6 +269,10 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
         # week, in step with the parent's `_weeks`.
         self._week_ids: list[list[str]] = []
         self._this_week_ids: list[str] = []
+        # `R` and the intercepts change only when a game is noted, and every
+        # step in between reads the same solve; `_note` drops both.
+        self._intercepts: tuple[float, ...] | None = None
+        self._solved: dict[tuple[int, ...], _Solved] | None = None
 
     @property
     def control_scale(self) -> float | None:
@@ -290,12 +310,17 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
 
     def intercepts(self) -> np.ndarray:
         """Mean innovation of each reading; 0 for the margin, which the edge owns."""
-        n, total, _, _ = self._stats
-        if not self._covariance_known():
-            return np.zeros(3)
-        means = np.array(total) / n
-        means[_MARGIN] = 0.0
-        return means
+        return np.array(self._intercepts_now())
+
+    def _intercepts_now(self) -> tuple[float, ...]:
+        if self._intercepts is None:
+            n, total, _, _ = self._stats
+            self._intercepts = (
+                (0.0, 0.0, 0.0)
+                if not self._covariance_known()
+                else (0.0, *(t / n for t in total[1:]))
+            )
+        return self._intercepts
 
     def noise_covariance(self) -> np.ndarray:
         """`R`: the readings' noise about the gap, net of the ratings' own uncertainty.
@@ -353,8 +378,31 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
             ],
             rv + rating_variance,
         )
+        self._intercepts = None
+        self._solved = None
 
     # -- the step -------------------------------------------------------------
+
+    def _present(self) -> Iterator[tuple[int, ...]]:
+        """Every set of readings a game can present: the margin, plus any of the rest."""
+        others = [i for i in self._enabled() if i != _MARGIN]
+        for k in range(len(others) + 1):
+            for chosen in combinations(others, k):
+                yield (_MARGIN, *chosen)
+
+    def _solved_now(self) -> dict[tuple[int, ...], _Solved]:
+        """`R^-1 1` for every set of readings a game can present, at the current `R`."""
+        if self._solved is None:
+            r = self.noise_covariance()
+            self._solved = {}
+            for present in self._present():
+                kept = tuple(i for i in present if math.isfinite(r[i, i]))
+                block = r[list(kept), :][:, list(kept)]
+                weights = np.linalg.solve(block, np.ones(len(kept)))
+                self._solved[present] = _Solved(
+                    kept, tuple(float(w) for w in weights), float(weights.sum())
+                )
+        return self._solved
 
     def _vector_step(
         self,
@@ -367,32 +415,21 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
         """The multivariate Kalman step; `sign` flips the readings to `my`'s side."""
         c = self._points_per_rating
         expected = c * (my.rating + home_adjustment - opp.rating)
-        readings_present = [
-            (i, v)
-            for i, v in enumerate((readings.margin, readings.control, readings.epa))
-            if v is not None
-        ]
-        present = [i for i, _ in readings_present]
-        intercepts = self.intercepts()
-        innovation = np.array(
-            [sign * (v - intercepts[i]) - expected for i, v in readings_present]
+        intercepts = self._intercepts_now()
+        present = {i: v for i, v in enumerate(readings) if v is not None}
+        solved = self._solved_now()[tuple(present)]
+        # 1^T R^-1 v: the innovations, weighted by what each reading is worth.
+        innovation = sum(
+            w * (sign * (present[i] - intercepts[i]) - expected)
+            for i, w in zip(solved.kept, solved.weights)
         )
-        rating_variance = c**2 * (my.rating_deviation**2 + opp.rating_deviation**2)
-        r = self.noise_covariance()[np.ix_(present, present)]
-        if not np.all(np.isfinite(r)):
-            # A reading whose noise is not yet known contributes nothing: drop it.
-            keep = [k for k, i in enumerate(present) if np.isfinite(r[k, k])]
-            present = [present[k] for k in keep]
-            innovation = innovation[keep]
-            r = r[np.ix_(keep, keep)]
-        ones = np.ones(len(present))
-        s = rating_variance * np.outer(ones, ones) + r
-        weights = np.linalg.solve(s, ones)  # S^-1 1
-        gain = my.rating_deviation**2 * c * weights  # K, in rating units per point
-        shrink = my.rating_deviation**2 * c**2 * float(ones @ weights)
+        variance = my.rating_deviation**2
+        rating_variance = c**2 * (variance + opp.rating_deviation**2)
+        # K = d^2 c 1^T S^-1 = d^2 c R^-1 1 / (1 + c^2 (d^2 + d'^2) 1^T R^-1 1)
+        scale = variance * c / (1 + rating_variance * solved.total)
         return _Rating(
-            my.rating + float(gain @ innovation),
-            math.sqrt(my.rating_deviation**2 * max(0.0, 1 - shrink)),
+            my.rating + scale * innovation,
+            math.sqrt(variance * max(0.0, 1 - scale * c * solved.total)),
         )
 
     def update_game(self, game: Game) -> Prediction:
