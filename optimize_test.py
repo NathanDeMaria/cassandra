@@ -262,3 +262,30 @@ def test_seeds__a_knob_the_previous_fit_predates_takes_the_constructor_default()
         {"sigmoid_scale": 10.0, "hfa_pts": pytest.approx(3.0), "passes": 1}
     ]
     assert lines[0].startswith("[optimize] seeded with the previous fit")
+
+
+def test_seeds__a_points_knob_the_previous_fit_predates_is_the_default_in_points():
+    """The 2026-09-20 run: ncaafb's glicko_full grew `hfa_slope_pts` and lost its seed.
+
+    The fit was searched in this frame, so its knobs are handed over as they
+    were; the one it never had is `home_advantage_slope`'s default, which is
+    a constructor argument and has to be read into the box the same way a
+    rating-unit fit is.
+    """
+    knobs = {
+        "sigmoid_scale": 10.0,
+        "hfa_pts": 3.0,
+        "rd_total": 100.0,
+        "rd_offseason_share": 0.25,
+    }
+    previous = _fit(
+        search=SearchRecord(frame=frame.POINTS, weeks_per_season=22, knobs=knobs)
+    )
+    config = _points_config(
+        parameters={**_points_config().parameters, "hfa_slope_pts": (0, 4)}
+    )
+
+    seeds, lines = optimize._seeds(config, previous, weeks_per_season=22)
+
+    assert seeds == [{**knobs, "hfa_slope_pts": 0.0}]
+    assert lines[0].startswith("[optimize] seeded with the previous fit")
