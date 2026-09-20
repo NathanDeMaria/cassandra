@@ -49,7 +49,7 @@
         "travel_advantage": 0,
         "season_regression": 0
     },
-    "n_iter": 1000,
+    "n_iter": 600,
     "seeds": [
         {
             "obs_sd": 13.0,
