@@ -25,6 +25,7 @@ from cassandra.conftest import (
 )
 from cassandra.epa_build import (
     CLIP,
+    SINCE,
     WEIGHT_POWER,
     build,
     current_fit,
@@ -147,6 +148,7 @@ def test_the_fit_names_both_models() -> None:
     assert fit.clip == CLIP
     assert fit.reading == "unweighted"
     assert fit.weight_power == WEIGHT_POWER
+    assert fit.since == SINCE
 
 
 def test_an_unchanged_fit_only_re_sweeps_the_newest_season() -> None:
@@ -173,13 +175,15 @@ def test_an_unchanged_fit_only_re_sweeps_the_newest_season() -> None:
         {"clip": 5.0},
         {"reading": "weighted"},
         {"weight_power": 1.0},
+        {"since": 2006},
     ],
 )
 def test_any_field_of_the_fit_moving_rebuilds_the_league(changed: dict) -> None:
     """Merging two models' numbers into one index is unreproducible.
 
-    Every field, because each of the five moves the numbers on its own and
-    none of them is visible in the others.
+    Every field, because each of them moves the numbers on its own -- or,
+    for `since`, which games there are numbers for -- and none of them is
+    visible in the others.
     """
     source = _Source({(2024, 1): _plays("old", season=2024), (2025, 1): _plays("new")})
     seasons = [_season(2024, "old"), _season(2025, "new")]
@@ -205,6 +209,28 @@ def test_rebuild_re_sweeps_a_league_that_is_already_current() -> None:
 def test_building_with_no_seasons_says_so() -> None:
     with pytest.raises(ValueError, match="nothing to sweep"):
         asyncio.run(build(_LEAGUE, [], _Source({})))
+
+
+def test_seasons_before_the_floor_are_not_swept() -> None:
+    """The index starts at `SINCE`, whatever the cache reaches back to.
+
+    Before the floor the feed prices a noisier copy of the margin, and a
+    league whose seasons all fall before it has nothing to build an index
+    from rather than an index of the wrong seasons.
+    """
+    early = SINCE - 1
+    source = _Source(
+        {(early, 1): _plays("early", season=early), (2025, 1): _plays("new")}
+    )
+
+    asyncio.run(build(_LEAGUE, [_season(early, "early"), _season(2025, "new")], source))
+
+    assert source.loaded == [(2025, 1)]
+    stored = read_epa_file(_LEAGUE)
+    assert stored is not None and set(stored.games) == {"new"}
+
+    with pytest.raises(ValueError, match=f"since {SINCE}"):
+        asyncio.run(build(_LEAGUE, [_season(early, "early")], source))
 
 
 def test_the_written_index_is_what_a_predictor_reads_back() -> None:

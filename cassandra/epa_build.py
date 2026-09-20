@@ -25,8 +25,9 @@ from collections.abc import Mapping, Sequence
 
 from endgame.types import Season
 from lucky_ones import MODELS, GamePlays
-from lucky_ones.epa import DEFAULT_CLIP, DEFAULT_WEIGHT_POWER
+from lucky_ones.epa import DEFAULT_CLIP
 from lucky_ones.plays import PlaySource
+from lucky_ones.points import FIRST_LEGIBLE_SEASON
 
 from cassandra.pbp_sweep import (
     SweepStats,
@@ -52,10 +53,31 @@ from cassandra.predictor.types import GameEpa
 CLIP = DEFAULT_CLIP
 
 # The exponent on the win-probability weighting behind the weighted pair.
-# The package default, and passed explicitly for the reason the clip is:
-# the header records it, so a change to the default upstream is found as a
-# stale index rather than merged into one.
-WEIGHT_POWER = DEFAULT_WEIGHT_POWER
+# Passed explicitly for the reason the clip is -- the header records it, so
+# a change upstream is found as a stale index rather than merged into one --
+# and named here rather than taken from the package because the two have
+# disagreed. `lucky_ones` shipped 2.0, measured on how well a whole-game
+# number describes the game while it was in doubt; what cassandra does with
+# the number is rate teams, and on that question every step past 0.5 costs
+# sample for nothing (walk-forward R^2 on the next margin, ncaafb 2014-2025:
+# 0.336 unweighted, 0.334 at 0.5, 0.321 at 1, 0.294 at 2). A decided snap
+# carries about seven tenths of a live one's signal, and a quarter of college
+# snaps are decided. 0.5 is where the weight a decided snap gets matches
+# what it is worth. The package default moves to the same number in its
+# next release; this is pinned so the header says what the index holds
+# either way.
+WEIGHT_POWER = 0.5
+
+# The first season the index covers. The feed before it is legible now --
+# see `lucky_ones.points.FIRST_LEGIBLE_SEASON` for what changed -- but the
+# expected points fit starts here, and measured on what it recovers, the
+# seasons before it read as a noisier copy of the margin that adds nothing
+# to a rating built on the scoreboard (walk-forward, ncaafb 2006-2013: R^2
+# 0.4086 with EPA against 0.4088 without, where 2014-2025 gains 0.004). A
+# third of the index was those seasons, and a search over them lands at a
+# whisper of the weight the later ones earn. Recorded in `EpaFit.since` so
+# an index built to a different floor is found stale rather than merged.
+SINCE = FIRST_LEGIBLE_SEASON
 
 
 def current_fit(league: str) -> EpaFit:
@@ -73,6 +95,7 @@ def current_fit(league: str) -> EpaFit:
         clip=CLIP,
         reading=EPA_READING,
         weight_power=WEIGHT_POWER,
+        since=SINCE,
     )
 
 
@@ -147,6 +170,12 @@ async def build(
     """
     if not seasons:
         raise ValueError(f"No seasons for {league}; nothing to sweep")
+    # Applied before anything else so "the most recent season" and "every
+    # season" both mean the seasons the index covers, and a league whose
+    # cache reaches back further than the floor doesn't sweep the rest.
+    seasons = [season for season in seasons if season.year >= SINCE]
+    if not seasons:
+        raise ValueError(f"No seasons for {league} since {SINCE}; nothing to sweep")
 
     fit = current_fit(league)
     stored = read_epa_file(league)

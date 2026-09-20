@@ -116,6 +116,12 @@ class EpaFit(BaseModel):
     what made every file written before it correctly stale: see
     `read_epa_file`.
 
+    `since` is the first season the index covers. A choice made here, not
+    a fact about the feed: `cassandra.epa_build` says why the seasons
+    before it are left out, and an index built to a different floor holds
+    a different set of games, which is the definition of one that has to
+    be rebuilt rather than topped up.
+
     Together these are what makes the sweep idempotent: a stage that finds
     its own fit already stored has nothing to do, and one that finds a
     different one has to rebuild rather than merge into numbers from another
@@ -134,6 +140,7 @@ class EpaFit(BaseModel):
     clip: float
     reading: str
     weight_power: float
+    since: int
 
 
 class EpaFile(BaseModel):
