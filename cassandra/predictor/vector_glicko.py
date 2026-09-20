@@ -199,6 +199,7 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         observation_stats: Sequence[Any] | None = None,
         game_control: GameControlIndex | None = None,
         game_epa: EpaIndex | None = None,
@@ -223,6 +224,7 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
             sources=sources,
             ratings=ratings,
             anchors=anchors,
+            unanchored_seen=unanchored_seen,
         )
         self._control_scale = (
             None
