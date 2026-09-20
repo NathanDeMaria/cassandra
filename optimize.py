@@ -134,15 +134,22 @@ def _seeds(
             # A knob the previous fit never had is one the constructor
             # defaulted for it -- `passes` was 1 for every fit before it
             # existed -- so that fit is still a point in the new box, at the
-            # default. A name with no default is left out, and `misplaced`
-            # says so.
-            defaults = _constructor_defaults(config.predictor_class)
+            # default. The defaults are constructor arguments, so they go
+            # under the fit's and the whole is read into this frame: a new
+            # `hfa_slope_pts` is `home_advantage_slope`'s 0, priced at the
+            # fit's own `sigmoid_scale`. A name with no default is left out,
+            # and `misplaced` says so.
+            defaulted = frames.to_knobs(
+                config.frame,
+                {**_constructor_defaults(config.predictor_class), **previous.params},
+                weeks_per_season,
+            )
             offer(
                 "the previous fit",
                 {
-                    name: knobs[name] if name in knobs else defaults[name]
+                    name: knobs[name] if name in knobs else defaulted[name]
                     for name in config.parameters
-                    if name in knobs or name in defaults
+                    if name in knobs or name in defaulted
                 },
             )
     for index, seed in enumerate(config.seeds, start=1):
