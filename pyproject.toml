@@ -132,6 +132,19 @@ endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "78f7
 # writes will not be identical to the ones before it.
 # Nothing scheduled reads that index, so nothing published moves with it.
 #
+# `6eba778` reads the pre-2014 feed the way it was written. The old feed puts
+# a down of -1 on the try, so every extra point was priced as a first and
+# goal from the 3 that ended at nothing -- minus six, six times a game --
+# and about one score in six had its flag and its jump a row apart, or the
+# touchdown row missing with its seven on the try. Both leagues' EPA before
+# 2014 sat 0.12 points per play below the seasons after, with a third less
+# spread, and `lucky_ones.points.FIRST_LEGIBLE_SEASON` is the package's own
+# name for the boundary. The read is fixed; the fits shipped at this rev are
+# still the ones trained through the old read, and the retrain is the next
+# pin. The `EpaFit` and `ControlFit` headers key on the commit, so both
+# indexes rebuild from scratch on the next sweep -- see `cassandra.epa_build`
+# for where the EPA one now starts.
+#
 # `data` is pyarrow, for `lucky_ones.arrow` -- the adapter from endgame's
 # stored parquet, and the only part of the package cassandra imports that
 # needs it. Declared rather than left to endgame_aws's pyarrow, so the import
@@ -142,7 +155,7 @@ endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "78f7
 # scikit-learn that produces a win probability fit, and cassandra produces
 # none -- it reads the one that ships inside the package. The scikit-learn
 # above is cassandra's own, for the prob-to-margin calibration.
-lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "87073d1f9e8d0a72c36a98efb66f9ca7ee3d590b", extras = ["data"]}
+lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "6eba778418a489168308491adc50b8d4b616fc71", extras = ["data"]}
 
 
 [tool.poetry.group.dev.dependencies]

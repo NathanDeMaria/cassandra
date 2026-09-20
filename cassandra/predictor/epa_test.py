@@ -19,7 +19,8 @@ _FIT = EpaFit(
     ep_run_id="20260904-024017",
     clip=3.0,
     reading="unweighted",
-    weight_power=2.0,
+    weight_power=0.5,
+    since=2014,
 )
 
 
