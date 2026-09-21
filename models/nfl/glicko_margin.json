@@ -36,7 +36,7 @@
         ],
         "passes": [
             1,
-            3,
+            5,
             "int"
         ]
     },
@@ -45,7 +45,7 @@
         "travel_advantage": 0,
         "season_regression": 0.1151108598194098
     },
-    "n_iter": 680,
+    "n_iter": 1360,
     "seeds": [
         {
             "obs_sd": 13.0,
