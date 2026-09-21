@@ -89,8 +89,13 @@ special-teams points that difference is made of are not information about
 the gap. That is the "second, slightly noisier copy of the final score"
 `glicko_blend` measured, arriving through a filter that knows what to do
 with a copy: ignore it, if it were told to. So EPA is off by default and the
-control reading is on; the configs search the control exchange rate and a
-sibling lets the search say whether EPA at some other rate is any better.
+control reading is on; the configs search the control exchange rate. A
+sibling config searched `epa_scale` too, in both leagues, and the batch's
+answer (runs 20260920-040935 and -165658) was the same twice: `obs_sd` on
+its floor, `epa_scale` and `control_scale` on their ceilings, the deviation
+increases at zero -- a search making EPA the scoreboard -- and the worst
+target in the Glicko family either way. That sibling is gone; the knob
+stays for anyone who wants to try again.
 """
 
 import math
