@@ -26,17 +26,14 @@
         "rd_total": [
             20,
             800
-        ],
-        "rd_offseason_share": [
-            0,
-            1
         ]
     },
     "fixed": {
         "scoring_method": "sigmoid",
         "travel_pts": 0,
         "initial_rd": 251.58686450937677,
-        "season_regression": 0.1151108598194098
+        "season_regression": 0.1151108598194098,
+        "rd_offseason_share": 0
     },
-    "n_iter": 1360
+    "n_iter": 2720
 }

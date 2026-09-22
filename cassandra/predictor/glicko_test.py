@@ -7,7 +7,7 @@ import pytest
 from ..scoring import DEFAULT_SIGMOID_SCALE
 from .base_predictor import MEAN_RATING
 from .conftest import GameFactory
-from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating
+from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating, glicko_step
 from .types import Rating
 
 # The rating half of Glicko's behavior is checked against every model in
@@ -452,3 +452,21 @@ def test_a_search_can_hand_over_a_whole_float() -> None:
 def test_a_fraction_of_a_pass_or_none_at_all_is_refused(passes: Any) -> None:
     with pytest.raises(ValueError, match="passes"):
         GlickoPredictor("test_league", passes=passes)
+
+
+def test_a_gap_too_wide_for_the_arithmetic_is_a_certainty() -> None:
+    """Run 20260921-050501: a corner probe put the expected score at exactly 0.
+
+    Plain floats overflow on `10 ** huge` and then divide by zero; the step
+    has to be the limit instead -- the deviation kept, the rating moved by
+    the whole surprise -- and finite.
+    """
+    my, opp = _Rating(1500.0, 100.0), _Rating(1500.0 + 1e9, 100.0)
+
+    upset = glicko_step(my, opp, 1.0, 0.0)
+    expected_loss = glicko_step(my, opp, 0.0, 0.0)
+
+    assert math.isfinite(upset.rating) and math.isfinite(upset.rating_deviation)
+    assert upset.rating_deviation == pytest.approx(my.rating_deviation)
+    assert upset.rating > my.rating
+    assert expected_loss.rating == pytest.approx(my.rating)
