@@ -20,16 +20,16 @@
         ]
     },
     "fixed": {
-        "home_advantage": 27.02174415553942,
+        "home_advantage": 31.978705303107024,
         "initial_rd": 251.58686450937677,
-        "weekly_rd_increase": 35.674093368781605,
+        "weekly_rd_increase": 36.64139523316492,
         "season_rd_increase": 0.0,
         "season_regression": 0.1151108598194098,
         "mov_scale": 20.99145683990124,
         "control_temp": 1.0,
         "epa_margin_scale": 10.0,
         "travel_advantage": 0,
-        "prediction_scale": 243.35798146411082,
+        "prediction_scale": 321.2017828541857,
         "epa_residual_beta": 0
     },
     "fixed_from": "glicko_full",

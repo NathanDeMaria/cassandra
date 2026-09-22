@@ -47,6 +47,12 @@ class _Played(NamedTuple):
 
 _Q = math.log(10) / 400
 
+#: The widest expected-score exponent `glicko_step` takes: `10**100` puts
+#: the expectation at 1e-100, which is 0 for every purpose but the division
+#: by `p (1 - p)` behind it. Run 20260921-050501 hit that division at 0 on
+#: one ncaafb probe with `sigmoid_scale` near its floor.
+_MAX_EXPONENT = 100.0
+
 #: How many unfiled teams' seasons the running estimate needs before it is
 #: used over the league mean. One team's rating is that team; a handful is a
 #: population.
@@ -566,11 +572,13 @@ def glicko_step(
     taken: positive for the side at home, negative for the side that isn't.
     """
     g_opp = _g(opp_rating.rating_deviation)
-    expected_score = 1 / (
-        1
-        + 10
-        ** (g_opp * (opp_rating.rating - (my_rating.rating + home_adjustment)) / 400)
-    )
+    exponent = g_opp * (opp_rating.rating - (my_rating.rating + home_adjustment)) / 400
+    # A gap the arithmetic can't hold -- a corner probe pricing a point at
+    # thousands of rating units -- is a certainty either way. Held just off 0
+    # and 1 so `d2` stays finite and the step is the limit it tends to: no
+    # change to the deviation, and the rating moved by the full surprise.
+    exponent = min(max(exponent, -_MAX_EXPONENT), _MAX_EXPONENT)
+    expected_score = 1 / (1 + 10**exponent)
     d2 = 1 / (_Q**2 * g_opp**2 * expected_score * (1 - expected_score))
     rd_inv_sq = 1 / my_rating.rating_deviation**2
     rd_inv_plus_d2 = rd_inv_sq + 1 / d2

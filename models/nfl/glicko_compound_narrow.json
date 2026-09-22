@@ -20,17 +20,17 @@
         ]
     },
     "fixed": {
-        "home_advantage": 27.02174415553942,
+        "home_advantage": 31.978705303107024,
         "initial_rd": 251.58686450937677,
-        "weekly_rd_increase": 35.674093368781605,
+        "weekly_rd_increase": 36.64139523316492,
         "season_rd_increase": 0.0,
         "season_regression": 0.1151108598194098,
         "scoring_method": "sigmoid",
-        "sigmoid_scale": 15.579992692896434,
+        "sigmoid_scale": 10.764602881863297,
         "travel_advantage": 0,
-        "rest_advantage": 23.799833609791815,
-        "qb_out_penalty": 40.650262142480265,
-        "prediction_scale": 243.35798146411082
+        "rest_advantage": 27.378048295365286,
+        "qb_out_penalty": 56.83618119380147,
+        "prediction_scale": 321.2017828541857
     },
     "fixed_from": "glicko_full",
     "n_iter": 300
