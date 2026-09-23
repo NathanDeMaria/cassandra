@@ -28,6 +28,7 @@ from .glicko_blend import BlendedGlickoPredictor
 from .margin_blend import BlendedMarginEloPredictor
 from .margin_elo import MarginEloPredictor
 from .margin_glicko import MarginGlickoPredictor
+from .unit_glicko import UnitMarginGlickoPredictor
 from .vector_glicko import VectorMarginGlickoPredictor
 
 # Spelled as a union of concrete classes rather than `type[Predictor]` so the
@@ -59,6 +60,7 @@ RATED_MODELS: list[RatedModel] = [
     MarginEloPredictor,
     MarginGlickoPredictor,
     VectorMarginGlickoPredictor,
+    UnitMarginGlickoPredictor,
     BlendedMarginEloPredictor,
 ]
 MODELS: list[Model] = [*RATED_MODELS, FlatPredictor]
