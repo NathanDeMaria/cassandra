@@ -35,6 +35,6 @@
         "margin_scale": 9,
         "epa_scale": 1.0
     },
-    "n_iter": 250,
+    "n_iter": 500,
     "objective": "margin_mae"
 }
