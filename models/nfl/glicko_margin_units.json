@@ -12,19 +12,19 @@
         ],
         "play_sd": [
             0.5,
-            2.5
+            4.5
         ],
         "offense_initial_sd": [
             0.05,
-            0.3
+            0.55
         ],
         "defense_initial_sd": [
             0.05,
-            0.3
+            0.55
         ],
         "offense_weekly_sd_increase": [
             0,
-            0.12
+            0.24
         ],
         "defense_weekly_sd_increase": [
             0,
@@ -32,7 +32,7 @@
         ],
         "offense_season_sd_increase": [
             0,
-            0.3
+            0.6
         ],
         "defense_season_sd_increase": [
             0,
