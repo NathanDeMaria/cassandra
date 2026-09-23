@@ -1,0 +1,81 @@
+{
+    "predictor_class": "UnitMarginGlickoPredictor",
+    "league": "nfl",
+    "parameters": {
+        "unit_weight": [
+            0,
+            1
+        ],
+        "points_per_epa": [
+            40,
+            120
+        ],
+        "play_sd": [
+            0.5,
+            2.5
+        ],
+        "offense_initial_sd": [
+            0.05,
+            0.3
+        ],
+        "defense_initial_sd": [
+            0.05,
+            0.3
+        ],
+        "offense_weekly_sd_increase": [
+            0,
+            0.12
+        ],
+        "defense_weekly_sd_increase": [
+            0,
+            0.12
+        ],
+        "offense_season_sd_increase": [
+            0,
+            0.3
+        ],
+        "defense_season_sd_increase": [
+            0,
+            0.3
+        ],
+        "offense_season_regression": [
+            0,
+            1
+        ],
+        "defense_season_regression": [
+            0,
+            1
+        ]
+    },
+    "fixed": {
+        "points_per_rating": 0.1208,
+        "travel_advantage": 0.0,
+        "season_regression": 0.1151108598194098,
+        "obs_sd": 27.991108960913543,
+        "prediction_scale": 192.44048015907717,
+        "initial_rd": 177.2743124577264,
+        "weekly_rd_increase": 10.755385849871807,
+        "season_rd_increase": 77.93933469327749,
+        "home_advantage": 21.68346272285814,
+        "rest_advantage": 17.696800945221295,
+        "qb_out_penalty": 32.205383928017966,
+        "passes": 2
+    },
+    "fixed_from": "glicko_margin",
+    "n_iter": 600,
+    "seeds": [
+        {
+            "unit_weight": 0.1,
+            "points_per_epa": 65.0,
+            "play_sd": 1.0,
+            "offense_initial_sd": 0.14,
+            "defense_initial_sd": 0.14,
+            "offense_weekly_sd_increase": 0.05,
+            "defense_weekly_sd_increase": 0.0,
+            "offense_season_sd_increase": 0.1,
+            "defense_season_sd_increase": 0.03,
+            "offense_season_regression": 0.8,
+            "defense_season_regression": 0.2
+        }
+    ]
+}
