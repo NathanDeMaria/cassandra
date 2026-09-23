@@ -11,26 +11,23 @@
             40
         ],
         "defense_scale": [
-            0.5,
+            0.05,
             40
-        ],
-        "parent_share": [
-            0,
-            1
         ]
     },
     "fixed": {
-        "home_advantage": 31.978705303107024,
+        "home_advantage": 35.61015671178783,
         "initial_rd": 251.58686450937677,
-        "weekly_rd_increase": 36.64139523316492,
+        "weekly_rd_increase": 36.8478453855494,
         "season_rd_increase": 0.0,
         "season_regression": 0.1151108598194098,
         "scoring_method": "sigmoid",
-        "sigmoid_scale": 10.764602881863297,
+        "sigmoid_scale": 10.330641527496203,
         "travel_advantage": 0,
-        "rest_advantage": 27.378048295365286,
-        "qb_out_penalty": 56.83618119380147,
-        "prediction_scale": 321.2017828541857
+        "rest_advantage": 25.002557558206135,
+        "qb_out_penalty": 57.53754692840133,
+        "prediction_scale": 341.4462483379318,
+        "parent_share": 0.0
     },
     "fixed_from": "glicko_full",
     "n_iter": 300

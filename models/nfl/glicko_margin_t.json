@@ -4,7 +4,7 @@
     "parameters": {
         "obs_sd": [
             6,
-            54
+            102
         ],
         "prediction_scale": [
             80,
@@ -40,7 +40,7 @@
             "int"
         ],
         "nu": [
-            2,
+            1,
             40
         ]
     },
