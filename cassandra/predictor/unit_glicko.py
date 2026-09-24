@@ -100,9 +100,12 @@ them.
   a better job. That is known before the season, so it is applied then.
 - `new_qb_shift` plus `qb_quality_shift` per 0.1 EPA per attempt of
   quarterback quality change, for a team whose week-one starter is new.
-  Applied after the team's first game, not at the rollover: who starts is
-  only in the plays once he has, and a model that read it any earlier
-  would be scoring itself with a depth chart it doesn't have.
+  Applied after the team's first game with play-by-play, not at the
+  rollover: who starts is only in the plays once he has, and a model that
+  read it any earlier would be scoring itself with a depth chart it doesn't
+  have. Not after an opener without plays, either -- the starter on file is
+  then the next game's, and shifting before that game would read its own
+  starter.
 
 A shift applied mid-season lands on the preseason ratings the smoother
 re-walks from as well, or the next pass would undo it. Replayed on ncaafb
@@ -111,11 +114,13 @@ games (and their first four games):
 
     shifts                                           FBS         games 1-4
     quarterback, after game 1, measured sizes     -0.00043      -0.00063
+    (the rows above waited for game 1 even without plays; the two below
+    wait for a game with plays, and read one game less ahead)
     quarterback, after game 1, 1.5x               -0.00057      -0.00077
       the same, before the season (a depth chart) -0.00074      -0.00116
     coach left for a job, -2.5                    -0.00013      -0.00023
-    quarterback 1.5x after game 1 + coach -2.5    -0.00068      -0.00095
-      and the offense's starting sd at 0.10       -0.00087      -0.00161
+    quarterback 1.5x after game 1 + coach -2.5    -0.00066      -0.00089
+      and the offense's starting sd at 0.10       -0.00085      -0.00153
 
 The last row is the clocks moving with the shifts: once the summer's change
 at quarterback is read directly, an offense no longer needs the blanket
@@ -505,10 +510,16 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # it; the units haven't moved in between, so it is this one.
         super().update_game(game)
         self._update_sides(game, edge)
-        for team in (game.home, game.away):
-            if team in self._qb_pending:
-                self._qb_pending.discard(team)
-                self._shift(team, self._quarterback_points(team))
+        # Only after a game with plays: who started is read off the plays, so
+        # an opener ESPN has none for -- a lower-division opponent, most often
+        # -- hasn't said who the starter is, and the week-one starter on file
+        # is whoever started the next game. Shifting after the opener would
+        # hand that game's prediction the name of its own starter.
+        if self._game_epa.get(game.game_id) is not None:
+            for team in (game.home, game.away):
+                if team in self._qb_pending:
+                    self._qb_pending.discard(team)
+                    self._shift(team, self._quarterback_points(team))
         return prediction
 
     def _quarterback_points(self, team: str) -> float:
