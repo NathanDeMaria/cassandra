@@ -8,7 +8,7 @@
         ],
         "new_qb_shift": [
             -4,
-            1
+            6
         ],
         "qb_quality_shift": [
             0,
@@ -47,7 +47,7 @@
         "defense_season_regression": 0.2
     },
     "fixed_from": "glicko_margin_units",
-    "n_iter": 200,
+    "n_iter": 400,
     "seeds": [
         {
             "coach_left_shift": -2.5,
