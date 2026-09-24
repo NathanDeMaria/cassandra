@@ -1,0 +1,62 @@
+{
+    "predictor_class": "UnitMarginGlickoPredictor",
+    "league": "nfl",
+    "parameters": {
+        "new_qb_shift": [
+            -4,
+            6
+        ],
+        "qb_quality_shift": [
+            0,
+            5
+        ],
+        "offense_initial_sd": [
+            0.1,
+            1.0
+        ],
+        "offense_season_regression": [
+            0,
+            1
+        ]
+    },
+    "fixed": {
+        "points_per_rating": 0.1208,
+        "travel_advantage": 0.0,
+        "season_regression": 0.1151108598194098,
+        "obs_sd": 27.991108960913543,
+        "prediction_scale": 192.44048015907717,
+        "initial_rd": 177.2743124577264,
+        "weekly_rd_increase": 10.755385849871807,
+        "season_rd_increase": 77.93933469327749,
+        "home_advantage": 21.68346272285814,
+        "rest_advantage": 17.696800945221295,
+        "qb_out_penalty": 32.205383928017966,
+        "passes": 2,
+        "unit_weight": 0.7570635024041564,
+        "points_per_epa": 106.18042373790921,
+        "play_sd": 2.9023772264023244,
+        "defense_initial_sd": 0.05,
+        "offense_weekly_sd_increase": 0.049116626323784135,
+        "defense_weekly_sd_increase": 0.0,
+        "offense_season_sd_increase": 0.5104498213431049,
+        "defense_season_sd_increase": 0.2910630048075891,
+        "defense_season_regression": 0.987107226856403,
+        "coach_left_shift": 0.0
+    },
+    "fixed_from": "glicko_margin_units",
+    "n_iter": 300,
+    "seeds": [
+        {
+            "new_qb_shift": -1.14,
+            "qb_quality_shift": 1.72,
+            "offense_initial_sd": 0.4,
+            "offense_season_regression": 0.0456
+        },
+        {
+            "new_qb_shift": 0.0,
+            "qb_quality_shift": 0.0,
+            "offense_initial_sd": 0.55,
+            "offense_season_regression": 0.045590937217253484
+        }
+    ]
+}

@@ -45,7 +45,7 @@ def test_nothing_to_compare_is_no_fact() -> None:
 
 
 def test_a_league_without_data_has_no_facts() -> None:
-    facts = OffseasonFacts.for_league("nfl")
+    facts = OffseasonFacts.for_league("mens")
     assert len(facts) == 0
     assert list(facts.seasons(2024)) == []
 
@@ -61,3 +61,22 @@ def test_the_league_facts_read_the_bundled_data() -> None:
     assert left.quality_change < -0.1
     assert facts.get("Oklahoma State Cowboys", None) is None
     assert facts.get("LSU Tigers", 2019) == pytest.approx((None, False, 0.0))
+
+
+def test_the_nfl_facts_are_keyed_by_nickname() -> None:
+    facts = OffseasonFacts.for_league("nfl")
+    assert facts.get("Las Vegas Raiders", 2022) is None
+    raiders = facts.get("raiders", 2022)
+    assert raiders is not None and raiders.coach_departure == "resigned"  # Gruden
+    dolphins = facts.get("dolphins", 2007)
+    assert dolphins is not None and dolphins.coach_departure == "left_for_job"
+
+
+def test_nfl_quarterback_changes() -> None:
+    facts = OffseasonFacts.for_league("nfl")
+    # Stafford for Goff, both ways.
+    rams, lions = facts.get("rams", 2021), facts.get("lions", 2021)
+    assert rams is not None and rams.new_quarterback and rams.quality_change > 0
+    assert lions is not None and lions.new_quarterback and lions.quality_change < 0
+    chiefs = facts.get("chiefs", 2025)
+    assert chiefs is not None and chiefs.new_quarterback is False

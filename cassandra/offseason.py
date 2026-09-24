@@ -24,20 +24,35 @@ Measured against `glicko_margin_units`' residuals, FBS 2015-2025, with
 starter is -0.76 points (t -1.8) and each 0.1 EPA per attempt of quality
 change +1.14 (t 4.3); over the season, -0.43 and +0.63 (t 3.9). A coach who
 left for a better job is -2.5 early and -2.3 over the season (t -3.7); a
-fired one is nothing (+0.1). Coordinator changes, measured the same way,
+fired one is nothing (+0.1), and neither is one who retired (+0.3, 18 of
+them), even from a strong team. Coordinator changes, measured the same way,
 showed nothing on either side of the ball and aren't read.
 
-Keyed by the team name a `Matchup` carries -- call-it-what-you-want's
-current name, which is also what the data files record.
+**The NFL** reads the same facts from say-youll-remember-me's NFL files,
+with every team setting a season's passing average rather than FBS. Its
+residuals are too few to say much on their own -- a new starter -0.4 points
+early (t -0.7), quality +0.7 per 0.1 (t 0.8) -- but replaying
+`nfl/glicko_margin_units` with the college-sized shifts gains 0.0003 brier
+on 2015-2025 and 0.0008 in teams' first four games. Only three NFL coaches
+have left for another job, the last in 2007, so its coach shift has
+nothing to read. Its eight retirements run -2.9 points over the next
+season but +1.3 in the first four games: an old roster coming apart as the
+season goes, not something the offseason knew.
+
+Keyed by the team name a `Matchup` carries: call-it-what-you-want's current
+name in college, which is also what the data files record; in the NFL,
+endgame's nickname for the franchise ("raiders"), made from the files'
+names by the rule endgame's stored seasons were named by.
 """
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from functools import cache
 from typing import NamedTuple, Self
 
 import say_youll_remember_me as syrm
 from call_it_what_you_want import TeamNamer
+from endgame.nfl.games import _get_team as nfl_nickname
 
 #: Attempts of the prior a quarterback's EPA per attempt is shrunk toward.
 #: Measured flat between 75 and 300: the effect's size and t moved in the
@@ -48,9 +63,9 @@ PRIOR_ATTEMPTS = 150.0
 #: toward what first-time starters turn out to be.
 NEWCOMER_MIN_ATTEMPTS = 100
 
-#: The league the data files cover. Any other league has no facts, and a
+#: The leagues the data files cover. Any other league has no facts, and a
 #: model reading them sees every team as unchanged.
-FACTS_LEAGUE = "ncaafb"
+FACTS_LEAGUES = ("ncaafb", "nfl")
 
 
 class OffseasonFact(NamedTuple):
@@ -81,13 +96,13 @@ class QuarterbackRow(NamedTuple):
 
 
 def quarterback_facts(
-    rows: Iterable[QuarterbackRow], fbs: set[tuple[str, int]]
+    rows: Iterable[QuarterbackRow], peers: set[tuple[str, int]]
 ) -> dict[tuple[str, int], tuple[bool, float]]:
     """(new starter, quality change) per (team, season), from quarterback seasons.
 
-    `fbs` is the team-seasons whose passers set a season's average -- the
-    level a quality is measured from. Pure, so it's testable on rows built
-    by hand.
+    `peers` is the team-seasons whose passers set a season's average -- the
+    level a quality is measured from: FBS in college, the whole NFL. Pure,
+    so it's testable on rows built by hand.
     """
     rows = list(rows)
     totals: dict[int, list[float]] = defaultdict(lambda: [0.0, 0.0])
@@ -97,7 +112,7 @@ def quarterback_facts(
             continue
         anywhere[(row.player_key, row.season)][0] += row.epa or 0.0
         anywhere[(row.player_key, row.season)][1] += row.attempts
-        if (row.team, row.season) in fbs:
+        if (row.team, row.season) in peers:
             totals[row.season][0] += row.epa or 0.0
             totals[row.season][1] += row.attempts
     average = {season: epa / att for season, (epa, att) in totals.items() if att}
@@ -175,13 +190,15 @@ def _league_facts(league: str) -> Mapping[tuple[str, int], OffseasonFact]:
 
     Cached because an optimization run builds hundreds of predictors.
     """
-    if league != FACTS_LEAGUE:
+    if league not in FACTS_LEAGUES:
         return {}
-    namer = TeamNamer.for_league(league)
-    fbs = {(namer.canonical(r.team), r.season) for r in syrm.coaching_staffs(league)}
+    name = _namer(league)
+    # The staff file covers exactly the peers: every FBS team-season in
+    # college, every franchise's in the NFL.
+    peers = {(name(r.team), r.season) for r in syrm.coaching_staffs(league)}
     rows = [
         QuarterbackRow(
-            team=namer.canonical(r.team),
+            team=name(r.team),
             season=r.season,
             player_key=r.player_key,
             starts=r.starts,
@@ -191,12 +208,10 @@ def _league_facts(league: str) -> Mapping[tuple[str, int], OffseasonFact]:
         )
         for r in syrm.quarterback_seasons(league)
     ]
-    quarterbacks = quarterback_facts(rows, fbs)
-    team_seasons = {(r.team, r.season) for r in rows} | fbs
-    ids = {namer.canonical(r.team): r.espn_id for r in syrm.coaching_staffs(league)}
-    ids |= {
-        namer.canonical(r.team): r.espn_id for r in syrm.quarterback_seasons(league)
-    }
+    quarterbacks = quarterback_facts(rows, peers)
+    team_seasons = {(r.team, r.season) for r in rows} | peers
+    ids = {name(r.team): r.espn_id for r in syrm.coaching_staffs(league)}
+    ids |= {name(r.team): r.espn_id for r in syrm.quarterback_seasons(league)}
     facts: dict[tuple[str, int], OffseasonFact] = {}
     for team, season in team_seasons:
         departed = syrm.departure(ids[team], season, league) if team in ids else None
@@ -209,3 +224,23 @@ def _league_facts(league: str) -> Mapping[tuple[str, int], OffseasonFact]:
             quality_change=change,
         )
     return facts
+
+
+def _namer(league: str) -> Callable[[str], str]:
+    """How a data file's team name becomes the one a `Matchup` carries."""
+    if league == "nfl":
+        return _nfl_name
+    return TeamNamer.for_league(league).canonical
+
+
+def _nfl_name(name: str) -> str:
+    """ "Las Vegas Raiders" -> "raiders", as endgame named its stored seasons.
+
+    Its rule, not a copy of it: the files' names and the seasons' have to
+    agree for every franchise, and a second rule would drift from the one
+    that named the seasons.
+    """
+    nickname = nfl_nickname(name)
+    if nickname is None:
+        raise ValueError(f"not an NFL franchise: {name!r}")
+    return nickname
