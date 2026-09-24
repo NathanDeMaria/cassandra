@@ -327,8 +327,9 @@ def test_a_coach_who_left_moves_the_team_and_its_offense_at_the_rollover(
 def test_a_new_quarterback_waits_for_his_first_game(game: GameFactory) -> None:
     # -1 + 2 * 1 = +1 point
     knobs: dict[str, Any] = {"new_qb_shift": -1.0, "qb_quality_shift": 2.0}
-    plain = _predictor({"g": LOPSIDED}, **knobs)
-    new = _predictor({"g": LOPSIDED}, offseason=BETTER_QB, **knobs)
+    plays = {"g": LOPSIDED, "h": LOPSIDED, "i": LOPSIDED}
+    plain = _predictor(plays, **knobs)
+    new = _predictor(plays, offseason=BETTER_QB, **knobs)
     for predictor in (plain, new):
         _into_2024(predictor, game)
 
@@ -349,8 +350,8 @@ def test_a_new_quarterback_waits_for_his_first_game(game: GameFactory) -> None:
 
 def test_a_quarterback_shift_survives_the_smoother(game: GameFactory) -> None:
     knobs: dict[str, Any] = {"new_qb_shift": 1.0, "passes": 3}
-    plain = _predictor({"g": LOPSIDED}, **knobs)
-    new = _predictor({"g": LOPSIDED}, offseason=BETTER_QB, **knobs)
+    plain = _predictor({"g": LOPSIDED, "h": LOPSIDED}, **knobs)
+    new = _predictor({"g": LOPSIDED, "h": LOPSIDED}, offseason=BETTER_QB, **knobs)
     for predictor in (plain, new):
         _into_2024(predictor, game)
         predictor.update_game(game("A", "C", 14, 10, game_id="h"))
@@ -369,3 +370,18 @@ def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
         {**state, "game_epa": EpaIndex(), "offseason": OffseasonFacts()}
     )
     assert loaded.state_dict() == predictor.state_dict()
+
+
+def test_an_opener_without_plays_does_not_name_the_starter(game: GameFactory) -> None:
+    """The starter on file is the next game's, so the shift waits for it."""
+    knobs: dict[str, Any] = {"new_qb_shift": 1.0}
+    plain = _predictor({"g": LOPSIDED, "i": LOPSIDED}, **knobs)
+    new = _predictor({"g": LOPSIDED, "i": LOPSIDED}, offseason=BETTER_QB, **knobs)
+    for predictor in (plain, new):
+        _into_2024(predictor, game)
+        predictor.update_game(game("A", "C", 35, 3, game_id="h"))  # no plays
+
+    assert new.get_rating("A") == plain.get_rating("A")
+    second = game("A", "D", 21, 17, game_id="i")
+    assert new.update_game(second) == plain.update_game(second)
+    assert new.get_rating("A").rating > plain.get_rating("A").rating
