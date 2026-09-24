@@ -1,6 +1,7 @@
 """Tests for deriving availability from parsed quarterback data."""
 
-from cassandra.qb import TeamGameQb
+from say_youll_remember_me.qb import TeamGameQb
+
 from cassandra.qb_out_build import home_away_ids, out_teams
 
 

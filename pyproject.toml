@@ -36,6 +36,16 @@ endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "9ec6c0f4
 # team's rating history depends on its identity being the same from one run
 # to the next. Bump it deliberately with `poetry update`.
 call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "15f23685a42466d3273a18430c19d2b5daee2586"}
+# What changed about a team between seasons -- head-coach changes and why,
+# coordinators, quarterback seasons -- and the play-text quarterback parser
+# `cassandra.qb_out_build` reads starters with, which lived here as
+# `cassandra.qb` until the quarterback file needed it too. Its base install is
+# call-it-what-you-want alone; the `plays` extra that rebuilds its
+# quarterback file is not taken, since cassandra only reads.
+#
+# Pinned like call-it-what-you-want, for the same reason: the offseason facts
+# a replay reads should move only with a deliberate bump.
+say-youll-remember-me = {git = "https://github.com/NathanDeMaria/say-youll-remember-me.git", rev = "30465e706e8f815e6f0c70f7e21b788ccc341d75"}
 aiofiles = "^25.1.0"
 numpy = "^2.4.0"
 pandas = "^2.3.3"

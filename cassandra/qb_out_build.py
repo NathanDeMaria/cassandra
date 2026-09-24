@@ -82,9 +82,9 @@ from typing import Any, Protocol
 
 from call_it_what_you_want import TeamNamer
 from endgame.types import Season, iter_weeks
+from say_youll_remember_me.qb import TeamGameQb, team_games
 
 from cassandra.predictor.qb_out import QbOutFile, qb_out_path
-from cassandra.qb import TeamGameQb, team_games
 
 #: Past any real season. NCAAFB runs to about 17 source weeks plus bowls,
 #: the NFL to 22; this is the loop bound for "ask for everything".
