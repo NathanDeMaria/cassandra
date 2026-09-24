@@ -415,8 +415,8 @@ sync = ["aiohttp (>=3.8)", "endgame-aws"]
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/call-it-what-you-want.git"
-reference = "15f23685a42466d3273a18430c19d2b5daee2586"
-resolved_reference = "15f23685a42466d3273a18430c19d2b5daee2586"
+reference = "b815fc3008fe958d8731c8523919d13a2a936b0d"
+resolved_reference = "b815fc3008fe958d8731c8523919d13a2a936b0d"
 
 [[package]]
 name = "cffi"
@@ -2879,8 +2879,8 @@ plays = ["endgame-aws ; python_version >= \"3.14\"", "lucky-ones[data] ; python_
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/say-youll-remember-me.git"
-reference = "30465e706e8f815e6f0c70f7e21b788ccc341d75"
-resolved_reference = "30465e706e8f815e6f0c70f7e21b788ccc341d75"
+reference = "525078e1064a5e8a88c26d282c7182698b7c7423"
+resolved_reference = "525078e1064a5e8a88c26d282c7182698b7c7423"
 
 [[package]]
 name = "scikit-learn"
@@ -3491,4 +3491,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "f66134b80c9eb607af32d21cf75a82b54ca2bf19467632774122ee65168edd74"
+content-hash = "00a202893d70422fa46eaf3bfd26b534d1a33214f90621f8080c56f210d373a4"

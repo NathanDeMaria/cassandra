@@ -35,7 +35,7 @@ endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "9ec6c0f4
 # team data under a replay without anything in the diff saying so, and a
 # team's rating history depends on its identity being the same from one run
 # to the next. Bump it deliberately with `poetry update`.
-call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "15f23685a42466d3273a18430c19d2b5daee2586"}
+call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "b815fc3008fe958d8731c8523919d13a2a936b0d"}
 # What changed about a team between seasons -- head-coach changes and why,
 # coordinators, quarterback seasons -- and the play-text quarterback parser
 # `cassandra.qb_out_build` reads starters with, which lived here as
@@ -45,7 +45,7 @@ call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-yo
 #
 # Pinned like call-it-what-you-want, for the same reason: the offseason facts
 # a replay reads should move only with a deliberate bump.
-say-youll-remember-me = {git = "https://github.com/NathanDeMaria/say-youll-remember-me.git", rev = "30465e706e8f815e6f0c70f7e21b788ccc341d75"}
+say-youll-remember-me = {git = "https://github.com/NathanDeMaria/say-youll-remember-me.git", rev = "525078e1064a5e8a88c26d282c7182698b7c7423"}
 aiofiles = "^25.1.0"
 numpy = "^2.4.0"
 pandas = "^2.3.3"
