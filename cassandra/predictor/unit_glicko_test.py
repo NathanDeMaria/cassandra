@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from ..offseason import OffseasonFact, OffseasonFacts
 from .base_predictor import MEAN_RATING, Anchor
 from .conftest import GameFactory
 from .epa import EpaIndex
@@ -280,3 +281,91 @@ def test_an_unseen_team_sits_at_its_anchor_by_its_units(game: GameFactory) -> No
 def test_nonsense_unit_settings_are_refused(param: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         _predictor(**param)
+
+
+# --- offseason shifts ---------------------------------------------------------
+
+
+COACH_LEFT = OffseasonFacts({("A", 2024): OffseasonFact("left_for_job", None, 0.0)})
+# A new starter a tenth of a point per attempt better than the one who left.
+BETTER_QB = OffseasonFacts({("A", 2024): OffseasonFact(None, True, 0.1)})
+
+
+def _into_2024(predictor: UnitMarginGlickoPredictor, game: GameFactory) -> None:
+    predictor.pass_season(2023)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    predictor.pass_week()
+    predictor.pass_season(2024)
+
+
+def test_no_shift_knobs_is_the_model_without_facts(game: GameFactory) -> None:
+    facts = OffseasonFacts({("A", 2024): OffseasonFact("left_for_job", True, 0.2)})
+    plain = _predictor({"g": LOPSIDED})
+    read = _predictor({"g": LOPSIDED}, offseason=facts)
+    for predictor in (plain, read):
+        _into_2024(predictor, game)
+        predictor.update_game(game("A", "C", 3, 10, game_id="h"))
+    assert read.ratings == plain.ratings
+    assert read.predict_game(game("A", "B")) == plain.predict_game(game("A", "B"))
+
+
+def test_a_coach_who_left_moves_the_team_and_its_offense_at_the_rollover(
+    game: GameFactory,
+) -> None:
+    plain = _predictor({"g": LOPSIDED}, coach_left_shift=-3.0)
+    left = _predictor({"g": LOPSIDED}, coach_left_shift=-3.0, offseason=COACH_LEFT)
+    for predictor in (plain, left):
+        _into_2024(predictor, game)
+
+    moved = left.get_rating("A").rating - plain.get_rating("A").rating
+    assert moved == pytest.approx(-3.0 / left.points_per_rating)
+    offense = left.get_sides("A").offense.rating - plain.get_sides("A").offense.rating
+    assert offense == pytest.approx(-3.0 / left.points_per_epa)
+    assert left.get_rating("B") == plain.get_rating("B")
+
+
+def test_a_new_quarterback_waits_for_his_first_game(game: GameFactory) -> None:
+    # -1 + 2 * 1 = +1 point
+    knobs: dict[str, Any] = {"new_qb_shift": -1.0, "qb_quality_shift": 2.0}
+    plain = _predictor({"g": LOPSIDED}, **knobs)
+    new = _predictor({"g": LOPSIDED}, offseason=BETTER_QB, **knobs)
+    for predictor in (plain, new):
+        _into_2024(predictor, game)
+
+    # Nothing is known about him until he has played.
+    assert new.get_rating("A") == plain.get_rating("A")
+    opener = game("A", "C", 14, 10, game_id="h")
+    assert new.update_game(opener) == plain.update_game(opener)
+
+    moved = new.get_rating("A").rating - plain.get_rating("A").rating
+    assert moved == pytest.approx(1.0 / new.points_per_rating)
+    # Once, not every game.
+    second = game("C", "A", 7, 7, game_id="i")
+    new.update_game(second)
+    plain.update_game(second)
+    again = new.get_rating("A").rating - plain.get_rating("A").rating
+    assert again < moved
+
+
+def test_a_quarterback_shift_survives_the_smoother(game: GameFactory) -> None:
+    knobs: dict[str, Any] = {"new_qb_shift": 1.0, "passes": 3}
+    plain = _predictor({"g": LOPSIDED}, **knobs)
+    new = _predictor({"g": LOPSIDED}, offseason=BETTER_QB, **knobs)
+    for predictor in (plain, new):
+        _into_2024(predictor, game)
+        predictor.update_game(game("A", "C", 14, 10, game_id="h"))
+        predictor.pass_week()
+
+    moved = new.get_rating("A").rating - plain.get_rating("A").rating
+    assert moved > 0.5 / new.points_per_rating
+
+
+def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
+    predictor = _predictor(
+        coach_left_shift=-2.5, new_qb_shift=-1.1, qb_quality_shift=1.7
+    )
+    state = json.loads(json.dumps(predictor.state_dict()))
+    loaded = UnitMarginGlickoPredictor.from_state_dict(
+        {**state, "game_epa": EpaIndex(), "offseason": OffseasonFacts()}
+    )
+    assert loaded.state_dict() == predictor.state_dict()
