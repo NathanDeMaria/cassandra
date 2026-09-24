@@ -45,7 +45,7 @@ call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-yo
 #
 # Pinned like call-it-what-you-want, for the same reason: the offseason facts
 # a replay reads should move only with a deliberate bump.
-say-youll-remember-me = {git = "https://github.com/NathanDeMaria/say-youll-remember-me.git", rev = "35dc57f5abd8f1f9927b15166f84d89fbe868313"}
+say-youll-remember-me = {git = "https://github.com/NathanDeMaria/say-youll-remember-me.git", rev = "4ca747646aa2a2112889279f93ebc96ccd4e0122"}
 aiofiles = "^25.1.0"
 numpy = "^2.4.0"
 pandas = "^2.3.3"

@@ -2879,8 +2879,8 @@ plays = ["endgame-aws ; python_version >= \"3.14\"", "lucky-ones[data] ; python_
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/say-youll-remember-me.git"
-reference = "35dc57f5abd8f1f9927b15166f84d89fbe868313"
-resolved_reference = "35dc57f5abd8f1f9927b15166f84d89fbe868313"
+reference = "4ca747646aa2a2112889279f93ebc96ccd4e0122"
+resolved_reference = "4ca747646aa2a2112889279f93ebc96ccd4e0122"
 
 [[package]]
 name = "scikit-learn"
@@ -3491,4 +3491,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "f155848db27de265da77964f654056ff58c12380c8b38791992542633f041d82"
+content-hash = "d98938722b2c0e5fc7da0112d05028c1d0d7d5c5600641f16db6f97bc1a72e1f"
