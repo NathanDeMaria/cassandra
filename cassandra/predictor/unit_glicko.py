@@ -88,6 +88,41 @@ is `unit_weight`. At `unit_weight` 0 this is `MarginGlickoPredictor` exactly,
 game by game; the units never feed back into the parent's step and the
 parent never sees an EPA number.
 
+What changed over the summer
+----------------------------
+
+Three knobs read `cassandra.offseason`'s facts, each a shift in points
+applied to the team's rating and its offense together, so the blend moves
+by the same amount. All three are 0 by default, which is the model without
+them.
+
+- `coach_left_shift`, at the rollover, for a team whose head coach left for
+  a better job. That is known before the season, so it is applied then.
+- `new_qb_shift` plus `qb_quality_shift` per 0.1 EPA per attempt of
+  quarterback quality change, for a team whose week-one starter is new.
+  Applied after the team's first game, not at the rollover: who starts is
+  only in the plays once he has, and a model that read it any earlier
+  would be scoring itself with a depth chart it doesn't have.
+
+A shift applied mid-season lands on the preseason ratings the smoother
+re-walks from as well, or the next pass would undo it. Replayed on ncaafb
+2002-2025 on the fitted units model, against no shifts, on 2015+ FBS
+games (and their first four games):
+
+    shifts                                           FBS         games 1-4
+    quarterback, after game 1, measured sizes     -0.00043      -0.00063
+    quarterback, after game 1, 1.5x               -0.00057      -0.00077
+      the same, before the season (a depth chart) -0.00074      -0.00116
+    coach left for a job, -2.5                    -0.00013      -0.00023
+    quarterback 1.5x after game 1 + coach -2.5    -0.00068      -0.00095
+      and the offense's starting sd at 0.10       -0.00087      -0.00161
+
+The last row is the clocks moving with the shifts: once the summer's change
+at quarterback is read directly, an offense no longer needs the blanket
+uncertainty that stood in for it (0.14 was the best starting sd without
+the shifts). `glicko_margin_units_offseason` searches the shifts with the
+offense's starting sd and offseason regression, the rest pinned.
+
 What a release carries
 ----------------------
 
@@ -131,6 +166,7 @@ from typing import Any, NamedTuple, Self
 
 from endgame.types import Game
 
+from ..offseason import OffseasonFacts
 from .adjustments import (
     DEFAULT_QB_OUT_PENALTY,
     DEFAULT_TRAVEL_ADVANTAGE,
@@ -191,6 +227,10 @@ DEFAULT_DEFENSE_SEASON_REGRESSION = 0.2
 #: reading of EPA; what they aren't honest about is how much of EPA is the
 #: margin. 0.2 to 0.25 replayed best, 0.35 and 0.5 were worse.
 DEFAULT_UNIT_WEIGHT = 0.2
+
+#: The departure category that moves a team's rating over the summer; see
+#: `cassandra.offseason` for why the others don't.
+LEFT_FOR_JOB = "left_for_job"
 
 #: How many sides of last season's average offense this season's center
 #: starts with. A few weeks of games outweigh it.
@@ -259,6 +299,10 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         defense_season_sd_increase: float = DEFAULT_DEFENSE_SEASON_SD_INCREASE,
         offense_season_regression: float = DEFAULT_OFFENSE_SEASON_REGRESSION,
         defense_season_regression: float = DEFAULT_DEFENSE_SEASON_REGRESSION,
+        # Offseason shifts, in points; see "What changed over the summer".
+        coach_left_shift: float = 0.0,
+        new_qb_shift: float = 0.0,
+        qb_quality_shift: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -270,6 +314,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         anchors: Mapping[str, Anchor] | None = None,
         unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         game_epa: EpaIndex | None = None,
+        offseason: OffseasonFacts | None = None,
     ) -> None:
         super().__init__(
             league,
@@ -327,6 +372,19 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._sides_preseason = dict(self._sides)
         self._contest_weeks: list[list[_Contest]] = []
         self._contests_this_week: list[_Contest] = []
+        self._coach_left_shift = coach_left_shift
+        self._new_qb_shift = new_qb_shift
+        self._qb_quality_shift = qb_quality_shift
+        # Defaulted like `game_epa`: every caller wants the league's facts,
+        # and a test that wants none passes `OffseasonFacts()` -- checked
+        # against None, since an empty one is falsy. Not carried in
+        # `state_dict`, like the index.
+        self._offseason = (
+            offseason if offseason is not None else OffseasonFacts.for_league(league)
+        )
+        # Teams whose quarterback shift waits on their first game this
+        # season. In-season state, like the smoother's ledger.
+        self._qb_pending: set[str] = set()
 
     @property
     def unit_weight(self) -> float:
@@ -447,7 +505,42 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # it; the units haven't moved in between, so it is this one.
         super().update_game(game)
         self._update_sides(game, edge)
+        for team in (game.home, game.away):
+            if team in self._qb_pending:
+                self._qb_pending.discard(team)
+                self._shift(team, self._quarterback_points(team))
         return prediction
+
+    def _quarterback_points(self, team: str) -> float:
+        """What this season's quarterback change is worth to `team`, in points."""
+        fact = self._offseason.get(team, self._season)
+        if fact is None or not fact.new_quarterback:
+            return 0.0
+        return self._new_qb_shift + self._qb_quality_shift * fact.quality_change / 0.1
+
+    def _shift(self, team: str, points: float) -> None:
+        """Move `team`'s rating and its offense by `points`, now and at preseason.
+
+        Both, because the smoother re-walks the season from the preseason
+        ratings: a shift that only touched the current ones would be undone
+        by the next pass.
+        """
+        if not points:
+            return
+        by = points / self.points_per_rating
+        for ratings in (self._ratings, self._preseason):
+            if team in ratings:
+                current = ratings[team]
+                ratings[team] = current._replace(rating=current.rating + by)
+        offense_by = points / self._points_per_epa
+        for sides in (self._sides, self._sides_preseason):
+            if team in sides:
+                pair = sides[team]
+                sides[team] = pair._replace(
+                    offense=pair.offense._replace(
+                        rating=pair.offense.rating + offense_by
+                    )
+                )
 
     def _update_sides(self, game: Game, edge: float) -> None:
         """Both contests, from the units as they stood before the game.
@@ -596,6 +689,12 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._sides_preseason = dict(self._sides)
         self._contest_weeks = []
         self._contests_this_week = []
+        self._qb_pending = set()
+        for team, fact in self._offseason.seasons(self._season):
+            if fact.coach_departure == LEFT_FOR_JOB:
+                self._shift(team, self._coach_left_shift)
+            if fact.new_quarterback and (self._new_qb_shift or self._qb_quality_shift):
+                self._qb_pending.add(team)
 
     def state_dict(self) -> dict[str, Any]:
         """The parent's state, the unit knobs, the center and the sides.
@@ -615,6 +714,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "defense_season_sd_increase": self._season_sd_increase.defense,
             "offense_season_regression": self._unit_regression.offense,
             "defense_season_regression": self._unit_regression.defense,
+            "coach_left_shift": self._coach_left_shift,
+            "new_qb_shift": self._new_qb_shift,
+            "qb_quality_shift": self._qb_quality_shift,
             "epa_center_state": [
                 self._center_previous,
                 self._center_sum,

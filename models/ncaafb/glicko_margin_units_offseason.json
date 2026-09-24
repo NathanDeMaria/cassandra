@@ -1,0 +1,60 @@
+{
+    "predictor_class": "UnitMarginGlickoPredictor",
+    "league": "ncaafb",
+    "parameters": {
+        "coach_left_shift": [
+            -6,
+            1
+        ],
+        "new_qb_shift": [
+            -4,
+            1
+        ],
+        "qb_quality_shift": [
+            0,
+            5
+        ],
+        "offense_initial_sd": [
+            0.05,
+            0.3
+        ],
+        "offense_season_regression": [
+            0,
+            1
+        ]
+    },
+    "fixed": {
+        "points_per_rating": 0.1403,
+        "travel_advantage": 0.0,
+        "season_regression": 0.0,
+        "obs_sd": 18.738552847098447,
+        "prediction_scale": 167.04790817058102,
+        "initial_rd": 192.2683793552397,
+        "weekly_rd_increase": 3.248017274775874,
+        "season_rd_increase": 85.40651050259638,
+        "home_advantage": 16.913495929368022,
+        "rest_advantage": 9.766579539190591,
+        "qb_out_penalty": 15.162296246928598,
+        "passes": 3,
+        "unit_weight": 0.2,
+        "points_per_epa": 75.0,
+        "play_sd": 1.0,
+        "defense_initial_sd": 0.14,
+        "offense_weekly_sd_increase": 0.05,
+        "defense_weekly_sd_increase": 0.0,
+        "offense_season_sd_increase": 0.1,
+        "defense_season_sd_increase": 0.03,
+        "defense_season_regression": 0.2
+    },
+    "fixed_from": "glicko_margin_units",
+    "n_iter": 200,
+    "seeds": [
+        {
+            "coach_left_shift": -2.5,
+            "new_qb_shift": -1.14,
+            "qb_quality_shift": 1.72,
+            "offense_initial_sd": 0.1,
+            "offense_season_regression": 0.8
+        }
+    ]
+}
