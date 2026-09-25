@@ -25,10 +25,30 @@ calibration comparison (`moneyline_calibration`: Brier, model vs market) is
 printed next to the ROI because it explains it -- a model less sure than the
 market "finds" edge on every underdog and loses on every one of them.
 
+**Whether the model knows anything the market doesn't.** ROI and cover
+rate answer "did betting it make money", which on a season of lines is
+mostly luck. `market_information` asks the question they are noisy
+answers to: regress the result's miss from the line on the model's
+disagreement with it. The slope is the weight the model deserves next to
+the line -- 0 if the line already had everything, 1 if the model is right
+and the line wrong -- and its standard error says how sure. The same slope
+on the line's *move* from entry to close is CLV per point of edge, which
+settles faster still. `probability_information` is the moneyline's
+version. Those are the numbers to compare two models on, and the ones to
+watch week to week: a model worth betting has a weight whose error bar
+clears zero before its bankroll does anything interesting.
+
+`spread_strategies` then grades flat -110 bets by minimum edge with the
+p-value against break-even beside the ROI, `by_week` says whether an edge
+is drifting, and `team_disagreement` lists the teams the model and the
+line disagree about most, with who the results sided with.
+
 Everything here is a pure function of a predictions frame and an
 `OddsDatabase`; `betting.py` at the repo root does the I/O.
 """
 
+import math
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import NamedTuple
 
@@ -274,6 +294,251 @@ def clv_by_edge(bets: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+#: What a winning spread bet pays per unit at the standard -110, and the
+#: cover rate that breaks even against it: 110/210.
+SPREAD_PAYOUT = 100 / 110
+BREAK_EVEN = 110 / 210
+
+#: Minimum edge, in points against the entry line, for `spread_strategies`.
+SPREAD_THRESHOLDS = (0.0, 1.0, 2.0, 3.0, 5.0, 7.0)
+
+
+class MeanWithError(NamedTuple):
+    mean: float
+    se: float
+    n: int
+
+    @property
+    def t(self) -> float:
+        return self.mean / self.se if self.se > 0 else float("nan")
+
+    def __str__(self) -> str:
+        return f"{self.mean:+.3f} ± {self.se:.3f} (t {self.t:+.1f}, n {self.n})"
+
+
+def mean_with_error(values: pd.Series) -> MeanWithError:
+    values = values.dropna()
+    n = len(values)
+    se = float(values.std(ddof=1) / np.sqrt(n)) if n > 1 else float("nan")
+    return MeanWithError(float(values.mean()) if n else float("nan"), se, n)
+
+
+def _ols(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float, float]:
+    """(intercept, slope, slope se, residual sd) of y on x, heteroskedasticity-robust (HC1)."""
+    design = np.column_stack([np.ones_like(x), x])
+    bread = np.linalg.pinv(design.T @ design)
+    beta = bread @ design.T @ y
+    residual = y - design @ beta
+    n = len(y)
+    meat = (design * residual[:, None] ** 2).T @ design
+    covariance = bread @ meat @ bread * n / max(n - 2, 1)
+    return (
+        float(beta[0]),
+        float(beta[1]),
+        float(np.sqrt(max(covariance[1, 1], 0.0))),
+        float(residual.std(ddof=2)) if n > 2 else float("nan"),
+    )
+
+
+class MarketInformation(NamedTuple):
+    """Whether the model knows anything the line doesn't, at one read.
+
+    `weight` is the slope of (result - line) on (model - line): the share of
+    each point of disagreement that turns out to be right. 0 means the line
+    already had everything the model had -- betting it is paying the vig to
+    flip coins. 1 means the model is right and the line is wrong. The best
+    blend of the two is `line + weight * (model - line)`, and `mae_blend`
+    is its in-sample MAE (a single slope on a few hundred games, so the
+    optimism is small). A weight is the thing to compare between two models
+    on the same games: it is what each would be worth to someone who
+    already has the line.
+
+    `move` is the same slope for how the line moved from the entry read to
+    the close -- how much of the model's disagreement at entry the market
+    came around to by kickoff. It is CLV per point of edge, and it settles
+    much faster than `weight`, since the move has no game on the end of it.
+    """
+
+    at: str
+    n: int
+    weight: float
+    weight_se: float
+    mae_line: float
+    mae_model: float
+    mae_blend: float
+    move: float
+    move_se: float
+
+
+def market_information(lines: pd.DataFrame, at: str) -> MarketInformation:
+    """`MarketInformation` for the `at` read ("entry" or "close")."""
+    spread = f"{at}_spread"
+    games = lines[lines[spread].notna() & lines["predicted_margin"].notna()]
+    line = -games[spread].to_numpy(dtype=float)
+    model = games["predicted_margin"].to_numpy(dtype=float)
+    mov = (games["home_score"] - games["away_score"]).to_numpy(dtype=float)
+    nan = float("nan")
+    if len(games) < 3:
+        return MarketInformation(at, len(games), nan, nan, nan, nan, nan, nan, nan)
+    _, weight, weight_se, _ = _ols(model - line, mov - line)
+    move, move_se = nan, nan
+    moved = (
+        games[LineColumns.ENTRY_SPREAD].notna()
+        & games[LineColumns.CLOSE_SPREAD].notna()
+    )
+    if at == "entry" and moved.sum() > 2:
+        entry = -games.loc[moved, LineColumns.ENTRY_SPREAD].to_numpy(dtype=float)
+        close = -games.loc[moved, LineColumns.CLOSE_SPREAD].to_numpy(dtype=float)
+        _, move, move_se, _ = _ols(model[moved.to_numpy()] - entry, close - entry)
+    blend = line + weight * (model - line)
+    return MarketInformation(
+        at=at,
+        n=len(games),
+        weight=weight,
+        weight_se=weight_se,
+        mae_line=float(np.abs(mov - line).mean()),
+        mae_model=float(np.abs(mov - model).mean()),
+        mae_blend=float(np.abs(mov - blend).mean()),
+        move=move,
+        move_se=move_se,
+    )
+
+
+def binomial_tail(wins: int, n: int, p: float) -> float:
+    """P(at least `wins` of `n`) for a coin that comes up with probability `p`.
+
+    Exact, in log space so a season's worth of bets doesn't overflow; NaN
+    for no bets. The one-sided p-value of a record against break-even.
+    """
+    if n <= 0:
+        return float("nan")
+    k = np.arange(wins, n + 1)
+    log_terms = (
+        math.lgamma(n + 1)
+        - np.vectorize(math.lgamma)(k + 1)
+        - np.vectorize(math.lgamma)(n - k + 1)
+        + k * math.log(p)
+        + (n - k) * math.log1p(-p)
+    )
+    return float(np.exp(log_terms).sum())
+
+
+def spread_strategies(
+    bets: pd.DataFrame, thresholds: Sequence[float] = SPREAD_THRESHOLDS
+) -> pd.DataFrame:
+    """Flat unit bets at -110 on the model's side of the entry line, by minimum edge.
+
+    One row per threshold and per split -- every bet, then the model's side
+    as the favorite or the underdog at entry, then home or away. `p_value`
+    is one-sided against `BREAK_EVEN`: how often a coin that covers exactly
+    as often as the vig requires would have done this well. Read it before
+    `roi`; on a few hundred bets, a 55% cover rate is about one standard
+    error from break-even.
+    """
+    favored = np.where(
+        bets["bet_home"],
+        bets[LineColumns.ENTRY_SPREAD] < 0,
+        bets[LineColumns.ENTRY_SPREAD] > 0,
+    )
+    splits = {
+        "all": np.ones(len(bets), dtype=bool),
+        "favorite": favored,
+        "underdog": ~favored & (bets[LineColumns.ENTRY_SPREAD] != 0).to_numpy(),
+        "home": bets["bet_home"].to_numpy(dtype=bool),
+        "away": ~bets["bet_home"].to_numpy(dtype=bool),
+    }
+    rows = []
+    for threshold in thresholds:
+        over = (bets["edge_points"] >= threshold).to_numpy()
+        for split, mask in splits.items():
+            chosen = bets[over & mask]
+            if chosen.empty:
+                continue
+            rec = record(chosen, "entry")
+            decided = rec.wins + rec.losses
+            units = rec.wins * SPREAD_PAYOUT - rec.losses
+            rate = rec.cover_rate
+            rows.append(
+                {
+                    "min_edge": threshold,
+                    "side": split,
+                    "n": len(chosen),
+                    "record": str(rec),
+                    "cover_rate": rate,
+                    "cover_se": np.sqrt(rate * (1 - rate) / decided)
+                    if decided
+                    else float("nan"),
+                    "units": units,
+                    "roi": units / len(chosen),
+                    "p_value": binomial_tail(rec.wins, decided, BREAK_EVEN),
+                    "clv": chosen["clv"].mean(),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def by_week(bets: pd.DataFrame) -> pd.DataFrame:
+    """CLV and the entry-line record per week, to see whether an edge is drifting."""
+    rows = []
+    for (year, week), chosen in bets.groupby(["year", "week_number"]):
+        rec = record(chosen, "entry")
+        rows.append(
+            {
+                "year": year,
+                "week": week,
+                "n": len(chosen),
+                "clv": chosen["clv"].mean(),
+                "record": str(rec),
+                "cover_rate": rec.cover_rate,
+                "units": rec.wins * SPREAD_PAYOUT - rec.losses,
+            }
+        )
+    table = pd.DataFrame(rows)
+    if not table.empty:
+        table["cumulative_units"] = table["units"].cumsum()
+    return table
+
+
+def team_disagreement(lines: pd.DataFrame, at: str = "close") -> pd.DataFrame:
+    """Per team, how far the model sat from the `at` line and who the results sided with.
+
+    Signed to the team: `model_vs_line` is how many more points the model
+    gave the team than the line did, on average; `result_vs_line` is how
+    many more it won by than the line said. A team where the first is large
+    and the second is near zero is one the model keeps getting wrong in a
+    way the market doesn't -- the list to read before betting on it, and
+    the list to take to `team_seasons.py` and `evidence.py` for a cause.
+    `model_closer` is the share of games the model's margin finished nearer
+    the result than the line's.
+    """
+    spread = f"{at}_spread"
+    games = lines[lines[spread].notna() & lines["predicted_margin"].notna()]
+    line = -games[spread]
+    mov = games["home_score"] - games["away_score"]
+    sides = []
+    for team, sign in (("home_team", 1.0), ("away_team", -1.0)):
+        sides.append(
+            pd.DataFrame(
+                {
+                    "team": games[team],
+                    "model_vs_line": sign * (games["predicted_margin"] - line),
+                    "result_vs_line": sign * (mov - line),
+                    "model_closer": (games["predicted_margin"] - mov).abs()
+                    < (line - mov).abs(),
+                }
+            )
+        )
+    grouped = pd.concat(sides).groupby("team")
+    table = grouped.agg(
+        n=("model_vs_line", "size"),
+        model_vs_line=("model_vs_line", "mean"),
+        result_vs_line=("result_vs_line", "mean"),
+        model_closer=("model_closer", "mean"),
+    ).reset_index()
+    order = table["model_vs_line"].abs().sort_values(ascending=False).index
+    return table.loc[order].reset_index(drop=True)
+
+
 def _priced(lines: pd.DataFrame, at: str) -> pd.DataFrame:
     """The games with a moneyline on both sides at the `at` read."""
     return lines[
@@ -300,6 +565,66 @@ def moneyline_calibration(lines: pd.DataFrame, at: str) -> dict[str, float]:
         "brier_market": float(((market - home_won) ** 2).mean()),
         "hold": float(hold.mean()),
     }
+
+
+class ProbabilityInformation(NamedTuple):
+    """`MarketInformation` for the moneyline: the model's weight against the no-vig price.
+
+    A logistic regression of the result on the market's log-odds (as an
+    offset, so it keeps weight 1) plus `weight` times the model's log-odds
+    minus the market's, with an intercept for any home lean the de-vigging
+    missed. `weight` 0 means the market's probability already has
+    everything; a positive weight with `weight / weight_se` past 2 means
+    the model's disagreement carries information the price doesn't. The
+    brier columns are on the same games, the blend in-sample.
+    """
+
+    at: str
+    n: int
+    weight: float
+    weight_se: float
+    brier_market: float
+    brier_model: float
+    brier_blend: float
+
+
+def probability_information(lines: pd.DataFrame, at: str) -> ProbabilityInformation:
+    priced = _priced(lines, at)
+    nan = float("nan")
+    if len(priced) < 10:
+        return ProbabilityInformation(at, len(priced), nan, nan, nan, nan, nan)
+    won = (priced["home_score"] > priced["away_score"]).to_numpy(dtype=float)
+    market = no_vig_home_probability(
+        priced[f"{at}_home_moneyline"], priced[f"{at}_away_moneyline"]
+    ).to_numpy(dtype=float)
+    model = priced[GameDfColumns.TEAM1_WIN_PROB].to_numpy(dtype=float)
+
+    def logit(p: np.ndarray) -> np.ndarray:
+        p = np.clip(p, 1e-6, 1 - 1e-6)
+        return np.log(p / (1 - p))
+
+    offset = logit(market)
+    design = np.column_stack([np.ones_like(offset), logit(model) - offset])
+    beta = np.zeros(2)
+    information = np.eye(2)
+    for _ in range(50):
+        p = 1 / (1 + np.exp(-(offset + design @ beta)))
+        information = (design * (p * (1 - p))[:, None]).T @ design
+        step = np.linalg.solve(information + 1e-9 * np.eye(2), design.T @ (won - p))
+        beta += step
+        if np.abs(step).max() < 1e-10:
+            break
+    blend = 1 / (1 + np.exp(-(offset + design @ beta)))
+    covariance = np.linalg.pinv(information)
+    return ProbabilityInformation(
+        at=at,
+        n=len(priced),
+        weight=float(beta[1]),
+        weight_se=float(np.sqrt(max(covariance[1, 1], 0.0))),
+        brier_market=float(((market - won) ** 2).mean()),
+        brier_model=float(((model - won) ** 2).mean()),
+        brier_blend=float(((blend - won) ** 2).mean()),
+    )
 
 
 def _side_bets(priced: pd.DataFrame, at: str, bet_home: pd.Series) -> pd.DataFrame:

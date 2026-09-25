@@ -5,19 +5,28 @@ import pandas as pd
 import pytest
 
 from .betting import (
+    BREAK_EVEN,
     GAME_LENGTH,
+    SPREAD_PAYOUT,
     LineColumns,
     Record,
     american_payout,
     american_to_probability,
+    binomial_tail,
+    by_week,
     clv_by_edge,
     line_windows,
+    market_information,
+    mean_with_error,
     moneyline_bets,
     moneyline_calibration,
     no_vig_home_probability,
     previous_game_end,
+    probability_information,
     record,
     spread_bets,
+    spread_strategies,
+    team_disagreement,
 )
 from .odds import OddsDatabase, OddsSnapshot
 
@@ -286,3 +295,136 @@ def test_market_baselines_take_every_favorite_or_every_underdog() -> None:
     assert table.loc["every favorite", "units"] == pytest.approx(1 / 3 - 1)
     assert table.loc["every underdog", "units"] == pytest.approx(2.5 - 1)
     assert table.loc["every favorite", "n_favorites"] == 2
+
+
+def _simulated_lines(weight: float, n: int = 3000, seed: int = 0) -> pd.DataFrame:
+    """Lined games where `weight` of the model's disagreement with the line is real.
+
+    The truth sits `weight` of the way from the line to the model, the
+    result is the truth plus noise, and the close has moved 30% of the way
+    from the entry toward the model.
+    """
+    rng = np.random.default_rng(seed)
+    line = rng.normal(0, 10, n)
+    model = line + rng.normal(0, 4, n)
+    mov = np.round(line + weight * (model - line) + rng.normal(0, 13, n))
+    close = line + 0.3 * (model - line)
+    return pd.DataFrame(
+        {
+            "game_id": [str(i) for i in range(n)],
+            "year": 2026,
+            "week_number": np.arange(n) % 3 + 1,
+            "home_team": [f"h{i % 10}" for i in range(n)],
+            "away_team": [f"a{i % 10}" for i in range(n)],
+            "home_score": np.where(mov > 0, mov, 0),
+            "away_score": np.where(mov < 0, -mov, 0),
+            "predicted_margin": model,
+            "team1_win_prob": 0.5,
+            LineColumns.ENTRY_SPREAD: -line,
+            LineColumns.CLOSE_SPREAD: -close,
+        }
+    )
+
+
+@pytest.mark.parametrize("weight", [0.0, 0.5, 1.0])
+def test_market_information_recovers_how_much_of_the_model_is_right(weight) -> None:
+    info = market_information(_simulated_lines(weight), "entry")
+    assert info.weight == pytest.approx(weight, abs=3 * info.weight_se)
+    assert info.weight_se < 0.1
+    # The close moved 30% of the way toward the model by construction.
+    assert info.move == pytest.approx(0.3, abs=1e-6)
+    if weight == 0.0:
+        assert info.mae_line < info.mae_model
+
+
+def test_market_information_has_no_move_at_the_close() -> None:
+    info = market_information(_simulated_lines(0.5), "close")
+    assert np.isnan(info.move)
+    assert info.n == 3000
+
+
+def test_spread_strategies_price_at_minus_110() -> None:
+    bets = spread_bets(
+        _lines(
+            (-3.0, -4.0, +4.0, 10),  # edge 1, home favorite, covered
+            (-3.0, -2.0, +8.0, 1),  # edge 5, home favorite, lost
+            (+3.0, +3.0, +8.0, 5),  # edge 11, home underdog, covered
+        )
+    )
+    table = spread_strategies(bets, thresholds=(0.0, 5.0))
+
+    def row(edge: float, side: str) -> pd.Series:
+        return table[(table["min_edge"] == edge) & (table["side"] == side)].iloc[0]
+
+    every = row(0.0, "all")
+    assert every["record"] == "2-1-0"
+    assert every["units"] == pytest.approx(2 * 100 / 110 - 1)
+    assert row(0.0, "favorite")["n"] == 2
+    assert row(0.0, "underdog")["n"] == 1
+    assert row(5.0, "all")["n"] == 2
+    # One win in one decided bet is still nowhere near significant.
+    assert row(0.0, "underdog")["p_value"] == pytest.approx(BREAK_EVEN)
+
+
+def test_break_even_is_the_vig() -> None:
+    assert BREAK_EVEN * SPREAD_PAYOUT == pytest.approx(1 - BREAK_EVEN)
+
+
+def test_by_week_accumulates_units() -> None:
+    bets = spread_bets(_simulated_lines(0.5, n=300))
+    weeks = by_week(bets)
+    assert weeks["n"].sum() == len(bets)
+    assert weeks["cumulative_units"].iloc[-1] == pytest.approx(weeks["units"].sum())
+
+
+def test_team_disagreement_is_signed_to_the_team() -> None:
+    lines = _lines((-3.0, -3.0, +9.0, 10), (-3.0, -3.0, +1.0, 2))
+    lines["home_team"] = ["X", "Y"]
+    lines["away_team"] = ["Y", "X"]
+    table = team_disagreement(lines).set_index("team")
+    # Game 1: model X by 9, line X by 3, result X by 10. Game 2: model Y by 1,
+    # line Y by 3, result Y by 2 -- from X's side -1, -3 and -2.
+    assert table.loc["X", "model_vs_line"] == pytest.approx(((9 - 3) + (-1 + 3)) / 2)
+    assert table.loc["X", "result_vs_line"] == pytest.approx(((10 - 3) + (-2 + 3)) / 2)
+    model_vs_line = table["model_vs_line"].to_dict()
+    assert model_vs_line["Y"] == pytest.approx(-model_vs_line["X"])
+    assert table.loc["X", "model_closer"] == 0.5
+
+
+def test_probability_information_gives_a_copy_of_the_market_no_weight() -> None:
+    rng = np.random.default_rng(0)
+    n = 4000
+    p = rng.uniform(0.1, 0.9, n)
+    won = rng.random(n) < p
+    # Fair prices at p, and a model that is the market plus noise it doesn't know.
+    home_ml = np.where(p >= 0.5, -100 * p / (1 - p), 100 * (1 - p) / p)
+    away_ml = np.where(p >= 0.5, 100 * p / (1 - p), -100 * (1 - p) / p)
+    noisy = 1 / (1 + np.exp(-(np.log(p / (1 - p)) + rng.normal(0, 0.5, n))))
+    lines = pd.DataFrame(
+        {
+            "home_score": won.astype(int),
+            "away_score": (~won).astype(int),
+            "team1_win_prob": noisy,
+            "close_home_moneyline": home_ml,
+            "close_away_moneyline": away_ml,
+        }
+    )
+    info = probability_information(lines, "close")
+    assert abs(info.weight) < 3 * info.weight_se
+    assert info.brier_market < info.brier_model
+
+
+def test_mean_with_error() -> None:
+    summary = mean_with_error(pd.Series([1.0, 2.0, 3.0, np.nan]))
+    assert summary.mean == 2.0
+    assert summary.n == 3
+    assert summary.se == pytest.approx(1 / np.sqrt(3))
+
+
+def test_binomial_tail_is_exact() -> None:
+    assert binomial_tail(1, 1, BREAK_EVEN) == pytest.approx(BREAK_EVEN)
+    assert binomial_tail(0, 5, 0.3) == pytest.approx(1.0)
+    assert binomial_tail(2, 2, 0.5) == pytest.approx(0.25)
+    assert np.isnan(binomial_tail(0, 0, 0.5))
+    # Big enough to overflow a direct product, small enough to still be a number.
+    assert 0 < binomial_tail(1700, 3000, BREAK_EVEN) < 1e-4
