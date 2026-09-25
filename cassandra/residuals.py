@@ -125,7 +125,7 @@ still worth 1.1% of the gap between two models.
 """
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import cache
 from typing import NamedTuple
 
@@ -1151,9 +1151,56 @@ def classification_axes(df: pd.DataFrame, league: str) -> Mapping[str, pd.Series
     pair, which is a signature noise doesn't produce -- and it is the shape
     to look for before reading anything else on this axis.
     """
+    tier = team_tiers(df, league)
+    if tier is None:
+        return {}
+
+    years = df["year"].to_numpy()
+    home = [tier(t, int(y)) for t, y in zip(df["home_team"], years)]
+    away = [tier(t, int(y)) for t, y in zip(df["away_team"], years)]
+
+    return {
+        "division": pd.Series([division_label(t) for t in home], index=df.index),
+        "conference": pd.Series([conference_label(t) for t in home], index=df.index),
+        "division_matchup": pd.Series(
+            [
+                UNCLASSIFIED
+                if h is None or a is None
+                else f"{division_label(h)} at home vs {division_label(a)}"
+                for h, a in zip(home, away)
+            ],
+            index=df.index,
+        ),
+        # Whether the two sides share a conference. Conference games are the
+        # schedule the ratings were mostly built on; non-conference ones are
+        # the games a program chose, which is where a home team that booked a
+        # visitor from far away, or from a tier below, collects whatever the
+        # model doesn't know about that. On ncaafb the early-season home bias
+        # lives entirely here: FBS-vs-FBS non-conference games in weeks 1-4
+        # run +1.3, conference games in the same weeks -0.9.
+        "conference_game": pd.Series(
+            [_conference_game(h, a) for h, a in zip(home, away)], index=df.index
+        ),
+    }
+
+
+#: A team's tier in one season: its division, and its conference (None for an
+#: independent). None for a team the registry has no classification for.
+Tier = tuple[str, str | None] | None
+
+
+def team_tiers(df: pd.DataFrame, league: str) -> Callable[[str, int], Tier] | None:
+    """How to look up any team's division and conference in a season.
+
+    The lookup `classification_axes` labels games with, for a caller that
+    labels something else -- a team-season, a conference-season. None for a
+    league the registry doesn't classify. `df` is the predictions frame,
+    read for which seasons each team played, which is what the spanning
+    label (see below) is resolved from.
+    """
     registry = registry_league(league)
     if registry is None:
-        return {}
+        return None
     namer = TeamNamer.for_league(league)
     classifications = default_classifications()
 
@@ -1179,7 +1226,8 @@ def classification_axes(df: pd.DataFrame, league: str) -> Mapping[str, pd.Series
         seasons_played.setdefault(team, []).append(int(year))
     resolved = resolve_spanning_label(seasons_played, recorded)
 
-    def tier(team: str, year: int) -> tuple[str, str | None] | None:
+    @cache
+    def tier(team: str, year: int) -> Tier:
         found = recorded(team, year)
         if found is None:
             return None
@@ -1188,44 +1236,20 @@ def classification_axes(df: pd.DataFrame, league: str) -> Mapping[str, pd.Series
             division = resolved.get(team, LUMPED_DIVISION)
         return division, found.conference
 
-    years = df["year"].to_numpy()
-    home = [tier(t, int(y)) for t, y in zip(df["home_team"], years)]
-    away = [tier(t, int(y)) for t, y in zip(df["away_team"], years)]
+    return tier
 
-    def _division(t: tuple[str, str | None] | None) -> str:
-        return UNCLASSIFIED if t is None else t[0]
 
-    def _conference(t: tuple[str, str | None] | None) -> str:
-        # An independent has no conference, and gets its division rather than
-        # a shared "None" bucket that would pool schools with nothing in
-        # common. The same fallback `Tier.__str__` makes.
-        if t is None:
-            return UNCLASSIFIED
-        return t[0] if t[1] is None else f"{t[0]} / {t[1]}"
+def division_label(tier: Tier) -> str:
+    return UNCLASSIFIED if tier is None else tier[0]
 
-    return {
-        "division": pd.Series([_division(t) for t in home], index=df.index),
-        "conference": pd.Series([_conference(t) for t in home], index=df.index),
-        "division_matchup": pd.Series(
-            [
-                UNCLASSIFIED
-                if h is None or a is None
-                else f"{_division(h)} at home vs {_division(a)}"
-                for h, a in zip(home, away)
-            ],
-            index=df.index,
-        ),
-        # Whether the two sides share a conference. Conference games are the
-        # schedule the ratings were mostly built on; non-conference ones are
-        # the games a program chose, which is where a home team that booked a
-        # visitor from far away, or from a tier below, collects whatever the
-        # model doesn't know about that. On ncaafb the early-season home bias
-        # lives entirely here: FBS-vs-FBS non-conference games in weeks 1-4
-        # run +1.3, conference games in the same weeks -0.9.
-        "conference_game": pd.Series(
-            [_conference_game(h, a) for h, a in zip(home, away)], index=df.index
-        ),
-    }
+
+def conference_label(tier: Tier) -> str:
+    # An independent has no conference, and gets its division rather than a
+    # shared "None" bucket that would pool schools with nothing in common.
+    # The same fallback `Tier.__str__` makes.
+    if tier is None:
+        return UNCLASSIFIED
+    return tier[0] if tier[1] is None else f"{tier[0]} / {tier[1]}"
 
 
 def _conference_game(
