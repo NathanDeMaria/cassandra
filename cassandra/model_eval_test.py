@@ -268,10 +268,7 @@ def test_rebuild_priors_clears_the_file_save_refuses_to_overwrite(
 
 def _eval_rows(league: str, n_spread: int, models=("a", "b")) -> pd.DataFrame:
     return pd.DataFrame(
-        [
-            {"league": league, "model": m, "n_spread_games": n_spread}
-            for m in models
-        ]
+        [{"league": league, "model": m, "n_spread_games": n_spread} for m in models]
     )
 
 
@@ -283,7 +280,10 @@ def test_a_league_losing_most_of_its_lines_is_reported() -> None:
 
 
 def test_coverage_growing_is_not_a_drop() -> None:
-    assert spread_coverage_drops(_eval_rows("ncaafb", 184), _eval_rows("ncaafb", 260)) == []
+    assert (
+        spread_coverage_drops(_eval_rows("ncaafb", 184), _eval_rows("ncaafb", 260))
+        == []
+    )
 
 
 def test_a_league_with_barely_any_lines_is_not_evidence() -> None:
@@ -339,3 +339,32 @@ def test_no_market_prices_is_nan_and_a_zero_count() -> None:
         assert metrics["n_market_games"] == 0
         assert np.isnan(metrics["market_brier_score"])
         assert np.isnan(metrics["market_game_brier_score"])
+
+
+def test_rebuild_priors_can_keep_its_file_out_of_the_shared_directory(
+    monkeypatch, tmp_path
+) -> None:
+    """A local replay's warm-up must not delete the file other replays read."""
+    shared = _priors_dir(monkeypatch, tmp_path)
+    (shared / "test_league_GlickoPredictor_priors.json").write_text('{"x": 1600.0}')
+    private = tmp_path / "mine" / "priors.json"
+
+    built = rebuild_priors(
+        GlickoPredictor,
+        "test_league",
+        {},
+        _one_season(60),
+        OddsDatabase({}),
+        priors_path=private,
+    )
+
+    assert built is True
+    assert private.exists()
+    assert (shared / "test_league_GlickoPredictor_priors.json").read_text() == (
+        '{"x": 1600.0}'
+    )
+    manager = opponent_prior.OpponentPriorManager("test_league", path=private)
+    warm = GlickoPredictor("test_league", opponent_prior_manager=manager)
+    # Warm from the file it built, and not from the shared one's "x".
+    assert warm.ratings != {}
+    assert "x" not in warm.ratings

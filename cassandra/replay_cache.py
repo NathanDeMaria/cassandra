@@ -268,6 +268,11 @@ async def load_replay(
         league,
         GENERATED_DIR / league / f"{model}_diagnose_state.json",
         priors_from=_priors_config(league, model),
+        # Its own priors file, beside the replay, not the class's shared one
+        # under ~/.cassandra/predictor/data: the warm-up deletes and rewrites
+        # the file it builds, and on a laptop running several sessions the
+        # shared one is being read by somebody else's replay.
+        priors_path=REPLAY_DIR / league / f"{model}.priors.json",
     )
     _keep(league, model, key, frame, replayed_at)
     return Replay(league, model, frame, replayed_at, config, from_cache=False)
