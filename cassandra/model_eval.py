@@ -1,7 +1,7 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pandas as pd
 from endgame.types import Season
@@ -12,6 +12,7 @@ from .odds import OddsDatabase
 from .predictor import OptimizationConfig, Predictor, load_predictor
 from .predictor import frame as frames
 from .predictor.config import load_predictor_class
+from .predictor.opponent_prior import OpponentPriorManager
 from .prob_to_margin import (
     BaseProbToMarginFitter,
     BaseProbToMarginPredictor,
@@ -117,12 +118,25 @@ def prior_path(predictor_class: type[Predictor], league: str) -> Path | None:
     return None if manager is None else manager._prior_path
 
 
+def _prior_override(league: str, priors_path: Path | None) -> dict[str, Any]:
+    """Constructor arguments that point a predictor's priors at `priors_path`.
+
+    Empty for None, which leaves the class's shared default in place. Only
+    called for a class `prior_path` says has priors: the others don't take
+    the argument.
+    """
+    if priors_path is None:
+        return {}
+    return {"opponent_prior_manager": OpponentPriorManager(league, path=priors_path)}
+
+
 def rebuild_priors(
     predictor_class: type[Predictor],
     league: str,
     params: Mapping[str, float | str],
     seasons: Sequence[Season],
     odds_db: OddsDatabase,
+    priors_path: Path | None = None,
 ) -> bool:
     """Replay once with callbacks on, so the priors a fit started from exist.
 
@@ -141,16 +155,24 @@ def rebuild_priors(
 
     Returns whether anything was built, so a caller can skip the second
     replay for a class that has no priors to build.
+
+    `priors_path` builds the file there instead of at the class's shared
+    location under ~/.cassandra/predictor/data. A Batch container has that
+    location to itself; a laptop running several sessions does not, and a
+    rebuild there deletes the file under every other replay reading it.
     """
     path = prior_path(predictor_class, league)
     if path is None:
         return False
+    path = priors_path or path
     # `OpponentPriorManager.save` refuses to overwrite, so a rerun in a warm
     # container -- or a second model of the same class in one evaluate --
     # is an instant ValueError unless the old file goes first. `jobs.py`
     # clears it for the same reason before an optimize child runs.
     path.unlink(missing_ok=True)
-    predictor = predictor_class(league, **params)
+    predictor = predictor_class(
+        league, **params, **_prior_override(league, priors_path)
+    )
     for _ in join_with_odds(predictor, seasons, odds_db, post_callbacks=True):
         pass
     return True
@@ -161,6 +183,7 @@ async def get_predictions(
     league: str,
     state_path: Path,
     priors_from: Path | None = None,
+    priors_path: Path | None = None,
 ) -> pd.DataFrame:
     """Run a predictor over a league's games. The expensive, once-per-predictor step.
 
@@ -174,6 +197,9 @@ async def get_predictions(
     evaluate number disagree with the target its own fit reported. `None`
     keeps that old behaviour, for a caller replaying a config that no
     search produced.
+
+    `priors_path` keeps the warm-up's file there rather than at the shared
+    default -- see `rebuild_priors`.
     """
     if priors_from is None:
         predictor = load_predictor(predictor_config_path)
@@ -187,16 +213,20 @@ async def get_predictions(
     seasons, odds_db = await read_league(league)
     config = OptimizationConfig.model_validate_json(priors_from.read_text())
     weeks = frames.weeks_per_season([len(season.weeks) for season in seasons])
-    rebuild_priors(
+    built = rebuild_priors(
         load_predictor_class(config.predictor_class),
         league,
         frames.to_params(config.frame, config.fixed, weeks),
         seasons,
         odds_db,
+        priors_path=priors_path,
     )
     # Constructed *after* the warm-up, because the priors are read in
     # `__init__` and a predictor built before it would hold the old file.
-    predictor = load_predictor(predictor_config_path)
+    predictor = load_predictor(
+        predictor_config_path,
+        **(_prior_override(league, priors_path) if built else {}),
+    )
     df = pd.DataFrame(
         [
             asdict(prediction)
