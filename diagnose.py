@@ -43,12 +43,11 @@ question a feature has to answer, and the only one that pays.
 import argparse
 import asyncio
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 
 from cassandra.constants import CASSANDRA_HOME
-from cassandra.model_eval import get_predictions
+from cassandra.replay_cache import load_replay
 from cassandra.residuals import (
     AxisReport,
     add_residuals,
@@ -59,23 +58,7 @@ from cassandra.residuals import (
     standard_axes,
 )
 
-# The same two directories `evaluate_models` reads, and the same precedence:
-# a freshly optimized model wins over the checked-in baseline of that name.
-_AUTHORED_DIR = Path(__file__).parent / "models"
-_GENERATED_DIR = CASSANDRA_HOME / "models"
 _DIAGNOSTICS_DIR = CASSANDRA_HOME / "diagnostics"
-
-
-def _config_path(league: str, model: str) -> Path:
-    generated = _GENERATED_DIR / league / f"{model}_result.json"
-    if generated.exists():
-        return generated
-    authored = _AUTHORED_DIR / league / f"{model}.json"
-    if authored.exists():
-        return authored
-    raise FileNotFoundError(
-        f"no config for {league}/{model}: looked at {generated} and {authored}"
-    )
 
 
 def _print_report(report: AxisReport, margin_mae: float) -> None:
@@ -147,20 +130,18 @@ def _print_home_field_by(scored: pd.DataFrame, division: pd.Series) -> None:
         )
 
 
-async def _main(league: str, model: str, permutations: int, top_teams: int) -> None:
-    # Under the search's own priors, like `evaluate_models`. Without this a
-    # diagnostic reads whichever priors file the machine happened to have --
-    # which on one laptop meant `GlickoPredictor` replayed warm and
-    # `CompoundGlickoPredictor` cold, and the residuals were compared across
-    # a difference in starting information rather than in modelling.
-    authored = _AUTHORED_DIR / league / f"{model}.json"
-    predictions = await get_predictions(
-        _config_path(league, model),
-        league,
-        _GENERATED_DIR / league / f"{model}_diagnose_state.json",
-        priors_from=authored if authored.exists() else None,
-    )
-    scored = add_residuals(predictions)
+async def _main(
+    league: str, model: str, permutations: int, top_teams: int, refresh: bool
+) -> None:
+    # Under the search's own priors, like `evaluate_models` -- `load_replay`
+    # replays that way. Without it a diagnostic reads whichever priors file
+    # the machine happened to have, which on one laptop meant
+    # `GlickoPredictor` replayed warm and `CompoundGlickoPredictor` cold, and
+    # the residuals were compared across a difference in starting
+    # information rather than in modelling.
+    replay = await load_replay(league, model, refresh=refresh)
+    print(replay.describe())
+    scored = add_residuals(replay.predictions)
     margin_mae = scored["margin_residual"].abs().mean()
     print(f"{league}/{model}: {len(scored)} games, margin MAE {margin_mae:.4f}")
 
@@ -234,5 +215,12 @@ if __name__ == "__main__":
         default=10,
         help="how many teams from each end of a per-team table to print",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="replay even if the cached replay is current",
+    )
     args = parser.parse_args()
-    asyncio.run(_main(args.league, args.model, args.permutations, args.top_teams))
+    asyncio.run(
+        _main(args.league, args.model, args.permutations, args.top_teams, args.refresh)
+    )

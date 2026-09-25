@@ -193,3 +193,7 @@ class OddsDatabase:
     def snapshots(self, game_id: str) -> list[OddsSnapshot]:
         """Every read of this game's prices, oldest first. Empty if never priced."""
         return self._history.get(game_id, [])
+
+    def history(self) -> dict[str, list[OddsSnapshot]]:
+        """Every game's reads, the whole series -- what `from_history` rebuilds from."""
+        return self._history
