@@ -1,5 +1,6 @@
 import json
 from collections import Counter, defaultdict
+from pathlib import Path
 
 from endgame.types import Game
 
@@ -9,8 +10,13 @@ _PREDICTOR_DATA_DIR = CASSANDRA_HOME / "predictor" / "data"
 
 
 class OpponentPriorManager:
-    def __init__(self, league: str, model: str | None = None) -> None:
-        self._prior_path = (
+    def __init__(
+        self, league: str, model: str | None = None, path: Path | None = None
+    ) -> None:
+        # `path` is for a caller that must not share the default file -- a
+        # local replay whose warm-up would otherwise delete and rewrite the
+        # one every other process on the machine is reading from.
+        self._prior_path = path or (
             _PREDICTOR_DATA_DIR / f"{league}_{model + '_' if model else ''}priors.json"
         )
         self._opponent_counter: defaultdict[str, Counter[str]] = defaultdict(Counter)

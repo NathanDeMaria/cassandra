@@ -313,3 +313,32 @@ def test_the_best_covered_model_answers_for_the_league() -> None:
 def test_an_empty_table_has_nothing_to_compare() -> None:
     assert spread_coverage_drops(pd.DataFrame([]), _eval_rows("ncaafb", 1)) == []
     assert spread_coverage_drops(_eval_rows("ncaafb", 184), pd.DataFrame([])) == []
+
+
+def test_rebuild_priors_can_keep_its_file_out_of_the_shared_directory(
+    monkeypatch, tmp_path
+) -> None:
+    """A local replay's warm-up must not delete the file other replays read."""
+    shared = _priors_dir(monkeypatch, tmp_path)
+    (shared / "test_league_GlickoPredictor_priors.json").write_text('{"x": 1600.0}')
+    private = tmp_path / "mine" / "priors.json"
+
+    built = rebuild_priors(
+        GlickoPredictor,
+        "test_league",
+        {},
+        _one_season(60),
+        OddsDatabase({}),
+        priors_path=private,
+    )
+
+    assert built is True
+    assert private.exists()
+    assert (shared / "test_league_GlickoPredictor_priors.json").read_text() == (
+        '{"x": 1600.0}'
+    )
+    manager = opponent_prior.OpponentPriorManager("test_league", path=private)
+    warm = GlickoPredictor("test_league", opponent_prior_manager=manager)
+    # Warm from the file it built, and not from the shared one's "x".
+    assert warm.ratings != {}
+    assert "x" not in warm.ratings
