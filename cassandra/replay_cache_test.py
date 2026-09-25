@@ -34,7 +34,10 @@ def _frame() -> pd.DataFrame:
 def replays(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
 
-    async def fake(config, league, state_path, priors_from=None):
+    async def fake(config, league, state_path, priors_from=None, priors_path=None):
+        # Never the shared priors under ~/.cassandra/predictor/data.
+        assert priors_path is not None
+        assert priors_path.parent == replay_cache.REPLAY_DIR / league
         calls.append(league)
         return _frame()
 

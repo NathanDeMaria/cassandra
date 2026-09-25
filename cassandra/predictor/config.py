@@ -1,5 +1,6 @@
 import importlib
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -217,7 +218,12 @@ class PredictorConfig(BaseModel):
     objective: str = DEFAULT_OBJECTIVE
 
 
-def load_predictor(config_path: Path | str) -> Predictor:
+def load_predictor(config_path: Path | str, **overrides: Any) -> Predictor:
+    """The predictor a config describes; `overrides` are passed to it on top.
+
+    For constructor arguments a config can't carry -- an
+    `opponent_prior_manager` reading a private priors file, say.
+    """
     config = PredictorConfig.model_validate_json(Path(config_path).read_text())
     predictor_class = load_predictor_class(config.predictor_class)
-    return predictor_class(config.league, **config.params)
+    return predictor_class(config.league, **config.params, **overrides)
