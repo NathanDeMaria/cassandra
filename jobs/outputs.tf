@@ -25,6 +25,7 @@ output "job_role_arn" {
 #   gh variable set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw ci_plan_role_arn)"
 #   gh variable set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw ci_apply_role_arn)"
 #   gh variable set AWS_IMAGE_ROLE_ARN --body "$(terraform output -raw ci_image_role_arn)"
+#   gh variable set AWS_DIAGNOSE_ROLE_ARN --body "$(terraform output -raw ci_diagnose_role_arn)"
 
 output "ci_plan_role_arn" {
   description = "role-to-assume for plan jobs (any branch, any PR)"
@@ -39,4 +40,9 @@ output "ci_apply_role_arn" {
 output "ci_image_role_arn" {
   description = "role-to-assume for the image push (main only)"
   value       = aws_iam_role.ci_image.arn
+}
+
+output "ci_diagnose_role_arn" {
+  description = "role-to-assume for reading failed jobs and their logs (main only)"
+  value       = aws_iam_role.ci_diagnose.arn
 }

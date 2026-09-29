@@ -253,6 +253,58 @@ resource "aws_iam_role_policy_attachment" "ci_image" {
 
 
 # ------------------------------------------------------------------------------
+# Diagnose role: main only, and only enough to read why a job failed.
+#
+# What `.claude/skills/diagnose-failure/failures.py` calls, and nothing else:
+# list and describe jobs, and read their CloudWatch streams. No s3 -- the
+# queue name reaches the workflow as a variable rather than out of the shared
+# state -- no submit, cancel or terminate, and nothing on this stack's state.
+# An automated diagnosis that is wrong costs a bad issue comment; one that
+# could resubmit would cost queue time, so it can't.
+#
+# The Batch reads take no resource: `ListJobs` and `DescribeJobs` don't
+# support resource-level permissions, so "*" is the only thing IAM accepts.
+# They expose job metadata (names, commands, environment), not data.
+# ------------------------------------------------------------------------------
+
+resource "aws_iam_role" "ci_diagnose" {
+  name               = "${var.resource_name_prefix}-ci-diagnose"
+  description        = "Read failed Batch jobs and their logs from main of ${var.github_repository}"
+  assume_role_policy = data.aws_iam_policy_document.apply_assume_role.json
+}
+
+data "aws_iam_policy_document" "ci_diagnose" {
+  statement {
+    sid       = "ReadJobs"
+    effect    = "Allow"
+    actions   = ["batch:ListJobs", "batch:DescribeJobs"]
+    resources = ["*"]
+  }
+
+  # Only Batch's default group, which is where every cassandra container
+  # writes -- see `LOG_GROUP` in `.claude/skills/run-report/fetch_run.py`.
+  statement {
+    sid     = "ReadJobLogs"
+    effect  = "Allow"
+    actions = ["logs:GetLogEvents"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/batch/job:log-stream:*",
+    ]
+  }
+}
+
+resource "aws_iam_policy" "ci_diagnose" {
+  name        = "${var.resource_name_prefix}-ci-diagnose"
+  description = "Read-only: Batch job records and their /aws/batch/job log streams"
+  policy      = data.aws_iam_policy_document.ci_diagnose.json
+}
+
+resource "aws_iam_role_policy_attachment" "ci_diagnose" {
+  role       = aws_iam_role.ci_diagnose.name
+  policy_arn = aws_iam_policy.ci_diagnose.arn
+}
+
+# ------------------------------------------------------------------------------
 # Apply role: main only.
 # ------------------------------------------------------------------------------
 

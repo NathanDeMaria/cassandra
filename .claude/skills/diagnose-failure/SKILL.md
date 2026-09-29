@@ -1,187 +1,194 @@
 ---
 name: diagnose-failure
-description: Find out why an AWS Batch job failed -- a run stage, an optimize child, or the scheduled launcher -- down to a root cause, a local reproduction and a proposed fix. Use when a failure email arrives, when a run report shows FAILURES, when a scheduled run never appeared, or when asked why a job died, crashed, exited non-zero or was killed.
+description: Find out why an AWS Batch job failed -- a run stage, an optimize child, or the scheduled launcher -- and propose a fix, read-only. Use when a failure email arrives, when a run report shows FAILURES, when a scheduled run never appeared, or when asked why a job died, crashed, exited non-zero or was killed.
 argument-hint: "[job-id | job-name | run-id]"
+context: fork
+agent: general-purpose
+allowed-tools: Bash(make failures) Bash(make failures *) Bash(git log *) Bash(git show *) Bash(git diff *) Bash(git blame *) Bash(python3 .claude/skills/inspect-dependency/inspect_module.py *) Read Grep Glob
+disallowed-tools: Edit, Write, NotebookEdit, Agent, AskUserQuestion, WebFetch, WebSearch
 ---
 
 # Diagnosing a failed Batch job
 
-`run-report` answers "how did this run go"; this answers "why did this job
-die, and what fixes it". The difference matters in what you do: a report
-reads numbers and recommends tuning, a diagnosis ends in a root cause, a
-reproduction, and a change -- or in a clear statement that nothing in the
-repo is at fault.
+You find why a job failed and **propose** a fix. You change nothing: no
+edits, no commits, no submits, cancels or retries, no local runs of the
+pipeline. Everything you can do is a read, and the tools above are the
+whole of it -- if a step seems to need something else, say what and why in
+the report instead. This runs unattended too (see the end), so never stop
+to ask a question; state the assumption and carry on.
 
-Input: `$ARGUMENTS`. It is one of
+Input: `$ARGUMENTS` -- a job id (what the failure email carries), a job
+name (`cassandra-launcher`), a run id (`20260915-044450`), or nothing.
 
-- **a job id** (`3f2a…-…` or `3f2a…:7` for one array child) -- what the
-  `cassandra-batch-failures` SNS email carries. Start at step 2.
-- **a job name** (`cassandra-launcher`, `cassandra-optimize-20260915-044450`)
-  -- the newest job by that name. Start at step 2.
-- **a run id** (`20260915-044450`) or nothing -- start at step 1.
+## Tokens
 
-Needs `AWS_PROFILE` set to an SSO profile from `~/.aws/config`. If a call
-comes back with an expired-token error, say so and suggest `aws sso login`;
-don't diagnose from `--cached` without saying the data may be stale.
+The logs are huge and almost all noise: an optimize stream is hundreds of
+KB of probe table. Every read goes through a tool that condenses or
+narrows first.
 
-## 1. Find the job that actually broke
+- `make failures` output is the first thing you read and usually most of
+  what you need.
+- The full streams are saved under `logs/batch/jobs/`. Search them with
+  **Grep** (`output_mode: "content"`, `-C` of 3 or less, `head_limit` of 30
+  or less). **Never Read a log file** -- not even with a limit; Grep for
+  what you want to know instead.
+- Read source with `offset`/`limit` around the line a frame names (about
+  40 lines), not whole files. Grep for a name before opening a file to
+  look for it.
+- Don't read code at all for the failure kinds that aren't code (step 2).
 
-```bash
-make report ARGS=--list          # runs, newest first, plus launcher jobs
-make report ARGS=<run-id>        # the run's STAGES, INFRASTRUCTURE, FAILURES
-```
-
-Read only the status line, `STAGES`, `INFRASTRUCTURE` and `FAILURES`. Two
-rules pick the job to diagnose:
-
-- **`cascade:` names it.** Every stage after a failure is marked
-  `Dependent Job failed` and has no log. Those are casualties, never causes.
-  Diagnose the stage the cascade line names, and within it the failure
-  group with a traceback, not the one without.
-- **No run at all, or no run at the scheduled time, means the launcher.**
-  `--list` prints `Launcher jobs` separately. A `cassandra-launcher` that
-  FAILED submitted nothing, so `make report` has nothing to show; diagnose
-  the launcher job itself.
-
-Several failure groups under one stage with *different* exceptions are
-separate problems. Take them in DAG order (anchors, the sweeps, optimize,
-evaluate, publish): an upstream one can produce the downstream one.
-
-## 2. Get the job's own evidence
+## 1. Find the job that broke
 
 ```bash
-make job ARGS=<job-id>                 # or a job name, e.g. cassandra-launcher
-make job ARGS="<job-id> --lines 200"   # a longer tail
+make failures                          # last 24h: launcher failures and runs
+make failures ARGS="--since 72h"
+make failures ARGS=<run-id>
 ```
 
-`job_detail.py` prints the job's definition, image, command, memory and
-timeout, then **every attempt** with its exit code, Batch's reasons and a
-one-line classification, then the last attempt's log from its last
-`Traceback` to the end. The full stream of every attempt is saved to
-`logs/batch/jobs/<job-id>-attempt<N>.log`. For an array parent it groups
-the failed children by reason and details the first child of each group.
+This reads job records only, no logs. Each run lists its failed jobs by
+stage and kind, counts the `Dependent Job failed` casualties as `cascaded`
+(they are never the cause, and have no log), and ends with `next:` -- the
+job to look at: the first real failure in DAG order. A `LAUNCHER` line
+means the schedule fired and submitted nothing, so there is no run.
 
-Read those saved logs with the **Read tool**, one call per file, and only
-the part you need -- an optimize stream is mostly probe tables. Never
-`cat` a stream whole, and never loop over files in the shell.
+Given a job id or name, skip to:
 
-## 3. Classify
+```bash
+make failures ARGS=<job-id>            # or <job-id>:<index>, or a job name
+make failures ARGS="<job-id> --lines 80"
+```
 
-The reasons Batch gives decide which kind of problem this is before any
-code is read. Say which row it is, in so many words, before going further.
+That prints the job's definition, image, memory and timeout, one line per
+attempt with its exit code, Batch's reasons and a `[kind]`, and how long
+before the stop the log went quiet. The last attempt's log follows,
+condensed: from five lines before the last traceback to the end, with
+probe rows, repeated lines, repeated warnings and third-party traceback
+frames folded to counts. An array parent lists its failed children by kind
+and details the first of each.
 
-| evidence | what it is | where the fix lives |
+If it fails with an expired-token error, stop and report that (`aws sso
+login`, or the role in CI).
+
+## 2. Classify
+
+The `[kind]` decides how much further to go. Say which it is.
+
+| kind | what it means | go further? |
 |---|---|---|
-| `CannotPullImageManifestError`, no attempts, no log | the job definition names an image tag that isn't in ECR | a deploy: `make push TAG=<sha>` or the image workflow, then terraform. No model or code is implicated |
-| `CannotStartContainerError`, `ResourceInitializationError` | the container never started (secrets, network, execution role) | `jobs/*.tf` or the shared stack, not Python |
-| `OutOfMemoryError`, exit `137` with no traceback | the kernel killed it at the definition's memory | the stage's `*_memory` in `jobs/variables.tf`; or the code that grew -- see below |
-| `Host EC2 (instance …) terminated` on **every** attempt | spot reclaims spent the whole retry budget | nothing in the repo. Optimize children leave a checkpoint in the temp bucket under the job id; see `run-report` for resuming it |
-| `Job attempt duration exceeded timeout` | optimize's `optimize_timeout_seconds` (6 h) guard, or the launcher's 900 s | the config's `n_iter` / box, or a slowdown in the replay -- compare its wall time to the last good run's |
-| `Essential container in task exited`, exit `1`, a traceback | a Python exception | the code or data the traceback names -- step 4 |
-| `Dependent Job failed` | a casualty | go back to step 1 |
-| `Cancelled`/`Terminated` with a user reason | someone stopped it | nothing to fix; say who/why if the reason says |
+| `image not in ECR` | the job definition's tag was never pushed | no -- a deploy |
+| `container never started` | secrets, network or execution role | only `jobs/*.tf` |
+| `spot reclaim` on every attempt | spent all the retries on reclaims | no -- see `run-report` on resuming from the checkpoint |
+| `timeout` | optimize's 6 h guard, or the launcher's 900 s | the config's `n_iter` and the log's pace |
+| `out of memory` / `killed (137)` | the kernel killed it at the definition's memory | the log's last lines say what was loading |
+| `exit 1` with a traceback | a Python exception | yes -- step 3 |
+| `cancelled` / `terminated` | someone stopped it | no |
 
-Some patterns that have bitten before, and what they mean:
+Patterns worth knowing before reading any code:
 
-- **The same exception in every child of a league** is a data problem --
-  seasons, odds, an index a sweep writes -- not a model problem. One fix
-  brings them all back. Don't propose per-model edits.
+- **The same exception in every child of a league** is a data problem
+  (seasons, odds, a sweep's index), not a model problem. One fix, not one
+  per model.
 - **`OverlappingWeeksError`** (from `endgame`) is games grouped into the
-  wrong week for that league/season, upstream of any model config.
-  `/inspect-dependency` reads the pinned revision; the fix is in the data or
-  in `endgame` (then a pin bump in `pyproject.toml`), never a retune.
-- **`NoRegionError`, `AccessDenied`, an S3 `301` naming another region** in
-  the launcher or any stage are environment problems: `local.job_environment`
-  and the job role in `jobs/main.tf`. They read as "no run happened" when
-  it's the launcher.
-- **A `KeyError`/`ValueError` naming a model or parameter in the launcher or
-  an optimize child** after a `models/` change usually means the manifest
-  and the image disagree: the launcher sized the array against one
-  `models/` directory, and `CASSANDRA_BATCH_MANIFEST` pins the names. Check
-  the image tag against the commit that changed `models/`.
+  wrong week, upstream of any config. The fix is in data or in `endgame`.
+- **`NoRegionError`, `AccessDenied`, an s3 `301` naming another region**
+  are environment problems: `local.job_environment` or the job role in
+  `jobs/main.tf`. In the launcher they read as "no run happened".
+- **A `KeyError`/`ValueError` naming a model after a `models/` change** is
+  usually the image and the manifest disagreeing -- check which commit the
+  image is (below) against the one that changed `models/`.
 - **An OOM that is new** on a stage that used to fit is a regression until
-  shown otherwise. Look at what changed in that stage's code path since the
-  last green run before recommending more memory.
+  shown otherwise; say what grew rather than only proposing more memory.
+- **`last output` long before the stop** on a timeout or OOM means it was
+  stuck in one step, and the last line names it.
 
-**Which code ran.** The image line says the tag. A short SHA names the
-commit; `git log -1 <sha>`. `latest` is whatever `main` was when the image
-workflow last pushed -- compare the job's start time with `git log main`,
-and say that the commit is inferred. Read and reproduce against *that*
-commit (`git worktree add` or `git stash` + checkout), not whatever this
-branch happens to be on: a bug already fixed on the branch is a deploy
-problem, not a code one.
+## 3. Read the code that ran
 
-## 4. Reproduce locally (tracebacks only)
+The image line gives the tag. A short SHA is the commit. `latest` is `main`
+as of the last image push -- take the newest `git log main` commit before
+the job started and say the commit is inferred.
 
-Every stage is runnable on its own, and `--upload=False` keeps s3
-untouched. Reproduce with the same scope the failing job had -- the
-`command` line from step 2, plus its league/model from the child's name:
+Read that commit, not whatever is checked out. First check whether it
+matters:
 
 ```bash
-poetry run python jobs.py anchors  --league ncaafb --upload=False
-poetry run python jobs.py qb_out   --league nfl --upload=False
-poetry run python jobs.py optimize --league nfl --model glicko_full --upload=False
-poetry run python jobs.py evaluate --league nfl --upload=False
-poetry run python jobs.py publish  --league nfl --upload=False
-poetry run python jobs.py submit   --dry-run          # the launcher
+git diff --stat <sha> HEAD -- <path>
 ```
 
-An optimize reproduction does not need the whole search: most crashes are
-in data loading or the first replay, which the first probe reaches, so
-interrupt it once the probe table starts. If the crash is late in the
-search, lower `n_iter` in `models/<league>/<model>.json` for the
-reproduction and `git checkout` the file afterwards -- never commit it.
+Empty means the working tree is the same file: Read it there with
+`offset`/`limit`. Otherwise `git log --oneline <sha>..HEAD -- <path>` says
+whether it was already fixed (then it's a deploy problem, not a code one),
+and `git show <sha>:<path>` is the version that ran -- but it prints the
+whole file, so Grep the working-tree copy for the line first and only
+fall back to it when the two differ where it matters.
 
-A reproduction that passes locally is a finding too: the difference is the
-environment (credentials, region, memory, the image's revision of a
-dependency). Say so, and name which.
+Walk the kept frames from the innermost cassandra one outwards. For a
+frame in `endgame`, `endgame_aws` or `call_it_what_you_want`, read the
+**pinned** revision with
+`python3 .claude/skills/inspect-dependency/inspect_module.py <module.Name>`,
+never a checkout of `main`.
 
-When the traceback ends in `endgame`, `endgame_aws` or
-`call_it_what_you_want`, use `/inspect-dependency` against the **pinned**
-revision before reading any checkout.
+Stop when you can say which input or line produced the exception and why.
+If the log doesn't say enough to decide between explanations, Grep the
+saved stream for the value or the step that would, before guessing.
 
-## 5. Fix, and prove it
+## 4. Propose
 
-A fix is the smallest change that makes the reproduction pass, plus a test
-that fails without it when the bug is in code (a `*_test.py` next to the
-module, the way the repo already does it). Then:
+The smallest change that removes the cause, as a unified diff against the
+current tree -- with a test next to the module (`<module>_test.py`) that
+fails without it, when the cause is code. Infra fixes are diffs to
+`jobs/*.tf` and take effect through the terraform workflow; code fixes
+take effect only once an image with them is pushed. Say which.
+
+Then the command a person would run to prove it before resubmitting --
+`poetry run python jobs.py <stage> --league <league> [--model <model>]
+--upload=False`, `make test` -- and the scoped resubmit after it, e.g.
+`make submit ARGS="--league nfl --model glicko_full --skip-publish"`.
+Propose them; never run them.
+
+## 5. Report
+
+This is what goes back to whoever invoked you, so it is the whole output:
+
+````
+FAILED <job-name> <job-id>  (run <run-id> | launcher)
+KIND: <row from step 2>
+ROOT CAUSE: <one or two sentences>
+EVIDENCE: <the exception line, the innermost cassandra frame, Batch's reason -- quoted>
+RAN: <image tag> -> <sha> (<exact | inferred>)
+CASUALTIES: <n cascaded | none>
+PROPOSED FIX: <one line on what and why, or "none -- <deploy | capacity | reclaim>">
+```diff
+<the diff, if any>
+```
+VERIFY: <the local command that would have caught it>
+THEN: <image push / terraform apply needed first?> <the scoped resubmit>
+CONFIDENCE: <high | medium | low> -- <what would change your mind>
+````
+
+Nothing else: no log excerpts past the evidence line, no narration of how
+you got there. Several independent root causes get one block each. If the
+cause couldn't be established, say what was ruled out and what evidence is
+missing.
+
+## Running it unattended
+
+The skill needs AWS read access for `make failures` and nothing else. The
+`cassandra-ci-diagnose` role (`jobs/oidc.tf`) is exactly that:
+`batch:ListJobs`, `batch:DescribeJobs`, `logs:GetLogEvents` on
+`/aws/batch/job`. Set `CASSANDRA_JOB_QUEUE` and `AWS_REGION` in place of
+`~/.aws-batch/config.json`, then:
 
 ```bash
-make check      # ruff + ty, what CI runs
-make test
+make failures ARGS="--ids --since 24h"      # root-cause job ids, one per line; empty if none
+claude -p "/diagnose-failure <job-id>" \
+  --permission-mode dontAsk \
+  --allowedTools "Bash(make failures) Bash(make failures *) Bash(git log *) Bash(git show *) Bash(git diff *) Bash(git blame *) Bash(python3 .claude/skills/inspect-dependency/inspect_module.py *) Read Grep Glob" \
+  --disallowedTools "Edit Write NotebookEdit Agent AskUserQuestion WebFetch WebSearch"
 ```
 
-Infra fixes (memory, timeout, IAM, env vars) are edits to `jobs/*.tf`;
-they take effect through the terraform workflow, not an image push, and
-the report should say so.
-
-**Never resubmit, cancel or retry a job on your own.** A resubmission
-spends queue time and money; propose the scoped command and let the user
-run it:
-
-```bash
-make submit ARGS="--league nfl --model glicko_full --skip-evaluate --skip-publish"
-make submit ARGS="--skip-optimize --skip-evaluate"   # the daily republish
-```
-
-A fix to code only reaches Batch once an image with it is pushed and the
-job definition points at it -- mention that when proposing the rerun.
-
-## 6. Report
-
-```
-FAILED <job-name> (<job-id>)  in run <run-id> | launcher
-ROOT CAUSE: <one sentence: what broke and why>
-KIND: <row from the step-3 table>
-EVIDENCE: <the exception line and the innermost cassandra frame, or Batch's reason, quoted>
-RAN: image <tag> -> commit <sha> (<exact | inferred from time>)
-CASUALTIES: <what cascaded from it, as a count, or "none">
-REPRODUCED: <the command, and whether it failed the same way | not applicable>
-FIX: <the change made, with files, and the test | the change proposed | none needed>
-NEXT: <the scoped resubmit command, and whether an image push or terraform apply must come first>
-```
-
-Quote the real exception and reasons. Don't paste whole tracebacks or log
-chunks into the report; the saved log path is enough for anyone who wants
-the rest. If the root cause couldn't be established, say what was ruled
-out and what evidence is missing rather than guessing.
+`dontAsk` denies anything not pre-approved instead of waiting on a prompt.
+The two lists repeat the frontmatter's on purpose: the docs don't promise
+that a skill's tool lists carry into its forked context, and the CLI flags
+hold for the whole process either way. Keep them in step with the
+frontmatter. The credentials are the harder ceiling: whatever the tools,
+the role can't write to anything.

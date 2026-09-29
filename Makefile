@@ -20,11 +20,11 @@ report:
 	poetry run python .claude/skills/run-report/summarize_run.py $(ARGS)
 
 
-# Everything Batch knows about one failed job: every attempt's reasons and
-# the log from its last traceback. Takes a job id (the failure email has
-# one) or a job name, e.g. `make job ARGS=cassandra-launcher`.
-job:
-	poetry run python .claude/skills/diagnose-failure/job_detail.py $(ARGS)
+# Failed Batch jobs from the last day, root causes first, without fetching a
+# log. Pass a job id (the failure email has one) or a job name for that job's
+# attempts and a condensed log tail, e.g. `make failures ARGS=cassandra-launcher`.
+failures:
+	poetry run python .claude/skills/diagnose-failure/failures.py $(ARGS)
 
 
 # Slice one model's residuals to see where it's wrong, e.g.
@@ -103,4 +103,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report job diagnose publish build push _ecr_login submit
+.PHONY: lint check test report failures diagnose publish build push _ecr_login submit
