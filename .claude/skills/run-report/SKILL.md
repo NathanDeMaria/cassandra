@@ -65,6 +65,10 @@ node's real state. Three that don't exist locally and mean different things:
 report names the stage that actually broke. Report that one; the twenty-one casualties
 behind it are noise. Anchors failing takes the whole run with it.
 
+To root-cause a failure rather than summarize it -- every attempt's
+reasons, the traceback, a local reproduction and a fix -- hand it to
+`/diagnose-failure <job-id>`.
+
 **A failed launcher means no run exists.** If `--list` shows a launcher job (e.g.
 `cassandra-publish-daily`) that FAILED and no run beside it, the schedule fired and the
 submission died — check that job, not the queue.

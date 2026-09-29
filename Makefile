@@ -20,6 +20,13 @@ report:
 	poetry run python .claude/skills/run-report/summarize_run.py $(ARGS)
 
 
+# Everything Batch knows about one failed job: every attempt's reasons and
+# the log from its last traceback. Takes a job id (the failure email has
+# one) or a job name, e.g. `make job ARGS=cassandra-launcher`.
+job:
+	poetry run python .claude/skills/diagnose-failure/job_detail.py $(ARGS)
+
+
 # Slice one model's residuals to see where it's wrong, e.g.
 # `make diagnose ARGS="--league nfl --model margin_blend"`. Replays the model
 # once, so it costs about what one `evaluate` child does.
@@ -96,4 +103,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose publish build push _ecr_login submit
+.PHONY: lint check test report job diagnose publish build push _ecr_login submit
