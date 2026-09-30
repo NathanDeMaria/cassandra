@@ -14,6 +14,8 @@ from .betting import (
     line_windows,
     moneyline_bets,
     moneyline_calibration,
+    moneyline_clv,
+    moneyline_clv_by_edge,
     no_vig_home_probability,
     previous_game_end,
     record,
@@ -286,3 +288,70 @@ def test_market_baselines_take_every_favorite_or_every_underdog() -> None:
     assert table.loc["every favorite", "units"] == pytest.approx(1 / 3 - 1)
     assert table.loc["every underdog", "units"] == pytest.approx(2.5 - 1)
     assert table.loc["every favorite", "n_favorites"] == 2
+
+
+def _moneyline_lines(rows) -> pd.DataFrame:
+    """A `line_windows` frame from (prob, entry home/away, close home/away, won)."""
+    return pd.DataFrame(
+        [
+            {
+                "game_id": str(i),
+                "team1_win_prob": prob,
+                "home_score": 1 if home_won else 0,
+                "away_score": 0 if home_won else 1,
+                LineColumns.ENTRY_HOME_ML: entry[0],
+                LineColumns.ENTRY_AWAY_ML: entry[1],
+                LineColumns.CLOSE_HOME_ML: close[0],
+                LineColumns.CLOSE_AWAY_ML: close[1],
+            }
+            for i, (prob, entry, close, home_won) in enumerate(rows)
+        ]
+    )
+
+
+def test_moneyline_clv_is_the_market_moving_toward_the_models_side() -> None:
+    lines = _moneyline_lines(
+        [
+            # Model likes home (0.60 vs an even market); the close moves to
+            # -150/+150 (0.6 no-vig), all the way to the model: +0.10.
+            (0.60, (100, -100), (-150, 150), True),
+            # Model likes away (0.40 home vs even); the market moves to home
+            # -150, away from the model: -0.10, and the bet lost.
+            (0.40, (100, -100), (-150, 150), True),
+        ]
+    )
+
+    bets = moneyline_clv(lines).set_index("game_id")
+
+    assert bets.loc["0", "bet_home"] and not bets.loc["1", "bet_home"]
+    assert bets["clv_probability"].to_numpy() == pytest.approx([0.10, -0.10])
+    assert bets["edge_probability"].to_numpy() == pytest.approx([0.10, 0.10])
+    # A unit on +100 wins 1; the away bet lost its stake.
+    assert bets["profit_entry"].to_numpy() == pytest.approx([1.0, -1.0])
+
+
+def test_moneyline_clv_needs_both_sides_at_both_reads() -> None:
+    lines = _moneyline_lines(
+        [
+            (0.6, (100, None), (-150, 150), True),
+            (0.6, (100, -100), (None, 150), True),
+            (0.6, (100, -100), (-150, 150), True),
+        ]
+    )
+
+    assert list(moneyline_clv(lines)["game_id"]) == ["2"]
+
+
+def test_moneyline_clv_buckets_by_edge() -> None:
+    lines = _moneyline_lines(
+        [
+            (0.51, (100, -100), (100, -100), True),
+            (0.62, (100, -100), (-150, 150), False),
+        ]
+    )
+
+    table = moneyline_clv_by_edge(moneyline_clv(lines))
+
+    assert list(table["edge"]) == ["0.00-0.02", "0.10-1.00"]
+    assert list(table["n"]) == [1, 1]
+    assert table["roi_entry"].to_numpy() == pytest.approx([1.0, -1.0])

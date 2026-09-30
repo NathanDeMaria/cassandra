@@ -2,28 +2,40 @@
 
     python betting.py --league ncaafb --model glicko_full
     python betting.py --league nfl --model glicko_full --season 2026
+    python betting.py --league mens --model glicko_full --book kalshi
 
-Two reports, both on the games the odds pulls have a line for -- which is
-this season, since the pulls started in August 2026. See `cassandra.betting`
+Up to three reports, all on the games the book has a price for. `--book espn`, the
+default, is the odds pulls, which started in August 2026. `--book kalshi`
+and `--book polymarket` are the prediction markets gold-rush pulls (see
+`cassandra.markets`), which go back to the 2025 seasons and are read every
+hour -- but trade who wins, not the spread, so they get the moneyline
+reports only. Polymarket's get the close alone: its file has no quotes to
+tell an early price anyone could trade from an empty market's, so an entry
+read there grades noise (`markets.ENTRY_VENUES`). See `cassandra.betting`
 for what each number means and why it's there; the short version:
 
-- **Closing line value.** Each pick is made at the *entry* line, the first
-  read after both teams' previous game, and compared with the *close*. A
-  model that's ahead of the market gets positive CLV on average; the ATS
-  record at the entry line is what betting it would actually have done.
+- **Closing line value**, on `espn` only. Each pick is made at the
+  *entry* line, the first read after both teams' previous game, and
+  compared with the *close*. A model that's ahead of the market gets
+  positive CLV on average; the ATS record at the entry line is what
+  betting it would actually have done.
   `close lead` says how far before kickoff the close was read -- an hour
   at best, and a game the hourly pulls missed (every 2026 Saturday before
   09-19 came back cut to 25 events) "closes" at that morning's read, so
   its CLV is measured against a line hours stale.
 
-- **Moneyline.** The model's win probability against DraftKings' no-vig
-  probability: whose Brier is lower, and what the simple strategies on the
-  gap return. Read the favorite/underdog split before the ROI. An edge
-  that lives entirely on underdogs is a model less confident than the
-  market, not a model that knows more than it.
+- **Moneyline.** The model's win probability against the book's no-vig
+  probability (DraftKings' on `espn`): whose Brier is lower, and what the
+  simple strategies on the gap return. Read the favorite/underdog split
+  before the ROI. An edge that lives entirely on underdogs is a model less
+  confident than the market, not a model that knows more than it.
 
-The per-game table behind both lands at `~/.cassandra/betting/`, one csv per
-league and model, for anything this doesn't print.
+- **Moneyline CLV.** The first half again, on probability: the model's
+  side at the entry read's no-vig price, and how far the close moved
+  toward it. Every book with moneylines has it, markets included.
+
+The per-game table behind them lands at `~/.cassandra/betting/`, one csv per
+league, model and book, for anything this doesn't print.
 """
 
 import argparse
@@ -40,10 +52,13 @@ from cassandra.betting import (
     line_windows,
     moneyline_bets,
     moneyline_calibration,
+    moneyline_clv,
+    moneyline_clv_by_edge,
     record,
     spread_bets,
 )
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.markets import ENTRY_VENUES, VENUES, market_database
 from cassandra.model_eval import DEFAULT_FITTERS, score_predictions
 from cassandra.odds import OddsDatabase
 from cassandra.predictor import load_predictor
@@ -116,8 +131,31 @@ def _print_clv(lines: pd.DataFrame) -> None:
     )
 
 
-def _print_moneyline(lines: pd.DataFrame) -> None:
-    for at in ("close", "entry"):
+def _print_moneyline_clv(lines: pd.DataFrame) -> None:
+    bets = moneyline_clv(lines)
+    print(
+        f"\n--- moneyline CLV ({len(bets)} games priced both sides at entry and close)"
+    )
+    if bets.empty:
+        return
+    clv = bets["clv_probability"]
+    print(
+        f"  CLV: mean {clv.mean():+.4f} prob/bet, "
+        f"positive {(clv > 0).mean():.1%}, negative {(clv < 0).mean():.1%}, "
+        f"unmoved {(clv == 0).mean():.1%}"
+    )
+    print("\n  by the model's edge over the entry's no-vig price:")
+    print(
+        _indent(
+            moneyline_clv_by_edge(bets).to_string(
+                index=False, float_format="{:.3f}".format
+            )
+        )
+    )
+
+
+def _print_moneyline(lines: pd.DataFrame, reads: tuple[str, ...]) -> None:
+    for at in reads:
         calibration = moneyline_calibration(lines, at)
         print(
             f"\n--- moneyline at {at} ({calibration['n']:.0f} games priced both "
@@ -142,12 +180,18 @@ def _indent(text: str) -> str:
     return "\n".join(f"  {line}" for line in text.splitlines())
 
 
-async def _main(league: str, model: str, season: int | None) -> None:
+async def _main(league: str, model: str, season: int | None, book: str) -> None:
     config = _config_path(league, model)
     bucket = Config.init_from_file().bucket
-    print(f"{league}/{model} from {config}")
-    print(f"loading odds and {league} seasons from s3://{bucket}")
-    odds_db = await OddsDatabase.from_s3(bucket)
+    print(f"{league}/{model} from {config}, priced on {book}")
+    print(f"loading {book} prices and {league} seasons from s3://{bucket}")
+    if book == "espn":
+        odds_db = await OddsDatabase.from_s3(bucket)
+    else:
+        # Only the lines differ by book. The replay and the margin fit are
+        # the same whichever one is read -- the fit trains on every game's
+        # result, not on a line -- so the picks graded are the same picks.
+        odds_db = await market_database(bucket, book, league)
     seasons = await read_rated_seasons(league, bucket)
     predictor = load_predictor(config)
     predictions = pd.DataFrame(
@@ -165,16 +209,30 @@ async def _main(league: str, model: str, season: int | None) -> None:
     lines = line_windows(predictions, odds_db)
     if season is not None:
         lines = lines[lines["year"] == season]
+    # A market read has no spread, so there it's the read that counts.
+    entry = LineColumns.ENTRY_SPREAD if book == "espn" else LineColumns.ENTRY_READ_AT
     print(
         f"{len(predictions)} games replayed, {len(lines)} with a line read "
-        f"before kickoff, {lines[LineColumns.ENTRY_SPREAD].notna().sum()} of those "
+        f"before kickoff, {lines[entry].notna().sum()} of those "
         "with one read after both teams' previous game"
     )
-    _print_clv(lines)
-    _print_moneyline(lines)
+    if book == "espn":
+        _print_clv(lines)
+    else:
+        print(f"\n--- no spreads on {book}: it trades who wins, so moneyline only")
+    if book == "espn" or book in ENTRY_VENUES:
+        _print_moneyline(lines, ("close", "entry"))
+        _print_moneyline_clv(lines)
+    else:
+        _print_moneyline(lines, ("close",))
+        print(
+            f"\n--- no entry or CLV on {book}: its early prices can't be told "
+            "from an empty market's (see cassandra.markets.ENTRY_VENUES)"
+        )
 
     _BETTING_DIR.mkdir(parents=True, exist_ok=True)
-    out = _BETTING_DIR / f"{league}_{model}.csv"
+    suffix = "" if book == "espn" else f"_{book}"
+    out = _BETTING_DIR / f"{league}_{model}{suffix}.csv"
     # Every lined game, with the spread grading on the ones that have an
     # entry line -- a moneyline-only game still belongs in the table.
     graded = spread_bets(lines)
@@ -191,8 +249,14 @@ def main() -> None:
     parser.add_argument("--league", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--season", type=int, help="only this season's games")
+    parser.add_argument(
+        "--book",
+        choices=("espn", *VENUES),
+        default="espn",
+        help="whose prices to grade against (default: espn, the odds pulls)",
+    )
     args = parser.parse_args()
-    asyncio.run(_main(args.league, args.model, args.season))
+    asyncio.run(_main(args.league, args.model, args.season, args.book))
 
 
 if __name__ == "__main__":
