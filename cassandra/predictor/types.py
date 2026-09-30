@@ -63,11 +63,25 @@ class Rating(NamedTuple):
     existed is the same tuple it always was. Here rather than in a second
     property because this is the seam a release goes through, and a side
     rating that didn't go through it would be lost on the way back.
+
+    `rating` is the number the model steps, which is what `from_ratings`
+    rebuilds from. For most models it is also the number the model predicts
+    from; `blended` is set by the ones for which it isn't -- the models that
+    predict from `rating` and `units` combined -- and `overall` is whichever
+    the model predicts from, which is the number to rank on. Derived, so
+    `from_ratings` ignores it and a `Rating` built without it is the same
+    model.
     """
 
     rating: float
     rd: float | None = None
     units: Units | None = None
+    blended: float | None = None
+
+    @property
+    def overall(self) -> float:
+        """The rating the model predicts from: `blended` where there is one."""
+        return self.rating if self.blended is None else self.blended
 
 
 class GameControl(NamedTuple):
