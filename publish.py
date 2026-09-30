@@ -59,7 +59,9 @@ from endgame.types import Season
 from endgame_aws import Config, save_data_to_s3
 from pydantic import ValidationError
 
+from cassandra.columns import GameDfColumns
 from cassandra.constants import CASSANDRA_HOME
+from cassandra.markets import close_probabilities, market_databases
 from cassandra.model_eval import (
     DEFAULT_FITTERS,
     ScoredPredictions,
@@ -489,6 +491,7 @@ async def _publish_one(
     job: _Job,
     seasons: Sequence[Season],
     odds_db: OddsDatabase,
+    markets: Sequence[OddsDatabase],
     out: Path,
     upload: bool,
     bucket: str,
@@ -496,6 +499,10 @@ async def _publish_one(
     print(f"=== {job.league}/{job.model} ({job.config.predictor_class}) ===")
     history = RatingHistory()
     predictor, df = _predictions(job, seasons, odds_db, week_observer=history)
+    if not df.empty:
+        # For the metrics only: the market's close is what the model's Brier
+        # is compared against. `predictions.parquet` keeps its own columns.
+        df[GameDfColumns.MARKET_HOME_PROB] = close_probabilities(markets, df)
     # Written for parity with evaluate_models.py, which leaves the same file
     # for the same config. Nothing here reads it back -- the predictor is
     # already in hand -- so it's an artifact of the run, not a step in it.
@@ -613,9 +620,14 @@ async def _publish(
         # it as a pointer, and a page reading it beside an older release is
         # reading the same index that release was replayed with.
         await _publish_qb_out(league, out, upload, upload_bucket)
+        # Both venues' prices on this league's games, once for all its models.
+        # A league gold-rush doesn't pull reads as two empty books.
+        markets = await market_databases(bucket, league)
         for job in league_jobs:
             try:
-                await _publish_one(job, seasons, odds_db, out, upload, upload_bucket)
+                await _publish_one(
+                    job, seasons, odds_db, markets, out, upload, upload_bucket
+                )
             except RatingsUnsupported:
                 # Not a failure: a release is a table of team ratings, and
                 # FlatPredictor deliberately has none. It's a checked-in
