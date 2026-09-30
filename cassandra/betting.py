@@ -25,6 +25,12 @@ calibration comparison (`moneyline_calibration`: Brier, model vs market) is
 printed next to the ROI because it explains it -- a model less sure than the
 market "finds" edge on every underdog and loses on every one of them.
 
+**Moneyline CLV.** The spread CLV above, on the win probability instead:
+`moneyline_clv` takes the model's side at the entry read's no-vig price and
+measures how far the close's moved toward it. It's the number that works on
+any book with moneylines, including the prediction markets
+(`cassandra.markets`), which trade who wins and quote no spread at all.
+
 Everything here is a pure function of a predictions frame and an
 `OddsDatabase`; `betting.py` at the repo root does the I/O.
 """
@@ -55,6 +61,10 @@ KELLY_FRACTION = 0.25
 # model barely prefers is a coin flip; the buckets say whether the bigger
 # disagreements are the ones the market comes around to.
 EDGE_POINT_BUCKETS = ((0, 2), (2, 4), (4, 7), (7, float("inf")))
+
+# The same, for a moneyline: the model's probability minus the entry's no-vig
+# market probability on the side it likes.
+EDGE_PROBABILITY_BUCKETS = ((0, 0.02), (0.02, 0.05), (0.05, 0.10), (0.10, 1.0))
 
 
 def american_to_probability(price: pd.Series) -> pd.Series:
@@ -382,4 +392,74 @@ def moneyline_bets(lines: pd.DataFrame, at: str = "close") -> pd.DataFrame:
     rows.append(
         _strategy_row("every underdog", _side_bets(priced, at, ~home_favored), unit)
     )
+    return pd.DataFrame(rows)
+
+
+def moneyline_clv(lines: pd.DataFrame) -> pd.DataFrame:
+    """Grade the model's moneyline side at the entry read against the close.
+
+    Only games priced on both sides at both reads are kept. The side is the
+    one the model's probability beats the entry's no-vig market on, and the
+    columns added are:
+
+    - `bet_home`: that side.
+    - `edge_probability`: how far the model sat from the entry market on it.
+    - `clv_probability`: how far the no-vig market moved toward it by the
+      close. Positive means the market came round to the model.
+    - `won`, `profit_entry`: the result, and a unit stake's profit at the
+      entry price actually quoted for that side -- vig and fee included,
+      since that's what a bet there would have paid.
+    """
+    entry_home = lines[LineColumns.ENTRY_HOME_ML]
+    entry_away = lines[LineColumns.ENTRY_AWAY_ML]
+    close_home = lines[LineColumns.CLOSE_HOME_ML]
+    close_away = lines[LineColumns.CLOSE_AWAY_ML]
+    bets = lines[
+        entry_home.notna()
+        & entry_away.notna()
+        & close_home.notna()
+        & close_away.notna()
+    ].copy()
+    entry = no_vig_home_probability(
+        bets[LineColumns.ENTRY_HOME_ML], bets[LineColumns.ENTRY_AWAY_ML]
+    )
+    close = no_vig_home_probability(
+        bets[LineColumns.CLOSE_HOME_ML], bets[LineColumns.CLOSE_AWAY_ML]
+    )
+    model = bets[GameDfColumns.TEAM1_WIN_PROB]
+    bet_home = model > entry
+    home_won = bets["home_score"] > bets["away_score"]
+    bets["bet_home"] = bet_home
+    bets["edge_probability"] = (model - entry).abs()
+    bets["clv_probability"] = np.where(bet_home, close - entry, entry - close)
+    bets["won"] = np.where(bet_home, home_won, ~home_won)
+    payout = np.where(
+        bet_home,
+        american_payout(bets[LineColumns.ENTRY_HOME_ML]),
+        american_payout(bets[LineColumns.ENTRY_AWAY_ML]),
+    )
+    bets["profit_entry"] = np.where(bets["won"], payout, -1.0)
+    return bets
+
+
+def moneyline_clv_by_edge(bets: pd.DataFrame) -> pd.DataFrame:
+    """`moneyline_clv`'s grades, bucketed by the model's edge at entry."""
+    rows = []
+    for low, high in EDGE_PROBABILITY_BUCKETS:
+        bucket = bets[
+            (bets["edge_probability"] >= low) & (bets["edge_probability"] < high)
+        ]
+        if bucket.empty:
+            continue
+        rows.append(
+            {
+                "edge": f"{low:.2f}-{high:.2f}",
+                "n": len(bucket),
+                "clv_mean": bucket["clv_probability"].mean(),
+                "clv_positive": (bucket["clv_probability"] > 0).mean(),
+                "clv_negative": (bucket["clv_probability"] < 0).mean(),
+                "hit_rate": bucket["won"].mean(),
+                "roi_entry": bucket["profit_entry"].mean(),
+            }
+        )
     return pd.DataFrame(rows)
