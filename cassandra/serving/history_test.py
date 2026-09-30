@@ -14,7 +14,13 @@ import pytest
 from call_it_what_you_want import TeamNamer
 from endgame.types import Game, Season, Week
 
-from cassandra.predictor import EloPredictor, FlatPredictor, GlickoPredictor, Predictor
+from cassandra.predictor import (
+    EloPredictor,
+    FlatPredictor,
+    GlickoPredictor,
+    Predictor,
+    Rating,
+)
 from cassandra.predictor.opponent_prior import OpponentPriorManager
 from cassandra.save_predictions import generate_predictions
 
@@ -22,6 +28,7 @@ from .history import (
     HISTORY_COLUMNS,
     HISTORY_KEY,
     RatingHistory,
+    WeekSnapshot,
     history_bytes,
     history_path,
     read_history,
@@ -469,3 +476,31 @@ def test_a_written_artifact_is_readable_like_its_neighbours(tmp_path: Path) -> N
     write_history(frame, path)
 
     assert (path.stat().st_mode & 0o777) == (reference.stat().st_mode & 0o777)
+
+
+def test_a_row_carries_the_rating_the_model_predicts_from() -> None:
+    """The blend, where a model has one: the number a release ranks on.
+
+    Otherwise a week's movement would diff a release's blended rating
+    against a history of parent ratings.
+    """
+    history = RatingHistory()
+    history(
+        WeekSnapshot(
+            league=_LEAGUE,
+            year=2025,
+            week=1,
+            date=datetime(2025, 9, 1, tzinfo=timezone.utc),
+            ratings={
+                "Team A": Rating(1500.0, 80.0, blended=1530.0),
+                "Team B": Rating(1490.0, 80.0),
+            },
+            played=frozenset({"Team A", "Team B"}),
+            wins={"Team A": 1},
+            losses={"Team B": 1},
+        )
+    )
+
+    rating = history.frame(_RUN).set_index("team")["rating"]
+    assert rating["Team A"] == pytest.approx(1530.0)
+    assert rating["Team B"] == pytest.approx(1490.0)

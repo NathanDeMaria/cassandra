@@ -43,6 +43,10 @@ HISTORY_DTYPES: dict[str, str] = {
     "year": "int64",
     "week": "int64",
     "date": _parquet.DATETIME,
+    # The rating the model predicts from (`Rating.overall`), the number a
+    # release's `rating` is and a leaderboard ranks on -- so a week's
+    # movement diffs like with like. For the models that blend a
+    # scoreboard rating with offense and defense, that is the blend.
     "rating": "float64",
     # Glicko's rating deviation. Null for the Elo family rather than 0,
     # which is a meaningful and very wrong deviation -- the same choice
@@ -155,7 +159,7 @@ class RatingHistory:
                     "year": snapshot.year,
                     "week": snapshot.week,
                     "date": snapshot.date,
-                    "rating": rating.rating,
+                    "rating": rating.overall,
                     "rd": rating.rd,
                     "wins": snapshot.wins.get(team, 0),
                     "losses": snapshot.losses.get(team, 0),

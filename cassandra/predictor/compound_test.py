@@ -127,7 +127,8 @@ def test_unit_weight_zero_is_glicko_game_by_game(
 def _parents(predictor: CompoundGlickoPredictor) -> dict[str, Rating]:
     """The ratings without the sides, for comparing against a plain Glicko."""
     return {
-        team: rating._replace(units=None) for team, rating in predictor.ratings.items()
+        team: rating._replace(units=None, blended=None)
+        for team, rating in predictor.ratings.items()
     }
 
 

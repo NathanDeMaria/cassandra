@@ -398,41 +398,43 @@ def test_rebuilds_a_compound_predictor_that_predicts_the_same() -> None:
         )
 
 
-def _blend_in_rating(
-    predictor: CompoundGlickoPredictor, release: ModelRelease
-) -> ModelRelease:
-    """The release as a writer that ranks on the blend lays it out.
-
-    `rating` is what the model predicts from and `results` the rating it
-    steps -- by hand here, since nothing in this build writes it that way.
-    """
-    ratings = {
-        team: rating.model_copy(
-            update={
-                "rating": predictor._blended_rating(team),
-                "results": UnitRating(rating=rating.rating, rd=rating.rd or 0.0),
-            }
-        )
-        for team, rating in release.ratings.items()
-    }
-    rewritten = release.model_copy(update={"ratings": ratings})
-    return ModelRelease.model_validate_json(rewritten.model_dump_json())
-
-
-def test_rebuilds_from_results_when_rating_is_the_blend() -> None:
-    """The blend in `rating` is read as a blend, not as the rating to step.
-
-    Rebuilding from it instead would blend the sides in a second time, which
-    is the second assertion: the same release with `results` dropped -- what
-    a reader from before the field sees -- predicts something else.
+def test_a_blending_model_ranks_on_what_it_predicts_from() -> None:
+    """`rating` is the blend, `results` the parent, and the order agrees with
+    the model's own neutral-site predictions.
     """
     original = _compound()
-    params: dict[str, Any] = {"unit_weight": 3.0}
-    release = _blend_in_rating(
-        original, _snapshot(original, "CompoundGlickoPredictor", params)
-    )
+    release = _snapshot(original, "CompoundGlickoPredictor", {"unit_weight": 3.0})
+
+    for team, rating in release.ratings.items():
+        assert rating.results is not None
+        assert rating.rating == pytest.approx(original.ratings[team].overall)
+        assert rating.results.rating == pytest.approx(original.ratings[team].rating)
     a = release.ratings["Team A"]
     assert a.results is not None and a.rating != pytest.approx(a.results.rating)
+
+    for home, away in (
+        ("Team A", "Team B"),
+        ("Team B", "Team C"),
+        ("Team C", "Team A"),
+    ):
+        favored = release.ratings[home].rating > release.ratings[away].rating
+        prob = predict_matchup(original, home, away, neutral_site=True).team1_win_prob
+        assert (prob > 0.5) == favored
+
+
+def test_a_model_that_predicts_from_its_rating_has_no_results() -> None:
+    release = _snapshot(_trained(GlickoPredictor("test_league")), "GlickoPredictor", {})
+    assert all(rating.results is None for rating in release.ratings.values())
+
+
+def test_rebuilds_from_results_rather_than_the_blend() -> None:
+    """Rebuilding from the blend would blend the sides in a second time.
+
+    That is the second assertion: the same release with `results` dropped --
+    what a reader from before the field sees -- predicts something else.
+    """
+    original = _compound()
+    release = _snapshot(original, "CompoundGlickoPredictor", {"unit_weight": 3.0})
 
     rebuilt = release.rating_predictor()
     stale = release.model_copy(
@@ -455,14 +457,14 @@ def test_rebuilds_from_results_when_rating_is_the_blend() -> None:
 
 
 def test_a_release_written_before_results_still_reads() -> None:
-    """Its `rating` is the rating the model steps, as it always was."""
+    """Its `rating` is the parent, as every release before the field wrote it."""
     original = _compound()
     params: dict[str, Any] = {"unit_weight": 3.0}
     old = json.loads(
         _snapshot(original, "CompoundGlickoPredictor", params).model_dump_json()
     )
     for rating in old["ratings"].values():
-        rating.pop("results")
+        rating["rating"] = rating.pop("results")["rating"]
 
     release = ModelRelease.model_validate(old)
 

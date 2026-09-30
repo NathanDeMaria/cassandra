@@ -760,10 +760,14 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         On the team scale, `anchor + 2 (S / c) offset`, so a team's two
         sides average to its unit rating and a 1650 offense reads like a
         1650 team. Teams the index never had a play for carry none.
+
+        Every team carries its `blended` rating, the one `predict_game`
+        reads -- the parent itself for a team with no sides.
         """
         return {
             team: rating._replace(
-                units=self._absolute_units(team) if team in self._sides else None
+                units=self._absolute_units(team) if team in self._sides else None,
+                blended=self._blended(team).rating,
             )
             for team, rating in super().ratings.items()
         }

@@ -51,7 +51,8 @@ def _predictor(
 
 def _parents(predictor: UnitMarginGlickoPredictor) -> dict[str, Rating]:
     return {
-        team: rating._replace(units=None) for team, rating in predictor.ratings.items()
+        team: rating._replace(units=None, blended=None)
+        for team, rating in predictor.ratings.items()
     }
 
 
@@ -216,6 +217,34 @@ def test_the_units_pull_the_prediction_toward_what_they_saw(
         speaking.predict_game(neutral).team1_win_prob
         > silent.predict_game(neutral).team1_win_prob
     )
+
+
+def test_a_team_is_ranked_by_the_rating_it_is_predicted_from(
+    game: GameFactory,
+) -> None:
+    """A neutral-site tie leaves the parents level; only the blend can split them.
+
+    So a table sorted on the parent calls them even while the model favors
+    A, and `overall` -- what a release ranks on -- is the number that agrees
+    with the prediction.
+    """
+    predictor = _predictor({"g": LOPSIDED}, unit_weight=1.0)
+    predictor.update_game(game("A", "B", 7, 7, game_id="g")._replace(neutral_site=True))
+
+    a, b = predictor.ratings["A"], predictor.ratings["B"]
+    assert a.rating == pytest.approx(b.rating)
+    assert a.overall == a.blended and a.overall > b.overall
+    neutral = game("A", "B")._replace(neutral_site=True)
+    assert predictor.predict_game(neutral).team1_win_prob > 0.5
+
+
+def test_a_team_without_sides_is_blended_to_its_parent(game: GameFactory) -> None:
+    predictor = _predictor(unit_weight=1.0)
+    predictor.update_game(game("A", "B", 21, 7))
+
+    rating = predictor.ratings["A"]
+    assert rating.units is None
+    assert rating.blended == pytest.approx(rating.rating)
 
 
 def test_sides_go_out_on_the_team_scale_and_come_back(game: GameFactory) -> None:

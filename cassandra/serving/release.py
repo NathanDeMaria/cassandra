@@ -56,12 +56,10 @@ class TeamRating(BaseModel):
     leaves this None, and so does every release written before it existed,
     in whose `rating` the scoreboard rating already is.
 
-    Read before it is written: `rating_predictor` rebuilds from `results`
-    when a release carries it, so a consumer reading this build can take a
-    release whose `rating` is the blend without mistaking the blend for the
-    rating the model steps. A reader from before the field would do exactly
-    that and count the sides twice, which is why nothing writes it until the
-    readers have moved.
+    `rating_predictor` rebuilds from `results` when a release carries it,
+    since rebuilding from the blend would blend the sides in a second time.
+    A reader from before the field does exactly that, which is why the field
+    was read for a release before it was written.
     """
 
     rating: float
@@ -83,13 +81,28 @@ def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
     """
     return {
         team: TeamRating(
-            rating=rating.rating,
+            rating=rating.overall,
             rd=rating.rd,
+            results=_results(rating),
             offense=_unit_rating(rating.units.offense) if rating.units else None,
             defense=_unit_rating(rating.units.defense) if rating.units else None,
         )
         for team, rating in predictor.ratings.items()
     }
+
+
+def _results(rating: Rating) -> UnitRating | None:
+    """The scoreboard rating, where the model predicts from something else.
+
+    Only the blending models set `blended`, and they are all Glickos, so a
+    missing deviation there is a model that stopped keeping one -- raised
+    rather than written as a 0, which is a meaningful and very wrong one.
+    """
+    if rating.blended is None:
+        return None
+    if rating.rd is None:
+        raise ValueError("a blended rating needs the deviation of what it blends")
+    return UnitRating(rating=rating.rating, rd=rating.rd)
 
 
 def _unit_rating(unit: Unit) -> UnitRating:
