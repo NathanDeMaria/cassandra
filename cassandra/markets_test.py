@@ -10,6 +10,8 @@ from .betting import (
     no_vig_home_probability,
 )
 from .markets import (
+    close_probabilities,
+    close_probability,
     game_snapshots,
     history_from_days,
     kalshi_fee,
@@ -198,3 +200,68 @@ def test_a_book_too_wide_to_bet_is_no_price() -> None:
     [snapshot] = game_snapshots(game, "kalshi", FIELDS)
 
     assert snapshot.read_at == datetime.fromtimestamp(_hour(2), UTC)
+
+
+def _database(venue: str, game: dict) -> OddsDatabase:
+    return OddsDatabase.from_history(
+        history_from_days(venue, [{"fields": FIELDS, "games": [game]}])
+    )
+
+
+def test_the_close_is_the_last_two_sided_read_before_kickoff() -> None:
+    game = _game(
+        [
+            [_hour(3), 0.60, None, None, None],
+            [_hour(1), 0.70, None, None, None],
+            [_hour(-1), 0.99, None, None, None],
+        ],
+        [
+            [_hour(3), 0.40, None, None, None],
+            [_hour(1), 0.30, None, None, None],
+            [_hour(-1), 0.01, None, None, None],
+        ],
+    )
+
+    close = close_probability(_database("polymarket", game), "401", KICKOFF)
+
+    assert close == pytest.approx(0.70)
+
+
+def test_close_probabilities_take_the_first_venue_that_priced_the_game() -> None:
+    kalshi = _database(
+        "kalshi",
+        _game([[_hour(1), None, 0.6, 0.61, 1.0]], [[_hour(1), None, 0.38, 0.39, 1.0]]),
+    )
+    polymarket = OddsDatabase.from_history(
+        history_from_days(
+            "polymarket",
+            [
+                {
+                    "fields": FIELDS,
+                    "games": [
+                        _game([[_hour(1), 0.5, 0, 0, 0]], [[_hour(1), 0.5, 0, 0, 0]]),
+                        _game(
+                            [[_hour(1), 0.3, 0, 0, 0]],
+                            [[_hour(1), 0.7, 0, 0, 0]],
+                            game_id="402",
+                        ),
+                    ],
+                }
+            ],
+        )
+    )
+    games = pd.DataFrame(
+        {
+            "game_id": ["401", "402", "403"],
+            # Naive, as some season files store it: taken as UTC.
+            "date": [KICKOFF.replace(tzinfo=None)] * 3,
+        }
+    )
+
+    closes = close_probabilities([kalshi, polymarket], games)
+
+    kalshi_home = 0.61 + kalshi_fee(0.61)
+    kalshi_away = 0.39 + kalshi_fee(0.39)
+    assert closes[0] == pytest.approx(kalshi_home / (kalshi_home + kalshi_away))
+    assert closes[1] == pytest.approx(0.3)
+    assert pd.isna(closes[2])

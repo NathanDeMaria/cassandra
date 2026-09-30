@@ -313,3 +313,29 @@ def test_the_best_covered_model_answers_for_the_league() -> None:
 def test_an_empty_table_has_nothing_to_compare() -> None:
     assert spread_coverage_drops(pd.DataFrame([]), _eval_rows("ncaafb", 1)) == []
     assert spread_coverage_drops(_eval_rows("ncaafb", 184), pd.DataFrame([])) == []
+
+
+def test_scores_the_model_against_the_market_on_the_games_it_priced() -> None:
+    """The comparison is on the market's games, not the whole schedule.
+
+    Games 1 and 3 are priced: the market says 0.8 (team1 won) and 0.5
+    (team1 won), Briers 0.04 and 0.25. The model said 0.7 and 0.6 on them,
+    0.09 and 0.16. Game 2 is left out of both, though it's in `brier_score`.
+    """
+    games = _games().assign(market_home_prob=[0.8, float("nan"), 0.5])
+
+    metrics = score_predictions(games, _FixedMarginFitter(5.0)).metrics
+
+    assert metrics["n_market_games"] == 2
+    assert metrics["market_brier_score"] == pytest.approx((0.04 + 0.25) / 2)
+    assert metrics["market_game_brier_score"] == pytest.approx((0.09 + 0.16) / 2)
+    assert metrics["brier_score"] == pytest.approx((0.09 + 0.16 + 0.16) / 3)
+
+
+def test_no_market_prices_is_nan_and_a_zero_count() -> None:
+    for games in (_games(), _games().assign(market_home_prob=None)):
+        metrics = score_predictions(games, _FixedMarginFitter(5.0)).metrics
+
+        assert metrics["n_market_games"] == 0
+        assert np.isnan(metrics["market_brier_score"])
+        assert np.isnan(metrics["market_game_brier_score"])

@@ -167,7 +167,13 @@ class Metrics(BaseModel):
     consumer picking a default model wants a min, not a max.
 
     The optional fields are None for a league the odds database doesn't cover
-    at all. They're None rather than nan on purpose: `score_predictions`
+    at all, and the market ones for a league the prediction markets don't.
+
+    `market_brier_score` is the markets' own Brier at their close, and
+    `market_game_brier_score` the model's on the same `n_market_games` --
+    the pair to compare, since `brier_score` is over every game and the
+    markets price only some. A model that knows something the market
+    doesn't has the second below the first. They're None rather than nan on purpose: `score_predictions`
     returns nan there, and nan survives json.dumps as the literal `NaN`, which
     is not valid JSON and which browsers reject.
     """
@@ -179,6 +185,9 @@ class Metrics(BaseModel):
     market_margin_mae: float | None = None
     n_games: int
     n_spread_games: int = 0
+    market_brier_score: float | None = None
+    market_game_brier_score: float | None = None
+    n_market_games: int = 0
 
 
 def _no_nan(value: float) -> float | None:
@@ -198,6 +207,11 @@ def metrics_from_scored(metrics: dict[str, float]) -> Metrics:
         market_margin_mae=_no_nan(metrics["market_margin_mae"]),
         n_games=int(metrics["n_games"]),
         n_spread_games=int(metrics["n_spread_games"]),
+        market_brier_score=_no_nan(metrics.get("market_brier_score", math.nan)),
+        market_game_brier_score=_no_nan(
+            metrics.get("market_game_brier_score", math.nan)
+        ),
+        n_market_games=int(metrics.get("n_market_games", 0)),
     )
 
 

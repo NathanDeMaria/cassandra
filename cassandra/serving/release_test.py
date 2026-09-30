@@ -147,6 +147,9 @@ def test_metrics_map_nan_to_null_not_to_the_literal_nan() -> None:
     assert metrics.market_margin_mae is None
     assert metrics.spread_game_margin_mae is None
     assert metrics.n_spread_games == 0
+    assert metrics.market_brier_score is None
+    assert metrics.market_game_brier_score is None
+    assert metrics.n_market_games == 0
     payload = json.loads(metrics.model_dump_json())
     assert payload["against_spread_accuracy"] is None
     assert "NaN" not in metrics.model_dump_json()
@@ -478,3 +481,34 @@ print("sklearn" in sys.modules)
     )
 
     assert result.stdout.strip() == "False"
+
+
+def test_metrics_carry_the_market_comparison() -> None:
+    games = _games().assign(
+        home_score=100,
+        away_score=90,
+        team1_win=True,
+        spread=None,
+        market_home_prob=0.9,
+    )
+    scored = score_predictions(games, IsotonicProbToMarginFitter())
+
+    metrics = metrics_from_scored(scored.metrics)
+
+    assert metrics.n_market_games == len(games)
+    assert metrics.market_brier_score == pytest.approx(0.01)
+    assert metrics.market_game_brier_score == pytest.approx(
+        scored.metrics["brier_score"]
+    )
+
+
+def test_a_release_written_before_the_market_metrics_still_reads() -> None:
+    """The webapp reads releases published before these fields existed."""
+    old = Metrics(brier_score=0.19, margin_mae=9.1, n_games=100).model_dump()
+    for field in ("market_brier_score", "market_game_brier_score", "n_market_games"):
+        old.pop(field)
+
+    metrics = Metrics.model_validate(old)
+
+    assert metrics.market_brier_score is None
+    assert metrics.n_market_games == 0

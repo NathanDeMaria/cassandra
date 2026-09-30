@@ -222,6 +222,32 @@ class ScoredPredictions(NamedTuple):
     margin_predictor: BaseProbToMarginPredictor
 
 
+def _market_metrics(df: pd.DataFrame) -> dict[str, float]:
+    """The model's Brier against the prediction markets', on the games they priced.
+
+    Both on the same games, since the markets price the games they price --
+    the model's Brier over the whole schedule isn't comparable to theirs.
+    Needs `GameDfColumns.MARKET_HOME_PROB`, which a caller attaches
+    (`markets.close_probabilities`); without it, or with no game priced,
+    it's nan and a count of zero, the way the spread metrics are for a
+    league with no lines.
+    """
+    column = GameDfColumns.MARKET_HOME_PROB
+    priced = df[df[column].notna()] if column in df else df.iloc[0:0]
+    if priced.empty:
+        return {
+            "market_brier_score": float("nan"),
+            "market_game_brier_score": float("nan"),
+            "n_market_games": 0,
+        }
+    won = priced[GameDfColumns.TEAM1_WIN].astype(float)
+    return {
+        "market_brier_score": float(((priced[column] - won) ** 2).mean()),
+        "market_game_brier_score": brier_score_df(priced),
+        "n_market_games": len(priced),
+    }
+
+
 def score_predictions(
     df: pd.DataFrame, fitter: BaseProbToMarginFitter
 ) -> ScoredPredictions:
@@ -255,6 +281,7 @@ def score_predictions(
         "brier_score": brier_score_df(df),
         "margin_mae": (scored["predicted_margin"] - scored["team1_mov"]).abs().mean(),
         "n_games": len(scored),
+        **_market_metrics(df),
     }
 
     with_spread = scored[scored[GameDfColumns.SPREAD].notna()]

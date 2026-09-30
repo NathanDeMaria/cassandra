@@ -369,6 +369,7 @@ class _Bucket:
     def __init__(self) -> None:
         self.odds_reads = 0
         self.season_reads: list[str] = []
+        self.market_reads: list[str] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
         monkeypatch.setattr(publish, "CASSANDRA_HOME", home)
@@ -377,11 +378,17 @@ class _Bucket:
         )
         monkeypatch.setattr(publish, "OddsDatabase", self)
         monkeypatch.setattr(publish, "read_rated_seasons", self._read_rated_seasons)
+        monkeypatch.setattr(publish, "market_databases", self._market_databases)
 
     async def from_s3(self, bucket: str) -> OddsDatabase:
         assert bucket == self.bucket
         self.odds_reads += 1
         return OddsDatabase({})
+
+    async def _market_databases(self, bucket: str, league: str) -> list[OddsDatabase]:
+        assert bucket == self.bucket
+        self.market_reads.append(league)
+        return [OddsDatabase({})]
 
     async def _read_rated_seasons(self, league: str, bucket: str):
         assert bucket == self.bucket
@@ -427,6 +434,7 @@ def test_publishing_everything_reads_each_league_once(
     assert failures == []
     assert bucket.odds_reads == 1
     assert bucket.season_reads == ["mens", "nfl"]
+    assert bucket.market_reads == ["mens", "nfl"]
     for league, model in configs:
         release = ModelRelease.model_validate_json(
             (out / "models" / league / model / "latest.json").read_text()

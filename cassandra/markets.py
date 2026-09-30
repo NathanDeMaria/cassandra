@@ -47,6 +47,7 @@ import re
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 
+import pandas as pd
 from endgame_aws.io import get_session, list_keys, read_from_s3
 
 from .odds import OddsDatabase, OddsSnapshot
@@ -198,3 +199,65 @@ async def market_database(bucket: str, venue: str, league: str) -> OddsDatabase:
         raise ValueError(f"no market venue {venue!r}; there's {', '.join(VENUES)}")
     days = await _read_days(bucket, f"markets/{venue}/{league}/")
     return OddsDatabase.from_history(history_from_days(venue, days))
+
+
+def _implied(moneyline: float) -> float:
+    """What an American price implies, vig included -- `betting`'s formula."""
+    return -moneyline / (100 - moneyline) if moneyline < 0 else 100 / (100 + moneyline)
+
+
+def close_probability(
+    database: OddsDatabase, game_id: str, kickoff: datetime
+) -> float | None:
+    """The market's no-vig home win probability at its last read before kickoff.
+
+    The last read with both sides priced, as `betting.line_windows`' close
+    is the last read before kickoff; None if there's no such read. Hours
+    `game_snapshots` dropped as too wide to bet never get this far.
+    """
+    before = [
+        s
+        for s in database.snapshots(game_id)
+        if s.read_at < kickoff
+        and s.home_moneyline is not None
+        and s.away_moneyline is not None
+    ]
+    if not before:
+        return None
+    last = before[-1]
+    assert last.home_moneyline is not None and last.away_moneyline is not None
+    home, away = _implied(last.home_moneyline), _implied(last.away_moneyline)
+    return home / (home + away)
+
+
+def close_probabilities(
+    databases: Sequence[OddsDatabase], games: pd.DataFrame
+) -> pd.Series:
+    """Each game's market close, from the first database that has one.
+
+    `games` needs `game_id` and `date` (kickoff); the result is aligned to its
+    index, NaN where no database priced the game. Order is preference: a
+    game both venues priced takes the first one's number.
+    """
+    values = []
+    for game_id, date in zip(games["game_id"], games["date"]):
+        kickoff = pd.Timestamp(date)
+        if kickoff.tzinfo is None:
+            kickoff = kickoff.tz_localize("UTC")
+        found = None
+        for database in databases:
+            found = close_probability(database, str(game_id), kickoff.to_pydatetime())
+            if found is not None:
+                break
+        values.append(float("nan") if found is None else found)
+    return pd.Series(values, index=games.index, dtype=float)
+
+
+async def market_databases(bucket: str, league: str) -> list[OddsDatabase]:
+    """Both venues' books on one league, in the order a release prefers them.
+
+    Kalshi first: its prices are asks on a quoted book, so a close there is
+    a price someone could have paid. Polymarket fills in the games Kalshi
+    didn't list -- its close, an hour before tip-off, is as good as Kalshi's.
+    """
+    return [await market_database(bucket, venue, league) for venue in VENUES]
