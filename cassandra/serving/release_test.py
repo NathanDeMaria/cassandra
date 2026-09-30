@@ -398,6 +398,81 @@ def test_rebuilds_a_compound_predictor_that_predicts_the_same() -> None:
         )
 
 
+def _blend_in_rating(
+    predictor: CompoundGlickoPredictor, release: ModelRelease
+) -> ModelRelease:
+    """The release as a writer that ranks on the blend lays it out.
+
+    `rating` is what the model predicts from and `results` the rating it
+    steps -- by hand here, since nothing in this build writes it that way.
+    """
+    ratings = {
+        team: rating.model_copy(
+            update={
+                "rating": predictor._blended_rating(team),
+                "results": UnitRating(rating=rating.rating, rd=rating.rd or 0.0),
+            }
+        )
+        for team, rating in release.ratings.items()
+    }
+    rewritten = release.model_copy(update={"ratings": ratings})
+    return ModelRelease.model_validate_json(rewritten.model_dump_json())
+
+
+def test_rebuilds_from_results_when_rating_is_the_blend() -> None:
+    """The blend in `rating` is read as a blend, not as the rating to step.
+
+    Rebuilding from it instead would blend the sides in a second time, which
+    is the second assertion: the same release with `results` dropped -- what
+    a reader from before the field sees -- predicts something else.
+    """
+    original = _compound()
+    params: dict[str, Any] = {"unit_weight": 3.0}
+    release = _blend_in_rating(
+        original, _snapshot(original, "CompoundGlickoPredictor", params)
+    )
+    a = release.ratings["Team A"]
+    assert a.results is not None and a.rating != pytest.approx(a.results.rating)
+
+    rebuilt = release.rating_predictor()
+    stale = release.model_copy(
+        update={
+            "ratings": {
+                team: rating.model_copy(update={"results": None})
+                for team, rating in release.ratings.items()
+            }
+        }
+    ).rating_predictor()
+
+    for home, away in (("Team A", "Team B"), ("Team C", "Team A")):
+        expected = predict_matchup(original, home, away).team1_win_prob
+        assert predict_matchup(rebuilt, home, away).team1_win_prob == pytest.approx(
+            expected
+        )
+        assert predict_matchup(stale, home, away).team1_win_prob != pytest.approx(
+            expected
+        )
+
+
+def test_a_release_written_before_results_still_reads() -> None:
+    """Its `rating` is the rating the model steps, as it always was."""
+    original = _compound()
+    params: dict[str, Any] = {"unit_weight": 3.0}
+    old = json.loads(
+        _snapshot(original, "CompoundGlickoPredictor", params).model_dump_json()
+    )
+    for rating in old["ratings"].values():
+        rating.pop("results")
+
+    release = ModelRelease.model_validate(old)
+
+    assert all(rating.results is None for rating in release.ratings.values())
+    rebuilt = release.rating_predictor()
+    assert predict_matchup(rebuilt, "Team A", "Team B").team1_win_prob == (
+        pytest.approx(predict_matchup(original, "Team A", "Team B").team1_win_prob)
+    )
+
+
 def test_a_side_without_its_pair_is_not_a_side() -> None:
     """Half a pair is no state any model produces, so it rebuilds as none."""
     rating = TeamRating(rating=1500, rd=100, offense=UnitRating(rating=1600, rd=90))
