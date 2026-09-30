@@ -47,12 +47,28 @@ class TeamRating(BaseModel):
     model has no play-by-play for, rather than a copy of the team's prior:
     a consumer that finds them can show them, and one that finds None has
     nothing to show, which is the honest state.
+
+    `results` is the team rated on the scoreboard alone, for a model that
+    predicts from a blend of that and its sides rather than from either. Its
+    job is to let `rating` mean one thing in every release: the number the
+    model predicts from, which is the number to rank on. A model that
+    predicts from the scoreboard rating directly has nothing to separate and
+    leaves this None, and so does every release written before it existed,
+    in whose `rating` the scoreboard rating already is.
+
+    Read before it is written: `rating_predictor` rebuilds from `results`
+    when a release carries it, so a consumer reading this build can take a
+    release whose `rating` is the blend without mistaking the blend for the
+    rating the model steps. A reader from before the field would do exactly
+    that and count the sides twice, which is why nothing writes it until the
+    readers have moved.
     """
 
     rating: float
     rd: float | None = None
     wins: int = 0
     losses: int = 0
+    results: UnitRating | None = None
     offense: UnitRating | None = None
     defense: UnitRating | None = None
 
@@ -78,6 +94,19 @@ def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
 
 def _unit_rating(unit: Unit) -> UnitRating:
     return UnitRating(rating=unit.rating, rd=unit.rd)
+
+
+def _state(rating: TeamRating) -> Rating:
+    """The rating as the predictor steps it, sides attached.
+
+    `results` where the release separates it from `rating` -- there `rating`
+    is the blend the model predicts from, and rebuilding from it would blend
+    the sides in a second time. `rating` itself everywhere else, which is
+    every model that predicts from the rating it steps and every release
+    written before `results` existed.
+    """
+    stepped = rating.results or rating
+    return Rating(rating=stepped.rating, rd=stepped.rd, units=_units(rating))
 
 
 def _units(rating: TeamRating) -> Units | None:
@@ -273,10 +302,7 @@ class ModelRelease(BaseModel):
         predictor_class = load_predictor_class(self.predictor_class)
         return predictor_class.from_ratings(
             self.league,
-            {
-                team: Rating(rating=rating.rating, rd=rating.rd, units=_units(rating))
-                for team, rating in self.ratings.items()
-            },
+            {team: _state(rating) for team, rating in self.ratings.items()},
             **self.params,
         )
 
