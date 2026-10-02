@@ -415,8 +415,8 @@ sync = ["aiohttp (>=3.8)", "endgame-aws"]
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/call-it-what-you-want.git"
-reference = "090767f122c6808ca3a0ccfb5305d04f5d7772e7"
-resolved_reference = "090767f122c6808ca3a0ccfb5305d04f5d7772e7"
+reference = "b3bb578ddb7b68d3cd08d5c567d17b6f3a2b9d4e"
+resolved_reference = "b3bb578ddb7b68d3cd08d5c567d17b6f3a2b9d4e"
 
 [[package]]
 name = "cffi"
@@ -780,8 +780,8 @@ python-dateutil = "^2.8.2"
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/EndGame.git"
-reference = "9ec6c0f43018f43b5eb037ad8856aefaff6bd93c"
-resolved_reference = "9ec6c0f43018f43b5eb037ad8856aefaff6bd93c"
+reference = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9"
+resolved_reference = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9"
 subdirectory = "py-endgame"
 
 [[package]]
@@ -797,15 +797,15 @@ develop = false
 [package.dependencies]
 aiobotocore = "^3.9.0"
 dataclasses-json = ">=0.5.7,<1.0"
-endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "9ec6c0f43018f43b5eb037ad8856aefaff6bd93c", subdirectory = "py-endgame"}
+endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9", subdirectory = "py-endgame"}
 fire = ">=0.4.0,<1.0"
 pyarrow = "^25.0"
 
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/EndGame.git"
-reference = "78f76618b2b81cebb4a161775e057fb97d691d18"
-resolved_reference = "78f76618b2b81cebb4a161775e057fb97d691d18"
+reference = "36ec13c527013e1c8366065d107e03c7100b652b"
+resolved_reference = "36ec13c527013e1c8366065d107e03c7100b652b"
 subdirectory = "py-endgame-aws"
 
 [[package]]
@@ -3491,4 +3491,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "d98938722b2c0e5fc7da0112d05028c1d0d7d5c5600641f16db6f97bc1a72e1f"
+content-hash = "e12a3e5aa392525e0aaf6f07c7fa6992fdf98ebee7f22ba16ae165d357c99f79"
