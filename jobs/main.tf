@@ -5,13 +5,12 @@ provider "aws" {
 # The shared account-level infrastructure: queue, compute environment, ECR
 # repos, and the two roles that don't vary by app. Read rather than
 # redeclared, so there is exactly one of each.
-data "terraform_remote_state" "shared" {
-  backend = "s3"
-  config = {
-    bucket = var.shared_infra_state.bucket
-    key    = var.shared_infra_state.key
-    region = var.shared_infra_state.region
-  }
+#
+# aws-batch-optimization publishes its non-sensitive outputs as one JSON
+# parameter (its infra/ssm.tf), in the same shape as a `terraform_remote_state`
+# `outputs`, so this stack doesn't need to know where that one keeps its state.
+data "aws_ssm_parameter" "shared" {
+  name = var.shared_outputs_parameter
 }
 
 data "aws_caller_identity" "current" {}
@@ -19,7 +18,7 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  shared = data.terraform_remote_state.shared.outputs
+  shared = jsondecode(data.aws_ssm_parameter.shared.insecure_value)
 
   # An unset GitHub Actions secret interpolates to "", not to nothing, so CI
   # would hand terraform `TF_VAR_notification_email=""` and a bare `== null`
