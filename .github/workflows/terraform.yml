@@ -56,9 +56,8 @@ jobs:
 
   plan:
     # Skipped on main, where the apply job re-plans anyway. The other half of
-    # the condition -- "only once AWS_PLAN_ROLE_ARN exists" -- can't live here:
-    # the `secrets` context isn't available in a job-level `if`, and naming it
-    # makes the whole workflow invalid. It's the `guard` step below instead.
+    # the condition -- "only once AWS_PLAN_ROLE_ARN exists" -- is the `guard`
+    # step below, so a skip leaves a note in the run summary.
     if: >-
       github.ref != 'refs/heads/main'
       && github.event_name != 'workflow_dispatch'
@@ -82,13 +81,13 @@ jobs:
 
       # Before the OIDC roles are wired up there is nothing to authenticate
       # with, so every step below is a no-op and the job reports green with a
-      # note rather than failing red on every push. Secrets can't be tested in
-      # a job-level `if`, but they can be read into a step's env, which is what
-      # makes this the one place the check can go.
+      # note rather than failing red on every push. A step rather than a
+      # job-level `if` so the skip shows up in the run summary instead of as a
+      # silently skipped job.
       - name: Check for the plan role
         id: guard
         env:
-          ROLE_ARN: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          ROLE_ARN: ${{ vars.AWS_PLAN_ROLE_ARN }}
         run: |
           if [ -z "$ROLE_ARN" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -101,7 +100,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v5
         if: steps.guard.outputs.configured == 'true'
         with:
-          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
@@ -188,7 +187,7 @@ jobs:
 
   apply:
     # Same as plan: the "is the role wired up yet" half of this condition lives
-    # in the `guard` step, because `secrets` can't be referenced here.
+    # in the `guard` step.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     defaults:
@@ -205,7 +204,7 @@ jobs:
       - name: Check for the apply role
         id: guard
         env:
-          ROLE_ARN: ${{ secrets.AWS_APPLY_ROLE_ARN }}
+          ROLE_ARN: ${{ vars.AWS_APPLY_ROLE_ARN }}
         run: |
           if [ -z "$ROLE_ARN" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -218,7 +217,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v5
         if: steps.guard.outputs.configured == 'true'
         with:
-          role-to-assume: ${{ secrets.AWS_APPLY_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
