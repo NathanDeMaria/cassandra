@@ -123,7 +123,7 @@ wider. A brier scan per league is the small measurement that would replace
 them.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from endgame.types import Game
@@ -212,6 +212,9 @@ class BlendedMarginEloPredictor(MarginEloPredictor):
         anchors: Mapping[str, Anchor] | None = None,
         game_control: GameControlIndex | None = None,
         game_epa: EpaIndex | None = None,
+        # Passed straight through, like `ratings` and `anchors`: it is the
+        # parent's state, and this class only has to not drop it.
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
     ) -> None:
         # The four inherited numbers keep the parent's defaults, which were
         # chosen against basketball -- 3.5 points of home floor, a 40-point
@@ -227,6 +230,7 @@ class BlendedMarginEloPredictor(MarginEloPredictor):
             season_regression=season_regression,
             ratings=ratings,
             anchors=anchors,
+            unanchored_seen=unanchored_seen,
         )
         self._blend = PlayBlend.validated(play_weight, epa_share)
         self._control_scale = validated_scale("control_scale", control_scale)

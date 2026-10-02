@@ -437,7 +437,7 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
             math.sqrt(variance * max(0.0, 1 - scale * c * solved.total)),
         )
 
-    def update_game(self, game: Game) -> Prediction:
+    def _update_game(self, game: Game) -> Prediction:
         prediction = self.predict_game(game)
         home = self.get_rating(game.home)
         away = self.get_rating(game.away)

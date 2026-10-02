@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Self
 
 import numpy as np
@@ -29,9 +29,15 @@ class Elo538Predictor(Predictor):
         opponent_prior_manager: OpponentPriorManager | None = None,
         ratings: dict[str, float] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
+        # What teams with no anchor have turned out to be, carried so a
+        # loaded model enters an unfiled team where the replay that built it
+        # would. State rather than a knob -- see `Predictor.unanchored_prior`.
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
+        total, squares, count = unanchored_seen
+        self._unanchored_seen = (float(total), float(squares), int(count))
         self._season_regression = validated_regression(season_regression)
         self._home_advantage = home_advantage
         self._k = k
@@ -48,7 +54,7 @@ class Elo538Predictor(Predictor):
         win_prob = 1 / (1 + 10 ** ((away_rating - adjusted_home_rating) / 400))
         return Prediction(team1_win_prob=win_prob)
 
-    def update_game(self, game: Game) -> Prediction:
+    def _update_game(self, game: Game) -> Prediction:
         prediction = self.predict_game(game)
         home_rating = self.get_rating(game.home)
         away_rating = self.get_rating(game.away)
@@ -97,6 +103,7 @@ class Elo538Predictor(Predictor):
             "season_regression": self._season_regression,
             "ratings": self._ratings,
             "anchors": self._anchors,
+            "unanchored_seen": list(self._unanchored_seen),
         }
 
     @classmethod

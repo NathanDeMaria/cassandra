@@ -51,6 +51,11 @@ class RatingsUnsupported(NotImplementedError):
 
 MEAN_RATING = 1500.0
 
+#: How many unfiled teams' seasons the running estimate of `unanchored_prior`
+#: needs before it is used over `MEAN_RATING`. One team's rating is that team;
+#: a handful is a population.
+MIN_UNANCHORED_SEEN = 5
+
 
 def validated_regression(season_regression: float) -> float:
     """Check a `season_regression` on its way into a predictor.
@@ -171,6 +176,18 @@ class Predictor(ABC):
         # enters one, which is every team's earliest anchor -- see
         # `anchor_in`. Only anchors with a history read it at all.
         self._season: int | None = None
+        # What teams with no anchor have turned out to be: the sum, sum of
+        # squares and count of their end-of-season ratings, gathered as the
+        # replay goes. State rather than a knob, and overwritten by the
+        # subclasses that carry it through a state dict. See
+        # `unanchored_prior`.
+        self._unanchored_seen: tuple[float, float, int] = (0.0, 0.0, 0)
+        # Who has played since the last rollover, which is the population
+        # `_note_unanchored` folds in. Recorded here rather than by each
+        # subclass for the reason `_roll_over` is a hook rather than an
+        # override of `pass_season`: a subclass that forgot would silently
+        # stop learning what an unfiled team is.
+        self._played_this_season: set[str] = set()
 
     @property
     def league(self) -> str:
@@ -189,6 +206,18 @@ class Predictor(ABC):
         ...
 
     def update_game(self, game: Game) -> Prediction:
+        """Predict a game and fold its result in. Not for overriding.
+
+        Records who played -- which is what `_note_unanchored` needs at the
+        rollover -- and hands the game to `_update_game`, which is the one a
+        rating model implements. Split for the same reason `pass_season`
+        wraps `_roll_over`: the bookkeeping every model owes is in one place
+        rather than in each model's good intentions.
+        """
+        self._played_this_season.update((game.home, game.away))
+        return self._update_game(game)
+
+    def _update_game(self, game: Game) -> Prediction:
         """Predict and update internal state. Override in stateful subclasses."""
         return self.predict_game(game)
 
@@ -273,11 +302,35 @@ class Predictor(ABC):
     def unanchored_prior(self) -> float:
         """Where a team with no anchor enters, and regresses toward.
 
-        MEAN_RATING: with nothing known about a team, the middle of the
-        league is the honest guess. A subclass that has watched such teams
-        play can do better -- see `GlickoPredictor.unanchored_prior`.
+        Not the middle of the league: where the last unfiled teams ended up.
+
+        The registry classifies every FBS and FCS program, so a team it has
+        no tier for is almost always a D-II or D-III program it hasn't merged
+        yet, or an exhibition opponent -- and either way not an average team.
+        On ncaafb 133 such teams entered at the league mean of 1500 and lost
+        their first game by 33 points more than predicted, their second by 10,
+        and took eight games to be rated where they belonged. Entering them at
+        1100 was worth 0.0004 brier and 0.036 points of margin over the whole
+        league, on 3% of its team-games.
+
+        Rather than a number to search, this is measured as the replay goes:
+        at every rollover the end-of-season rating of each unanchored team
+        that played is folded into a running mean, and the next unfiled team
+        enters there. The first such teams of a replay enter at the league
+        mean, which is the honest answer with nothing seen; the estimate
+        settles within a few seasons. `regress` pulls toward the same number,
+        so an unfiled team's offseason takes it back to what unfiled teams
+        are, not to the middle of the league.
+
+        Here rather than on one rating system because it is a fact about the
+        league's registry, not about Glicko: it lived on `GlickoPredictor`
+        for its first year, and the four Elo configs on the three anchored
+        leagues entered their unfiled teams at 1500 that whole time.
         """
-        return MEAN_RATING
+        total, _, count = self._unanchored_seen
+        if count < MIN_UNANCHORED_SEEN:
+            return MEAN_RATING
+        return total / count
 
     def regress(self, team: str, rating: float) -> float:
         """One season's worth of reversion toward the team's anchor.
@@ -333,7 +386,37 @@ class Predictor(ABC):
         # would still hand the season opener a differential built out of
         # which team played a bowl.
         self._adjustments.pass_season()
+        # Before the rollover, so an unfiled team is counted at the rating it
+        # earned rather than at the one regression is about to pull back.
+        self._note_unanchored()
         self._roll_over()
+        self._played_this_season = set()
+
+    def _note_unanchored(self) -> None:
+        """Fold this season's unfiled teams into the running estimate.
+
+        Only teams that played since the last rollover, so a team that
+        appeared once in 2007 isn't counted again every offseason after.
+
+        A model with no team ratings has nothing to fold in and nothing that
+        reads the estimate either -- `FlatPredictor` is the one -- so the
+        refusal is the answer rather than an error.
+        """
+        try:
+            rated = self.ratings
+        except RatingsUnsupported:
+            return
+        total, squares, count = self._unanchored_seen
+        for team in self._played_this_season:
+            if team in self._anchors:
+                continue
+            found = rated.get(team)
+            if found is None:
+                continue
+            total += found.rating
+            squares += found.rating**2
+            count += 1
+        self._unanchored_seen = (total, squares, count)
 
     def _roll_over(self) -> None:
         """The offseason itself: regression, and whatever else a model does.
