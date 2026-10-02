@@ -108,7 +108,22 @@ Optimization is the expensive stage, so it's weekly. Publish is daily because
 ratings move with new games every day even when the fitted parameters don't.
 `--skip-optimize` implies skipping anchors: the anchors decide the scale a
 *search* is fit against, and a republish reads that scale back out of s3
-rather than deciding it. So the daily run is `publish` and nothing upstream.
+rather than deciding it. Same for the `game_control` and `epa` sweeps.
+
+It does *not* imply skipping the three play-by-play sweeps, though it used to.
+Their indexes are read again whenever a played game is priced, so a republish
+needs them current even though it re-decides nothing -- left to the weekly run
+they were rebuilt Monday at 03:00 CT, five hours before that day's plays are
+processed, so every Sunday and Monday game was missing from them until the
+following week. So the daily run is the three sweeps and then `publish`.
+`--skip-sweeps` is what drops them.
+
+Two of the three are incremental, by season rather than by game: with the
+stored fit unchanged, `game_control` and `epa` re-sweep the season in progress
+and merge it over the stored history. `qb_out` is rebuilt whole every run by
+design. A *stale* fit -- a `lucky-ones` bump, a new `MODELS[league].run_id` --
+makes both of the first two sweep every season from scratch, and that now
+lands on the daily publish's critical path rather than the weekly run's.
 
 ## State between stages
 

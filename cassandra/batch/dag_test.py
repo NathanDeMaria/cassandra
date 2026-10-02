@@ -522,16 +522,67 @@ def test_the_sweeps_do_not_wait_on_the_anchors(
     assert "dependsOn" not in by_command["epa"]
 
 
-def test_a_football_republish_waits_for_nothing(
+def test_a_football_republish_still_sweeps_the_plays(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`--skip-optimize` drops the sweeps with the search, for the reason it
-    drops the anchors: a republish reads its indexes back out of s3 rather
-    than deciding them. With nothing upstream left, it starts immediately.
+    """`--skip-optimize` no longer drops the sweeps, unlike the anchors it does
+    drop: all three indexes are read again when a played game is priced, so a
+    republish needs them current even though it re-decides nothing. It served
+    a week-old quarterback index for a week by dropping them.
     """
     requests = _submitted_requests(monkeypatch, leagues=["ncaafb"], skip_optimize=True)
+    by_command = _by_command(requests)
+
+    assert set(by_command) == {
+        "game_control",
+        "epa",
+        "qb_out",
+        "evaluate",
+        "publish",
+    }
+    # The anchors still go, which is the difference between deciding a scale
+    # and reading an index.
+    assert "anchors" not in by_command
+
+
+def test_a_republish_waits_for_every_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`publish` uploads the indexes it downloaded, so a sweep running beside
+    it rather than before it is a race the stale copy can win."""
+    requests = _submitted_requests(monkeypatch, leagues=["ncaafb"], skip_optimize=True)
+    by_command = _by_command(requests)
+
+    # The fake client numbers jobs in submission order: control, epa, qb-out.
+    every_sweep = [{"jobId": "job-1"}, {"jobId": "job-2"}, {"jobId": "job-3"}]
+    assert by_command["publish"]["dependsOn"] == every_sweep
+    assert by_command["evaluate"]["dependsOn"] == every_sweep
+
+
+def test_a_basketball_republish_waits_for_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """There is no play-by-play to sweep, so there is nothing upstream and the
+    daily publish starts immediately, as every republish used to."""
+    for leagues in (dag.CONTROL_LEAGUES, dag.EPA_LEAGUES, dag.QB_LEAGUES):
+        assert "mens" not in leagues
+    requests = _submitted_requests(monkeypatch, leagues=["mens"], skip_optimize=True)
     by_command = _by_command(requests)
 
     assert set(by_command) == {"evaluate", "publish"}
     assert "dependsOn" not in by_command["publish"]
     assert "dependsOn" not in by_command["evaluate"]
+
+
+def test_skip_sweeps_drops_them_from_a_republish_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one gate that drops the sweeps now, for the republish that knows its
+    indexes are current. With nothing upstream it starts immediately again."""
+    requests = _submitted_requests(
+        monkeypatch, leagues=["ncaafb"], skip_optimize=True, skip_sweeps=True
+    )
+    by_command = _by_command(requests)
+
+    assert set(by_command) == {"evaluate", "publish"}
+    assert "dependsOn" not in by_command["publish"]
