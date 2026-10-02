@@ -218,7 +218,8 @@ but doesn't own: creating a job definition or a schedule passes them.
 
 The image role is smaller than both: push/pull on the one ECR repository, the
 account-wide `ecr:GetAuthorizationToken` that a docker login needs and that
-takes no resource, and `s3:GetObject` on the shared stack's state object —
+takes no resource, and `ssm:GetParameter` on the one parameter the shared
+stack publishes its outputs to —
 nothing else, and no write anywhere. It replaces the `ecr-pusher-cassandra`
 user's long-lived access key, which used to live in this repo as two secrets.
 
@@ -255,13 +256,20 @@ reproducible.
 ### Where the image build gets its config
 
 `config.json` — the bucket name for `Config.init_from_file`, the ECR URL for
-the Makefile, the queue name for `jobs.py` — is **derived from the shared
-stack's terraform state**, not pasted into a secret. The push job reads the
-state object with the image role and filters it to those three keys:
+the Makefile, the queue name for `jobs.py` — is **derived from the outputs the
+shared stack publishes** to the SSM parameter `/batch/shared-outputs` (its
+`infra/ssm.tf`), not pasted into a secret. The push job reads the parameter
+with the image role and filters it to those three keys:
 
 ```bash
-aws s3 cp "s3://nathan-terraform/batch-state" - | jq '{bucket, repo_urls, job_queue_name} ...'
+aws ssm get-parameter --name /batch/shared-outputs --query Parameter.Value --output text \
+  | jq '{bucket, repo_urls, job_queue_name} ...'
 ```
+
+The parameter holds only that stack's non-sensitive outputs, so the image role
+needs no read on any terraform state — which holds every resource attribute,
+sensitive ones included. Terraform here reads the same parameter, with an
+`aws_ssm_parameter` data source.
 
 Two things that buys, beyond one less secret to rotate. It can't go stale: the
 old `BATCH_CONFIG` secret was a snapshot of `terraform output -json` and had to
@@ -307,8 +315,8 @@ Ordering matters — steps 1–3 are in the other repo, and this project's
 4. **Push an image.** Merge to main, or `make push TAG=<sha>` locally.
 
 The only *secret* this repo needs is the optional `NOTIFICATION_EMAIL`. The
-image workflow used to want four more; it reads the shared stack's terraform
-state instead. See [Where the image build gets its config](#where-the-image-build-gets-its-config).
+image workflow used to want four more; it reads the shared stack's published
+outputs instead. See [Where the image build gets its config](#where-the-image-build-gets-its-config).
 
 `make update` re-fetches the shared modules — terraform caches git modules and
 won't notice a change on the other end otherwise.

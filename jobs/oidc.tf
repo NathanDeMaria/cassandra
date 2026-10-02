@@ -136,9 +136,9 @@ resource "aws_iam_role" "ci_plan" {
   assume_role_policy = data.aws_iam_policy_document.plan_assume_role.json
 }
 
-# ReadOnlyAccess is also what lets the `terraform_remote_state` data source in
-# main.tf read the Batch stack's state object -- a data source read takes no
-# lock, so plain s3:GetObject covers it and no extra grant is needed.
+# ReadOnlyAccess is also what lets the `aws_ssm_parameter` data source in
+# main.tf read the Batch stack's published outputs (it covers ssm:GetParameter),
+# so no extra grant is needed.
 resource "aws_iam_role_policy_attachment" "ci_plan_readonly" {
   role       = aws_iam_role.ci_plan.name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/ReadOnlyAccess"
@@ -228,15 +228,16 @@ data "aws_iam_policy_document" "ci_image" {
     resources = ["*"]
   }
 
-  # Read-only, and only the shared stack's state object: that is where the
-  # bucket name and the repository URL come from. Deliberately not
-  # `s3:ListBucket`, and deliberately not this stack's own state -- an image
-  # build has no business reading, let alone locking, either one.
+  # Read-only, and only the one parameter the shared stack publishes its
+  # non-sensitive outputs to: that is where the bucket name and the repository
+  # URL come from. Deliberately not either stack's state -- that holds every
+  # resource attribute, sensitive ones included, and an image build has no
+  # business reading it.
   statement {
-    sid       = "ReadSharedState"
+    sid       = "ReadSharedOutputs"
     effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.shared_infra_state.bucket}/${var.shared_infra_state.key}"]
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.shared_outputs_parameter, "/")}"]
   }
 }
 
