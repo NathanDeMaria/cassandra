@@ -13,7 +13,7 @@ moves when cassandra deploys lives here.**
 | Shared (`aws-batch-optimization`) | Here (`cassandra/jobs`) |
 | --- | --- |
 | Job queue, compute environment, network | The seven job definitions |
-| ECR repo `cassandra` + its push user | Both schedules |
+| ECR repo `cassandra` | Both schedules |
 | `batch-execution-role` (pulls images) | `cassandra-batch-job-role` (what the code touches) |
 | `batch-scheduler-role` (submits jobs) | |
 | The `batch_job` and `job_schedule` modules | |
@@ -296,8 +296,8 @@ Ordering matters — steps 1–3 are in the other repo, and this project's
 `terraform init` will fail until the shared modules exist on `main`.
 
 1. **Shared infra.** In `aws-batch-optimization/infra`: `make apply`, then
-   `make outputs`. That creates the `cassandra` ECR repo, its push user, and
-   the shared roles, and writes `~/.aws-batch/config.json`.
+   `make outputs`. That creates the `cassandra` ECR repo and the shared
+   roles, and writes `~/.aws-batch/config.json`.
 2. **Here.** `cp terraform.tfvars.example terraform.tfvars`, set `image_tag`,
    then `make apply`. Nothing needs a pushed image first — a Batch job
    definition naming a tag that doesn't exist yet applies fine.
