@@ -26,7 +26,14 @@ python = "^3.14"
 # this rev now, and the two disagreeing about what a Game is would be a much
 # worse problem than a pin nobody needed. EndGame #85 and #86; the fix is
 # why the odds database stops being three-quarters empty.
-endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "9ec6c0f43018f43b5eb037ad8856aefaff6bd93c", subdirectory = "py-endgame"}
+#
+# Now at the rev that stops the no-prices guard crying wolf: ESPN drops a
+# game's prices once it kicks off and never has them for a preseason game,
+# and the guard read both as a broken fetch -- the last three hourly nfl
+# pulls failed every Sunday, and NHL preseason failed outright. EndGame #88
+# and #91. `endgame_aws` below resolves `endgame` at exactly this rev, so the
+# two stay one package's worth of agreement about what a Game is.
+endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9", subdirectory = "py-endgame"}
 # Team knowledge: which names are the same team, and what division and
 # conference each played in. Pure python apart from its extras, so it costs a
 # serving install one dependency it already has.
@@ -35,7 +42,17 @@ endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "9ec6c0f4
 # team data under a replay without anything in the diff saying so, and a
 # team's rating history depends on its identity being the same from one run
 # to the next. Bump it deliberately with `poetry update`.
-call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "090767f122c6808ca3a0ccfb5305d04f5d7772e7"}
+#
+# This bump is for the classifications: ciwyw #12 files the 2026 football
+# season, the first rows on record for it, and without them
+# `classification_in` answers 2026 with 2025's tiers -- which anchored North
+# Dakota State and Sacramento State 325 points below the FBS they moved to.
+# It also carries the prediction-market venue names (ciwyw #9 through #11),
+# which cassandra does not read; `by_name` and `espn_id` grew a `source` and
+# `league` filter there, and left out they behave as before. Checked rather
+# than assumed: every one of ncaafb's 1,118 stored names resolves to the same
+# canonical team across the bump, and a `glicko_full` replay is identical.
+call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "b3bb578ddb7b68d3cd08d5c567d17b6f3a2b9d4e"}
 # What changed about a team between seasons -- head-coach changes and why,
 # coordinators, quarterback seasons -- and the play-text quarterback parser
 # `cassandra.qb_out_build` reads starters with, which lived here as
@@ -112,7 +129,14 @@ bayesian-optimization = "^3.2.1"
 # which is most of why `market_gap` has 184 lined games to work with across
 # 75,111. EndGame #85 fixes the limit and fails the pull on the shapes that
 # would hide the next one; #86 is the pin that makes the fix reach the job.
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "78f76618b2b81cebb4a161775e057fb97d691d18", subdirectory = "py-endgame-aws"}
+#
+# Bumped again for the guard itself, which failed a pull whenever ESPN had
+# no prices to give: once a game kicks off, and always for a preseason one.
+# EndGame #88 excused the kicked-off games, #91 the preseason, and the pins
+# that carry them are what this rev is -- a fix in py-endgame does nothing
+# for the job until py-endgame-aws resolves it. See `OddsCoverageDropped` in
+# `cassandra.odds` for what the alarm looked like from here.
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "36ec13c527013e1c8366065d107e03c7100b652b", subdirectory = "py-endgame-aws"}
 # In-game win probability, and the `game_control` number cassandra turns into
 # an alternate score line. The fits ship inside the package, so pinning the
 # rev pins the model: which win probability curve a rating was built against
