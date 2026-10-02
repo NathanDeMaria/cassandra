@@ -590,7 +590,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         away_rating = self._blended_rating(matchup.away)
         return Prediction(team1_win_prob=self.win_prob(home_rating, away_rating))
 
-    def update_game(self, game: Game) -> Prediction:
+    def _update_game(self, game: Game) -> Prediction:
         """The parent's update, then the children's.
 
         The parents are read first and handed to `_update_units`, because
@@ -607,7 +607,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         home_parent = self.get_rating(game.home)
         away_parent = self.get_rating(game.away)
         home_edge = self.home_edge(game) + self.matchup_adjustment(game)
-        prediction = super().update_game(game)
+        prediction = super()._update_game(game)
         self._update_units(game, home_parent, away_parent, home_edge)
         return prediction
 

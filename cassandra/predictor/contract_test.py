@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from .base_predictor import MEAN_RATING
+from .base_predictor import MEAN_RATING, MIN_UNANCHORED_SEEN
 from .compound import CompoundGlickoPredictor
 from .conftest import GameFactory
 from .control import ControlGlickoPredictor
@@ -357,3 +357,82 @@ def test_explicit_empty_anchors_are_not_replaced_by_the_saved_ones(
 
     assert model("test_league", anchors={})._anchors == {}
     assert model("test_league")._anchors == {"Team A": 1200}
+
+
+@rated_model
+def test_what_unfiled_teams_turned_out_to_be_round_trips(model: RatedModel) -> None:
+    """A release replays with the estimate the replay that built it had.
+
+    Dropping it would put the next unfiled team back at the league mean --
+    which is what every Elo config did for a year, while the Glicko ones
+    carried it.
+    """
+    predictor = model("test_league", unanchored_seen=(5500.0, 6_100_000.0, 5))
+
+    restored = model.from_state_dict(predictor.state_dict())
+
+    assert restored._unanchored_seen == (5500.0, 6_100_000.0, 5)
+    assert restored.unanchored_prior() == pytest.approx(1100.0)
+
+
+@rated_model
+def test_an_unfiled_team_enters_where_the_last_ones_ended_up(
+    model: RatedModel, game: GameFactory
+) -> None:
+    """The whole point: a team the registry has no tier for is not average.
+
+    Every model that takes anchors gets this, not just the Glicko ones.
+    """
+    predictor = model("test_league", anchors={"Filed": 1500})
+    # Below MIN_UNANCHORED_SEEN there is nothing to generalise from, so the
+    # league mean is still the honest answer.
+    assert predictor.unanchored_prior() == MEAN_RATING
+
+    predictor._unanchored_seen = (
+        1100.0 * MIN_UNANCHORED_SEEN,
+        0.0,
+        MIN_UNANCHORED_SEEN,
+    )
+
+    assert predictor.unanchored_prior() == pytest.approx(1100.0)
+    assert _rating(predictor, "Never Heard Of") == pytest.approx(1100.0)
+    # The filed team is unmoved: it has an anchor, which is the whole
+    # difference between the two.
+    assert _rating(predictor, "Filed") == pytest.approx(1500.0)
+
+
+@rated_model
+def test_only_the_teams_that_played_are_folded_in(
+    model: RatedModel, game: GameFactory
+) -> None:
+    """A team that appeared once in 2007 is not counted again every offseason.
+
+    It was read off the Glicko smoother's ledger before, which is cleared at
+    the rollover; `_played_this_season` is the same population for every
+    model.
+    """
+    predictor = model("test_league")
+    predictor.update_game(game("Team A", "Team B", 21, 0))
+    predictor.pass_season(2008)
+
+    _, _, after_one = predictor._unanchored_seen
+    assert after_one == 2
+
+    # A second offseason with nobody playing adds nobody.
+    predictor.pass_season(2009)
+
+    assert predictor._unanchored_seen[2] == after_one
+
+
+@rated_model
+def test_an_anchored_team_is_not_folded_in(
+    model: RatedModel, game: GameFactory
+) -> None:
+    """The estimate is of what *unfiled* teams are. Counting filed ones would
+    drag it toward the league mean, which is the number it exists to replace."""
+    predictor = model("test_league", anchors={"Team A": 1200, "Team B": 1200})
+    predictor.update_game(game("Team A", "Team B", 21, 0))
+
+    predictor.pass_season(2008)
+
+    assert predictor._unanchored_seen == (0.0, 0.0, 0)

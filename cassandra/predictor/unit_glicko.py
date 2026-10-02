@@ -497,7 +497,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             team1_win_prob=_normal_cdf(expected / self._margin_sd(home, away))
         )
 
-    def update_game(self, game: Game) -> Prediction:
+    def _update_game(self, game: Game) -> Prediction:
         """The parent's step on the margin, then the two contests on EPA.
 
         The edge is read first, before the parent records the game in the
@@ -508,7 +508,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         edge = self.home_edge(game) + self.matchup_adjustment(game)
         # The parent's update makes the same prediction again and returns
         # it; the units haven't moved in between, so it is this one.
-        super().update_game(game)
+        super()._update_game(game)
         self._update_sides(game, edge)
         # Only after a game with plays: who started is read off the plays, so
         # an opener ESPN has none for -- a lower-division opponent, most often

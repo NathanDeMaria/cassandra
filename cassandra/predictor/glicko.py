@@ -14,6 +14,7 @@ from .adjustments import (
 )
 from .base_predictor import (
     MEAN_RATING,
+    MIN_UNANCHORED_SEEN,
     Anchor,
     Predictor,
     resolved_anchors,
@@ -52,11 +53,6 @@ _Q = math.log(10) / 400
 #: by `p (1 - p)` behind it. Run 20260921-050501 hit that division at 0 on
 #: one ncaafb probe with `sigmoid_scale` near its floor.
 _MAX_EXPONENT = 100.0
-
-#: How many unfiled teams' seasons the running estimate needs before it is
-#: used over the league mean. One team's rating is that team; a handful is a
-#: population.
-MIN_UNANCHORED_SEEN = 5
 
 #: Anchor points per unit of `home_advantage_slope`: the slope is quoted per
 #: 400 anchor points -- one Elo decade, and roughly the FBS-to-FCS gap on
@@ -254,7 +250,7 @@ class GlickoPredictor(Predictor):
         """
         return 1 / (1 + 10 ** ((away_rating - home_rating) / self._prediction_scale))
 
-    def update_game(self, game: Game) -> Prediction:
+    def _update_game(self, game: Game) -> Prediction:
         prediction = self.predict_game(game)
         home_rating = self.get_rating(game.home)
         away_rating = self.get_rating(game.away)
@@ -317,32 +313,6 @@ class GlickoPredictor(Predictor):
             return _Rating(self.anchor(team), self._initial_rd)
         return _Rating(self.unanchored_prior(), self.unanchored_rd())
 
-    def unanchored_prior(self) -> float:
-        """Where a team nobody filed a tier for enters: where the last ones ended up.
-
-        The registry classifies every FBS and FCS program, so a team it has
-        no tier for is almost always a D-II or D-III program it hasn't
-        merged yet, or an exhibition opponent -- and either way not an
-        average team. On ncaafb 133 such teams entered at the league mean of
-        1500 and lost their first game by 33 points more than predicted,
-        their second by 10, and took eight games to be rated where they
-        belonged. Entering them at 1100 was worth 0.0004 brier and 0.036
-        points of margin over the whole league, on 3% of its team-games.
-
-        Rather than a number to search, this is measured as the replay goes:
-        at every rollover the end-of-season rating of each unanchored team
-        that played is folded into a running mean, and the next unfiled team
-        enters there. The first such teams of a replay enter at the league
-        mean, which is the honest answer with nothing seen; the estimate
-        settles within a few seasons. `regress` pulls toward the same
-        number, so an unfiled team's offseason takes it back to what unfiled
-        teams are, not to the middle of the league.
-        """
-        total, _, count = self._unanchored_seen
-        if count < MIN_UNANCHORED_SEEN:
-            return super().unanchored_prior()
-        return total / count
-
     def unanchored_rd(self) -> float:
         """How unsure to be of a team nobody filed a tier for.
 
@@ -361,30 +331,6 @@ class GlickoPredictor(Predictor):
             return self._initial_rd
         variance = max(0.0, squares / count - (total / count) ** 2)
         return math.sqrt(self._initial_rd**2 + variance)
-
-    def _note_unanchored(self) -> None:
-        """Fold this season's unfiled teams into the running estimate.
-
-        Only teams that played this season, read off the smoother's ledger,
-        so a team that appeared once in 2007 isn't counted again every
-        offseason; and their ratings as they stand before the rollover
-        regresses them.
-        """
-        played = {
-            team
-            for week in (*self._weeks, self._this_week)
-            for game in week
-            for team in (game.home, game.away)
-        }
-        total, squares, count = self._unanchored_seen
-        for team in played:
-            if team in self._anchors:
-                continue
-            rating = self._ratings[team].rating
-            total += rating
-            squares += rating**2
-            count += 1
-        self._unanchored_seen = (total, squares, count)
 
     def pass_week(self) -> None:
         self._weeks.append(self._this_week)
@@ -461,7 +407,6 @@ class GlickoPredictor(Predictor):
         }
 
     def _roll_over(self) -> None:
-        self._note_unanchored()
         self._ratings = {
             team: _Rating(
                 self.regress(team, rating.rating),

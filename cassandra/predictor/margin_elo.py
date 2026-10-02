@@ -1,5 +1,5 @@
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Self
 
 from endgame.types import Game
@@ -74,9 +74,15 @@ class MarginEloPredictor(Predictor):
         season_regression: float = 0.0,
         ratings: dict[str, float] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
+        # What teams with no anchor have turned out to be, carried so a
+        # loaded model enters an unfiled team where the replay that built it
+        # would. State rather than a knob -- see `Predictor.unanchored_prior`.
+        unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
     ) -> None:
         super().__init__(league)
         self._anchors = resolved_anchors(league, anchors)
+        total, squares, count = unanchored_seen
+        self._unanchored_seen = (float(total), float(squares), int(count))
         self._season_regression = validated_regression(season_regression)
         self._ratings: dict[str, float] = ratings or {}
         self._home_advantage = home_advantage
@@ -136,7 +142,7 @@ class MarginEloPredictor(Predictor):
     def predict_game(self, matchup: Matchup) -> Prediction:
         return self._prediction(self.expected_margin(matchup))
 
-    def update_game(self, game: Game) -> Prediction:
+    def _update_game(self, game: Game) -> Prediction:
         # One `expected_margin` for both the prediction and the update: they
         # are the same number, and a search asks for it a hundred million
         # times.
@@ -199,6 +205,7 @@ class MarginEloPredictor(Predictor):
             "season_regression": self._season_regression,
             "ratings": self._ratings,
             "anchors": self._anchors,
+            "unanchored_seen": list(self._unanchored_seen),
         }
 
     @classmethod

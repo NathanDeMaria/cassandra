@@ -274,7 +274,7 @@ class MarginGlickoPredictor(GlickoPredictor):
             team1_win_prob=_normal_cdf(expected / self._margin_sd(home, away))
         )
 
-    def update_game(self, game: Game) -> Prediction:
+    def _update_game(self, game: Game) -> Prediction:
         """The parent's update with the margin in place of the score.
 
         Both sides stepped from their pre-game ratings, the home edge read
