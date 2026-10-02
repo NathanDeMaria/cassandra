@@ -3,33 +3,82 @@
 AWS Batch puts job *dependencies* on `SubmitJob`, not on the job definition,
 so terraform can declare the nodes but not the edges. This is the edges.
 
-The shape:
+The shape of a full run:
 
-    anchors        game_control        epa       (arrays, one child per league)
-       |                |               |
-       +----------------+---------------+
-                        |
-                        v
-              optimize (array, per model)
-                        |
-         +--------------+
-         |              |
-         v              v
-    evaluate       publish (array)
+    anchors    game_control      epa      qb-out    (arrays, one per league)
+       |            |             |          |
+       +------------+-------------+----------+
+                          |
+                          v
+                optimize (array, per model)
+                          |
+           +--------------+
+           |              |
+           v              v
+      evaluate       publish (array)
 
-Three independent inputs, all of which decide what a search is fit against, so
-all three run before optimize and none of them waits on the others. anchors
+Four independent inputs, all of which decide what a search is fit against, so
+all four run before optimize and none of them waits on the others. anchors
 sets the scale a rating sits on. `game_control` and `epa` sweep stored
 play-by-play into the two per-game indexes the blended models read: a search
 that runs before them fits `play_weight` against an empty index and reports
 that the plays are worthless, which is a real answer to a question nobody
-asked.
+asked. `qb_out` sweeps the same plays into who was missing their starting
+quarterback.
 
 `game_control` was a node here once, then wasn't -- nothing in the run read
 what it wrote once the `glicko_control` configs were deleted (see
 `cassandra.predictor.control`). It comes back with `epa` beside it because
 `BlendedGlickoPredictor` and `BlendedMarginEloPredictor` read both, which is
 the condition the sweep was always going to earn a node back on.
+
+## Why the sweeps run on a republish too
+
+The daily `--skip-optimize` shape keeps all three of them:
+
+    game_control      epa      qb-out
+         |             |          |
+         +-------------+----------+
+                 |
+                 v
+          publish (array)
+
+The sweeps were gated behind the search once, on the argument that a
+republish reads its indexes back out of s3 rather than deciding them. That is
+true of the *fit* and false of the indexes: all three are read again when a
+played game is priced -- `game_control` and `epa` by the blended models'
+`play_weight`, `qb_out` by the matchup term, and `qb_out` is published as
+`models/{league}/qb_out.json` besides. An index a week behind prices this
+week's games on last week's plays.
+
+Which it did. The weekly run is Monday 03:00 America/Chicago and the football
+plays are processed at 08:00, so the sweeps read a store holding plays through
+Saturday: in week 3 of 2026 the Thursday game was in the quarterback index and
+the fourteen Sunday games and the Monday nighter were not. Washington started
+Mariota with Daniels taking no snap, and the game read `qb_out_home: false` for
+a week. The eight daily publishes in between each downloaded that index from s3
+and uploaded it again unchanged.
+
+The edge matters as much as the nodes: `publish` uploads the indexes it
+downloaded, so a sweep running beside it rather than before it is a race the
+stale copy can win.
+
+## What a daily sweep costs
+
+Less than a weekly one, because two of the three are incremental, but it is
+not free and it is not per-game. With the stored fit unchanged -- the ordinary
+day -- `game_control` and `epa` re-sweep **the whole season in progress** and
+merge it over the stored history, which is about twenty weeks of parquet
+rather than four hundred. `qb_out` has no such shortcut: it is rebuilt whole
+every run by design (see `cassandra.qb_out_build`), which is every season's
+weeks, though they are small reads and most are empty.
+
+The case to watch is a *stale* fit -- a `lucky-ones` bump, or a new
+`MODELS[league].run_id`. Both builds then sweep every season from scratch,
+because an index holding two models' opinions is one nobody can reproduce,
+and that full sweep now lands on the daily publish's critical path instead of
+the weekly run's. It is work that has to happen before the next publish is
+trustworthy either way; it is just no longer work that waits for Monday.
 
 evaluate and publish are siblings, not a chain: `publish.py` reads
 `<model>_result.json` and fits its own prob->margin mapping via `_best_fit`,
@@ -117,14 +166,17 @@ async def submit(
     --skip-optimize` are "rebuild them" and "don't", and a run that re-rates
     a league is not one to guess about.
 
-    `skip_sweeps` drops the two play-by-play jobs, for the run whose indexes
-    are known to be current and doesn't want to pay two containers to confirm
-    it. Unlike the anchors they are cheap to be wrong about in one direction
-    only: a sweep that didn't need to run costs queue time, and one that
-    needed to run and didn't leaves the blended models fitting `play_weight`
-    against an empty index. It is implied by `skip_optimize` for the reason
-    `skip_anchors` is -- a republish reads its indexes back out of s3 rather
-    than deciding them.
+    `skip_sweeps` drops all three play-by-play jobs, for the run whose indexes
+    are known to be current and doesn't want to pay three containers to
+    confirm it. Unlike the anchors they are cheap to be wrong about in one
+    direction only: a sweep that didn't need to run costs queue time, and one
+    that needed to run and didn't leaves the blended models fitting
+    `play_weight` against an empty index.
+
+    `skip_optimize` does *not* imply it, unlike `skip_anchors`: the indexes
+    are read again when a played game is priced, so a republish needs them
+    current even though it is re-deciding nothing. See the module docstring on
+    the week that cost, and on what the daily sweep costs in return.
 
     `rebuild_sweeps` forces the full historical sweep instead of refreshing
     the season in progress. It does *not* re-rate anything on its own: the
@@ -166,7 +218,11 @@ async def submit(
     control_leagues = [league for league in CONTROL_LEAGUES if league in scope_leagues]
     epa_leagues = [league for league in EPA_LEAGUES if league in scope_leagues]
     qb_out_leagues = [league for league in QB_LEAGUES if league in scope_leagues]
-    run_sweeps = not (skip_sweeps or skip_optimize)
+    # Not implied by `skip_optimize` any more: all three indexes are read when
+    # a played game is priced, not only when a search is fit, so a republish
+    # that skipped them serves last week's answer about this week's games. The
+    # module docstring has the week that cost. `--skip-sweeps` still drops them.
+    run_sweeps = not skip_sweeps
 
     # A dry run builds every request and sends none, so it must not need a
     # client -- creating one costs a region and credentials, which is exactly
@@ -195,7 +251,7 @@ async def submit(
             )
             submitted.append(anchors_job)
 
-        # Both sweeps, submitted alongside anchors rather than after it: an
+        # Every sweep, submitted alongside anchors rather than after it: an
         # index has nothing to do with the scale a rating sits on, so making
         # either wait would serialize two independent hours.
         #
@@ -261,12 +317,19 @@ async def submit(
             )
             submitted.append(optimize_job)
 
-        # Both downstream stages wait on the optimize array, and through it on
-        # anchors and the sweeps -- none of those runs without an optimize job
-        # to feed, so naming them here as well would be edges that can never
-        # be the only one. A --skip-optimize republish has nothing upstream left to
-        # wait for, and starts immediately.
-        depends_on = [optimize_job.job_id] if optimize_job else []
+        # Both downstream stages wait on the optimize array, and through it
+        # on the anchors and the two fit sweeps -- none of which runs without
+        # an optimize job to feed, so naming them here as well would be edges
+        # that can never be the only one.
+        #
+        # A --skip-optimize republish has no optimize job to wait on and waits
+        # on the sweeps instead: publish uploads the indexes it downloaded, so
+        # a sweep rewriting one beside it is a race the stale copy can win. A
+        # republish with nothing upstream at all -- a basketball league, or
+        # `--skip-sweeps` -- still starts immediately.
+        depends_on = [
+            job.job_id for job in ([optimize_job] if optimize_job else sweep_jobs)
+        ]
 
         if not skip_evaluate:
             submitted.append(
