@@ -229,18 +229,19 @@ push until you've wired the roles up:
 
 ```bash
 cd jobs && make apply          # once, locally: creates the three CI roles
-gh secret set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw ci_plan_role_arn)"
-gh secret set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw ci_apply_role_arn)"
-gh secret set AWS_IMAGE_ROLE_ARN --body "$(terraform output -raw ci_image_role_arn)"
+gh variable set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw ci_plan_role_arn)"
+gh variable set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw ci_apply_role_arn)"
+gh variable set AWS_IMAGE_ROLE_ARN --body "$(terraform output -raw ci_image_role_arn)"
 ```
 
-All three are repository *secrets*, and all three must be set the same way —
-mixing the two contexts is what left the ECR repo empty once before, because
-`vars.AWS_IMAGE_ROLE_ARN` reads as `''` when the ARN is stored as a secret and
-the push then skips silently on a green run. That constraint is also why the
-"is it wired up yet" check is a `guard` step rather than a job-level `if`: the
-`secrets` context isn't available in a job `if`, and naming it there makes the
-whole workflow invalid.
+All three are repository *variables*, the same as in endgame, gold-rush,
+aws-batch-optimization and invisible-string. A role ARN isn't a credential:
+the trust policy in `oidc.tf` only accepts a token GitHub signed for this
+repository, so knowing the ARN gets nobody anything. All three must be set the
+same way, though — mixing the two contexts is what left the ECR repo empty
+once before, because `vars.AWS_IMAGE_ROLE_ARN` reads as `''` when the ARN is
+stored as a secret, and the push then skips silently on a green run. The
+`guard` step's note in the run summary is what makes that skip visible.
 
 The other secret these workflows read is `NOTIFICATION_EMAIL`, and leaving it
 unset is fine: an unset secret arrives as `""` rather than as nothing, which

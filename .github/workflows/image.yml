@@ -49,10 +49,8 @@ jobs:
 
       # Before the OIDC role is wired up there is nothing to authenticate with,
       # so every push step below is a no-op and the job reports green with a
-      # note rather than failing red on every push to main. Secrets can't be
-      # tested in a job-level `if`, but they can be read into a step's env,
-      # which is what makes this the one place the check can go -- the same
-      # guard the terraform workflow uses.
+      # note rather than failing red on every push to main -- the same guard
+      # the terraform workflow uses.
       #
       # Skipped entirely on a pull request, which leaves `configured` empty and
       # so keeps every step below it skipped: a PR builds but never pushes.
@@ -60,7 +58,7 @@ jobs:
         id: guard
         if: github.event_name == 'push'
         env:
-          ROLE_ARN: ${{ secrets.AWS_IMAGE_ROLE_ARN }}
+          ROLE_ARN: ${{ vars.AWS_IMAGE_ROLE_ARN }}
         run: |
           if [ -z "$ROLE_ARN" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -74,7 +72,7 @@ jobs:
         if: steps.guard.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_IMAGE_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_IMAGE_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       # `config.json` is what `Config.init_from_file` reads for the bucket
