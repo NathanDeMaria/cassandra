@@ -5,8 +5,10 @@ from endgame.types import Game, Season, Week
 
 from .exhibitions import (
     EXHIBITION_MAX_CAREER_GAMES,
+    PLACEHOLDER_TEAMS,
     exhibition_count,
     exhibition_teams,
+    is_placeholder,
     without_exhibitions,
 )
 
@@ -108,3 +110,39 @@ def test_a_league_with_no_exhibitions_comes_back_as_it_was() -> None:
     cleaned = without_exhibitions([season], "test_league", namer=TeamNamer.empty())
     assert cleaned == [season]
     assert exhibition_count([season], cleaned) == 0
+
+
+def test_a_placeholder_is_dropped_however_many_games_it_has() -> None:
+    """The career-game rule is exactly the wrong test for `TBD`: ncaafb 2026
+    files 118 games against it, which is more of a schedule than most real
+    programs have."""
+    # Against the established teams, so the only thing under test is TBD's
+    # own count -- 25 games, five times what makes a scrimmage opponent.
+    season = _season([*_regulars(), *_schedule("TBD", 25)])
+    junk = exhibition_teams([season], anchored=[], namer=TeamNamer.empty())
+
+    assert "TBD" in junk
+    assert not any(team.startswith("Regular") for team in junk)
+
+
+def test_a_placeholder_is_dropped_even_with_an_anchor() -> None:
+    """An anchor is what says "this is a program, however few games it has".
+    It cannot say that about an undecided fixture, so the placeholder rule
+    does not consult it."""
+    season = _season([*_regulars(), *_schedule("TBA", 25)])
+
+    junk = exhibition_teams([season], anchored=["TBA"], namer=TeamNamer.empty())
+
+    assert "TBA" in junk
+
+
+def test_placeholders_are_matched_whole_and_case_folded() -> None:
+    """`Tbd` from a feed that changed its mind is still a placeholder, and
+    `Tabor` is still a college."""
+    assert is_placeholder("TBD")
+    assert is_placeholder(" tbd ")
+    assert is_placeholder("Tba")
+    assert not is_placeholder("Tabor")
+    assert not is_placeholder("Tabor College Bluejays")
+    assert not is_placeholder("")
+    assert PLACEHOLDER_TEAMS == {"TBA", "TBD"}

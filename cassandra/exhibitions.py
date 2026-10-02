@@ -15,10 +15,24 @@ ends up in a release with a rating nobody should read. `GlickoPredictor.
 unanchored_prior` fixes most of the first; this fixes both by not rating the
 game at all.
 
-The rule
---------
+The rules
+---------
 
-A game is an exhibition when either side is **unanchored and has five or
+Two, and the second is not a special case of the first.
+
+A game is an exhibition when either side is **a placeholder**: `TBD` or
+`TBA`, which is what ESPN files a fixture under when the teams aren't
+decided -- a bowl slot, a Finals game nobody has earned yet. These are not
+teams at any number of games, and the count below is exactly the wrong test
+for them: ncaafb 2026 carries 118 games against `TBD` and the WNBA four, and
+the published API served two WNBA fixtures as `TBD vs TBD`. They have never
+had a completed game in any league's stored history, so nothing is rated off
+them today; the cost of leaving them in is a non-team in the replay and a
+fixture nobody can predict on the page, and the risk is a pickle captured
+before ESPN replaces the name, which would credit one rating with a dozen
+unrelated teams' results.
+
+A game is also an exhibition when either side is **unanchored and has five or
 fewer games in the league's whole stored history**, fixtures included.
 Both halves matter:
 
@@ -79,6 +93,25 @@ from .predictor.base_predictor import load_anchors
 #: opponent rather than a program. See the module docstring.
 EXHIBITION_MAX_CAREER_GAMES = 5
 
+#: What ESPN calls a fixture whose teams aren't decided. Surveyed across every
+#: stored league: ncaafb has `TBD` (118 games) and `TBA` (2), the WNBA has
+#: `TBD` (4), and no other league has either -- nor any other name that reads
+#: as a placeholder. Held as names rather than inferred from "no completed
+#: game ever", which is true of all of them and also true of a real program
+#: whose first game is next Saturday.
+PLACEHOLDER_TEAMS = frozenset({"TBA", "TBD"})
+
+
+def is_placeholder(team: str) -> bool:
+    """Whether this "team" is the stand-in for an undecided fixture.
+
+    Stripped and case-folded, so a feed that starts writing `Tbd` doesn't
+    quietly start rating it. Whole-name rather than substring: `Tabor` and
+    `Tabor College` are real, and so is every other team with those letters
+    inside it.
+    """
+    return team.strip().upper() in PLACEHOLDER_TEAMS
+
 
 def exhibition_teams(
     seasons: Iterable[Season],
@@ -90,7 +123,8 @@ def exhibition_teams(
 
     Counted after the namer has had its say, so a program the registry knows
     under two spellings is one team with one count -- the same names the
-    replay rates under.
+    replay rates under. Placeholders come back too, by name rather than by
+    count; see the module docstring on why that is a separate rule.
     """
     career: Counter[str] = Counter()
     for season in seasons:
@@ -103,7 +137,10 @@ def exhibition_teams(
     return frozenset(
         team
         for team, games in career.items()
-        if games <= max_career_games and team not in filed
+        # A placeholder is dropped whatever its count and whatever the
+        # registry says about it: `TBD` is not a team that happens to be
+        # unfiled, and 118 games against it is not a program's career.
+        if is_placeholder(team) or (games <= max_career_games and team not in filed)
     )
 
 
