@@ -589,3 +589,43 @@ def test_a_release_written_before_the_market_metrics_still_reads() -> None:
 
     assert metrics.market_brier_score is None
     assert metrics.n_market_games == 0
+
+
+def test_reading_a_release_never_imports_numba() -> None:
+    """numba is the smoother's, and the smoother is a fitting path.
+
+    `cassandra.predictor.smoothing` is imported by every Glicko model, so
+    the import that matters has to stay inside `compiled_sweep` -- a
+    consumer that reads a release and predicts a matchup has no numba and
+    no need of one, and `_smooth_with_dicts` is what a replay without it
+    runs. Same subprocess trick as the sklearn pair above, and the same
+    failure: a convenience import at module scope.
+    """
+    source = """
+import json, sys
+from cassandra.serving import ModelRelease
+
+release = ModelRelease.model_validate(json.load(sys.stdin))
+predictor = release.rating_predictor()
+from cassandra.predictor import predict_matchup
+assert 0.5 < predict_matchup(predictor, "Team A", "Team B").team1_win_prob < 1
+print("numba" in sys.modules)
+"""
+    payload = _release(
+        predictor_class="GlickoPredictor",
+        params={"home_advantage": 95.0, "passes": 2},
+        ratings={
+            "Team A": TeamRating(rating=1600, rd=180),
+            "Team B": TeamRating(rating=1500, rd=200),
+        },
+    ).model_dump_json()
+
+    result = subprocess.run(
+        [sys.executable, "-c", source],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "False"

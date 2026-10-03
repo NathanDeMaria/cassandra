@@ -2,6 +2,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple, Self
 
+import numpy as np
 from endgame.types import Game
 
 from ..scoring import DEFAULT_SIGMOID_SCALE, get_scoring_function
@@ -23,6 +24,7 @@ from .base_predictor import (
 from .blend import validated_scale
 from .opponent_prior import OpponentPriorManager
 from .rest import DEFAULT_REST_ADVANTAGE
+from .smoothing import Floats, Ints, compiled_sweep
 from .types import Matchup, Prediction, Rating
 
 
@@ -218,6 +220,15 @@ class GlickoPredictor(Predictor):
         self._preseason = dict(self._ratings)
         self._weeks: list[list[_Played]] = []
         self._this_week: list[_Played] = []
+        # The same season, addressed by row instead of by name, for the
+        # compiled sweep: a team's row, what the replay starts it at, and
+        # one array per played week. Built as the season goes and thrown
+        # away at the rollover, like `_weeks` -- see `_sweep_rows`. Empty
+        # and unused for a model with `passes=1`, which never smooths.
+        self._row_of: dict[str, int] = {}
+        self._entry: list[_Rating] = []
+        self._entry_is_preseason: list[bool] = []
+        self._week_rows: list[tuple[Ints, Ints, Floats, Floats]] = []
 
     def home_edge(self, matchup: Matchup) -> float:
         """Rating points the home side gets for being at home, before the matchup terms.
@@ -352,6 +363,53 @@ class GlickoPredictor(Predictor):
         for _ in range(self._passes - 1):
             self._smooth()
 
+    def _rows(self, week: Sequence[_Played]) -> tuple[Ints, Ints, Floats, Floats]:
+        """One week of games as the arrays the sweep reads.
+
+        Converted once per week and kept, not rebuilt per sweep: the sweep
+        runs after every week and reads every week played so far, so a
+        season's games would otherwise be converted a dozen times over.
+
+        Filled on demand from `_smooth` rather than in `pass_week`, so that
+        a subclass with a smoother of its own -- `MarginGlickoPredictor`,
+        `VectorGlickoPredictor` -- builds nothing it won't read.
+        """
+        return (
+            np.fromiter(
+                (self._row(played.home) for played in week), np.int64, len(week)
+            ),
+            np.fromiter(
+                (self._row(played.away) for played in week), np.int64, len(week)
+            ),
+            np.fromiter((played.actual for played in week), np.float64, len(week)),
+            np.fromiter(
+                (played.home_adjustment for played in week), np.float64, len(week)
+            ),
+        )
+
+    def _row(self, team: str) -> int:
+        """This team's row in the sweep's arrays, assigned on first sight.
+
+        The entry value goes in at the same time, because it is fixed for
+        the season: the rating the season opened this team at, or -- for a
+        team that wasn't in it -- its anchor at `initial_rd`, which is what
+        `_smooth`'s `rating_of` falls back to. Which of the two it was is
+        kept as well: a team the season didn't open with is not in the
+        replay until it plays, and so is not aged before then.
+        """
+        found = self._row_of.get(team)
+        if found is not None:
+            return found
+        found = self._row_of[team] = len(self._entry)
+        opened_at = self._preseason.get(team)
+        self._entry.append(
+            opened_at
+            if opened_at is not None
+            else _Rating(self.anchor(team), self._initial_rd)
+        )
+        self._entry_is_preseason.append(opened_at is not None)
+        return found
+
     def _aged(
         self, ratings: Mapping[str, _Rating], increase: float
     ) -> dict[str, _Rating]:
@@ -383,6 +441,76 @@ class GlickoPredictor(Predictor):
         Passes converge quickly and wobble a little past three (five was a
         hair worse on ncaafb), which is a fixed-point iteration doing what
         they do; nothing here damps it because nothing has needed to.
+
+        This is the half that knows about teams by name. The sweep itself
+        runs over rows where numba is installed -- the same arithmetic in
+        the same order, an order of magnitude faster, and the reason the
+        season's games are also kept as arrays; see
+        `cassandra.predictor.smoothing`. `_smooth_with_dicts` below is the
+        reference implementation and the fallback.
+        """
+        compiled = compiled_sweep()
+        if compiled is None or not self._weeks:
+            self._smooth_with_dicts()
+            return
+
+        while len(self._week_rows) < len(self._weeks):
+            self._week_rows.append(self._rows(self._weeks[len(self._week_rows)]))
+
+        rows = len(self._entry)
+        settled = np.zeros(rows)
+        settled_known = np.zeros(rows, bool)
+        for team, row in self._row_of.items():
+            current = self._ratings.get(team)
+            if current is not None:
+                settled[row] = current.rating
+                settled_known[row] = True
+
+        rating, present = compiled(
+            np.concatenate([week[0] for week in self._week_rows]),
+            np.concatenate([week[1] for week in self._week_rows]),
+            np.concatenate([week[2] for week in self._week_rows]),
+            np.concatenate([week[3] for week in self._week_rows]),
+            np.cumsum([len(week[0]) for week in self._week_rows], dtype=np.int64),
+            np.fromiter((entry.rating for entry in self._entry), np.float64, rows),
+            np.fromiter(
+                (entry.rating_deviation for entry in self._entry), np.float64, rows
+            ),
+            np.array(self._entry_is_preseason, bool),
+            settled,
+            settled_known,
+            self._initial_rd,
+            self._weekly_rd_increase,
+        )
+
+        # A team with no row never played this season, so the sweep has
+        # nothing for it and it keeps the rating it has -- which is the
+        # rating the season opened it at, since nothing has moved it. The
+        # deviations are the forward pass's throughout.
+        #
+        # `float`, not the `np.float64` the array holds: a rating goes on to
+        # be json -- a release, the opponent priors, a state file -- and
+        # `json.dump` has no encoder for numpy's scalar.
+        self._ratings = {
+            team: _Rating(
+                (
+                    float(rating[row])
+                    if (row := self._row_of.get(team)) is not None and present[row]
+                    else current.rating
+                ),
+                current.rating_deviation,
+            )
+            for team, current in self._ratings.items()
+        }
+
+    def _smooth_with_dicts(self) -> None:
+        """`_smooth`, by team name, for an install with no numba.
+
+        Kept rather than deleted because it is the definition of what the
+        compiled sweep has to do, and because a serving install that
+        replays a release has no numba in it. Both are tested against each
+        other on a real season; see `test_the_compiled_sweep_matches_the_
+        dict_sweep`.
         """
         settled = {team: rating.rating for team, rating in self._ratings.items()}
         replay = dict(self._preseason)
@@ -435,6 +563,13 @@ class GlickoPredictor(Predictor):
         self._preseason = dict(self._ratings)
         self._weeks = []
         self._this_week = []
+        # Rows are per season: they carry what the season opened a team at,
+        # and the rows of a season nobody is replaying any more would pin
+        # every team's entry value to last year's.
+        self._row_of = {}
+        self._entry = []
+        self._entry_is_preseason = []
+        self._week_rows = []
 
     def postrun_callback(self) -> None:
         self._prior_manager.save(
