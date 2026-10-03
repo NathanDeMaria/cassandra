@@ -20,16 +20,6 @@ data "aws_partition" "current" {}
 locals {
   shared = jsondecode(data.aws_ssm_parameter.shared.insecure_value)
 
-  # An unset GitHub Actions secret interpolates to "", not to nothing, so CI
-  # would hand terraform `TF_VAR_notification_email=""` and a bare `== null`
-  # check would read that as "yes, email me" -- then fail the apply on an SNS
-  # subscription with an empty endpoint. Normalising here keeps every `count`
-  # below reading as one decision.
-  notification_email = (
-    var.notification_email == null || var.notification_email == ""
-    ? null
-    : var.notification_email
-  )
 
   image = "${local.shared.repo_urls["cassandra"]}:${var.image_tag}"
 
@@ -399,60 +389,8 @@ module "daily_publish" {
 # ------------------------------------------------------------------------------
 # Failure notification
 # ------------------------------------------------------------------------------
-# A weekly job that quietly stops working is a model that quietly goes stale,
-# and nothing else here would say so.
-resource "aws_sns_topic" "failures" {
-  count = local.notification_email == null ? 0 : 1
-  name  = "cassandra-batch-failures"
-}
-
-resource "aws_sns_topic_subscription" "failures" {
-  count     = local.notification_email == null ? 0 : 1
-  topic_arn = aws_sns_topic.failures[0].arn
-  protocol  = "email"
-  endpoint  = local.notification_email
-}
-
-resource "aws_cloudwatch_event_rule" "job_failed" {
-  count       = local.notification_email == null ? 0 : 1
-  name        = "cassandra-batch-job-failed"
-  description = "Any cassandra Batch job entering FAILED"
-
-  event_pattern = jsonencode({
-    source      = ["aws.batch"]
-    detail-type = ["Batch Job State Change"]
-    detail = {
-      status = ["FAILED"]
-      # Array children report individually; without this a 20-child array
-      # failing sends 20 emails and the parent's one is the useful one.
-      jobDefinition = [{ prefix = "arn:aws:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/cassandra-" }]
-    }
-  })
-}
-
-resource "aws_cloudwatch_event_target" "job_failed" {
-  count     = local.notification_email == null ? 0 : 1
-  rule      = aws_cloudwatch_event_rule.job_failed[0].name
-  target_id = "sns"
-  arn       = aws_sns_topic.failures[0].arn
-}
-
-data "aws_iam_policy_document" "sns_publish" {
-  count = local.notification_email == null ? 0 : 1
-
-  statement {
-    actions   = ["SNS:Publish"]
-    resources = [aws_sns_topic.failures[0].arn]
-
-    principals {
-      type        = "Service"
-      identifiers = ["events.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_sns_topic_policy" "failures" {
-  count  = local.notification_email == null ? 0 : 1
-  arn    = aws_sns_topic.failures[0].arn
-  policy = data.aws_iam_policy_document.sns_publish[0].json
-}
+# None here: aws-batch-optimization's alerts.tf emails on any job failing on
+# the shared queue, these included (array children filtered, so a failed
+# optimize array is one email). Its topic is `failure_topic_arn` in
+# local.shared, for anything here that ever needs an alert a failed job
+# wouldn't raise.

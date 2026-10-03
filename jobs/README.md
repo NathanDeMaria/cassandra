@@ -244,10 +244,9 @@ once before, because `vars.AWS_IMAGE_ROLE_ARN` reads as `''` when the ARN is
 stored as a secret, and the push then skips silently on a green run. The
 `guard` step's note in the run summary is what makes that skip visible.
 
-The other secret these workflows read is `NOTIFICATION_EMAIL`, and leaving it
-unset is fine: an unset secret arrives as `""` rather than as nothing, which
-`main.tf` normalises back to `null` so the SNS topic and its rule simply aren't
-created.
+These workflows read no secrets. Failure email isn't this repo's:
+aws-batch-optimization emails on any job failing on the shared queue, these
+included, from its own `NOTIFICATION_EMAIL`.
 
 `image_tag` stays at its `latest` default in CI, which is the tag a push to
 main publishes. Pin a SHA in `terraform.tfvars` locally to make a run
@@ -314,8 +313,7 @@ Ordering matters — steps 1–3 are in the other repo, and this project's
    repository variables so both workflows wake up. See [CI](#ci).
 4. **Push an image.** Merge to main, or `make push TAG=<sha>` locally.
 
-The only *secret* this repo needs is the optional `NOTIFICATION_EMAIL`. The
-image workflow used to want four more; it reads the shared stack's published
+This repo needs no *secrets*. The image workflow used to want four; it reads the shared stack's published
 outputs instead. See [Where the image build gets its config](#where-the-image-build-gets-its-config).
 
 `make update` re-fetches the shared modules — terraform caches git modules and

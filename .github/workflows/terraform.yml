@@ -26,15 +26,11 @@ permissions:
 env:
   TF_IN_AUTOMATION: "1"
   AWS_REGION: us-east-2
-  # The tfvars file `make plan`/`make apply` reads locally is gitignored, so CI
-  # supplies what it needs as TF_VAR_*. Only this one: everything else has a
-  # default, the queue and the buckets come from the shared stack's remote
-  # state, and `image_tag` deliberately stays at its `latest` default, which is
-  # the tag a push to main publishes.
-  #
-  # An unset secret arrives as "" rather than as nothing, which main.tf
-  # normalises back to null -- see `local.notification_email`.
-  TF_VAR_notification_email: ${{ secrets.NOTIFICATION_EMAIL }}
+  # No TF_VAR_* here: the tfvars file `make plan`/`make apply` reads locally is
+  # gitignored, but everything in it has a default, the queue and the buckets
+  # come from the shared stack's published outputs, and `image_tag`
+  # deliberately stays at its `latest` default, which is the tag a push to main
+  # publishes.
 
 jobs:
   # No credentials and no backend, so this runs everywhere -- including before
