@@ -470,3 +470,26 @@ def test_a_gap_too_wide_for_the_arithmetic_is_a_certainty() -> None:
     assert upset.rating_deviation == pytest.approx(my.rating_deviation)
     assert upset.rating > my.rating
     assert expected_loss.rating == pytest.approx(my.rating)
+
+
+def test_the_wide_gap_is_a_certainty_from_the_favorite_s_side_too() -> None:
+    """The same game, read from the other side.
+
+    Every game steps both teams, so a gap this wide reaches the update
+    twice: once with the exponent at `+_MAX_EXPONENT` and once at `-`. Only
+    the first was finite -- clamping the exponent leaves `1 / (1 + 1e-100)`
+    rounding to exactly 1, so `p (1 - p)` is 0 and the division raised. See
+    `_MIN_SPREAD`.
+    """
+    my, opp = _Rating(1500.0 + 1e9, 100.0), _Rating(1500.0, 100.0)
+
+    expected_win = glicko_step(my, opp, 1.0, 0.0)
+    upset_loss = glicko_step(my, opp, 0.0, 0.0)
+
+    assert math.isfinite(upset_loss.rating) and math.isfinite(
+        upset_loss.rating_deviation
+    )
+    assert upset_loss.rating_deviation == pytest.approx(my.rating_deviation)
+    # Beating a nobody teaches nothing; losing to one costs the full surprise.
+    assert expected_win.rating == pytest.approx(my.rating)
+    assert upset_loss.rating < my.rating

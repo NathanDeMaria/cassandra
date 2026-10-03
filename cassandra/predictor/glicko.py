@@ -54,6 +54,19 @@ _Q = math.log(10) / 400
 #: one ncaafb probe with `sigmoid_scale` near its floor.
 _MAX_EXPONENT = 100.0
 
+#: The smallest `p (1 - p)` that division will see. Clamping the exponent is
+#: not enough on its own, and only one side of a wide game shows it: at
+#: `-_MAX_EXPONENT` the expectation is `1 / (1 + 1e-100)`, which *is* 1.0 in
+#: a double, so `1 - p` is 0 and the division raises. The exponent clamp
+#: caught the underdog's update and the favourite's -- the same game, read
+#: from the other side -- still raised.
+#:
+#: 1e-100 is what the other end of the clamp produces naturally, so the two
+#: directions are the same step mirrored: `d2` enormous, the deviation
+#: unchanged, and the rating moved by the full surprise. Above the floor this
+#: is the identity, so no ordinary game's arithmetic moves by a bit.
+_MIN_SPREAD = 10.0**-_MAX_EXPONENT
+
 #: Anchor points per unit of `home_advantage_slope`: the slope is quoted per
 #: 400 anchor points -- one Elo decade, and roughly the FBS-to-FCS gap on
 #: the ncaafb ladder -- so its value is a readable "how much more edge does
@@ -524,7 +537,11 @@ def glicko_step(
     # change to the deviation, and the rating moved by the full surprise.
     exponent = min(max(exponent, -_MAX_EXPONENT), _MAX_EXPONENT)
     expected_score = 1 / (1 + 10**exponent)
-    d2 = 1 / (_Q**2 * g_opp**2 * expected_score * (1 - expected_score))
+    # Floored, because the clamp above holds the exponent and not the
+    # product: at the negative end `expected_score` rounds to exactly 1 and
+    # this division is by zero. See `_MIN_SPREAD`.
+    spread = max(expected_score * (1 - expected_score), _MIN_SPREAD)
+    d2 = 1 / (_Q**2 * g_opp**2 * spread)
     rd_inv_sq = 1 / my_rating.rating_deviation**2
     rd_inv_plus_d2 = rd_inv_sq + 1 / d2
     rd_new = math.sqrt(1 / rd_inv_plus_d2)
