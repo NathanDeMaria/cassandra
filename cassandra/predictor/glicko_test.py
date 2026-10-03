@@ -1,3 +1,4 @@
+import json
 import math
 from datetime import datetime
 from typing import Any, NamedTuple
@@ -5,9 +6,11 @@ from typing import Any, NamedTuple
 import pytest
 
 from ..scoring import DEFAULT_SIGMOID_SCALE
+from . import smoothing
 from .base_predictor import MEAN_RATING
 from .conftest import GameFactory
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating, glicko_step
+from .smoothing import compiled_sweep
 from .types import Rating
 
 # The rating half of Glicko's behavior is checked against every model in
@@ -493,3 +496,88 @@ def test_the_wide_gap_is_a_certainty_from_the_favorite_s_side_too() -> None:
     # Beating a nobody teaches nothing; losing to one costs the full surprise.
     assert expected_win.rating == pytest.approx(my.rating)
     assert upset_loss.rating < my.rating
+
+
+# --- the compiled sweep -------------------------------------------------------
+
+_NEEDS_NUMBA = pytest.mark.skipif(
+    compiled_sweep() is None, reason="numba isn't installed in this environment"
+)
+
+
+def test_the_steps_agree() -> None:
+    """`smoothing._step` is `glicko_step` with the tuple taken off.
+
+    Two copies of the arithmetic, so the thing worth testing is that they
+    are the same arithmetic -- including the order it is written in, which
+    is what keeps the last bit the same.
+    """
+    cases = [
+        (1500.0, 216.0, 1500.0, 216.0, 1.0, 0.0),
+        (1725.5, 80.0, 1312.25, 400.0, 0.0, 95.0),
+        (1312.25, 400.0, 1725.5, 80.0, 0.5, -95.0),
+        # Past the exponent clamp, in both directions: the case
+        # `test_a_gap_too_wide_for_the_arithmetic_is_a_certainty` covers for
+        # `glicko_step`, and the one this copy would have got wrong.
+        (1500.0, 100.0, 1500.0 + 1e9, 100.0, 1.0, 0.0),
+        (1500.0 + 1e9, 100.0, 1500.0, 100.0, 0.0, 0.0),
+    ]
+    for my_rating, my_rd, opp_rating, opp_rd, score, adjustment in cases:
+        expected = glicko_step(
+            _Rating(my_rating, my_rd),
+            _Rating(opp_rating, opp_rd),
+            score,
+            adjustment,
+        )
+        assert smoothing._step(
+            my_rating, my_rd, opp_rating, opp_rd, score, adjustment
+        ) == pytest.approx(tuple(expected), rel=1e-15)
+
+
+def _two_seasons(predictor: GlickoPredictor, game: GameFactory) -> None:
+    """Enough of a season for the smoother to have something to re-walk.
+
+    Two seasons, so the rollover is crossed; a team that first plays in
+    week 2 ("E"), because a team the season did not open with enters the
+    replay later than the rest; and a week with no games, which still ages
+    every deviation.
+    """
+    for season in range(2):
+        _week(predictor, game, ("A", "B", 28, 7), ("C", "D", 10, 3))
+        _week(predictor, game, ("B", "C", 3, 31), ("D", "E", 0, 14))
+        _week(predictor, game)
+        _week(predictor, game, ("E", "A", 21, 20), ("C", "A", 7, 35))
+        predictor.pass_season(2023 + season)
+
+
+@_NEEDS_NUMBA
+def test_the_compiled_sweep_matches_the_dict_sweep(
+    game: GameFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason the dict sweep is still here: it defines the answer.
+
+    Exactly, on a season this small -- the last-bit differences a libm call
+    is entitled to need a few hundred thousand games to show up, and this
+    is a handful. On a 25-season ncaafb replay of `glicko_full` they come
+    to one ulp of brier and 2.3e-13 of a rating; see `smoothing`.
+    """
+    compiled = GlickoPredictor("test_league", passes=3, initial_rd=300)
+    by_dicts = GlickoPredictor("test_league", passes=3, initial_rd=300)
+    monkeypatch.setattr(by_dicts, "_smooth", by_dicts._smooth_with_dicts)
+
+    for predictor in (compiled, by_dicts):
+        _two_seasons(predictor, game)
+
+    assert compiled.ratings == by_dicts.ratings
+
+
+@_NEEDS_NUMBA
+def test_the_compiled_sweep_keeps_the_ratings_json(game: GameFactory) -> None:
+    """A rating goes on to be written out, and numpy's float isn't json."""
+    predictor = GlickoPredictor("test_league", passes=2)
+    _two_seasons(predictor, game)
+
+    assert json.dumps(
+        {team: rating.rating for team, rating in predictor.ratings.items()}
+    )
+    assert all(type(rating.rating) is float for rating in predictor._ratings.values())

@@ -102,6 +102,21 @@ scikit-learn = "^1.8.0"
 pyarrow = "^25.0.1"
 fire = "^0.7.1"
 bayesian-optimization = "^3.2.1"
+# The Glicko smoother's sweep, compiled. It is here rather than in `main`
+# because it is a fitting dependency in the strict sense: an install without
+# it replays the same model through `_smooth_with_dicts`, three times slower
+# and to the same ratings, which is the right trade for a web image reading
+# a release and the wrong one for a search that runs the sweep 20,000 times.
+# `cassandra.predictor.smoothing` imports it inside a function so that stays
+# true, and `release_test.test_reading_a_release_never_imports_numba` holds
+# it.
+#
+# It costs the deployed image ~90MB (llvmlite is most of it) and nothing in
+# build time -- there are manylinux wheels for 3.14, and no compiler is
+# needed to install one. What it does need is numpy below 2.6, which is
+# inside the `^2.4` above; a numpy that moves past it will hold this back,
+# and the fallback is what makes that survivable rather than urgent.
+numba = "^0.68.0"
 # Where the seasons, the odds and the play-by-play live. Only `cassandra.odds`
 # and `cassandra.save_predictions` import it, and neither is on the path a
 # consumer reading a release takes -- so it belongs here with the rest of the
