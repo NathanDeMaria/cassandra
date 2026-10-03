@@ -3,6 +3,7 @@ import io
 import re
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime
+from operator import attrgetter
 from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Iterable, Iterator
 
@@ -202,6 +203,34 @@ class _Prediction:
     neutral_site: bool
 
 
+_PREDICTION_FIELDS = tuple(field.name for field in fields(_Prediction))
+
+
+def predictions_frame(predictions: Iterable[_Prediction]) -> pd.DataFrame:
+    """The predictions as a frame, built a column at a time.
+
+    `pd.DataFrame([asdict(p) for p in predictions])` is the obvious way to
+    write this and costs a search real time: `asdict` is recursive and
+    deepcopies every value, so each row pays for a dict, twelve `getattr`s
+    and a `copy.deepcopy` of its `datetime` -- 3.6s of a 21s ncaafb probe,
+    on 78,000 games, a thousand times a search.
+
+    Nothing about the frame changes. The columns are the dataclass's fields
+    in declaration order, same as the dict-per-row path produced, and
+    `save_predictions_test.test_the_frame_matches_the_row_by_row_build`
+    holds the two together -- values and dtypes -- so this stays a
+    rewrite of how the frame is built rather than of what it contains.
+
+    An empty iterable gives the empty frame, which is what the row-by-row
+    build gave: the objectives raise on it by name (`No games to score`),
+    and a zero-column frame is how they recognize it.
+    """
+    columns = list(zip(*(attrgetter(*_PREDICTION_FIELDS)(p) for p in predictions)))
+    if not columns:
+        return pd.DataFrame()
+    return pd.DataFrame(dict(zip(_PREDICTION_FIELDS, columns)))
+
+
 def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
     team1_win = result.game.home_score > result.game.away_score
     spread = odds.spread if odds else None
@@ -248,7 +277,7 @@ async def build_predictions_df(
     predictor: Predictor, league: str, post_callbacks: bool
 ) -> pd.DataFrame:
     prediction_results = _get_results(predictor, league, post_callbacks=post_callbacks)
-    return pd.DataFrame([asdict(result) async for result in prediction_results])
+    return predictions_frame([result async for result in prediction_results])
 
 
 async def read_rated_seasons(league: str, bucket: str) -> list[Season]:
@@ -263,6 +292,40 @@ async def read_rated_seasons(league: str, bucket: str) -> list[Season]:
     """
     seasons = [season async for season in read_all_seasons(league, bucket)]
     return without_exhibitions(seasons, league)
+
+
+def prepared_for_replay(
+    league: str, seasons: Iterable[Season]
+) -> tuple[list[Season], TeamNamer]:
+    """The seasons under canonical names, and the namer to replay them with.
+
+    `generate_predictions` canonicalizes as it goes, which is the right
+    place for it when a caller replays a league once. A search replays the
+    same games a thousand times, and the registry's answer for a name does
+    not depend on the game, the season or the model -- so ncaafb paid 3.5s
+    of every 21s probe resolving 78,000 games' worth of names to the same
+    answers as the probe before it.
+
+    The two come back together on purpose. Pre-named seasons replayed with
+    the league's namer are merely slow, but the league's seasons replayed
+    with the empty namer are *wrong* -- every alternate spelling of a team
+    rates as its own program -- and a caller that takes both from here
+    cannot pick up one without the other.
+    """
+    namer = TeamNamer.for_league(league)
+    renamed = [
+        season._replace(
+            weeks=[
+                week._replace(games=[namer.apply(game) for game in week.games])
+                for week in season.weeks
+            ]
+        )
+        for season in seasons
+    ]
+    # Already canonical, so the replay has nothing left to rename. Not the
+    # same namer: handing back one that has already seen every game would
+    # double-count its `unknown` and `ambiguous` tallies.
+    return renamed, TeamNamer.empty()
 
 
 async def read_league(league: str) -> tuple[list[Season], OddsDatabase]:
@@ -299,6 +362,7 @@ def join_with_odds(
     post_callbacks: bool,
     roll_over_final_season: bool = True,
     week_observer: WeekObserver | None = None,
+    namer: TeamNamer | None = None,
 ) -> Iterator[_Prediction]:
     # like build_predictions_df, but meant for optimization that already has read seasons/odds into memory
     #
@@ -306,10 +370,15 @@ def join_with_odds(
     # than on `build_predictions_df` because the caller that wants a rating
     # history is publish, and publish is the one that already reads the
     # seasons and the odds once for the whole run.
+    #
+    # `namer` likewise: None means the replay resolves names itself, which
+    # is what a one-pass caller wants. A search hands over the one
+    # `prepared_for_replay` gave it along with the seasons it renamed.
     for result in generate_predictions(
         predictor,
         seasons,
         post_callbacks=post_callbacks,
+        namer=namer,
         roll_over_final_season=roll_over_final_season,
         week_observer=week_observer,
     ):

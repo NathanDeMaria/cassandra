@@ -188,6 +188,9 @@ class Predictor(ABC):
         # override of `pass_season`: a subclass that forgot would silently
         # stop learning what an unfiled team is.
         self._played_this_season: set[str] = set()
+        # `anchor` for the season in hand, filled as teams are asked for and
+        # emptied at every rollover -- see `anchor`.
+        self._anchor_cache: dict[str, float] = {}
 
     @property
     def league(self) -> str:
@@ -293,11 +296,27 @@ class Predictor(ABC):
         divisions all play each other, and the wrong number in one whose
         registry leaves a tier of programs unfiled. `GlickoPredictor`
         overrides it with what such teams have turned out to be.
+
+        Memoized for the season the replay is in, because the smoother asks
+        for the same few hundred answers a great many times: `passes=2` on
+        ncaafb walks the season again every week, which came to 1.8 million
+        calls a probe, a third of them stepping through a moved program's
+        `[year, rating]` history. The cache is cleared in `pass_season`,
+        the only thing that moves either input -- the clock, and (for an
+        unfiled team) the running estimate `_note_unanchored` folds the
+        season's teams into. Both move there, and `_note_unanchored` runs
+        before the regression that reads them, so nothing can read a value
+        cached from before the rollover.
         """
+        hit = self._anchor_cache.get(team)
+        if hit is not None:
+            return hit
         found = self._anchors.get(team)
-        if found is None:
-            return self.unanchored_prior()
-        return anchor_in(found, self._season)
+        value = (
+            self.unanchored_prior() if found is None else anchor_in(found, self._season)
+        )
+        self._anchor_cache[team] = value
+        return value
 
     def unanchored_prior(self) -> float:
         """Where a team with no anchor enters, and regresses toward.
@@ -380,6 +399,11 @@ class Predictor(ABC):
         """
         if year is not None:
             self._season = year
+        # Whatever `anchor` answered last season was answered for last
+        # season's clock, and for an unfiled team against an estimate that
+        # `_note_unanchored` is about to fold this season's teams into. Both
+        # move below, and both move before anything reads an anchor again.
+        self._anchor_cache.clear()
         # A team's last game of one season says nothing about how rested it
         # is for the next, and the gap between them is an offseason rather
         # than a bye. Cleared here rather than clamped, because clamping

@@ -2,12 +2,11 @@ import asyncio
 import inspect
 import json
 import math
-from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
 import fire
-import pandas as pd
+from call_it_what_you_want import TeamNamer
 
 from cassandra.box import Seed, misplaced
 from cassandra.checkpoint import S3Checkpoint
@@ -28,6 +27,8 @@ from cassandra.save_predictions import (
     OddsDatabase,
     Season,
     join_with_odds,
+    predictions_frame,
+    prepared_for_replay,
     read_rated_seasons,
 )
 
@@ -41,6 +42,7 @@ def _score_probe(
     frame: str,
     weeks_per_season: float,
     fixed: dict[str, float | str],
+    namer: TeamNamer,
     **probe,
 ) -> float:
     """Replay the league with one set of knobs and score the result.
@@ -51,14 +53,18 @@ def _score_probe(
     mean. The knobs are the config's, in its frame; the pinned ones reach the
     constructor the same way a searched one does, the optimizer simply never
     varies them and is not told about them, so they cost no dimension.
+
+    `seasons` and `namer` come as a pair from `prepared_for_replay`: the
+    games arrive already under canonical names and the namer renames
+    nothing, so a thousand probes resolve the league's names once between
+    them rather than once each.
     """
     params = frames.to_params(frame, {**fixed, **probe}, weeks_per_season)
     predictor = predictor_class(league, **params)  # type: ignore[call-arg]
     prediction_results = join_with_odds(
-        predictor, seasons, odds_db, post_callbacks=False
+        predictor, seasons, odds_db, post_callbacks=False, namer=namer
     )
-    df = pd.DataFrame([asdict(result) for result in prediction_results])
-    return objective(df)
+    return objective(predictions_frame(prediction_results))
 
 
 def _pinned_notice(fixed: dict[str, float | str], config_name: str) -> str | None:
@@ -210,6 +216,13 @@ async def _run_optimization(config_file: str) -> None:
         )
     odds_db = await OddsDatabase.from_s3(aws_config.bucket)
 
+    # Canonicalized once for the whole search rather than once per probe;
+    # see `prepared_for_replay`. The priors pass below gets the renamed
+    # seasons too, and renames them again -- a canonical name resolves to
+    # itself, so that pass is one replay's worth of wasted lookups rather
+    # than a different set of teams than the search will see.
+    seasons, namer = prepared_for_replay(league, seasons)
+
     # What a per-season deviation budget is spread over; see `frame.to_params`.
     weeks = frames.weeks_per_season([len(season.weeks) for season in seasons])
     if config_model.frame != frames.RATING:
@@ -246,6 +259,7 @@ async def _run_optimization(config_file: str) -> None:
         frame=config_model.frame,
         weeks_per_season=weeks,
         fixed=config_model.fixed,
+        namer=namer,
     )
     # Inside Batch the search saves itself under this job's id and a retry
     # after a spot reclaim resumes from the save; anywhere else there is no

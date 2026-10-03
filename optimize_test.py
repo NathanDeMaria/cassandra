@@ -2,6 +2,7 @@ import re
 from typing import cast
 
 import pytest
+from call_it_what_you_want import TeamNamer
 
 import optimize
 from cassandra.predictor import (
@@ -69,7 +70,7 @@ def test_a_probe_reaches_the_constructor_in_its_own_units(
     monkeypatch.setattr(
         optimize,
         "join_with_odds",
-        lambda predictor, seasons, odds_db, post_callbacks: [],
+        lambda predictor, seasons, odds_db, post_callbacks, namer: [],
     )
 
     value = optimize._score_probe(
@@ -81,6 +82,9 @@ def test_a_probe_reaches_the_constructor_in_its_own_units(
         frame=frame.POINTS,
         weeks_per_season=20,
         fixed={"scoring_method": "sigmoid", "travel_pts": 0},
+        # The search's seasons arrive already renamed; see
+        # `prepared_for_replay`.
+        namer=TeamNamer.empty(),
         sigmoid_scale=10.0,
         hfa_pts=3.0,
     )

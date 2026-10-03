@@ -1,9 +1,12 @@
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Self
 
+import pandas as pd
 import pytest
 from call_it_what_you_want import TeamNamer, teams_from_csv
 from endgame.types import Game, OverlappingWeeksError, Season, Week
+from pandas.testing import assert_frame_equal
 
 from .predictor import (
     ControlGlickoPredictor,
@@ -16,7 +19,12 @@ from .predictor import (
 )
 from .predictor.opponent_prior import OpponentPriorManager
 from .predictor.types import Matchup, Prediction
-from .save_predictions import generate_predictions
+from .save_predictions import (
+    _Prediction,
+    generate_predictions,
+    predictions_frame,
+    prepared_for_replay,
+)
 
 _HOME = "Team A"
 _AWAY = "Team B"
@@ -213,6 +221,114 @@ def test_generate_predictions_canonicalizes_team_names() -> None:
     # Both wins landed on one team rather than being split across two names.
     assert "Old Name" not in predictor.ratings
     assert predictor.get_rating("New Name") > 1500
+
+
+def _rename_registry() -> TeamNamer:
+    """One school under two names, and an opponent under one."""
+    return TeamNamer(
+        teams_from_csv(
+            [
+                "espn_id,name,year,source",
+                "1,Old Name,2022,espn",
+                "1,New Name,2023,espn",
+                "2,Rival,2023,espn",
+            ]
+        )
+    )
+
+
+def test_prepared_for_replay_renames_once_up_front(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A search's seasons arrive canonical, and replay to the same games.
+
+    The equivalence is the whole claim: renaming every game once and
+    replaying with a namer that renames nothing has to produce exactly what
+    renaming as the replay goes produced, or a thousand probes are faster
+    and measuring a different league.
+    """
+    seasons = [
+        Season([Week([_renamed_game("Old Name", "Rival", 2022)], 1)], 2022),
+        Season([Week([_renamed_game("New Name", "Rival", 2023)], 1)], 2023),
+    ]
+    registry = _rename_registry()
+    monkeypatch.setattr(
+        TeamNamer, "for_league", classmethod(lambda cls, league: registry)
+    )
+
+    prepared, replay_namer = prepared_for_replay("test_league", seasons)
+
+    # The renaming has already happened, before any predictor sees a game.
+    assert [
+        game.home for season in prepared for week in season.weeks for game in week.games
+    ] == ["New Name", "New Name"]
+    # And the namer that comes back with them renames nothing, so the games
+    # are not resolved a second time.
+    assert not replay_namer
+
+    once = list(
+        generate_predictions(EloPredictor("test_league"), prepared, namer=replay_namer)
+    )
+    as_it_goes = list(
+        generate_predictions(EloPredictor("test_league"), seasons, namer=registry)
+    )
+    assert [r.game for r in once] == [r.game for r in as_it_goes]
+    assert [r.prediction for r in once] == [r.prediction for r in as_it_goes]
+
+
+def test_prepared_for_replay_leaves_the_seasons_it_was_given_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller's seasons are shared -- `read_rated_seasons` hands the same
+    list to the priors pass and to the search -- so the rename has to copy."""
+    season = Season([Week([_renamed_game("Old Name", "Rival", 2022)], 1)], 2022)
+    monkeypatch.setattr(
+        TeamNamer, "for_league", classmethod(lambda cls, league: _rename_registry())
+    )
+
+    prepared, _ = prepared_for_replay("test_league", [season])
+
+    assert prepared[0].weeks[0].games[0].home == "New Name"
+    assert season.weeks[0].games[0].home == "Old Name"
+
+
+def test_the_frame_matches_the_row_by_row_build() -> None:
+    """`predictions_frame` is a faster spelling of the frame, not a new one.
+
+    Every objective reads the frame by column name, and
+    `cassandra.residuals` and `serving.predictions` read the same shape, so
+    a column that changed name, order or dtype here would be a silent change
+    to what a search maximizes.
+    """
+    predictions = [
+        _Prediction(
+            year=2023,
+            week_number=week,
+            home_score=21,
+            away_score=17,
+            team1_win=True,
+            team1_win_prob=0.6,
+            # None on one row and a number on the other: the mixed column is
+            # the one a columnar build could type differently.
+            spread=None if week == 1 else -3.5,
+            home_team=_HOME,
+            away_team=_AWAY,
+            game_id=str(week),
+            date=datetime(2023, 1, week, tzinfo=timezone.utc),
+            neutral_site=False,
+        )
+        for week in (1, 2)
+    ]
+
+    assert_frame_equal(
+        predictions_frame(predictions),
+        pd.DataFrame([asdict(prediction) for prediction in predictions]),
+    )
+
+
+def test_the_frame_is_empty_when_nothing_was_predicted() -> None:
+    """What the objectives recognize as "no games": see `brier_score_df`."""
+    assert predictions_frame([]).empty
 
 
 def test_generate_predictions_leaves_names_alone_without_a_registry() -> None:
