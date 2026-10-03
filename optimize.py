@@ -58,13 +58,43 @@ def _score_probe(
     games arrive already under canonical names and the namer renames
     nothing, so a thousand probes resolve the league's names once between
     them rather than once each.
+
+    The frame carries what the objective says it reads and nothing else --
+    see `cassandra.objective.Objective`. `odds_db` is empty unless `spread`
+    is one of those, which is the same declaration seen from the other end.
     """
     params = frames.to_params(frame, {**fixed, **probe}, weeks_per_season)
     predictor = predictor_class(league, **params)  # type: ignore[call-arg]
     prediction_results = join_with_odds(
         predictor, seasons, odds_db, post_callbacks=False, namer=namer
     )
-    return objective(predictions_frame(prediction_results))
+    return objective(predictions_frame(prediction_results, objective.reads))
+
+
+async def _odds_for(objective: Objective, name: str, bucket: str) -> OddsDatabase:
+    """The odds a search needs, which for every objective so far is none.
+
+    `spread` is the only column that comes out of the odds, and nothing in
+    `cassandra.objective` reads it: a search is graded on what the games
+    did, not on what a book thought they would do. The read is not cheap --
+    ~1,800 objects under `odds/` parsed into 72,000 snapshots and 3,662
+    priced games, of which 450 were ncaafb's -- and it is the first thing a
+    search waits on.
+
+    An empty database rather than None, so the replay keeps one shape: it
+    answers `get_odds` with None, which is what it already answers for a
+    game nobody hung a line on.
+
+    Says which way it went, because "the odds were skipped" is the kind of
+    thing worth finding in a log when a `spread` column comes back empty.
+    """
+    if objective.needs_odds:
+        return await OddsDatabase.from_s3(bucket)
+    print(
+        f"[optimize] objective {name!r} scores against results, not lines: "
+        "skipping the odds read"
+    )
+    return OddsDatabase({})
 
 
 def _pinned_notice(fixed: dict[str, float | str], config_name: str) -> str | None:
@@ -177,9 +207,11 @@ def _constructor_defaults(predictor_class: str) -> dict[str, float | str]:
 
 def _same_point(one: Seed, other: Seed) -> bool:
     return all(
-        (one[name] == other[name])
-        if isinstance(one[name], str) or isinstance(other[name], str)
-        else math.isclose(float(one[name]), float(other[name]), rel_tol=1e-9)
+        (
+            (one[name] == other[name])
+            if isinstance(one[name], str) or isinstance(other[name], str)
+            else math.isclose(float(one[name]), float(other[name]), rel_tol=1e-9)
+        )
         for name in one
     )
 
@@ -214,7 +246,8 @@ async def _run_optimization(config_file: str) -> None:
             f"No seasons for league {league!r} in s3://{aws_config.bucket}/seasons/; "
             "the league's data has to be uploaded before it can be optimized"
         )
-    odds_db = await OddsDatabase.from_s3(aws_config.bucket)
+    objective = get_objective(config_model.objective)
+    odds_db = await _odds_for(objective, config_model.objective, aws_config.bucket)
 
     # Canonicalized once for the whole search rather than once per probe;
     # see `prepared_for_replay`. The priors pass below gets the renamed
@@ -255,7 +288,7 @@ async def _run_optimization(config_file: str) -> None:
         seasons=seasons,
         odds_db=odds_db,
         predictor_class=predictor_class,
-        objective=get_objective(config_model.objective),
+        objective=objective,
         frame=config_model.frame,
         weeks_per_season=weeks,
         fixed=config_model.fixed,

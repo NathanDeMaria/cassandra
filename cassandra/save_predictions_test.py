@@ -292,15 +292,8 @@ def test_prepared_for_replay_leaves_the_seasons_it_was_given_alone(
     assert season.weeks[0].games[0].home == "Old Name"
 
 
-def test_the_frame_matches_the_row_by_row_build() -> None:
-    """`predictions_frame` is a faster spelling of the frame, not a new one.
-
-    Every objective reads the frame by column name, and
-    `cassandra.residuals` and `serving.predictions` read the same shape, so
-    a column that changed name, order or dtype here would be a silent change
-    to what a search maximizes.
-    """
-    predictions = [
+def _two_predictions() -> list[_Prediction]:
+    return [
         _Prediction(
             year=2023,
             week_number=week,
@@ -320,6 +313,17 @@ def test_the_frame_matches_the_row_by_row_build() -> None:
         for week in (1, 2)
     ]
 
+
+def test_the_frame_matches_the_row_by_row_build() -> None:
+    """`predictions_frame` is a faster spelling of the frame, not a new one.
+
+    Every objective reads the frame by column name, and
+    `cassandra.residuals` and `serving.predictions` read the same shape, so
+    a column that changed name, order or dtype here would be a silent change
+    to what a search maximizes.
+    """
+    predictions = _two_predictions()
+
     assert_frame_equal(
         predictions_frame(predictions),
         pd.DataFrame([asdict(prediction) for prediction in predictions]),
@@ -329,6 +333,42 @@ def test_the_frame_matches_the_row_by_row_build() -> None:
 def test_the_frame_is_empty_when_nothing_was_predicted() -> None:
     """What the objectives recognize as "no games": see `brier_score_df`."""
     assert predictions_frame([]).empty
+
+
+def test_a_narrowed_frame_is_the_wide_one_with_columns_removed() -> None:
+    """What a search builds: the objective's columns and no others.
+
+    Same values and same dtypes as the full frame's, so narrowing can't
+    change what an objective reads -- only what it costs to hand over.
+    """
+    predictions = _two_predictions()
+    reads = {"team1_win_prob", "home_score", "away_score"}
+
+    narrowed = predictions_frame(predictions, reads)
+
+    assert_frame_equal(narrowed, predictions_frame(predictions)[list(narrowed.columns)])
+    # Declaration order, not the caller's set iteration order.
+    assert list(narrowed.columns) == ["home_score", "away_score", "team1_win_prob"]
+
+
+def test_a_narrowed_frame_can_be_a_single_column() -> None:
+    """`attrgetter` of one name returns a bare value, not a 1-tuple.
+
+    Nothing asks for one column today; this is here because the failure
+    would be a transposed frame rather than an error.
+    """
+    frame = predictions_frame(_two_predictions(), {"team1_win_prob"})
+
+    assert list(frame.columns) == ["team1_win_prob"]
+    assert frame["team1_win_prob"].tolist() == [0.6, 0.6]
+
+
+def test_a_frame_of_nothing_at_all_is_refused() -> None:
+    """A column name that isn't a field would otherwise build an empty frame,
+    which every objective reports as "No games to score" -- a league with no
+    data, which is not what went wrong."""
+    with pytest.raises(ValueError, match="no prediction columns"):
+        predictions_frame(_two_predictions(), {"not_a_column"})
 
 
 def test_generate_predictions_leaves_names_alone_without_a_registry() -> None:
