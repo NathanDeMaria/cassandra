@@ -1,3 +1,4 @@
+import asyncio
 import re
 from typing import cast
 
@@ -5,6 +6,7 @@ import pytest
 from call_it_what_you_want import TeamNamer
 
 import optimize
+from cassandra.objective import Objective, get_objective
 from cassandra.predictor import (
     OptimizationConfig,
     Predictor,
@@ -78,7 +80,7 @@ def test_a_probe_reaches_the_constructor_in_its_own_units(
         [],
         cast(OddsDatabase, None),
         cast(type[Predictor], Fake),
-        lambda df: 1.0,
+        Objective(lambda df: 1.0, frozenset({"team1_win_prob", "team1_win"})),
         frame=frame.POINTS,
         weeks_per_season=20,
         fixed={"scoring_method": "sigmoid", "travel_pts": 0},
@@ -96,6 +98,45 @@ def test_a_probe_reaches_the_constructor_in_its_own_units(
     assert seen["travel_advantage"] == 0.0
     assert seen["scoring_method"] == "sigmoid"
     assert "hfa_pts" not in seen and "travel_pts" not in seen
+
+
+def test_a_search_graded_on_results_never_reads_the_odds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The s3 read a search was doing for a column nothing looks at.
+
+    Asserted by making the read fail: the objectives that exist score
+    against the games, so reaching s3 at all is the bug.
+    """
+
+    async def refuse(bucket: str) -> OddsDatabase:
+        raise AssertionError(f"read the odds from {bucket}")
+
+    monkeypatch.setattr(OddsDatabase, "from_s3", refuse)
+
+    odds = asyncio.run(
+        optimize._odds_for(get_objective("brier"), "brier", "some-bucket")
+    )
+
+    assert odds.get_odds("401752708") is None
+
+
+def test_a_search_graded_against_the_line_still_reads_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other branch, so the skip is a decision and not a deletion."""
+    read: list[str] = []
+
+    async def record(bucket: str) -> OddsDatabase:
+        read.append(bucket)
+        return OddsDatabase({})
+
+    monkeypatch.setattr(OddsDatabase, "from_s3", record)
+    against_the_line = Objective(lambda df: 0.0, frozenset({"spread"}))
+
+    asyncio.run(optimize._odds_for(against_the_line, "market_clv", "some-bucket"))
+
+    assert read == ["some-bucket"]
 
 
 # --- seeds -------------------------------------------------------------------

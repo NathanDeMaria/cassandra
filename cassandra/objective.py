@@ -20,6 +20,7 @@ of the package a webapp installs without the `fit` group. So this reads
 """
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from functools import partial
 
 import numpy as np
@@ -33,7 +34,63 @@ from .prob_to_margin import (
     MaeLogisticProbToMarginFitter,
 )
 
-type Objective = Callable[[pd.DataFrame], float]
+type Scorer = Callable[[pd.DataFrame], float]
+
+
+@dataclass(frozen=True)
+class Objective:
+    """A number to maximize, and what it has to read to produce one.
+
+    `reads` is the part that isn't obvious. A probe's frame used to carry
+    every column a prediction has -- twelve of them -- because the replay
+    produced them and nothing said which were wanted. Two were expensive:
+    the kickoff date, which pandas converts to datetime64 for nobody, and
+    `spread`, which only exists because the odds were read out of s3 first.
+    None of the three objectives here reads either. On ncaafb that was
+    1.0s of a 4.5s probe, a thousand times a search, plus ~1,800 s3 objects
+    and 72,000 parsed odds snapshots before the first probe -- for 450
+    priced ncaafb games the search never looks at.
+
+    So an objective says what it reads and the search builds that. The
+    declaration is load-bearing in two places: `save_predictions.
+    predictions_frame` builds these columns and no others, and `optimize.py`
+    reads the odds *only* when `spread` is among them. A market objective
+    added later declares `spread` and the odds come back on their own.
+
+    Both halves are tested, because a wrong declaration is the kind of bug
+    that reads as a model result: `objective_test` scores every objective
+    from a frame holding only what it declared, which raises a KeyError on
+    anything undeclared, and checks the names against `_Prediction`'s
+    fields so a typo can't quietly ask for a column that never existed.
+    """
+
+    score: Scorer
+    #: `_Prediction` field names -- what the frame must carry. Not
+    #: `GameDfColumns`: `team1_mov` is derived inside the objective from the
+    #: two scores, so what the *frame* needs is the scores.
+    reads: frozenset[str]
+
+    def __call__(self, df: pd.DataFrame) -> float:
+        return self.score(df)
+
+    @property
+    def needs_odds(self) -> bool:
+        """Whether scoring this needs the odds database read at all.
+
+        `spread` is the only column that comes from it; everything else on a
+        prediction comes out of the replay.
+        """
+        return GameDfColumns.SPREAD in self.reads
+
+
+#: What `brier_score_df` reads.
+_BRIER_READS = frozenset({GameDfColumns.TEAM1_WIN_PROB, GameDfColumns.TEAM1_WIN})
+
+#: What the margin objectives read: the probability, and the two scores the
+#: margin they are graded against is the difference of. The fitters read
+#: `team1_mov` and `team1_win_prob` and nothing else -- see
+#: `prob_to_margin.base_fit.fit_df` -- and `team1_mov` is derived here.
+_MARGIN_READS = frozenset({GameDfColumns.TEAM1_WIN_PROB, "home_score", "away_score"})
 
 
 def _negative_brier(df: pd.DataFrame) -> float:
@@ -66,17 +123,21 @@ def _negative_margin_mae(df: pd.DataFrame, fitter: BaseProbToMarginFitter) -> fl
 
 
 _OBJECTIVES: Mapping[str, Objective] = {
-    "brier": _negative_brier,
+    "brier": Objective(_negative_brier, _BRIER_READS),
     # The margin objective and the fit it scores through both minimize
     # absolute error, so the search is charged for its ratings rather than
     # for a least-squares transform that runs systematically wide.
-    "margin_mae": partial(_negative_margin_mae, fitter=MaeLogisticProbToMarginFitter()),
+    "margin_mae": Objective(
+        partial(_negative_margin_mae, fitter=MaeLogisticProbToMarginFitter()),
+        _MARGIN_READS,
+    ),
     # Available for a model whose prob->margin relationship is genuinely not
     # logistic. It fits many more knots than there are constraints holding
     # them down, so a run that only wins under this one has probably found
     # the fitter's flexibility rather than a better model.
-    "margin_mae_isotonic": partial(
-        _negative_margin_mae, fitter=IsotonicProbToMarginFitter()
+    "margin_mae_isotonic": Objective(
+        partial(_negative_margin_mae, fitter=IsotonicProbToMarginFitter()),
+        _MARGIN_READS,
     ),
 }
 

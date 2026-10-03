@@ -6,10 +6,12 @@ from .model_eval import score_predictions
 from .objective import (
     DEFAULT_OBJECTIVE,
     OBJECTIVE_NAMES,
+    Objective,
     _negative_margin_mae,
     get_objective,
 )
 from .prob_to_margin import MaeLogisticProbToMarginFitter
+from .save_predictions import _PREDICTION_FIELDS
 
 
 def _games(win_probs: np.ndarray, margins: np.ndarray) -> pd.DataFrame:
@@ -118,3 +120,58 @@ def test_no_objective_scores_an_empty_schedule(name: str) -> None:
     """
     with pytest.raises(ValueError, match="No games to score"):
         get_objective(name)(pd.DataFrame())
+
+
+# --- what an objective says it reads -----------------------------------------
+#
+# A search builds the frame from `reads` and skips the odds read unless
+# `spread` is in it, so an under-declaration is not a missing column at the
+# end of a run -- it is a search that scored something else for six hours.
+
+
+@pytest.mark.parametrize("name", OBJECTIVE_NAMES)
+def test_an_objective_asks_for_columns_a_prediction_has(name: str) -> None:
+    """`reads` is `_Prediction` field names, checked against the real ones.
+
+    A typo here would be invisible: the frame would simply not carry the
+    column, and the objective would fail on a frame that was built exactly
+    as asked.
+    """
+    assert get_objective(name).reads <= set(_PREDICTION_FIELDS)
+
+
+@pytest.mark.parametrize("name", OBJECTIVE_NAMES)
+def test_an_objective_scores_from_what_it_declared_and_nothing_more(
+    name: str,
+) -> None:
+    """The declaration is complete, not just correct.
+
+    Scored twice: from the whole frame, and from one narrowed to `reads` the
+    way `_score_probe` narrows it. An undeclared column raises a KeyError
+    here rather than being quietly available -- which is what makes the
+    narrowing safe to do in the search.
+    """
+    objective = get_objective(name)
+    games = _sample_games()
+    narrowed = games[[c for c in games.columns if c in objective.reads]]
+
+    assert objective(narrowed) == objective(games)
+
+
+def test_the_objectives_that_exist_score_against_results_not_lines() -> None:
+    """Which is why a search can skip the odds read entirely.
+
+    Not a property of objectives in general -- it is a fact about the three
+    there are, and the one `optimize.py` acts on. A market objective added
+    later declares `spread`, `needs_odds` goes true, and the read comes
+    back without anybody remembering to re-enable it.
+    """
+    for name in OBJECTIVE_NAMES:
+        assert not get_objective(name).needs_odds
+
+
+def test_an_objective_that_wants_a_line_says_so() -> None:
+    """The other side of `needs_odds`, so it isn't vacuously true."""
+    against_the_line = Objective(lambda df: 0.0, frozenset({"spread"}))
+
+    assert against_the_line.needs_odds

@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, AsyncIterable, AsyncIterator, Iterable, Iterator
+from typing import Any, AsyncIterable, AsyncIterator, Collection, Iterable, Iterator
 
 import aiofiles
 import pandas as pd
@@ -206,7 +206,9 @@ class _Prediction:
 _PREDICTION_FIELDS = tuple(field.name for field in fields(_Prediction))
 
 
-def predictions_frame(predictions: Iterable[_Prediction]) -> pd.DataFrame:
+def predictions_frame(
+    predictions: Iterable[_Prediction], reads: Collection[str] | None = None
+) -> pd.DataFrame:
     """The predictions as a frame, built a column at a time.
 
     `pd.DataFrame([asdict(p) for p in predictions])` is the obvious way to
@@ -215,20 +217,38 @@ def predictions_frame(predictions: Iterable[_Prediction]) -> pd.DataFrame:
     and a `copy.deepcopy` of its `datetime` -- 3.6s of a 21s ncaafb probe,
     on 78,000 games, a thousand times a search.
 
-    Nothing about the frame changes. The columns are the dataclass's fields
-    in declaration order, same as the dict-per-row path produced, and
-    `save_predictions_test.test_the_frame_matches_the_row_by_row_build`
-    holds the two together -- values and dtypes -- so this stays a
-    rewrite of how the frame is built rather than of what it contains.
+    `reads` narrows it to the columns a caller will actually read, which is
+    what a search wants: no objective reads the kickoff date, and pandas
+    spends 0.7s of a probe turning 78,000 of them into datetime64 for
+    nobody. `None` is every field, which is what the evaluate and publish
+    paths want -- they write the frame out, so every column is read by
+    somebody downstream. The order is the dataclass's either way, so a
+    narrowed frame is the wide one with columns removed and never a
+    reordering.
 
     An empty iterable gives the empty frame, which is what the row-by-row
     build gave: the objectives raise on it by name (`No games to score`),
     and a zero-column frame is how they recognize it.
     """
-    columns = list(zip(*(attrgetter(*_PREDICTION_FIELDS)(p) for p in predictions)))
+    wanted = (
+        _PREDICTION_FIELDS
+        if reads is None
+        else tuple(name for name in _PREDICTION_FIELDS if name in reads)
+    )
+    if not wanted:
+        raise ValueError(
+            "no prediction columns to build; "
+            f"wanted {sorted(reads or ())}, have {sorted(_PREDICTION_FIELDS)}"
+        )
+    # `attrgetter` of one name returns the value rather than a 1-tuple, so a
+    # single-column build has to be spelled differently. Not a case any
+    # objective reaches -- scoring anything needs at least two columns -- but
+    # a silent transposition is a bad way to find that out.
+    get = attrgetter(*wanted) if len(wanted) > 1 else lambda p: (getattr(p, wanted[0]),)
+    columns = list(zip(*(get(prediction) for prediction in predictions)))
     if not columns:
         return pd.DataFrame()
-    return pd.DataFrame(dict(zip(_PREDICTION_FIELDS, columns)))
+    return pd.DataFrame(dict(zip(wanted, columns)))
 
 
 def _build_prediction(result: GameResult, odds: Odds | None) -> _Prediction:
