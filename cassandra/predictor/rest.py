@@ -43,7 +43,7 @@ done: that changes the artifact format, and this does not.
 """
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Protocol
 
 from endgame.types import Game
@@ -82,6 +82,48 @@ REST_THRESHOLD_DAYS = 5.0
 #: Measured on ncaafb, 1.6% of team-games have a gap this long, and they
 #: account for 10% of the games the bye term would otherwise fire on.
 REST_MAX_GAP_DAYS = 20.0
+
+
+#: Where the seconds are counted from. Two of them, because season pickles
+#: carry naive datetimes in some leagues and aware ones in others and
+#: subtracting one kind from the other raises; both sides of any subtraction
+#: here come out of the same league's games, so they always agree.
+_EPOCH = datetime(1970, 1, 1)
+_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _seconds(date: datetime) -> float:
+    """A kickoff as seconds since the epoch.
+
+    The ledger holds these rather than `datetime`s, and the gap is a
+    subtraction of floats rather than of dates, for one reason: an *aware*
+    `datetime` subtraction asks both sides for their UTC offset, and with
+    football's dates coming out of a tz database that is a `dateutil`
+    lookup with a DST test in it. On a probe of ncaafb's 78,000 games that
+    was 1.76 million offset lookups and 2.7s of a 4.5s probe -- the rest
+    gap is asked for twice per game and asks twice itself.
+
+    One conversion per matchup instead, which is where the saving comes
+    from; the arithmetic is otherwise the same. `(a - epoch) - (b - epoch)`
+    is `a - b` exactly for dates on a whole second -- both are integer
+    counts of seconds well inside a double's exact range -- and every one of
+    ncaafb's 77,971 dates is on a whole minute.
+
+    It is the same number as `a - b` with one exception, which is the old
+    expression's and not this one's: subtracting two aware dates that carry
+    the *same tzinfo object* skips the offsets and subtracts wall clocks, so
+    a bye across a DST change read as seven days rather than seven days and
+    an hour. Through the epoch it is always elapsed time. Nothing changes
+    for the leagues this runs on -- a season file carries a fresh
+    `dateutil.tz.tzlocal()` per game, so every subtraction already went the
+    long way -- and `rest_test` has both the agreement and that one
+    difference.
+
+    Not `datetime.timestamp()`, which for a *naive* date means "in whatever
+    timezone this machine is in" -- it would make a replay's rest gaps
+    depend on the container's clock settings.
+    """
+    return (date - (_EPOCH if date.tzinfo is None else _EPOCH_UTC)).total_seconds()
 
 
 def validated_rest_advantage(value: float) -> float:
@@ -160,7 +202,8 @@ class RestLedger:
     ) -> None:
         self._threshold_days = threshold_days
         self._max_gap_days = max_gap_days
-        self._last_played: dict[str, datetime] = {}
+        # Seconds since the epoch, not dates; see `_seconds`.
+        self._last_played: dict[str, float] = {}
 
     @property
     def threshold_days(self) -> float:
@@ -178,27 +221,29 @@ class RestLedger:
         Called from `update_game` after the prediction is made, so a game
         never contributes to its own rest calculation.
         """
-        self._last_played[game.home] = game.date
-        self._last_played[game.away] = game.date
+        at = _seconds(game.date)
+        self._last_played[game.home] = at
+        self._last_played[game.away] = at
 
     def reset(self) -> None:
         """Forget every date. Called at a season boundary."""
         self._last_played.clear()
 
-    def _days_off(self, team: str, date: datetime) -> float | None:
+    def _days_off(self, team: str, at: float) -> float | None:
         """Days since this team last played, or None if it hasn't this season.
 
         None rather than a large number for a season opener: "we have no
         idea" and "extremely rested" are different claims, and only one of
         them is true in week one.
+
+        `at` is the kickoff as seconds, not as a `datetime`, because the
+        caller has one matchup and this gets asked twice about it -- see
+        `_seconds` for why the conversion is worth hoisting.
         """
         last = self._last_played.get(team)
         if last is None:
             return None
-        # Season pickles carry naive datetimes in some leagues and aware ones
-        # in others. Both sides of this subtraction come out of the same
-        # league's games, so they always agree with each other.
-        return (date - last).total_seconds() / 86400.0
+        return (at - last) / 86400.0
 
     def differential(self, matchup: Matchup) -> float:
         """Home days off minus away days off, 0 when either is unknown.
@@ -211,8 +256,9 @@ class RestLedger:
         Unclamped -- `rested_side` is what turns this into an adjustment, and
         a caller reading it for a diagnostic wants the real number of days.
         """
-        home = self._days_off(matchup.home, matchup.date)
-        away = self._days_off(matchup.away, matchup.date)
+        at = _seconds(matchup.date)
+        home = self._days_off(matchup.home, at)
+        away = self._days_off(matchup.away, at)
         if home is None or away is None:
             return 0.0
         return home - away
@@ -231,13 +277,19 @@ class RestLedger:
         throw the comparison out: the differential is a difference, and it is
         only as trustworthy as its worse half.
         """
-        home = self._days_off(matchup.home, matchup.date)
-        away = self._days_off(matchup.away, matchup.date)
+        at = _seconds(matchup.date)
+        home = self._days_off(matchup.home, at)
+        away = self._days_off(matchup.away, at)
         if home is None or away is None:
             return 0.0
         if home >= self._max_gap_days or away >= self._max_gap_days:
             return 0.0
-        difference = self.differential(matchup)
+        # `home - away` rather than `self.differential(matchup)`, which is
+        # that subtraction and the two lookups above again. It is the same
+        # number -- the None case it guards is the one that returned 0 two
+        # lines up -- and `rest_test.test_the_two_agree_on_every_matchup`
+        # keeps it that way.
+        difference = home - away
         if difference >= self._threshold_days:
             return 1.0
         if difference <= -self._threshold_days:

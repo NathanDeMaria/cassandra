@@ -1,7 +1,8 @@
 """Tests for the rest advantage: the ledger, and what it does to a prediction."""
 
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from endgame.types import Game
@@ -17,6 +18,7 @@ from .rest import (
     RestLedger,
     RestSource,
     StatedRest,
+    _seconds,
 )
 
 _LEAGUE = "test_league"
@@ -196,6 +198,107 @@ def test_a_negative_rest_advantage_is_refused() -> None:
     """It would mean a rested team is worse for being rested."""
     with pytest.raises(ValueError, match="rest_advantage must be non-negative"):
         MatchupAdjustments(rest_advantage=-1.0)
+
+
+# --------------------------------------------------------------- the gap itself
+#
+# The ledger holds seconds and subtracts floats rather than holding dates and
+# subtracting them, which is worth 2s of an ncaafb probe and is only allowed
+# to be worth that if it is the same number. See `rest._seconds`.
+
+_GAPS = [
+    # Aware, which is what football's season files carry.
+    (
+        datetime(2026, 9, 5, 19, 30, tzinfo=timezone.utc),
+        datetime(2026, 9, 12, 15, 0, tzinfo=timezone.utc),
+    ),
+    # Naive, which is what some of the other leagues' carry.
+    (datetime(2026, 9, 5, 19, 30), datetime(2026, 9, 12, 15, 0)),
+    # A fixed offset that isn't UTC.
+    (
+        datetime(2026, 9, 5, 19, 30, tzinfo=timezone(timedelta(hours=-6))),
+        datetime(2026, 9, 12, 15, 0, tzinfo=timezone(timedelta(hours=-6))),
+    ),
+    # Sub-second, which no feed produces and which the subtraction should
+    # survive anyway.
+    (
+        datetime(2026, 9, 5, 19, 30, 0, 125_000, tzinfo=timezone.utc),
+        datetime(2026, 9, 12, 15, 0, 0, 875_000, tzinfo=timezone.utc),
+    ),
+]
+
+
+@pytest.mark.parametrize("last, now", _GAPS, ids=range(len(_GAPS)))
+def test_the_gap_is_what_subtracting_the_dates_gave(
+    last: datetime, now: datetime
+) -> None:
+    """The form this replaced, kept here as the definition."""
+    assert (_seconds(now) - _seconds(last)) / 86400.0 == (
+        now - last
+    ).total_seconds() / 86400.0
+
+
+def test_the_gap_is_elapsed_time_across_a_dst_change() -> None:
+    """Seven days by the wall clock is seven days and an hour of rest.
+
+    The one case where this is not quite the old expression. `a - b` on two
+    aware dates takes a shortcut when they carry the *same tzinfo object* --
+    it subtracts the wall clocks and never asks for an offset -- so it would
+    read these as exactly seven days. Through the epoch it is always elapsed
+    time, which is the question being asked, and for the data this actually
+    runs on the two are identical anyway: the season files carry a fresh
+    `dateutil.tz.tzlocal()` per game, never a shared one, so every
+    subtraction the old code did already went the long way round and already
+    counted the hour.
+    """
+    last = datetime(2026, 10, 31, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
+    now = datetime(2026, 11, 7, 19, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    assert (_seconds(now) - _seconds(last)) / 86400.0 == pytest.approx(7 + 1 / 24)
+    # What the shortcut gives, named so the difference is on the record.
+    assert (now - last).total_seconds() / 86400.0 == 7.0
+
+
+def _rested_side_the_old_way(ledger: RestLedger, matchup: _Matchup) -> float:
+    """`rested_side` as it was, taking its difference from `differential`.
+
+    Four date lookups instead of two. Kept here as the definition of the
+    answer, the way the dict smoother is for the compiled one.
+    """
+    at = _seconds(matchup.date)
+    home = ledger._days_off(matchup.home, at)
+    away = ledger._days_off(matchup.away, at)
+    if home is None or away is None:
+        return 0.0
+    if home >= ledger.max_gap_days or away >= ledger.max_gap_days:
+        return 0.0
+    difference = ledger.differential(matchup)
+    if difference >= ledger.threshold_days:
+        return 1.0
+    if difference <= -ledger.threshold_days:
+        return -1.0
+    return 0.0
+
+
+def test_the_two_agree_on_every_matchup() -> None:
+    """`rested_side` now reads the difference off the two gaps it already has.
+
+    Across the threshold, the long-gap guard, an opener and both signs.
+    """
+    ledger = RestLedger()
+    ledger.record(_game("A", "B", 1))
+    ledger.record(_game("B", "C", 8))
+    ledger.record(_game("D", "E", 0))
+
+    for home, away, day in [
+        ("A", "B", 15),  # +7: a bye against a normal week
+        ("B", "A", 15),  # -7: the same, the other way round
+        ("A", "B", 9),  # +1: under the threshold
+        ("A", "D", 30),  # both sides past the long-gap guard
+        ("A", "Nobody", 15),  # an opener for one side
+    ]:
+        matchup = _Matchup(home, away, day)
+        assert ledger.rested_side(matchup) == _rested_side_the_old_way(ledger, matchup)
 
 
 # ------------------------------------------------------------------ stated rest
