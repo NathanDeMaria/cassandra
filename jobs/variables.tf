@@ -76,12 +76,6 @@ variable "shared_outputs_parameter" {
   default     = "/batch/shared-outputs"
 }
 
-variable "notification_email" {
-  description = "Where to email Batch failures. Null disables the topic, the rule and the subscription entirely."
-  type        = string
-  default     = null
-}
-
 # NB: there is deliberately no variable for the shared modules' git ref.
 # Terraform requires `source` to be a literal -- it resolves modules before
 # variables exist -- so pinning the shared modules means editing the `?ref=`
