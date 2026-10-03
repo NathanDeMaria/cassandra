@@ -35,5 +35,8 @@
         "passes": 2
     },
     "fixed_from": "glicko_full",
+    "fixed_aliases": {
+        "mov_scale": "sigmoid_scale"
+    },
     "n_iter": 500
 }

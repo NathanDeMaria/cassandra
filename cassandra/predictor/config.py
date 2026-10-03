@@ -74,6 +74,13 @@ class OptimizationConfig(BaseModel):
     # Glicko family, so the cross-family pairs are noise that buries the one
     # comparison that means anything.
     fixed_from: str | None = None
+    # A pin that copies a source value under another name: pin -> the name in
+    # the source's fit. `BlendedGlickoPredictor`'s `mov_scale` is what
+    # `sigmoid_scale` is to `glicko_full` -- the blend drops the parent's
+    # scorer and reads a final score with its own -- so `play_weight` 0 is
+    # `glicko_full` only while the two agree. Matched by name, nothing checked
+    # it, and nfl's sat at the old 20.99 while the fit moved to 10.3.
+    fixed_aliases: dict[str, str] = {}
     # The units `parameters` and `fixed` are written in; see
     # `cassandra.predictor.frame`. "rating" is the constructor's own, and
     # what every config before frames existed searched in. "points" is the
@@ -118,6 +125,13 @@ class OptimizationConfig(BaseModel):
             raise ValueError(
                 f"fixed_from={self.fixed_from!r} names where pins came from, "
                 "but there are no pinned parameters"
+            )
+        if self.fixed_aliases and not self.fixed_from:
+            raise ValueError("fixed_aliases maps pins onto a source; name it in fixed_from")
+        unpinned = sorted(set(self.fixed_aliases) - set(self.fixed))
+        if unpinned:
+            raise ValueError(
+                f"fixed_aliases names {', '.join(unpinned)}, which is not pinned here"
             )
         return self
 

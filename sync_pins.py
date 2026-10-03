@@ -18,7 +18,9 @@ fitted value, and one the source itself *fixes* takes that fixed value.
 "Searches" is read in constructor terms -- a source in the points frame
 (`cassandra.predictor.frame`) that searches `hfa_pts` and `sigmoid_scale`
 moves `home_advantage`, so a pin of it takes the fitted value.
-A pin the source knows nothing about -- `mov_scale`, say -- is the target's
+A pin named in the target's `fixed_aliases` is looked up under the source's
+name for it -- `glicko_blend`'s `mov_scale` is `glicko_full`'s
+`sigmoid_scale`. Any other pin the source knows nothing about is the target's
 own and is left alone, and nothing is added that the target did not already
 pin. Parameters the target searches are never touched, even when the source
 fitted them too.
@@ -85,9 +87,11 @@ def sync(league: str, source: str) -> list[str]:
         # a `glicko_full` that searches `hfa_pts` still moves `home_advantage`,
         # and that is the name the pin here carries.
         searched = source_config.searched_params()
+        aliases = raw.get("fixed_aliases", {})
         for name, pinned in raw["fixed"].items():
-            if name in searched:
-                if name not in fitted:
+            source_name = aliases.get(name, name)
+            if source_name in searched:
+                if source_name not in fitted:
                     # The source searches it and the fit on disk predates the
                     # dimension -- a parameter added to the search that has
                     # not been run yet. The pin keeps the value it was
@@ -95,9 +99,9 @@ def sync(league: str, source: str) -> list[str]:
                     # at, and moves on the run after.
                     waiting.append(name)
                     continue
-                current = fitted[name]
-            elif name in source_fixed:
-                current = source_fixed[name]
+                current = fitted[source_name]
+            elif source_name in source_fixed:
+                current = source_fixed[source_name]
             else:
                 continue
             if current != pinned:

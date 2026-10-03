@@ -634,7 +634,10 @@ def _frozen_parameters(stages):
             unchecked.append(f"{league}/{model} <- {source}")
             continue
 
-        for name, pinned in sorted(pins.items()):
+        aliases = config.get("fixed_aliases") or {}
+        for pin, pinned in sorted(pins.items()):
+            # `glicko_blend`'s `mov_scale` is `glicko_full`'s `sigmoid_scale`.
+            name = aliases.get(pin, pin)
             if name not in measured or not isinstance(measured[name], (int, float)):
                 continue
             bounds = source_config["parameters"].get(name)
@@ -649,8 +652,8 @@ def _frozen_parameters(stages):
                 continue
             if abs(measured[name] - pinned) > tolerance:
                 drifted.append(
-                    f"  {league}/{model}: pins {name}={pinned:g}, but "
-                    f"{league}/{source} fitted {measured[name]:g} this run "
+                    f"  {league}/{model}: pins {pin}={pinned:g}, but "
+                    f"{league}/{source} fitted {name}={measured[name]:g} this run "
                     f"-- re-pin it in models/{league}/{model}.json, or reopen "
                     f"it if the pin was never the point"
                 )

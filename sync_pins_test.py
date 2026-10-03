@@ -93,6 +93,23 @@ def test_the_targets_own_pins_and_searches_are_left_alone(league: Path) -> None:
     assert blend["parameters"]["initial_rd"] == [80, 620]
 
 
+def test_an_aliased_pin_takes_the_source_value_under_its_other_name(
+    league: Path, tmp_path: Path
+) -> None:
+    """`mov_scale` is the blend's `sigmoid_scale`; nfl's stayed at a stale
+    20.99 for two re-pins because nothing matched it by name."""
+    _framed_source(league, tmp_path, with_search_record=True)
+    child = json.loads((league / "glicko_blend.json").read_text())
+    child["fixed_aliases"] = {"mov_scale": "sigmoid_scale"}
+    _write(league / "glicko_blend.json", child)
+
+    sync_pins.sync("mens", "glicko_full")
+
+    blend = json.loads((league / "glicko_blend.json").read_text())
+    assert blend["fixed"]["mov_scale"] == 8.5
+    assert "sigmoid_scale" not in blend["fixed"]
+
+
 def test_a_config_without_fixed_from_is_not_a_target(league: Path) -> None:
     sync_pins.sync("mens", "glicko_full")
 
