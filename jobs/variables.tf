@@ -5,7 +5,7 @@ variable "aws_region" {
 }
 
 variable "image_tag" {
-  description = "Image tag to run. CI tags every build with the short commit SHA; pin one here to make a run reproducible."
+  description = "Image tag to run. CI tags every build `sha-<short commit sha>`; pin one here to make a run reproducible. The prefix is what the repository's lifecycle policy matches on, so a tag without it is kept indefinitely -- which is the right default for one a human made and the wrong one for a build."
   type        = string
   default     = "latest"
 }
