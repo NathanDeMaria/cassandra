@@ -8,6 +8,7 @@ from pathlib import Path
 import fire
 from call_it_what_you_want import TeamNamer
 
+from cassandra import fingerprint
 from cassandra.box import Seed, misplaced
 from cassandra.checkpoint import S3Checkpoint
 from cassandra.constants import CASSANDRA_HOME
@@ -15,6 +16,7 @@ from cassandra.model_eval import rebuild_priors
 from cassandra.objective import Objective, get_objective
 from cassandra.optimize import optimize
 from cassandra.predictor import (
+    InputFingerprint,
     OptimizationConfig,
     Predictor,
     PredictorConfig,
@@ -228,7 +230,9 @@ def _previous_result(path: Path) -> PredictorConfig | None:
     return PredictorConfig.model_validate_json(path.read_text())
 
 
-async def _run_optimization(config_file: str, deadline: float | None = None) -> None:
+async def _run_optimization(
+    config_file: str, rebuild: bool = False, deadline: float | None = None
+) -> None:
     config_path = Path(config_file)
     with open(config_path, "r") as f:
         config_model = OptimizationConfig.model_validate_json(f.read())
@@ -238,6 +242,22 @@ async def _run_optimization(config_file: str, deadline: float | None = None) -> 
     league = config_model.league
 
     aws_config = Config.init_from_file()
+
+    # Before the seasons are read, because the whole point is to not read
+    # them: the fingerprint is two listings, and a league with nothing new
+    # exits here rather than spending an hour arriving back at the fit it
+    # already has. The config is a checked-in input; its result is
+    # generated, so it lands under CASSANDRA_HOME with the rest of the run's
+    # output -- and the previous one, if it is there, is both where this
+    # search starts and what says whether it needs to run at all.
+    output_path = CASSANDRA_HOME / "models" / league / f"{config_path.stem}_result.json"
+    previous = _previous_result(output_path)
+    inputs = await fingerprint.of_inputs(
+        league, aws_config.bucket, config_path, previous
+    )
+    if _skipped(inputs, previous, rebuild=rebuild):
+        return
+
     seasons = await read_rated_seasons(league, aws_config.bucket)
     if not seasons:
         # Otherwise every probe scores an empty set of games and the search
@@ -301,11 +321,7 @@ async def _run_optimization(config_file: str, deadline: float | None = None) -> 
     if checkpoint is not None:
         print(f"[optimize] checkpointing to s3://{checkpoint.bucket}/{checkpoint.key}")
 
-    # The config is a checked-in input; its result is generated, so it lands
-    # under CASSANDRA_HOME with the rest of the run's output -- and the
-    # previous one, if it is there, is where this search starts.
-    output_path = CASSANDRA_HOME / "models" / league / f"{config_path.stem}_result.json"
-    seeds, seed_lines = _seeds(config_model, _previous_result(output_path), weeks)
+    seeds, seed_lines = _seeds(config_model, previous, weeks)
     for line in seed_lines:
         print(line)
 
@@ -342,14 +358,57 @@ async def _run_optimization(config_file: str, deadline: float | None = None) -> 
         search=SearchRecord(
             frame=config_model.frame, weeks_per_season=weeks, knobs=knobs
         ),
+        # What this search read, so the next run can tell whether to repeat
+        # it. Taken before the search rather than after: the warm-up pass
+        # writes this league's priors, and a fingerprint taken afterwards
+        # would include a file this run created and so never match again.
+        inputs=inputs,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(result_model.model_dump_json(indent=4, by_alias=True))
 
 
-def _main(config_file: str) -> None:
-    asyncio.run(_run_optimization(config_file))
+def _skipped(
+    inputs: InputFingerprint,
+    previous: PredictorConfig | None,
+    *,
+    rebuild: bool,
+) -> bool:
+    """Whether to keep the fit on disk instead of searching for it again.
+
+    Says why either way, because both answers are ones someone will come
+    looking for: a skip has to be explicable without reading the code, and a
+    search that was expected to skip and didn't has to name what moved.
+    """
+    if rebuild:
+        print("[optimize] --rebuild: searching whether or not anything changed")
+        return False
+    if previous is None or previous.inputs is None:
+        # Either no fit yet, or one written before fingerprints existed.
+        # Both mean "search": a missing fingerprint is not a matching one.
+        return False
+    if not inputs.complete:
+        print(
+            f"[optimize] this build records no {fingerprint.GIT_SHA_ENV_VAR}, so "
+            "'the code is unchanged' can't be checked: searching"
+        )
+        return False
+    moved = inputs.differences(previous.inputs)
+    if moved:
+        print(f"[optimize] searching: {', '.join(moved)} changed since the last fit")
+        return False
+    print(
+        "[optimize] skipped: data, config, code and seed are all unchanged since "
+        f"the last fit, which scored {previous.target:.6f} on "
+        f"{previous.objective!r}. The search is deterministic, so repeating it "
+        "would return the same answer; pass --rebuild to run it anyway."
+    )
+    return True
+
+
+def _main(config_file: str, rebuild: bool = False) -> None:
+    asyncio.run(_run_optimization(config_file, rebuild=rebuild))
 
 
 if __name__ == "__main__":

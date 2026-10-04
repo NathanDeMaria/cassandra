@@ -201,6 +201,57 @@ class SearchRecord(BaseModel):
     knobs: dict[str, float | str]
 
 
+class InputFingerprint(BaseModel):
+    """Everything a search consumed, reduced to four digests.
+
+    Recorded beside the fit so a later run can ask whether repeating the
+    search could possibly reach a different answer. It cannot, if all four
+    match: `optimize` is deterministic given its inputs (`random_state=1`,
+    and a replay is the same arithmetic every time), so the same data, the
+    same config, the same code and the same starting point produce the same
+    number. See `cassandra.fingerprint`, which computes these; this is only
+    the shape they are stored in.
+
+    Four parts rather than one, because when a skip *doesn't* happen the
+    useful thing to print is which of them moved.
+
+    `code` is the whole repository's commit, not the subset a given model
+    reads. Working out which modules actually feed one search is the kind of
+    cleverness whose failure mode is serving a stale fit forever, so this
+    deliberately over-invalidates: any commit re-searches everything. An
+    image built without the commit baked in records "" here, which never
+    matches, so an unknown build always re-searches.
+    """
+
+    # Digest of the league's stored seasons and per-league predictor indexes.
+    data: str
+    # Digest of the checked-in model config: bounds, pins, frame, n_iter.
+    config: str
+    # The commit the image was built from, or "" when it wasn't recorded.
+    code: str
+    # Digest of the fit this search started from. An input like any other:
+    # a run that improves on its seed changes this, so the run after it has
+    # to repeat the search once more before the answer settles.
+    seed: str
+
+    @property
+    def complete(self) -> bool:
+        """Whether this fingerprint is one a skip may be based on.
+
+        An empty `code` means nothing told the container what it was built
+        from, so "the code is unchanged" is not something it can claim.
+        """
+        return bool(self.code)
+
+    def differences(self, other: "InputFingerprint") -> list[str]:
+        """Which parts moved, for the line that explains a search happening."""
+        return [
+            name
+            for name in ("data", "config", "code", "seed")
+            if getattr(self, name) != getattr(other, name)
+        ]
+
+
 class PredictorConfig(BaseModel):
     predictor_class: str
     league: str
@@ -215,6 +266,11 @@ class PredictorConfig(BaseModel):
     # numbers. Defaulted for the releases published before objectives
     # existed, all of which were brier.
     objective: str = DEFAULT_OBJECTIVE
+    # What this fit was searched against, so the next run can tell whether
+    # anything it depends on has moved. Optional because every result
+    # written before this existed has none, and a missing fingerprint means
+    # "search it" rather than "skip it".
+    inputs: InputFingerprint | None = None
 
 
 def load_predictor(config_path: Path | str) -> Predictor:

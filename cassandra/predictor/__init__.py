@@ -8,6 +8,7 @@ from .base_predictor import (
 )
 from .compound import CompoundGlickoPredictor
 from .config import (
+    InputFingerprint,
     OptimizationConfig,
     PredictorConfig,
     SearchRecord,

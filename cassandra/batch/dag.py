@@ -141,6 +141,7 @@ async def submit(
     skip_sweeps: bool = False,
     rebuild_sweeps: bool = False,
     skip_optimize: bool = False,
+    rebuild_optimize: bool = False,
     skip_evaluate: bool = False,
     skip_publish: bool = False,
     dry_run: bool = False,
@@ -184,7 +185,21 @@ async def submit(
     `rebuild_anchors` this costs queue time and changes nothing, and it is
     here for the run that suspects a partial index rather than for one that
     wants different numbers.
+
+    `rebuild_optimize` is the same shape for the searches: a child whose
+    data, config, code and seed are all unchanged since its last fit keeps
+    that fit and exits in seconds (`cassandra.fingerprint`), and this makes
+    it search regardless. Like `rebuild_sweeps` it cannot change an answer --
+    the search is deterministic, so a rebuild of a genuinely unchanged search
+    returns the number it already had -- so it is for doubting the
+    fingerprint, not for wanting a different fit. Asking for it alongside
+    `skip_optimize` raises, for the reason `rebuild_anchors` does.
     """
+    if rebuild_optimize and skip_optimize:
+        raise ValueError(
+            "rebuild_optimize asks for searches that skip_optimize removes. "
+            "Drop one of them."
+        )
     if rebuild_anchors and (skip_anchors or skip_optimize):
         dropped = "skip_anchors" if skip_anchors else "skip_optimize"
         raise ValueError(
@@ -299,7 +314,12 @@ async def submit(
             optimize_job = await submitter.run(
                 name=_job_name("optimize"),
                 job_definition=optimize_job_definition,
-                command=["optimize"],
+                # A child whose data, config, code and seed are all unchanged
+                # since its last fit keeps that fit and exits -- see
+                # `cassandra.fingerprint`. `rebuild_optimize` searches anyway,
+                # which is what to pass when the fingerprint is suspected of
+                # being wrong rather than when a result is wanted sooner.
+                command=["optimize"] + (["--rebuild"] if rebuild_optimize else []),
                 size=len(work),
                 # Children resolve their index against this exact list rather
                 # than rebuilding it, so a launcher and an image on different

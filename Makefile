@@ -68,6 +68,14 @@ CACHE_FLAGS ?=
 # architecture happened to push last. See the workflow.
 TAG_LATEST ?= $(IS_MAIN)
 
+# Baked into the image, where an optimize child reads it to decide whether
+# the code behind a fit has moved (`cassandra.fingerprint`). Lazy, so it only
+# shells out for a target that builds. A dirty tree still reports the commit
+# it sits on, which would let a search skip against uncommitted changes --
+# the reason to care is a local `make push`, so it prints a warning there
+# rather than silently lying.
+GIT_SHA ?= $(shell git rev-parse HEAD)
+
 # Which architectures to build for. Both are deployable: the compute
 # environment can launch Graviton instances as well as x86 ones, and the
 # instance type is Batch's choice at scale-up time, not CI's -- so what ECR
@@ -81,6 +89,7 @@ PLATFORM ?=
 # `build` and `push` differ only in their output flag, so they stay one build
 # definition -- tagging included, rather than a follow-up `docker tag`.
 BUILD_FLAGS := --target runtime -f .devcontainer/Dockerfile -t ${IMAGE_URL}:${TAG}
+BUILD_FLAGS += --build-arg GIT_SHA=$(GIT_SHA)
 ifeq ($(TAG_LATEST),true)
 BUILD_FLAGS += -t ${IMAGE_URL}:latest
 endif
@@ -104,6 +113,7 @@ _ecr_login:
 # read. Needs the ECR login both for the push and for the registry cache CI
 # passes in CACHE_FLAGS.
 push: _ecr_login
+	@git diff --quiet HEAD || echo "WARNING: uncommitted changes -- this image will claim it was built from $(GIT_SHA), and a search may skip against code that isn't in that commit"
 	docker buildx build ${CACHE_FLAGS} ${BUILD_FLAGS} --push .
 
 # Join the two per-architecture images into the manifest list that the commit
