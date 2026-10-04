@@ -41,9 +41,9 @@ variable "optimize_timeout_seconds" {
 }
 
 variable "optimize_memory" {
-  description = "MiB for an optimize child. Every season for a league is held in memory for the whole search."
+  description = "MiB for an optimize child. Every season for a league is held in memory for the whole search, and so is every observation the GP has made. Measured peak for the heaviest checked-in config -- ncaafb glicko_compound, 13 knobs, 1000 iterations -- is ~950 MiB: ~275 of league, probe frame and imports, and ~680 of bayes_opt at a thousand observations. The rest is headroom for the leagues that aren't ncaafb-shaped, within a ceiling that still fits two children on one instance. See `vcpu` on the module in main.tf."
   type        = number
-  default     = 4096
+  default     = 1536
 }
 
 variable "game_control_memory" {
