@@ -281,12 +281,23 @@ module "optimize" {
   # A search is single-threaded where it spends its time. One ncaafb
   # glicko_full probe measured 6.95s on two cores against 7.10s on one --
   # the replay is Python and a numba kernel, neither threaded. The one part
-  # that reaches BLAS is bayes_opt's `suggest()`, and it is 9% of a
-  # 1000-iteration glicko_compound search (24.8 minutes of suggest against
-  # ~4.2 hours of probes) and 13% slower on a single core. So the second
-  # core is worth about 1% of a child's wall clock, and giving it up halves
-  # the stage's instance-hours -- the whole weekly run, since optimize is
-  # 47 of its children.
+  # that reaches BLAS is bayes_opt's `suggest()`, which is 13% slower on a
+  # single core, and on the ncaafb configs that is 9% of the search (24.8
+  # minutes of suggest against ~4.2 hours of probes at glicko_compound's
+  # 1000 iterations), so the second core buys ~1% of a child's wall clock.
+  #
+  # The exception, and the thing to watch: `suggest()` grows faster than
+  # quadratically in observations, and nfl/glicko_full searches 2720 of
+  # them, where a single suggest measured 171 seconds. That child is mostly
+  # GP, not replay, so it pays closer to the full 13% -- and it is already
+  # the child that spends 16.85 instance-hours over nine attempts and dies
+  # on the 6h guard, 96 iterations short. Its problem is n_iter, not its
+  # core count, and the fix is there rather than here.
+  #
+  # Against ~1%: two children per instance, so the stage's instance-hours
+  # halve, and the same 16-vCPU cap runs 16 at once rather than 8. Optimize
+  # is 49 of the weekly run's children and, measured over the 2026-09-28
+  # run, 98% of its instance-hours.
   vcpu = 1
 
   # The compute environment is all spot. A search that gets reclaimed now
