@@ -1,5 +1,13 @@
-# 3.14-bookworm
-FROM python@sha256:b58de395e525ffb2dbc6804ed76d46f053885aa8ed0f3ba5df3da5be12e7bf9b AS base
+# 3.14-bookworm.
+#
+# The digest of the *index*, not of one platform's manifest inside it. The
+# previous pin was the latter, which is why it only ever built amd64: a
+# single-platform digest has nothing for `--platform linux/arm64` to resolve
+# to, so the build either ignores the request or fails outright. This is the
+# one line that makes a multi-architecture build possible at all.
+#
+#   docker buildx imagetools inspect python:3.14-bookworm
+FROM python@sha256:b3c121f5b6b446c964c6ea924d9a099e259b29d7b56df82729e33572a31eadcc AS base
 
 # Non-root, uid/gid 1000 to match the host user whose files get bind-mounted in
 # (~/.aws, ~/.claude, ~/.cassandra). Running as root here meant every SSO
@@ -120,7 +128,12 @@ RUN arch="$(dpkg --print-architecture)" \
 
 # Only needed interactively (`aws sso login`, `make push`) -- nothing in
 # cassandra shells out to the CLI, it goes through aiobotocore.
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" &&\
+#
+# `uname -m` rather than the x86_64 this used to hardcode: the runtime stage
+# is built for both architectures now, and a `dev` stage that can only build
+# on one of them is a trap for whoever next opens the devcontainer on an arm
+# machine. The two names the CLI publishes are exactly uname's.
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip" &&\
     unzip awscliv2.zip &&\
     sudo ./aws/install &&\
     rm awscliv2.zip &&\

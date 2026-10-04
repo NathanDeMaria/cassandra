@@ -62,11 +62,30 @@ IS_MAIN := $(shell git rev-parse --abbrev-ref HEAD | grep -q ^main$$ && echo tru
 # layer cache already does the job.
 CACHE_FLAGS ?=
 
+# Whether this build also moves `latest`. On main by default, which is what
+# `latest` means -- but CI's per-architecture builds turn it off, because
+# `latest` has to end up on the manifest list rather than on whichever
+# architecture happened to push last. See the workflow.
+TAG_LATEST ?= $(IS_MAIN)
+
+# Which architectures to build for. Both are deployable: the compute
+# environment can launch Graviton instances as well as x86 ones, and the
+# instance type is Batch's choice at scale-up time, not CI's -- so what ECR
+# holds has to cover either. One platform at a time here rather than a list,
+# because a list is a manifest list, and that is something only a registry can
+# hold: `--load` imports into the local docker daemon, which cannot. CI builds
+# each architecture on a runner of that architecture and merges the two
+# afterwards; a laptop pushing by hand wants `PLATFORM=` and gets its own.
+PLATFORM ?=
+
 # `build` and `push` differ only in their output flag, so they stay one build
 # definition -- tagging included, rather than a follow-up `docker tag`.
 BUILD_FLAGS := --target runtime -f .devcontainer/Dockerfile -t ${IMAGE_URL}:${TAG}
-ifeq ($(IS_MAIN),true)
+ifeq ($(TAG_LATEST),true)
 BUILD_FLAGS += -t ${IMAGE_URL}:latest
+endif
+ifneq ($(PLATFORM),)
+BUILD_FLAGS += --platform $(PLATFORM)
 endif
 
 # What `build` does with the result. `--load` locally, where the point is to
@@ -87,6 +106,22 @@ _ecr_login:
 push: _ecr_login
 	docker buildx build ${CACHE_FLAGS} ${BUILD_FLAGS} --push .
 
+# Join the two per-architecture images into the manifest list that the commit
+# tag and `latest` actually point at. A registry-side operation: it reads the
+# two manifests and writes an index referring to them, so nothing is rebuilt
+# or re-uploaded.
+#
+# The `-amd64`/`-arm64` tags it reads exist only because `--push` has to put
+# each half somewhere a later step can name. Nothing pulls them, and the
+# repository's lifecycle policy expires them with every other commit tag.
+#
+#   make manifest TAG=sha-abc1234
+manifest: _ecr_login
+	docker buildx imagetools create \
+		-t ${IMAGE_URL}:${TAG} \
+		$(if $(filter true,$(TAG_LATEST)),-t ${IMAGE_URL}:latest) \
+		${IMAGE_URL}:${TAG}-amd64 ${IMAGE_URL}:${TAG}-arm64
+
 
 # Submit the whole DAG: optimize (one array child per model) then evaluate and
 # publish. Pass through anything jobs.py takes, e.g.
@@ -96,4 +131,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose publish build push _ecr_login submit
+.PHONY: lint check test report diagnose publish build push manifest _ecr_login submit
