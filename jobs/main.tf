@@ -270,6 +270,25 @@ module "optimize" {
   memory             = var.optimize_memory
   timeout_seconds    = var.optimize_timeout_seconds
 
+  # One vCPU rather than the module's two, so two searches share a box.
+  #
+  # Every instance in the shared compute environment is a 2-vCPU `.large`,
+  # which makes the vCPU the unit of cost here and memory nearly free: a
+  # child reserving both cores owns the whole instance for its whole run
+  # whatever it asks for in memory, and `optimize_memory` was reserving nine
+  # times its measured peak for nothing.
+  #
+  # A search is single-threaded where it spends its time. One ncaafb
+  # glicko_full probe measured 6.95s on two cores against 7.10s on one --
+  # the replay is Python and a numba kernel, neither threaded. The one part
+  # that reaches BLAS is bayes_opt's `suggest()`, and it is 9% of a
+  # 1000-iteration glicko_compound search (24.8 minutes of suggest against
+  # ~4.2 hours of probes) and 13% slower on a single core. So the second
+  # core is worth about 1% of a child's wall clock, and giving it up halves
+  # the stage's instance-hours -- the whole weekly run, since optimize is
+  # 47 of its children.
+  vcpu = 1
+
   # The compute environment is all spot. A search that gets reclaimed now
   # resumes from the checkpoint it keeps in the temp bucket (`cassandra.checkpoint`),
   # so a retry pays for the probes since the last save rather than for the
