@@ -27,10 +27,17 @@ env:
 jobs:
   # Before the OIDC role is wired up there is nothing to authenticate with, so
   # every push step below is a no-op and the workflow reports green with a note
-  # rather than failing red on every push to main. Secrets can't be tested in a
-  # job-level `if`, but they can be read into a step's env -- which is what
-  # makes a step the only place the check can go. It gets a job of its own
+  # rather than failing red on every push to main. It gets a job of its own
   # because three jobs below need the answer and it should be decided once.
+  #
+  # `vars`, not `secrets`: a role ARN isn't one, and this repo has no Actions
+  # secrets at all -- the three CI role ARNs are repository variables. Reading
+  # the wrong namespace returns empty rather than erroring, which this guard
+  # then reads as "not configured", which it reports as success. That is how
+  # 8c599ca pushed no image and still went green. Variables *can* be tested in
+  # a job-level `if`, unlike secrets, so the env round-trip here is no longer
+  # load-bearing -- it stays because the step is also where the note gets
+  # written.
   #
   # A pull request answers `false` without looking: a PR builds but never
   # pushes. Nothing wants a PR's image in ECR -- the documented way to get one
@@ -45,7 +52,7 @@ jobs:
       - name: Check for the image role
         id: check
         env:
-          ROLE_ARN: ${{ secrets.AWS_IMAGE_ROLE_ARN }}
+          ROLE_ARN: ${{ vars.AWS_IMAGE_ROLE_ARN }}
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" != "push" ]; then
@@ -107,7 +114,7 @@ jobs:
         if: needs.guard.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_IMAGE_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_IMAGE_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       # `config.json` is what `Config.init_from_file` reads for the bucket
@@ -170,7 +177,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_IMAGE_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_IMAGE_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       # Only the repository URL, not the whole config.json the builds need:
