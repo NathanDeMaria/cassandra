@@ -17,12 +17,12 @@ permissions:
 
 env:
   AWS_REGION: us-east-2
-  # Where the shared stack keeps its state. The push job reads the bucket name
-  # and the ECR URL out of it rather than carrying either as a secret, so this
-  # is the one piece of coordinates CI has to know. Matches the default of
-  # `shared_infra_state` in jobs/variables.tf; if that ever moves, both move.
-  SHARED_STATE_BUCKET: nathan-terraform
-  SHARED_STATE_KEY: batch-state
+  # The SSM parameter the shared stack publishes its non-sensitive outputs to.
+  # The push job reads the bucket name and the ECR URL out of it rather than
+  # carrying either as a secret, so this is the one name CI has to know.
+  # Matches the default of `shared_outputs_parameter` in jobs/variables.tf,
+  # which also scopes the image role's read to it; if that moves, both move.
+  SHARED_OUTPUTS_PARAMETER: /batch/shared-outputs
 
 jobs:
   # Before the OIDC role is wired up there is nothing to authenticate with, so
@@ -120,24 +120,24 @@ jobs:
       # `config.json` is what `Config.init_from_file` reads for the bucket
       # name, what the Makefile reads for the ECR URL, and what `jobs.py`
       # reads for the queue name. It used to be a repository secret holding a
-      # whole `terraform output -json`; it's derived from the shared stack's
-      # state instead, so there is nothing to re-paste when that stack
-      # changes.
+      # whole `terraform output -json`; it's derived from the outputs the
+      # shared stack publishes instead, so there is nothing to re-paste when
+      # that stack changes.
       #
-      # Filtered to the three keys this repo actually reads, which also keeps
-      # `ecr_iam_users` out of it: that output is sensitive, it holds live
-      # access keys, and the previous secret baked all of it into every image.
+      # Filtered to the three keys this repo actually reads, and re-wrapped as
+      # `{"value": ...}` so it keeps the `terraform output -json` shape every
+      # reader expects. (The previous secret was the whole output, sensitive
+      # `ecr_iam_users` access keys included, baked into every image.)
       # A missing key here fails now, rather than at `Config.init_from_file`
       # in a Batch job an hour later.
-      - name: Build config.json from the shared terraform state
+      - name: Build config.json from the shared stack's outputs
         if: needs.guard.outputs.configured == 'true'
         run: |
-          aws s3 cp "s3://${SHARED_STATE_BUCKET}/${SHARED_STATE_KEY}" - \
-            | jq --exit-status '{
-                bucket: .outputs.bucket,
-                repo_urls: .outputs.repo_urls,
-                job_queue_name: .outputs.job_queue_name,
-              } | if any(.[]; . == null) then error("missing output") else . end' \
+          aws ssm get-parameter --name "$SHARED_OUTPUTS_PARAMETER" \
+              --query Parameter.Value --output text \
+            | jq --exit-status '{bucket, repo_urls, job_queue_name}
+                | if any(.[]; . == null) then error("missing output")
+                  else map_values({value: .}) end' \
             > config.json
           echo "IMAGE_URL=$(jq -r .repo_urls.value.cassandra config.json)" >> "$GITHUB_ENV"
 
@@ -182,11 +182,15 @@ jobs:
 
       # Only the repository URL, not the whole config.json the builds need:
       # nothing is built here, so there is no image for a bucket name to end
-      # up inside. Same `--exit-status` guard, for the same reason.
-      - name: Read the repository URL from the shared terraform state
+      # up inside. Read straight out of the parameter rather than through the
+      # `{"value": ...}` re-wrap above, which exists for config.json's readers
+      # and has no reader here. Same `--exit-status` guard, for the same
+      # reason.
+      - name: Read the repository URL from the shared stack's outputs
         run: |
-          url="$(aws s3 cp "s3://${SHARED_STATE_BUCKET}/${SHARED_STATE_KEY}" - \
-            | jq --exit-status -r '.outputs.repo_urls.value.cassandra')"
+          url="$(aws ssm get-parameter --name "$SHARED_OUTPUTS_PARAMETER" \
+              --query Parameter.Value --output text \
+            | jq --exit-status -r '.repo_urls.cassandra')"
           echo "IMAGE_URL=$url" >> "$GITHUB_ENV"
 
       - name: Join the architectures into one image
