@@ -103,6 +103,21 @@ COPY --chown=dev:dev config.json /home/dev/.aws-batch/config.json
 ADD --chown=dev:dev . /home/dev/runtime
 WORKDIR /home/dev/runtime
 
+# What this image was built from, which is how an optimize child decides
+# whether the code behind a fit has changed (`cassandra.fingerprint`). The
+# whole commit, deliberately: working out which modules feed one search is
+# the kind of cleverness whose failure mode is serving a stale fit forever.
+#
+# Last, and after the ADD, because a build arg invalidates every layer below
+# it and this one changes on every commit -- the ADD already does, so putting
+# it here costs nothing and putting it higher would cost the poetry install.
+#
+# Empty by default. `cassandra.fingerprint.code_version` reads an empty value
+# as "unknown", which never matches a recorded fingerprint, so an image built
+# without this searches everything rather than skipping on a false match.
+ARG GIT_SHA=""
+ENV CASSANDRA_GIT_SHA=$GIT_SHA
+
 ENTRYPOINT ["python", "/home/dev/runtime/jobs.py"]
 CMD ["manifest"]
 

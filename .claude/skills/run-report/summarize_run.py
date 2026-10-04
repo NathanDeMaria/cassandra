@@ -188,6 +188,17 @@ class Child:
         return None if not self.targets else self.best - self.targets[0]
 
     @property
+    def skipped(self):
+        """True when the child kept its fit instead of re-deriving it.
+
+        A skipped search has no probe table at all, so without this the row
+        reads as a container that ran for eight seconds and found nothing --
+        indistinguishable from a broken one. The line comes from
+        `optimize._skipped`; `optimize_test` holds the two to the same shape.
+        """
+        return any(message.startswith("skipped:") for message in self.diagnostics)
+
+    @property
     def seed_held(self):
         """True when nothing the search tried beat the point it was seeded with."""
         return (
@@ -728,11 +739,20 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
             gain = f"{child.gain:+.6f}"
             if child.seed_held:
                 converged += " (seed held)"
+        elif child.skipped:
+            # Not a search that found nothing: a search that correctly did
+            # not happen. See `cassandra.fingerprint`.
+            best = probes = gain = "-"
+            converged = "inputs unchanged, kept the last fit"
         else:
             best = probes = converged = gain = "-"
         rows.append(
             [
-                "ok" if child.status == "SUCCEEDED" else child.status,
+                "skipped"
+                if child.skipped and child.status == "SUCCEEDED"
+                else "ok"
+                if child.status == "SUCCEEDED"
+                else child.status,
                 child.name,
                 child.predictor_class or "?",
                 f"n_iter={child.n_iter if child.n_iter is not None else '?'}",
@@ -752,6 +772,16 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
         out.append(
             "   the best-so-far, so last+ near the end means it was still climbing)"
         )
+        if any(child.skipped for child in optimize):
+            kept = sum(1 for child in optimize if child.skipped)
+            out.append(
+                f"  ({kept} search(es) skipped: nothing they read had moved since "
+                "their last fit, and"
+            )
+            out.append(
+                "   the search is deterministic, so repeating it would return the "
+                "same number -- `--rebuild-optimize` to force one)"
+            )
         if any(child.seeded for child in optimize):
             out.append(
                 "  (a seeded search's first probes are the previous fit and the "

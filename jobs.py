@@ -214,9 +214,7 @@ async def _qb_out(
 
     if leagues is None:
         child = manifest.array_index(index)
-        leagues = (
-            [dag.qb_out_league(child)] if child is not None else list(QB_LEAGUES)
-        )
+        leagues = [dag.qb_out_league(child)] if child is not None else list(QB_LEAGUES)
 
     bucket = _bucket()
     await artifacts.download_predictor_data(bucket)
@@ -287,6 +285,7 @@ async def _optimize(
     model: str | None,
     download: bool,
     upload: bool,
+    rebuild: bool = False,
 ) -> None:
     # Import here rather than at module scope: `optimize.py` pulls in
     # bayes_opt and sklearn, and `jobs.py submit` runs in the same image but
@@ -333,7 +332,9 @@ async def _optimize(
         print(f"  clearing stale priors: {work.prior_path}")
         work.prior_path.unlink()
 
-    await _run_optimization(str(work.config_path), deadline=_search_deadline())
+    await _run_optimization(
+        str(work.config_path), rebuild=rebuild, deadline=_search_deadline()
+    )
 
     if upload:
         keys = await artifacts.upload(
@@ -530,6 +531,7 @@ class Jobs:
         model: str | None = None,
         download: bool = True,
         upload: bool = True,
+        rebuild: bool = False,
     ) -> None:
         """Optimize one config. Defaults to this array child's index.
 
@@ -537,8 +539,13 @@ class Jobs:
         container is to get the result somewhere the next stage can read it;
         pass `--upload=False` for a local dry run. `--download=False` likewise
         leaves the anchors already on this disk alone.
+
+        `--rebuild` searches even when nothing the last fit was found against
+        has changed, which is otherwise a skip -- see `cassandra.fingerprint`.
+        The escape hatch for when the fingerprint is wrong, or for proving it
+        isn't.
         """
-        asyncio.run(_optimize(index, league, model, download, upload))
+        asyncio.run(_optimize(index, league, model, download, upload, rebuild))
 
     def evaluate(
         self,
@@ -568,6 +575,7 @@ class Jobs:
         skip_sweeps: bool = False,
         rebuild_sweeps: bool = False,
         skip_optimize: bool = False,
+        rebuild_optimize: bool = False,
         skip_evaluate: bool = False,
         skip_publish: bool = False,
         dry_run: bool = False,
@@ -603,9 +611,7 @@ class Jobs:
                     "GAME_CONTROL", game_control_job_definition
                 ),
                 epa_job_definition=_job_definition("EPA", epa_job_definition),
-                qb_out_job_definition=_job_definition(
-                    "QB_OUT", qb_out_job_definition
-                ),
+                qb_out_job_definition=_job_definition("QB_OUT", qb_out_job_definition),
                 optimize_job_definition=_job_definition(
                     "OPTIMIZE", optimize_job_definition
                 ),
@@ -623,6 +629,7 @@ class Jobs:
                 skip_sweeps=skip_sweeps,
                 rebuild_sweeps=rebuild_sweeps,
                 skip_optimize=skip_optimize,
+                rebuild_optimize=rebuild_optimize,
                 skip_evaluate=skip_evaluate,
                 skip_publish=skip_publish,
                 dry_run=dry_run,

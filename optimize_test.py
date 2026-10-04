@@ -8,6 +8,7 @@ from call_it_what_you_want import TeamNamer
 import optimize
 from cassandra.objective import Objective, get_objective
 from cassandra.predictor import (
+    InputFingerprint,
     OptimizationConfig,
     Predictor,
     PredictorConfig,
@@ -334,3 +335,90 @@ def test_seeds__a_points_knob_the_previous_fit_predates_is_the_default_in_points
 
     assert seeds == [{**knobs, "hfa_slope_pts": 0.0}]
     assert lines[0].startswith("[optimize] seeded with the previous fit")
+
+
+# --- skipping a search whose inputs haven't moved -----------------------------
+#
+# `_skipped` is the whole safety boundary: every path that returns True means
+# a fit is published without being re-derived this run. The tests below are
+# mostly about the paths that must return *False*.
+
+
+def _inputs(**overrides: str) -> InputFingerprint:
+    fields = {"data": "d1", "config": "c1", "code": "sha1", "seed": "s1"}
+    return InputFingerprint(**{**fields, **overrides})
+
+
+def test_a_search_is_skipped_when_nothing_it_reads_has_moved(capsys) -> None:
+    fingerprint = _inputs()
+
+    assert optimize._skipped(fingerprint, _fit(inputs=fingerprint), rebuild=False)
+
+    out = capsys.readouterr().out
+    assert "skipped" in out
+    # The reason has to be legible without reading the code, and the way out
+    # has to be in the same line as the refusal.
+    assert "unchanged" in out and "--rebuild" in out
+
+
+@pytest.mark.parametrize("part", ["data", "config", "code", "seed"])
+def test_any_one_input_moving_means_the_search_runs(part: str, capsys) -> None:
+    """Four independent reasons, each of which has to be enough on its own."""
+    before = _inputs()
+    now = _inputs(**{part: "moved"})
+
+    assert not optimize._skipped(now, _fit(inputs=before), rebuild=False)
+    assert part in capsys.readouterr().out
+
+
+def test_a_fit_from_before_fingerprints_existed_is_searched(capsys) -> None:
+    """A missing fingerprint is not a matching one.
+
+    Every result in the bucket predates this, so this is the path the first
+    run after deploying takes for all 49 children.
+    """
+    assert not optimize._skipped(_inputs(), _fit(inputs=None), rebuild=False)
+
+
+def test_a_model_with_no_previous_fit_is_searched() -> None:
+    assert not optimize._skipped(_inputs(), None, rebuild=False)
+
+
+def test_an_image_that_cannot_say_what_code_it_has_is_searched(capsys) -> None:
+    """The fail-safe for a build with no commit baked in.
+
+    Both sides record "" for code, so a naive comparison would call them
+    equal and skip -- which would mean a local build skipping against
+    whatever it happened to have. `complete` is what stops that.
+    """
+    unknown = _inputs(code="")
+
+    assert not optimize._skipped(unknown, _fit(inputs=unknown), rebuild=False)
+    assert "CASSANDRA_GIT_SHA" in capsys.readouterr().out
+
+
+def test_rebuild_searches_even_when_everything_matches(capsys) -> None:
+    fingerprint = _inputs()
+
+    assert not optimize._skipped(fingerprint, _fit(inputs=fingerprint), rebuild=True)
+    assert "--rebuild" in capsys.readouterr().out
+
+
+def test_the_skip_line_is_picked_up_by_the_run_report() -> None:
+    """A skipped child has no probe table, so this line is all the report gets.
+
+    Without it the report shows a child that ran for eight seconds and says
+    nothing about why, which reads as a broken search rather than a saved
+    hour.
+    """
+    fingerprint = _inputs()
+    import io
+    from contextlib import redirect_stdout
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        optimize._skipped(fingerprint, _fit(inputs=fingerprint), rebuild=False)
+
+    matched = _REPORT_DIAGNOSTIC.match(buffer.getvalue().strip().splitlines()[0])
+    assert matched is not None
+    assert matched.group("message").startswith("skipped:")
