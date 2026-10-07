@@ -390,3 +390,84 @@ def test_optimize__a_seed_for_an_int_bound_has_to_be_whole() -> None:
     bounds: dict[str, Any] = {"x": (0.0, 1.0), "n": (1, 4, "int")}
     with pytest.raises(ValueError, match="not a whole number"):
         optimize(lambda x, n: 0.0, bounds, iterations=1, seeds=[{"x": 0.5, "n": 2.5}])
+
+
+# --- deadline -----------------------------------------------------------------
+#
+# A search that would run into Batch's timeout stops short with what it has,
+# because the kill fails the whole array and every stage behind it.
+
+
+class _Clock:
+    """A clock that only moves when a probe runs: one tick per probe."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _ticking(clock: _Clock) -> Any:
+    def f(x: float, c: str) -> float:
+        clock.now += 1.0
+        return _seeded_bowl(x, c)
+
+    return f
+
+
+def test_optimize__stops_before_a_chunk_that_would_miss_the_deadline() -> None:
+    clock = _Clock()
+    seed = {"x": 0.3, "c": "b"}
+    target, params = optimize(
+        _ticking(clock),
+        _SEEDED_BOUNDS,
+        iterations=40,
+        seeds=[seed],
+        checkpoint_every=10,
+        # Two chunks of ten take 20; a third would need 1.5 * 10 more.
+        deadline=30.0,
+        clock=clock,
+    )
+
+    assert clock.now == 20.0
+    # Cut short, and still at the seed: the guarantee survives the deadline.
+    assert target == pytest.approx(1.0)
+    assert params["c"] == "b"
+
+
+def test_optimize__a_deadline_with_room_changes_nothing() -> None:
+    unbounded = optimize(
+        _seeded_bowl, _SEEDED_BOUNDS, iterations=12, checkpoint_every=5
+    )
+    clock = _Clock()
+    bounded = optimize(
+        _ticking(clock),
+        _SEEDED_BOUNDS,
+        iterations=12,
+        checkpoint_every=5,
+        deadline=1e9,
+        clock=clock,
+    )
+
+    assert bounded == unbounded
+    assert clock.now == INIT_POINTS + 12
+
+
+def test_optimize__a_cut_short_search_clears_its_checkpoint(tmp_path: Path) -> None:
+    """It returned a result, so there is nothing for a retry to resume."""
+    from .checkpoint import FileCheckpoint
+
+    clock = _Clock()
+    save = FileCheckpoint(tmp_path / "s.json")
+    optimize(
+        _ticking(clock),
+        _SEEDED_BOUNDS,
+        iterations=40,
+        checkpoint=save,
+        checkpoint_every=10,
+        deadline=25.0,
+        clock=clock,
+    )
+
+    assert save.load() is None

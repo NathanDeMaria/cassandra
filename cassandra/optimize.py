@@ -3,6 +3,7 @@ import math
 import signal
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -222,6 +223,13 @@ INIT_POINTS = 5
 # a state dump and an upload that cost about a second.
 CHECKPOINT_EVERY = 25
 
+# How much slower than the last chunk the next one is assumed to be, when
+# deciding whether it fits before the deadline. A chunk's cost grows with the
+# search -- `suggest()` refits the GP on every probe so far -- and a box can
+# slow down mid-attempt when a second search lands on its other hyperthread,
+# so the last chunk is a floor on the next rather than a forecast of it.
+DEADLINE_SAFETY = 1.5
+
 
 def optimize(
     function: Callable[..., float],
@@ -230,6 +238,8 @@ def optimize(
     checkpoint: Checkpoint | None = None,
     checkpoint_every: int = CHECKPOINT_EVERY,
     seeds: Sequence[Seed] = (),
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> tuple[float, dict[str, float | str]]:
     """Search `param_bounds` for `iterations` probes past the random start.
 
@@ -247,6 +257,16 @@ def optimize(
     `cassandra.checkpoint`. The result is the same either way: chunked
     probing with a reload between chunks reproduces a single `maximize`
     exactly, which `optimize_test` asserts.
+
+    With a `deadline` -- a `clock()` reading -- the search stops short rather
+    than run into it: before each chunk it checks that the next one, at
+    `DEADLINE_SAFETY` times the last one's cost, still finishes in time, and
+    if not it returns the best probe so far. That is never below the seeds,
+    so a search cut short keeps the previous fit at worst. The alternative is
+    Batch's timeout, which kills the child, fails the array, and takes every
+    league's evaluate and publish down with it: 20261005-080205 lost all
+    seven publishes to two searches that ran 2.5x slower than the day before
+    and both had held their seed for weeks.
     """
     for seed in seeds:
         problem = misplaced(seed, param_bounds)
@@ -265,9 +285,22 @@ def optimize(
     resumed = _load(optimizer, checkpoint)
     if resumed:
         print(f"[optimize] resumed at probe {resumed} of {total}")
+    last_chunk: float | None = None
     with _saving_on_sigterm(optimizer, checkpoint):
         while len(optimizer.res) < total:
             done = len(optimizer.res)
+            if (
+                deadline is not None
+                and last_chunk is not None
+                and clock() + DEADLINE_SAFETY * last_chunk > deadline
+            ):
+                print(
+                    f"[optimize] stopped at probe {done} of {total}: the next "
+                    f"{min(checkpoint_every, total - done)} would not finish "
+                    "before the attempt's deadline, so the best so far stands"
+                )
+                break
+            started = clock()
             # The seeds and the random start only once, and never on a
             # resumed search: a reload carries those probes with it.
             handed = 0
@@ -284,6 +317,7 @@ def optimize(
             # runs the start and no more.
             optimizer.maximize(init_points=init_points, n_iter=step - handed)
             _save(optimizer, checkpoint)
+            last_chunk = clock() - started
 
     if optimizer.max is None:
         raise ValueError("Optimizer did not find a maximum")
