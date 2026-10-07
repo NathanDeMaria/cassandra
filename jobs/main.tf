@@ -272,8 +272,9 @@ module "optimize" {
 
   # One vCPU rather than the module's two, so two searches share a box.
   #
-  # Every instance in the shared compute environment is a 2-vCPU `.large`,
-  # which makes the vCPU the unit of cost here and memory nearly free: a
+  # When this was written every instance in the shared compute environment
+  # was a 2-vCPU `.large` (it now also offers `.xlarge` and `.2xlarge`),
+  # which made the vCPU the unit of cost here and memory nearly free: a
   # child reserving both cores owns the whole instance for its whole run
   # whatever it asks for in memory, and `optimize_memory` was reserving nine
   # times its measured peak for nothing.
@@ -319,8 +320,31 @@ module "optimize" {
 
   # The same timeout, told to the search so it can stop short of it with a
   # result rather than be killed without one. See `optimize`'s `deadline`.
+  #
+  # And one BLAS thread, which is what makes `vcpu = 1` true. A vCPU here is
+  # a CPU share, not a pin: the container still sees every core on the box,
+  # and OpenBLAS starts a thread per core it sees. One child alone on a box
+  # gets away with that, which is how the ~1% above was measured. Two
+  # children with large GPs do not -- run 20261005-080205 lost evaluate and
+  # every publish to ncaafb/glicko_full and nfl/glicko_margin timing out on
+  # one m8i.large, a day after both finished in 3-5h. Resumed from that
+  # run's saves (~800 and ~1000 observations) on one m8i.large, median
+  # seconds a probe:
+  #
+  #                          ncaafb/glicko_full  nfl/glicko_margin
+  #   alone                         4.6                6.1
+  #   together                     52.9               46.3
+  #   together, 1 thread each       7.0               10.2
+  #
+  # So capped, sharing a box costs 1.5-1.7x -- the two vCPUs of a .large are
+  # one core's hyperthreads -- and uncapped it costs ten. All three names,
+  # because which BLAS numpy links is a property of the wheel, not of this
+  # repo.
   environment_variables = concat(local.job_environment, [
     { name = "CASSANDRA_ATTEMPT_TIMEOUT_SECONDS", value = tostring(var.optimize_timeout_seconds) },
+    { name = "OMP_NUM_THREADS", value = "1" },
+    { name = "OPENBLAS_NUM_THREADS", value = "1" },
+    { name = "MKL_NUM_THREADS", value = "1" },
   ])
 }
 
