@@ -71,6 +71,30 @@ def _search_deadline() -> float | None:
     return _STARTED + float(timeout) - DEADLINE_MARGIN_SECONDS
 
 
+def _host_line() -> str:
+    """What this search is running on, for comparing probe times across runs.
+
+    Per-probe time moved 0.67x-2.5x between two runs a day apart with no
+    config change, and Batch forgets an instance's type once it's gone. The
+    CPU model says which generation and vendor; siblings against cores says
+    whether the two vCPUs a .large search shares are one core's
+    hyperthreads.
+    """
+    fields: dict[str, str] = {}
+    try:
+        with open("/proc/cpuinfo") as cpuinfo:
+            for line in cpuinfo:
+                name, _, value = line.partition(":")
+                fields.setdefault(name.strip(), value.strip())
+    except OSError:
+        return "[host] cpuinfo unavailable"
+    return (
+        f"[host] {fields.get('model name', '?')}, "
+        f"{fields.get('siblings', '?')} threads on {fields.get('cpu cores', '?')} "
+        f"cores per socket, {os.cpu_count()} vCPU visible"
+    )
+
+
 def _bucket() -> str:
     """The batch bucket, from the config terraform writes.
 
@@ -277,6 +301,7 @@ async def _optimize(
         work = manifest.resolve_index(index)
 
     print(f"=== {work.name} ({work.predictor_class}, n_iter={work.n_iter}) ===")
+    print(_host_line())
 
     # The anchors decide what a rating means, so they have to be on disk
     # before the search starts: without them every team regresses toward
