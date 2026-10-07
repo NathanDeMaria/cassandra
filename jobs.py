@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import fire
@@ -46,6 +47,28 @@ from cassandra.predictor import (
     anchor_path,
 )
 from cassandra.predictor.qb_out import QB_LEAGUES
+
+# When this process started, which is as close as it can see to when Batch
+# started the attempt's clock.
+_STARTED = time.monotonic()
+
+# The job definition's per-attempt timeout, set beside it in terraform. Unset
+# outside Batch, where nothing kills a search and it runs to the end.
+ATTEMPT_TIMEOUT_ENV = "CASSANDRA_ATTEMPT_TIMEOUT_SECONDS"
+
+# What a search leaves itself between stopping and the kill: the result
+# written and uploaded, which is seconds, and the container's start before
+# this process, which is seconds more. Ten minutes is for being wrong about
+# both.
+DEADLINE_MARGIN_SECONDS = 600
+
+
+def _search_deadline() -> float | None:
+    """The `time.monotonic()` reading a search has to be done by, if any."""
+    timeout = os.environ.get(ATTEMPT_TIMEOUT_ENV)
+    if not timeout:
+        return None
+    return _STARTED + float(timeout) - DEADLINE_MARGIN_SECONDS
 
 
 def _bucket() -> str:
@@ -285,7 +308,7 @@ async def _optimize(
         print(f"  clearing stale priors: {work.prior_path}")
         work.prior_path.unlink()
 
-    await _run_optimization(str(work.config_path))
+    await _run_optimization(str(work.config_path), deadline=_search_deadline())
 
     if upload:
         keys = await artifacts.upload(

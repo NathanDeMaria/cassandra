@@ -317,7 +317,11 @@ module "optimize" {
   # search can outlast, and there is no reason to hold it under the limit.
   retry_attempts = 10
 
-  environment_variables = local.job_environment
+  # The same timeout, told to the search so it can stop short of it with a
+  # result rather than be killed without one. See `optimize`'s `deadline`.
+  environment_variables = concat(local.job_environment, [
+    { name = "CASSANDRA_ATTEMPT_TIMEOUT_SECONDS", value = tostring(var.optimize_timeout_seconds) },
+  ])
 }
 
 module "evaluate" {

@@ -35,7 +35,7 @@ variable "schedule_timezone" {
 }
 
 variable "optimize_timeout_seconds" {
-  description = "Per-attempt wall clock for one model's search. The slowest checked-in config is a few hours; this is a runaway guard, not a target."
+  description = "Per-attempt wall clock for one model's search. Also handed to the search as CASSANDRA_ATTEMPT_TIMEOUT_SECONDS, and a search stops itself ten minutes short of it with the best fit so far rather than be killed: a killed child fails the array and every evaluate and publish behind it."
   type        = number
   default     = 21600
 }

@@ -228,7 +228,7 @@ def _previous_result(path: Path) -> PredictorConfig | None:
     return PredictorConfig.model_validate_json(path.read_text())
 
 
-async def _run_optimization(config_file: str) -> None:
+async def _run_optimization(config_file: str, deadline: float | None = None) -> None:
     config_path = Path(config_file)
     with open(config_path, "r") as f:
         config_model = OptimizationConfig.model_validate_json(f.read())
@@ -315,6 +315,7 @@ async def _run_optimization(config_file: str) -> None:
         config_model.n_iter,
         checkpoint=checkpoint,
         seeds=seeds,
+        deadline=deadline,
     )
 
     # Merged, not just recorded: `load_predictor` rebuilds from `params`
