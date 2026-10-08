@@ -413,7 +413,7 @@ def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
     assert loaded.state_dict() == predictor.state_dict()
 
 
-# A's roster 150 talent points above the season's FBS average.
+# A's roster 1.5 sd above the season's FBS mean.
 TALENTED = TalentIndex({("A", 2024): 1.5})
 
 
@@ -455,9 +455,23 @@ def test_an_opener_without_plays_does_not_name_the_starter(game: GameFactory) ->
     assert new.get_rating("A").rating > plain.get_rating("A").rating
 
 
+def test_each_summer_shifts_only_the_change_in_talent(game: GameFactory) -> None:
+    # 1.0 sd in 2024 and 1.5 in 2025: by 2025 the shifts add up to 1.5 sd's
+    # worth, not 2.5.
+    talent = TalentIndex({("A", 2024): 1.0, ("A", 2025): 1.5})
+    plain = _predictor({"g": LOPSIDED}, talent_shift=0.8)
+    read = _predictor({"g": LOPSIDED}, talent_shift=0.8, talent=talent)
+    for predictor in (plain, read):
+        _into_2024(predictor, game)
+        predictor.pass_season(2025)
+
+    moved = read.get_rating("A").rating - plain.get_rating("A").rating
+    assert moved == pytest.approx(0.8 * 1.5 / read.points_per_rating)
+
+
 def test_the_talent_gap_is_a_matchup_term(game: GameFactory) -> None:
-    # A 150 above the FBS average, B 50 below: a 200-point gap, 2 points at
-    # 1 point per 100.
+    # A 1.5 sd above the FBS mean, B 0.5 below: a 2 sd gap, 2 points at
+    # 1 point per sd.
     talent = TalentIndex({("A", 2024): 1.5, ("B", 2024): -0.5})
     plain = _predictor({"g": LOPSIDED}, talent_edge=1.0)
     read = _predictor({"g": LOPSIDED}, talent_edge=1.0, talent=talent)
