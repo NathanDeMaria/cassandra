@@ -128,6 +128,46 @@ uncertainty that stood in for it (0.14 was the best starting sd without
 the shifts). `glicko_margin_units_offseason` searches the shifts with the
 offense's starting sd and offseason regression, the rest pinned.
 
+Roster talent
+-------------
+
+Two knobs read `cassandra.talent`: each FBS team's 247 talent composite above
+that season's FBS average, in hundreds of points. Both are 0 by default.
+
+- `talent_shift`, points per 100 at the rollover, applied the way the shifts
+  above are. The composite is out before the season.
+- `talent_edge`, points of margin per 100 points of talent gap, added to
+  every game between two rated teams as a matchup term -- home field's kind
+  of number rather than a rating's. It is in the update as well as the
+  prediction, so the ratings learn around it, and it never carries into the
+  next season.
+
+Replayed on the fitted `glicko_margin_units_offseason`, brier change against
+neither, on 2015-2025 FBS v FBS games (and their first four) and on 2026's
+265:
+
+    talent                         2015-25     games 1-4    2026
+    shift 0.5 at the rollover     -0.00003     -0.00008    -0.00105
+    shift 1.0                     +0.00009     +0.00021    -0.00193
+    edge 1.0 per game             -0.00012     -0.00012    -0.00030
+    edge 2.0                      -0.00007     +0.00010    -0.00050
+    shift 0.5 + edge 1.0          -0.00007     +0.00002    -0.00131
+
+The shift takes the talent pattern out of the residuals and still loses
+before 2026, likely because the parent has no offseason regression: what a
+summer's shift leaves behind carries into the next, so a team that is
+talented every year is pushed up every year. The edge can't accumulate.
+Neither moves pooled brier by more than 0.00001, so
+`glicko_margin_units_talent` searches the two on `brier_fbs`, everything
+else pinned at `glicko_margin_units_offseason`'s fit.
+
+Talent is read here rather than as a `MatchupAdjustments` term because it
+is a fact about a season, and a `Matchup` doesn't carry one -- a January
+bowl's date is the next year's -- where the predictor's clock does. Like the
+offseason facts, the index stays out of `state_dict`: a model rebuilt from
+a release reads the league's file if it is on disk, and prices no talent if
+it isn't.
+
 What a release carries
 ----------------------
 
@@ -172,6 +212,7 @@ from typing import Any, NamedTuple, Self
 from endgame.types import Game
 
 from ..offseason import OffseasonFacts
+from ..talent import TalentIndex
 from .adjustments import (
     DEFAULT_QB_OUT_PENALTY,
     DEFAULT_TRAVEL_ADVANTAGE,
@@ -308,6 +349,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         coach_left_shift: float = 0.0,
         new_qb_shift: float = 0.0,
         qb_quality_shift: float = 0.0,
+        talent_shift: float = 0.0,
+        talent_edge: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -320,6 +363,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         game_epa: EpaIndex | None = None,
         offseason: OffseasonFacts | None = None,
+        talent: TalentIndex | None = None,
     ) -> None:
         super().__init__(
             league,
@@ -387,6 +431,11 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._offseason = (
             offseason if offseason is not None else OffseasonFacts.for_league(league)
         )
+        # Roster talent; see "Roster talent". Non-negative, as more talent
+        # being worse is not a hypothesis worth a search's time.
+        self._talent_shift = _non_negative("talent_shift", talent_shift)
+        self._talent_edge = _non_negative("talent_edge", talent_edge)
+        self._talent = talent if talent is not None else TalentIndex.for_league(league)
         # Teams whose quarterback shift waits on their first game this
         # season. In-season state, like the smoother's ledger.
         self._qb_pending: set[str] = set()
@@ -477,6 +526,21 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             precision + earned
         )
         return _Rating(rating, parent.rating_deviation)
+
+    def matchup_adjustment(self, matchup: Matchup) -> float:
+        """The parent's matchup terms, and the talent gap at `talent_edge`.
+
+        In rating points, like the rest of the edge. Nothing when either
+        side is unrated -- below FBS, an academy, a season before 2015.
+        """
+        points = super().matchup_adjustment(matchup)
+        if not self._talent_edge:
+            return points
+        home = self._talent.get(matchup.home, self._season)
+        away = self._talent.get(matchup.away, self._season)
+        if home is None or away is None:
+            return points
+        return points + self._talent_edge * (home - away) / self.points_per_rating
 
     def predict_game(self, matchup: Matchup) -> Prediction:
         """The parent's prediction, on blended ratings.
@@ -706,6 +770,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 self._shift(team, self._coach_left_shift)
             if fact.new_quarterback and (self._new_qb_shift or self._qb_quality_shift):
                 self._qb_pending.add(team)
+        if self._talent_shift:
+            for team, above in self._talent.season(self._season):
+                self._shift(team, self._talent_shift * above)
 
     def state_dict(self) -> dict[str, Any]:
         """The parent's state, the unit knobs, the center and the sides.
@@ -728,6 +795,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "coach_left_shift": self._coach_left_shift,
             "new_qb_shift": self._new_qb_shift,
             "qb_quality_shift": self._qb_quality_shift,
+            "talent_shift": self._talent_shift,
+            "talent_edge": self._talent_edge,
             "epa_center_state": [
                 self._center_previous,
                 self._center_sum,
