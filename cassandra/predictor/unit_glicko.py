@@ -131,35 +131,44 @@ offense's starting sd and offseason regression, the rest pinned.
 Roster talent
 -------------
 
-Two knobs read `cassandra.talent`: each FBS team's 247 talent composite above
-that season's FBS average, in hundreds of points. Both are 0 by default.
+Two knobs read `cassandra.talent`: each FBS team's 247 talent composite, in
+standard deviations from that season's FBS mean. Both are 0 by default.
 
-- `talent_shift`, points per 100 at the rollover, applied the way the shifts
-  above are. The composite is out before the season.
-- `talent_edge`, points of margin per 100 points of talent gap, added to
-  every game between two rated teams as a matchup term -- home field's kind
-  of number rather than a rating's. It is in the update as well as the
-  prediction, so the ratings learn around it, and it never carries into the
-  next season.
+- `talent_shift`, points per sd at the rollover, applied the way the shifts
+  above are -- but only the *change* since the team's last rated season, so
+  the summers' shifts add up to `talent_shift` times this season's level and
+  never more. The composite is out before the season.
+- `talent_edge`, points of margin per sd of talent gap, added to every game
+  between two rated teams as a matchup term -- home field's kind of number
+  rather than a rating's. It is in the update as well as the prediction, so
+  the ratings learn around it and it never carries into the next season.
+
+The first version shifted by the level every summer. The parent has no
+offseason regression, so what one summer's shift left behind carried into
+the next: a shift of 1 point per 100 talent moved the first games' margins
+by 0.8 per 100 in 2015 and by 1.4 by 2021, and the seasons that wanted less
+of it paid for the ones that wanted more. Talent is persistent enough
+(0.96-0.99 year to year) that adding the change instead keeps the level
+where `talent_shift` puts it.
 
 Replayed on the fitted `glicko_margin_units_offseason`, brier change against
-neither, on 2015-2025 FBS v FBS games (and their first four) and on 2026's
-265:
+no talent in units of 1e-4, on FBS v FBS games 2015-2025 (by a side's game
+of the season), FBS against lower tiers, and 2026's 265 FBS games:
 
-    talent                         2015-25     games 1-4    2026
-    shift 0.5 at the rollover     -0.00003     -0.00008    -0.00105
-    shift 1.0                     +0.00009     +0.00021    -0.00193
-    edge 1.0 per game             -0.00012     -0.00012    -0.00030
-    edge 2.0                      -0.00007     +0.00010    -0.00050
-    shift 0.5 + edge 1.0          -0.00007     +0.00002    -0.00131
+    talent, points per sd            2015-25  games 1-4  games 5+  lower tier   2026
+    per game 1.0                       -0.88      -0.94     -0.85       -0.68  -5.19
+    per game 2.0                       -1.16      -0.75     -1.34       -0.69  -9.59
+    change-only shift 2.0              -0.86      -0.07     -1.20       +0.01  +1.50
+    level shift 1.0, every summer      -0.18      -0.40     -0.08       +1.77 -15.50
+    per game 2.0 + change shift 1.0    -1.16      +0.14     -1.71       -0.93  -8.30
 
-The shift takes the talent pattern out of the residuals and still loses
-before 2026, likely because the parent has no offseason regression: what a
-summer's shift leaves behind carries into the next, so a team that is
-talented every year is pushed up every year. The edge can't accumulate.
-Neither moves pooled brier by more than 0.00001, so
-`glicko_margin_units_talent` searches the two on `brier_fbs`, everything
-else pinned at `glicko_margin_units_offseason`'s fit.
+Every form gains in the same seasons and loses in the same four -- 2020,
+2021, 2023 and 2025 -- so which seasons gain is how much talent mattered
+that year, not which form read it. The change-only shift gets most of its
+gain in 2015, the one season where the change is the whole level; after
+that the summers' changes are small and the games wash out what's left.
+The shifts also cost FBS games against lower tiers, whose teams aren't
+rated and so don't move.
 
 Talent is read here rather than as a `MatchupAdjustments` term because it
 is a fact about a season, and a `Matchup` doesn't carry one -- a January
@@ -770,9 +779,10 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 self._shift(team, self._coach_left_shift)
             if fact.new_quarterback and (self._new_qb_shift or self._qb_quality_shift):
                 self._qb_pending.add(team)
-        if self._talent_shift:
-            for team, above in self._talent.season(self._season):
-                self._shift(team, self._talent_shift * above)
+        if self._talent_shift and self._season is not None:
+            for team, level in self._talent.season(self._season):
+                change = level - self._talent.previous(team, self._season)
+                self._shift(team, self._talent_shift * change)
 
     def state_dict(self) -> dict[str, Any]:
         """The parent's state, the unit knobs, the center and the sides.

@@ -4,11 +4,11 @@
     "parameters": {
         "talent_edge": [
             0,
-            3
+            5
         ],
         "talent_shift": [
             0,
-            2
+            3
         ]
     },
     "fixed": {
@@ -43,7 +43,7 @@
     "n_iter": 60,
     "seeds": [
         {
-            "talent_edge": 1.0,
+            "talent_edge": 2.0,
             "talent_shift": 0.0
         },
         {
