@@ -16,6 +16,7 @@ from cassandra.predictor.base_predictor import load_anchors
 from cassandra.predictor.epa import load_epa
 from cassandra.predictor.game_control import load_game_control
 from cassandra.predictor.qb_out import load_qb_out
+from cassandra.talent import load_talent
 
 from . import artifacts
 
@@ -24,7 +25,7 @@ _LEAGUE = "nfl"
 #: Every cached reader of a file under `predictor/data`. A new loader goes
 #: here as well as in `download_predictor_data`, and the test below is what
 #: notices if it only made it into one of the two.
-_LOADERS = (load_anchors, load_game_control, load_epa, load_qb_out)
+_LOADERS = (load_anchors, load_game_control, load_epa, load_qb_out, load_talent)
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +53,7 @@ def test_the_download_drops_every_cached_read(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(artifacts, "download", nothing_to_download)
     asyncio.run(artifacts.download_predictor_data("bucket"))
 
-    assert [loader.cache_info().currsize for loader in _LOADERS] == [0, 0, 0, 0]
+    assert [loader.cache_info().currsize for loader in _LOADERS] == [0] * len(_LOADERS)
 
 
 def test_the_index_written_by_the_download_is_what_the_next_read_returns(

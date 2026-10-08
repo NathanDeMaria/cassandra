@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from .brier import brier_score_df
 from .model_eval import score_predictions
 from .objective import (
     DEFAULT_OBJECTIVE,
@@ -13,16 +14,27 @@ from .objective import (
 from .prob_to_margin import MaeLogisticProbToMarginFitter
 from .save_predictions import _PREDICTION_FIELDS
 
+#: Two FBS teams, then an FCS team against one of them, round and round.
+_MATCHUPS = [
+    ("Ohio State Buckeyes", "Michigan Wolverines"),
+    ("Troy Trojans", "Ohio State Buckeyes"),
+    ("North Dakota State Bison", "Troy Trojans"),
+]
+
 
 def _games(win_probs: np.ndarray, margins: np.ndarray) -> pd.DataFrame:
     """A predictions frame in the shape `join_with_odds` produces one."""
+    teams = [_MATCHUPS[i % len(_MATCHUPS)] for i in range(len(margins))]
     return pd.DataFrame(
         {
+            "year": np.full(len(margins), 2020),
             "home_score": np.maximum(margins, 0) + 60,
             "away_score": 60 - np.minimum(margins, 0),
             "team1_win": margins > 0,
             "team1_win_prob": win_probs,
             "spread": np.full(len(margins), np.nan),
+            "home_team": [home for home, _ in teams],
+            "away_team": [away for _, away in teams],
         }
     )
 
@@ -99,6 +111,27 @@ def test_margin_objective_prefers_the_better_scaled_of_two_models() -> None:
     )
 
 
+def test_fbs_brier_scores_only_the_games_between_two_fbs_teams() -> None:
+    games = _sample_games()
+    fbs = games.home_team != "North Dakota State Bison"
+
+    score = get_objective("brier_fbs")(games)
+
+    assert score == pytest.approx(-brier_score_df(games[fbs]))
+    assert score != pytest.approx(get_objective("brier")(games))
+
+
+def test_fbs_brier_reads_the_division_of_the_season_played() -> None:
+    """North Dakota State is FBS from 2026, and FCS in every season before."""
+    games = _sample_games().assign(
+        home_team="North Dakota State Bison", away_team="Troy Trojans"
+    )
+    with pytest.raises(ValueError, match="two FBS teams"):
+        get_objective("brier_fbs")(games)
+
+    assert np.isfinite(get_objective("brier_fbs")(games.assign(year=2026)))
+
+
 def test_an_unknown_objective_names_the_ones_that_exist() -> None:
     with pytest.raises(ValueError, match="margin_mae"):
         get_objective("margin_rmse")
@@ -161,7 +194,7 @@ def test_an_objective_scores_from_what_it_declared_and_nothing_more(
 def test_the_objectives_that_exist_score_against_results_not_lines() -> None:
     """Which is why a search can skip the odds read entirely.
 
-    Not a property of objectives in general -- it is a fact about the three
+    Not a property of objectives in general -- it is a fact about the ones
     there are, and the one `optimize.py` acts on. A market objective added
     later declares `spread`, `needs_odds` goes true, and the read comes
     back without anybody remembering to re-enable it.

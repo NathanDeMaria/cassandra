@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from ..offseason import OffseasonFact, OffseasonFacts
+from ..talent import TalentIndex
 from .base_predictor import MEAN_RATING, Anchor
 from .conftest import GameFactory
 from .epa import EpaIndex
@@ -305,6 +306,8 @@ def test_an_unseen_team_sits_at_its_anchor_by_its_units(game: GameFactory) -> No
         {"defense_weekly_sd_increase": -0.01},
         {"offense_season_sd_increase": -0.01},
         {"defense_season_regression": 1.5},
+        {"talent_shift": -0.5},
+        {"talent_edge": -0.5},
     ],
 )
 def test_nonsense_unit_settings_are_refused(param: dict[str, Any]) -> None:
@@ -392,13 +395,49 @@ def test_a_quarterback_shift_survives_the_smoother(game: GameFactory) -> None:
 
 def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
     predictor = _predictor(
-        coach_left_shift=-2.5, new_qb_shift=-1.1, qb_quality_shift=1.7
+        coach_left_shift=-2.5,
+        new_qb_shift=-1.1,
+        qb_quality_shift=1.7,
+        talent_shift=0.8,
+        talent_edge=1.2,
     )
     state = json.loads(json.dumps(predictor.state_dict()))
     loaded = UnitMarginGlickoPredictor.from_state_dict(
-        {**state, "game_epa": EpaIndex(), "offseason": OffseasonFacts()}
+        {
+            **state,
+            "game_epa": EpaIndex(),
+            "offseason": OffseasonFacts(),
+            "talent": TalentIndex(),
+        }
     )
     assert loaded.state_dict() == predictor.state_dict()
+
+
+# A's roster 150 talent points above the season's FBS average.
+TALENTED = TalentIndex({("A", 2024): 1.5})
+
+
+def test_no_talent_shift_is_the_model_without_talent(game: GameFactory) -> None:
+    plain = _predictor({"g": LOPSIDED})
+    read = _predictor({"g": LOPSIDED}, talent=TALENTED)
+    for predictor in (plain, read):
+        _into_2024(predictor, game)
+    assert read.ratings == plain.ratings
+
+
+def test_talent_moves_the_team_and_its_offense_at_the_rollover(
+    game: GameFactory,
+) -> None:
+    plain = _predictor({"g": LOPSIDED}, talent_shift=0.8)
+    read = _predictor({"g": LOPSIDED}, talent_shift=0.8, talent=TALENTED)
+    for predictor in (plain, read):
+        _into_2024(predictor, game)
+
+    moved = read.get_rating("A").rating - plain.get_rating("A").rating
+    assert moved == pytest.approx(0.8 * 1.5 / read.points_per_rating)
+    offense = read.get_sides("A").offense.rating - plain.get_sides("A").offense.rating
+    assert offense == pytest.approx(0.8 * 1.5 / read.points_per_epa)
+    assert read.get_rating("B") == plain.get_rating("B")
 
 
 def test_an_opener_without_plays_does_not_name_the_starter(game: GameFactory) -> None:
@@ -414,3 +453,35 @@ def test_an_opener_without_plays_does_not_name_the_starter(game: GameFactory) ->
     second = game("A", "D", 21, 17, game_id="i")
     assert new.update_game(second) == plain.update_game(second)
     assert new.get_rating("A").rating > plain.get_rating("A").rating
+
+
+def test_the_talent_gap_is_a_matchup_term(game: GameFactory) -> None:
+    # A 150 above the FBS average, B 50 below: a 200-point gap, 2 points at
+    # 1 point per 100.
+    talent = TalentIndex({("A", 2024): 1.5, ("B", 2024): -0.5})
+    plain = _predictor({"g": LOPSIDED}, talent_edge=1.0)
+    read = _predictor({"g": LOPSIDED}, talent_edge=1.0, talent=talent)
+    for predictor in (plain, read):
+        _into_2024(predictor, game)
+
+    assert read.ratings == plain.ratings
+    gap = read.matchup_adjustment(game("A", "B")) - plain.matchup_adjustment(
+        game("A", "B")
+    )
+    assert gap == pytest.approx(2.0 / read.points_per_rating)
+    assert read.matchup_adjustment(game("B", "A")) == pytest.approx(
+        plain.matchup_adjustment(game("B", "A")) - gap
+    )
+    assert (
+        read.predict_game(game("A", "B")).team1_win_prob
+        > plain.predict_game(game("A", "B")).team1_win_prob
+    )
+
+
+def test_an_unrated_side_prices_no_talent(game: GameFactory) -> None:
+    talent = TalentIndex({("A", 2024): 1.5})
+    plain = _predictor({"g": LOPSIDED}, talent_edge=1.0)
+    read = _predictor({"g": LOPSIDED}, talent_edge=1.0, talent=talent)
+    for predictor in (plain, read):
+        _into_2024(predictor, game)
+    assert read.predict_game(game("A", "C")) == plain.predict_game(game("A", "C"))

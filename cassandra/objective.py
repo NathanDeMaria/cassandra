@@ -16,15 +16,23 @@ Deliberately light on imports: `cassandra.predictor.config` validates an
 objective name against this registry, and `cassandra.predictor` is the half
 of the package a webapp installs without the `fit` group. So this reads
 `prob_to_margin` (numpy, and sklearn only inside a fit) and never
-`model_eval`, which would pull s3 in behind it.
+`model_eval`, which would pull s3 in behind it. call-it-what-you-want, which
+`brier_fbs` reads divisions from, is a serving dependency already and pure
+python.
 """
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from functools import partial
+from functools import cache, partial
 
 import numpy as np
 import pandas as pd
+from call_it_what_you_want import (
+    Classifications,
+    TeamNamer,
+    default_classifications,
+    registry_league,
+)
 
 from .brier import brier_score_df
 from .columns import GameDfColumns
@@ -93,8 +101,69 @@ _BRIER_READS = frozenset({GameDfColumns.TEAM1_WIN_PROB, GameDfColumns.TEAM1_WIN}
 _MARGIN_READS = frozenset({GameDfColumns.TEAM1_WIN_PROB, "home_score", "away_score"})
 
 
+#: What `_negative_fbs_brier` reads: brier's columns, and who played when.
+_FBS_BRIER_READS = _BRIER_READS | {"home_team", "away_team", "year"}
+
+#: The league and division `brier_fbs` scores.
+_FBS_LEAGUE = "ncaafb"
+_FBS = "FBS"
+
+
 def _negative_brier(df: pd.DataFrame) -> float:
     return -brier_score_df(df)
+
+
+@cache
+def _fbs_lookup() -> tuple[TeamNamer, Classifications, str | None]:
+    """The namer and classification table `_in_fbs` reads, built once."""
+    return (
+        TeamNamer.for_league(_FBS_LEAGUE),
+        default_classifications(),
+        registry_league(_FBS_LEAGUE),
+    )
+
+
+@cache
+def _in_fbs(team: str, year: int) -> bool:
+    """Whether call-it-what-you-want has `team` in FBS in `year`.
+
+    The lookup `cassandra.residuals.team_tiers` makes, minus its handling of
+    the lumped lower divisions, which can't make a team FBS. Names are
+    canonical already -- a replay renames before the predictor sees a game --
+    so the id is read straight off the name. Cached per team-season: a
+    search scores the same 150,000 sides every probe.
+    """
+    namer, classifications, registry = _fbs_lookup()
+    espn_id = namer.espn_id(team)
+    if espn_id is None or registry is None:
+        return False
+    found = classifications.classification_in(espn_id, year, registry)
+    return found is not None and found.division == _FBS
+
+
+def _negative_fbs_brier(df: pd.DataFrame) -> float:
+    """Minus the brier score of the games between two FBS teams.
+
+    Pooled brier is mostly games below FBS: ncaafb's replay is 75,882 games,
+    17,072 of them between two FBS teams. A knob that only touches FBS teams
+    -- roster talent is the first -- can move the pooled number by 0.00001
+    while moving these games by 0.000065, and a search on pooled brier can't
+    tell its settings apart.
+    """
+    if df.empty:
+        raise ValueError("No games to score")
+    years = df["year"].to_numpy()
+    fbs = np.fromiter(
+        (
+            _in_fbs(home, int(year)) and _in_fbs(away, int(year))
+            for home, away, year in zip(df["home_team"], df["away_team"], years)
+        ),
+        dtype=bool,
+        count=len(df),
+    )
+    if not fbs.any():
+        raise ValueError("No games between two FBS teams to score")
+    return -brier_score_df(df[fbs])
 
 
 def _negative_margin_mae(df: pd.DataFrame, fitter: BaseProbToMarginFitter) -> float:
@@ -139,6 +208,10 @@ _OBJECTIVES: Mapping[str, Objective] = {
         partial(_negative_margin_mae, fitter=IsotonicProbToMarginFitter()),
         _MARGIN_READS,
     ),
+    # Brier on the games between two FBS teams, for a college football knob
+    # the pooled number can't see. Only meaningful on ncaafb: any other
+    # league has no FBS games and raises.
+    "brier_fbs": Objective(_negative_fbs_brier, _FBS_BRIER_READS),
 }
 
 #: Every objective a config may name. `DEFAULT_OBJECTIVE` is what a config
