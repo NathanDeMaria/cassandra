@@ -16,7 +16,7 @@ from cassandra.predictor.base_predictor import load_anchors
 from cassandra.predictor.epa import load_epa
 from cassandra.predictor.game_control import load_game_control
 from cassandra.predictor.qb_out import load_qb_out
-from cassandra.talent import load_talent
+from cassandra.roster import TALENT, load_roster
 
 from . import artifacts
 
@@ -25,7 +25,7 @@ _LEAGUE = "nfl"
 #: Every cached reader of a file under `predictor/data`. A new loader goes
 #: here as well as in `download_predictor_data`, and the test below is what
 #: notices if it only made it into one of the two.
-_LOADERS = (load_anchors, load_game_control, load_epa, load_qb_out, load_talent)
+_LOADERS = (load_anchors, load_game_control, load_epa, load_qb_out, load_roster)
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +44,9 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 def test_the_download_drops_every_cached_read(monkeypatch: pytest.MonkeyPatch) -> None:
     for loader in _LOADERS:
-        loader(_LEAGUE)
+        # The roster files are read per measure; one is enough to fill it.
+        args = (_LEAGUE, TALENT) if loader is load_roster else (_LEAGUE,)
+        loader(*args)
     assert all(loader.cache_info().currsize == 1 for loader in _LOADERS)
 
     async def nothing_to_download(bucket: str, prefix: str = "models/") -> list[Path]:
