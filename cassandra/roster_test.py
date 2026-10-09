@@ -3,7 +3,15 @@ from pathlib import Path
 import pytest
 
 from . import roster
-from .roster import ACADEMIES, RETURNING, TALENT, RosterIndex, SeasonValue, standardized
+from .roster import (
+    ACADEMIES,
+    DEFENSE,
+    OFFENSE,
+    TALENT,
+    RosterIndex,
+    SeasonValue,
+    standardized,
+)
 
 
 def _row(season: int, espn_id: str, value: float) -> SeasonValue:
@@ -35,7 +43,7 @@ def test_the_academies_are_left_out() -> None:
     assert got == {("1", 2020): pytest.approx(1.0), ("2", 2020): pytest.approx(-1.0)}
     # Returning production reads them like anyone.
     assert (academy, 2020) in standardized(
-        rows, lambda espn_id, season: True, RETURNING.excluded
+        rows, lambda espn_id, season: True, OFFENSE.excluded
     )
 
 
@@ -87,22 +95,31 @@ def test_previous_is_the_latest_earlier_rated_season() -> None:
     assert index.previous("C", 2017) == 0.0
 
 
-def test_returning_production_reads_the_usage_column(
+def test_returning_offense_reads_the_usage_column(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    path = tmp_path / "ncaafb_returning.csv"
+    path = tmp_path / "ncaafb_returning_offense.csv"
     path.write_text(
-        "season,espn_id,team,percent_ppa,usage\n"
-        "2020,333,Alabama Crimson Tide,9.40,0.80\n"
-        "2020,2653,Troy Trojans,0.50,0.40\n"
-        "2020,2005,Air Force Falcons,0.60,0.60\n"
+        "season,espn_id,team,usage,usage_stayed\n"
+        "2020,333,Alabama Crimson Tide,0.80,0.10\n"
+        "2020,2653,Troy Trojans,0.40,0.20\n"
+        "2020,2005,Air Force Falcons,0.60,0.30\n"
     )
     monkeypatch.setattr(roster, "roster_path", lambda league, measure: path)
     roster.load_roster.cache_clear()
     try:
-        index = RosterIndex.for_league("ncaafb", RETURNING)
+        index = RosterIndex.for_league("ncaafb", OFFENSE)
     finally:
         roster.load_roster.cache_clear()
     sd = (((0.8 - 0.6) ** 2 + (0.4 - 0.6) ** 2 + 0) / 3) ** 0.5
     assert index.get("Alabama Crimson Tide", 2020) == pytest.approx(0.2 / sd)
     assert index.get("Air Force Falcons", 2020) == pytest.approx(0.0)
+
+
+def test_each_measure_has_its_own_file_and_column() -> None:
+    assert roster.roster_path("ncaafb", DEFENSE).name == "ncaafb_returning_defense.csv"
+    assert (TALENT.column, OFFENSE.column, DEFENSE.column) == (
+        "talent",
+        "usage",
+        "defense",
+    )

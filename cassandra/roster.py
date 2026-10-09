@@ -1,10 +1,10 @@
 """What a rating model knows about a roster before the season.
 
-Two measures, both filed by ESPN id and season by so-high-school -- a private
-repo, since the talent numbers are 247's -- and copied to
-`predictor/data/<league>_talent.csv` and `<league>_returning.csv`, which
-every Batch job downloads with the rest of that prefix. Nothing here imports
-it.
+Three measures, all filed by ESPN id and season by so-high-school -- a
+private repo, since the talent numbers are 247's -- and copied to
+`predictor/data/<league>_talent.csv`, `<league>_returning_offense.csv` and
+`<league>_returning_defense.csv`, which every Batch job downloads with the
+rest of that prefix. Nothing here imports it.
 
 **What a model reads** is each FBS team's value in standard deviations from
 that season's FBS mean. Only FBS teams: 247 rated about a hundred FCS teams
@@ -53,21 +53,23 @@ results -- so a later season's number is the results leaking back in.
 Returning production
 --------------------
 
-CFBD's share of last season's offensive plays made by players on this
-season's roster (`usage` in the file). It counts the roster rather than who
-played -- a starter hurt for the year is still returning -- so it is known
-before the season. Only players who stayed count: a transfer's production
-leaves with them and doesn't arrive with them, so a team rebuilt from the
-portal reads as new here and the talent number is the one that sees who
-arrived. The file's `percent_*` ratios are not read: a team whose
-production last season was near zero makes them meaningless, where usage
-stays a share. Offense only, from 2014; a team's first FBS season has none.
+How much of last season's production is on this season's roster, offense
+and defense, built by so-high-school from CFBD's preseason rosters and last
+season's player stats. Offense is the share of last season's plays (CFBD's
+usage); defense the mean share of tackles, tackles for loss and passes
+defended. Incoming transfers count at the new team on both sides of the
+share, Connelly's rule -- CFBD's own measure counts only players who
+stayed, which in 2026 leaves out over a quarter of what came back. The roster is
+the preseason one: a starter hurt for the year is on it, and so are players
+who left mid-season, so it is known before the season. Offense starts in
+2014 and defense in 2017; a team with nothing last season has neither.
 
-At the same predicted margin, the side with a standard deviation more of it
-beat `glicko_margin_units_offseason` by 1.0 point over FBS v FBS 2015-2025
-(t 7), 1.4 in a team's first four games and 0.9 after -- alongside talent,
-whose gap it is uncorrelated with (0.02). The academies are read like
-anyone: their production is measured the same way.
+At the same predicted margin, 2017-2025, the side with a standard deviation
+more of each beat `glicko_margin_units_offseason` by about a point -- 0.9
+for offense and 1.0 for defense with talent and each other in, more in a
+team's first four games. They are nearly independent of talent (gap
+correlations under 0.1) and of each other (0.17). The academies are read
+like anyone: their production is measured the same way.
 
 Keyed by the team name a `Matchup` carries, as `cassandra.offseason` is.
 """
@@ -100,7 +102,8 @@ class Measure(NamedTuple):
 
 
 TALENT = Measure("talent", "talent", ACADEMIES)
-RETURNING = Measure("returning", "usage")
+OFFENSE = Measure("returning_offense", "usage")
+DEFENSE = Measure("returning_defense", "defense")
 
 
 class SeasonValue(NamedTuple):

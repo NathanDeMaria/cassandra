@@ -131,18 +131,18 @@ offense's starting sd and offseason regression, the rest pinned.
 What the roster says
 --------------------
 
-Three knobs read `cassandra.roster`: each FBS team's 247 talent composite
-and its returning offensive production, both in standard deviations from
-that season's FBS mean. All three are 0 by default.
+Four knobs read `cassandra.roster`: each FBS team's 247 talent composite and
+its returning offensive and defensive production, all in standard
+deviations from that season's FBS mean. All four are 0 by default.
 
 - `talent_shift`, points per sd of talent at the rollover, applied the way
   the shifts above are -- but only the *change* since the team's last rated
   season, so the summers' shifts add up to `talent_shift` times this
   season's level and never more. The composite is out before the season.
-- `talent_edge`, points of margin per sd of talent gap, and
-  `returning_edge`, per sd of returning-production gap, each added to every
-  game between two teams with a value as a matchup term -- home field's kind
-  of number rather than a rating's. They are in the update as well as the
+- `talent_edge`, `offense_returning_edge` and `defense_returning_edge`,
+  points of margin per sd of the two teams' gap, each added to every game
+  between two teams with a value as a matchup term -- home field's kind of
+  number rather than a rating's. They are in the update as well as the
   prediction, so the ratings learn around them, and they never carry into
   the next season.
 
@@ -155,31 +155,34 @@ of it paid for the ones that wanted more. Talent is persistent enough
 where `talent_shift` puts it.
 
 Replayed on the fitted `glicko_margin_units_offseason`, brier change against
-neither, in units of 1e-4, on FBS v FBS games 2015-2025 (by a side's game of
-the season), FBS against lower tiers 2015-2025, and 2026's 265 FBS games:
+none of it, in units of 1e-4, on FBS v FBS games 2015-2025 (by a side's game
+of the season), FBS against lower tiers 2015-2025, and 2026's 265 FBS games.
+Defense starts in 2017, so its 2015-2016 seasons are the model without it:
 
     points per sd                      2015-25  games 1-4  games 5+  lower tier   2026
-    talent per game 1.0                  -0.88      -0.94     -0.85       -0.68  -5.19
     talent per game 2.0                  -1.16      -0.75     -1.34       -0.69  -9.59
     talent change-only shift 2.0         -0.86      -0.07     -1.20       +0.01  +1.50
     talent level shift 1.0, every summer -0.18      -0.40     -0.08       +1.77 -15.50
-    returning per game 1.0               -6.25      -9.62     -4.83       +2.83 -13.89
-    talent 2.0 + returning 1.0           -7.40     -10.40     -6.13       +2.16 -23.28
-    talent 2.0 + returning 1.5           -8.29     -10.90     -7.18       +3.76 -25.27
+    offense per game 1.5                 -7.77     -12.22     -5.88       +4.07 -25.24
+    defense per game 1.5                 -7.92      -7.65     -8.03       +1.11 -16.64
+    talent 2, offense 1.5               -8.92     -13.08     -7.16       +3.45 -33.26
+    talent 2, offense 1.5, defense 1.5  -15.43     -17.85    -14.40       +4.68 -39.46
+    talent 2, offense 1, defense 1.5    -14.73     -17.40    -13.59       +3.12 -38.16
 
-Returning production is the bigger of the two, five times talent's alone,
-and they add. The talent forms all gain in the same seasons and lose in the
-same four -- 2020, 2021, 2023 and 2025 -- so which seasons gain is how much
-talent mattered that year, not which form read it; the change-only shift
-gets most of its gain in 2015, the one season where the change is the whole
-level. Returning production gains in nine seasons of twelve.
+Returning production is the bigger part, offense and defense about equally,
+and the three add: the last two rows gain in eleven and twelve seasons of
+twelve. The talent forms all gain in the same seasons and lose in the same
+four -- 2020, 2021, 2023 and 2025 -- so which seasons gain is how much talent
+mattered that year, not which form read it; the change-only shift gets most
+of its gain in 2015, the one season where the change is the whole level.
 
 The edges cost FBS games against lower tiers, whose teams have no values: a
 team's rating learns around the edges in its FBS games and takes that into
-games the edges don't reach. Reading a missing side as the FBS average puts
-the edges into those games too and narrows the cost (+0.76 at talent 2 and
-returning 1), but gives back more on FBS v FBS (-6.54) than it saves, pooled
-brier included, so a missing side prices nothing.
+games the edges don't reach. Offense costs the most. Reading a missing side
+as the FBS average puts the edges into those games too and narrows the cost
+(+0.76 at talent 2 and CFBD's stayers-only offense 1), but gives back more
+on FBS v FBS (-6.54 against -7.40) than it saves, pooled brier included, so
+a missing side prices nothing.
 
 The roster is read here rather than as `MatchupAdjustments` terms because
 it is a fact about a season, and a `Matchup` doesn't carry one -- a January
@@ -232,7 +235,7 @@ from typing import Any, NamedTuple, Self
 from endgame.types import Game
 
 from ..offseason import OffseasonFacts
-from ..roster import RETURNING, TALENT, RosterIndex
+from ..roster import DEFENSE, OFFENSE, TALENT, RosterIndex
 from .adjustments import (
     DEFAULT_QB_OUT_PENALTY,
     DEFAULT_TRAVEL_ADVANTAGE,
@@ -371,7 +374,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         qb_quality_shift: float = 0.0,
         talent_shift: float = 0.0,
         talent_edge: float = 0.0,
-        returning_edge: float = 0.0,
+        offense_returning_edge: float = 0.0,
+        defense_returning_edge: float = 0.0,
         opponent_prior_manager: OpponentPriorManager | None = None,
         sources: MatchupSources | None = None,
         ratings: dict[str, _Rating] | None = None,
@@ -385,7 +389,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         game_epa: EpaIndex | None = None,
         offseason: OffseasonFacts | None = None,
         talent: RosterIndex | None = None,
-        returning: RosterIndex | None = None,
+        offense_returning: RosterIndex | None = None,
+        defense_returning: RosterIndex | None = None,
     ) -> None:
         super().__init__(
             league,
@@ -457,14 +462,24 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # being worse is not a hypothesis worth a search's time.
         self._talent_shift = _non_negative("talent_shift", talent_shift)
         self._talent_edge = _non_negative("talent_edge", talent_edge)
-        self._returning_edge = _non_negative("returning_edge", returning_edge)
+        self._offense_returning_edge = _non_negative(
+            "offense_returning_edge", offense_returning_edge
+        )
+        self._defense_returning_edge = _non_negative(
+            "defense_returning_edge", defense_returning_edge
+        )
         self._talent = (
             talent if talent is not None else RosterIndex.for_league(league, TALENT)
         )
-        self._returning = (
-            returning
-            if returning is not None
-            else RosterIndex.for_league(league, RETURNING)
+        self._offense_returning = (
+            offense_returning
+            if offense_returning is not None
+            else RosterIndex.for_league(league, OFFENSE)
+        )
+        self._defense_returning = (
+            defense_returning
+            if defense_returning is not None
+            else RosterIndex.for_league(league, DEFENSE)
         )
         # Teams whose quarterback shift waits on their first game this
         # season. In-season state, like the smoother's ledger.
@@ -562,12 +577,13 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
 
         In rating points, like the rest of the edge. A gap is nothing when
         either side has no value -- below FBS, a season the measure doesn't
-        reach, an academy's talent, a team's first FBS season returning.
+        reach, an academy's talent, a team with no production last season.
         """
         points = super().matchup_adjustment(matchup)
         for weight, index in (
             (self._talent_edge, self._talent),
-            (self._returning_edge, self._returning),
+            (self._offense_returning_edge, self._offense_returning),
+            (self._defense_returning_edge, self._defense_returning),
         ):
             if not weight:
                 continue
@@ -833,7 +849,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "qb_quality_shift": self._qb_quality_shift,
             "talent_shift": self._talent_shift,
             "talent_edge": self._talent_edge,
-            "returning_edge": self._returning_edge,
+            "offense_returning_edge": self._offense_returning_edge,
+            "defense_returning_edge": self._defense_returning_edge,
             "epa_center_state": [
                 self._center_previous,
                 self._center_sum,
