@@ -308,8 +308,8 @@ def test_an_unseen_team_sits_at_its_anchor_by_its_units(game: GameFactory) -> No
         {"defense_season_regression": 1.5},
         {"talent_shift": -0.5},
         {"talent_edge": -0.5},
-        {"offense_returning_edge": -0.5},
-        {"defense_returning_edge": -0.5},
+        {"offense_returning_shift": -0.5},
+        {"defense_returning_shift": -0.5},
     ],
 )
 def test_nonsense_unit_settings_are_refused(param: dict[str, Any]) -> None:
@@ -402,8 +402,8 @@ def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
         qb_quality_shift=1.7,
         talent_shift=0.8,
         talent_edge=1.2,
-        offense_returning_edge=0.9,
-        defense_returning_edge=0.7,
+        offense_returning_shift=0.9,
+        defense_returning_shift=0.7,
     )
     state = json.loads(json.dumps(predictor.state_dict()))
     loaded = UnitMarginGlickoPredictor.from_state_dict(
@@ -507,30 +507,40 @@ def test_an_unrated_side_prices_no_talent(game: GameFactory) -> None:
     assert read.predict_game(game("A", "C")) == plain.predict_game(game("A", "C"))
 
 
-def test_the_returning_gaps_are_matchup_terms_beside_talents(
-    game: GameFactory,
+@pytest.mark.parametrize("side", ["offense", "defense"])
+def test_returning_production_shifts_the_rating_every_summer(
+    game: GameFactory, side: str
 ) -> None:
-    # Talent 2 sd apart at 1 point per sd, offense 1 sd apart at 0.5, defense
-    # 2 sd apart at 0.25: 3 points to A.
-    talent = RosterIndex({("A", 2024): 1.5, ("B", 2024): -0.5})
-    offense = RosterIndex({("A", 2024): 0.5, ("B", 2024): -0.5})
-    defense = RosterIndex({("A", 2024): 1.0, ("B", 2024): -1.0})
-    knobs: dict[str, Any] = {
-        "talent_edge": 1.0,
-        "offense_returning_edge": 0.5,
-        "defense_returning_edge": 0.25,
-    }
-    plain = _predictor({"g": LOPSIDED}, **knobs)
+    # A returns 1.5 sd above the FBS mean in 2024 and 0.5 in 2025: each
+    # summer shifts by that summer's level, which the games in between price.
+    returning = RosterIndex({("A", 2024): 1.5, ("A", 2025): 0.5})
+    knob: dict[str, Any] = {f"{side}_returning_shift": 0.8}
+    index: dict[str, Any] = {f"{side}_returning": returning}
+    plain = _predictor({"g": LOPSIDED}, **knob)
+    read = _predictor({"g": LOPSIDED}, **knob, **index)
+    for predictor in (plain, read):
+        _into_2024(predictor, game)
+
+    moved = read.get_rating("A").rating - plain.get_rating("A").rating
+    assert moved == pytest.approx(0.8 * 1.5 / read.points_per_rating)
+    # The units are learned from plays and don't hear about the roster.
+    assert read.get_sides("A") == plain.get_sides("A")
+    assert read.get_rating("B") == plain.get_rating("B")
+
+    for predictor in (plain, read):
+        predictor.pass_season(2025)
+    moved = read.get_rating("A").rating - plain.get_rating("A").rating
+    assert moved == pytest.approx(0.8 * (1.5 + 0.5) / read.points_per_rating)
+
+
+def test_returning_production_is_not_a_matchup_term(game: GameFactory) -> None:
+    returning = RosterIndex({("A", 2024): 1.0, ("B", 2024): -1.0})
+    plain = _predictor({"g": LOPSIDED})
     read = _predictor(
-        {"g": LOPSIDED},
-        talent=talent,
-        offense_returning=offense,
-        defense_returning=defense,
-        **knobs,
+        {"g": LOPSIDED}, offense_returning=returning, defense_returning=returning
     )
     for predictor in (plain, read):
         _into_2024(predictor, game)
-    gap = read.matchup_adjustment(game("A", "B")) - plain.matchup_adjustment(
+    assert read.matchup_adjustment(game("A", "B")) == plain.matchup_adjustment(
         game("A", "B")
     )
-    assert gap == pytest.approx(3.0 / read.points_per_rating)

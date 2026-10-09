@@ -10,13 +10,13 @@
             0,
             3
         ],
-        "offense_returning_edge": [
+        "offense_returning_shift": [
             0,
-            4
+            5
         ],
-        "defense_returning_edge": [
+        "defense_returning_shift": [
             0,
-            4
+            5
         ]
     },
     "fixed": {
@@ -53,20 +53,20 @@
         {
             "talent_edge": 2.0,
             "talent_shift": 0.0,
-            "offense_returning_edge": 1.5,
-            "defense_returning_edge": 1.5
+            "offense_returning_shift": 2.5,
+            "defense_returning_shift": 2.5
         },
         {
             "talent_edge": 2.0,
             "talent_shift": 0.0,
-            "offense_returning_edge": 0.0,
-            "defense_returning_edge": 0.0
+            "offense_returning_shift": 0.0,
+            "defense_returning_shift": 0.0
         },
         {
             "talent_edge": 0.0,
             "talent_shift": 0.0,
-            "offense_returning_edge": 0.0,
-            "defense_returning_edge": 0.0
+            "offense_returning_shift": 0.0,
+            "defense_returning_shift": 0.0
         }
     ],
     "objective": "brier_fbs"
