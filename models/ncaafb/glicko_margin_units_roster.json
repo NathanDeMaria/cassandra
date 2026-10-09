@@ -10,7 +10,11 @@
             0,
             3
         ],
-        "returning_edge": [
+        "offense_returning_edge": [
+            0,
+            4
+        ],
+        "defense_returning_edge": [
             0,
             4
         ]
@@ -44,22 +48,25 @@
         "offense_season_regression": 0.7852579223994766
     },
     "fixed_from": "glicko_margin_units_offseason",
-    "n_iter": 80,
+    "n_iter": 100,
     "seeds": [
         {
             "talent_edge": 2.0,
             "talent_shift": 0.0,
-            "returning_edge": 1.5
+            "offense_returning_edge": 1.5,
+            "defense_returning_edge": 1.5
         },
         {
             "talent_edge": 2.0,
             "talent_shift": 0.0,
-            "returning_edge": 0.0
+            "offense_returning_edge": 0.0,
+            "defense_returning_edge": 0.0
         },
         {
             "talent_edge": 0.0,
             "talent_shift": 0.0,
-            "returning_edge": 0.0
+            "offense_returning_edge": 0.0,
+            "defense_returning_edge": 0.0
         }
     ],
     "objective": "brier_fbs"

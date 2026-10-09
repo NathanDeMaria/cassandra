@@ -308,7 +308,8 @@ def test_an_unseen_team_sits_at_its_anchor_by_its_units(game: GameFactory) -> No
         {"defense_season_regression": 1.5},
         {"talent_shift": -0.5},
         {"talent_edge": -0.5},
-        {"returning_edge": -0.5},
+        {"offense_returning_edge": -0.5},
+        {"defense_returning_edge": -0.5},
     ],
 )
 def test_nonsense_unit_settings_are_refused(param: dict[str, Any]) -> None:
@@ -401,7 +402,8 @@ def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
         qb_quality_shift=1.7,
         talent_shift=0.8,
         talent_edge=1.2,
-        returning_edge=0.9,
+        offense_returning_edge=0.9,
+        defense_returning_edge=0.7,
     )
     state = json.loads(json.dumps(predictor.state_dict()))
     loaded = UnitMarginGlickoPredictor.from_state_dict(
@@ -410,7 +412,8 @@ def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
             "game_epa": EpaIndex(),
             "offseason": OffseasonFacts(),
             "talent": RosterIndex(),
-            "returning": RosterIndex(),
+            "offense_returning": RosterIndex(),
+            "defense_returning": RosterIndex(),
         }
     )
     assert loaded.state_dict() == predictor.state_dict()
@@ -504,19 +507,30 @@ def test_an_unrated_side_prices_no_talent(game: GameFactory) -> None:
     assert read.predict_game(game("A", "C")) == plain.predict_game(game("A", "C"))
 
 
-def test_the_returning_gap_is_a_matchup_term_beside_talents(
+def test_the_returning_gaps_are_matchup_terms_beside_talents(
     game: GameFactory,
 ) -> None:
-    # Talent 2 sd apart at 1 point per sd, returning 1 sd apart at 0.5:
-    # 2.5 points to A.
+    # Talent 2 sd apart at 1 point per sd, offense 1 sd apart at 0.5, defense
+    # 2 sd apart at 0.25: 3 points to A.
     talent = RosterIndex({("A", 2024): 1.5, ("B", 2024): -0.5})
-    returning = RosterIndex({("A", 2024): 0.5, ("B", 2024): -0.5})
-    knobs: dict[str, Any] = {"talent_edge": 1.0, "returning_edge": 0.5}
+    offense = RosterIndex({("A", 2024): 0.5, ("B", 2024): -0.5})
+    defense = RosterIndex({("A", 2024): 1.0, ("B", 2024): -1.0})
+    knobs: dict[str, Any] = {
+        "talent_edge": 1.0,
+        "offense_returning_edge": 0.5,
+        "defense_returning_edge": 0.25,
+    }
     plain = _predictor({"g": LOPSIDED}, **knobs)
-    read = _predictor({"g": LOPSIDED}, talent=talent, returning=returning, **knobs)
+    read = _predictor(
+        {"g": LOPSIDED},
+        talent=talent,
+        offense_returning=offense,
+        defense_returning=defense,
+        **knobs,
+    )
     for predictor in (plain, read):
         _into_2024(predictor, game)
     gap = read.matchup_adjustment(game("A", "B")) - plain.matchup_adjustment(
         game("A", "B")
     )
-    assert gap == pytest.approx(2.5 / read.points_per_rating)
+    assert gap == pytest.approx(3.0 / read.points_per_rating)
