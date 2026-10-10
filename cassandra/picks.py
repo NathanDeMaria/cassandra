@@ -290,6 +290,41 @@ def contracts_for(stake: float, price: float) -> int:
     return count
 
 
+def kelly(probability: float, cost: float) -> float:
+    """The Kelly fraction for a contract paying 1 that costs `cost`, fee in."""
+    return max(probability - cost, 0.0) / (1 - cost)
+
+
+def allocate(
+    budget: float, prices: Sequence[float], weights: Sequence[float]
+) -> list[int]:
+    """Contracts for each pick when `budget` dollars are split by `weights`.
+
+    A split of a small budget can leave a pick less than one contract's
+    price. That pick is dropped, the smallest weight first, and the budget
+    re-split among the rest, so the money goes to bets that can be placed
+    rather than being left unspent.
+
+    Split by Kelly weight, $20 a week on the top 10 picks by edge made
+    +29% on the 2025-26 Kalshi entries, against +23% for the same $20 split
+    evenly over every pick -- which left 40% of picks below one contract.
+    Ranking by expected return instead made +32%, but it buys longshots
+    (56% underdogs against 35%), and 23 weeks can't tell any of the three
+    apart.
+    """
+    active = [i for i, weight in enumerate(weights) if weight > 0]
+    while active:
+        total = sum(weights[i] for i in active)
+        counts = {
+            i: contracts_for(budget * weights[i] / total, prices[i]) for i in active
+        }
+        unplaced = [i for i in active if counts[i] == 0]
+        if not unplaced:
+            return [counts.get(i, 0) for i in range(len(prices))]
+        active.remove(min(unplaced, key=lambda i: weights[i]))
+    return [0] * len(prices)
+
+
 def fillable(orderbook: Mapping, action: str, limit: float) -> float:
     """Contracts on offer at or below `limit` for buying `action` in one market.
 

@@ -10,12 +10,14 @@ from .picks import (
     KalshiGame,
     Matched,
     PreviousGame,
+    allocate,
     book,
     contracts_for,
     entry,
     event_day,
     fillable,
     kalshi_games,
+    kelly,
     match,
     no_vig_home,
     order_fee,
@@ -165,6 +167,26 @@ def test_a_stake_buys_what_it_can_with_the_fee_in() -> None:
     count = contracts_for(20, 0.4)
     assert count * 0.4 + order_fee(0.4, count) <= 20
     assert (count + 1) * 0.4 + order_fee(0.4, count + 1) > 20
+
+
+def test_kelly_backs_only_a_positive_expected_return() -> None:
+    assert kelly(0.6, 0.5) == pytest.approx(0.2)
+    assert kelly(0.5, 0.52) == 0.0
+
+
+def test_a_budget_is_split_by_weight_and_spent_within_itself() -> None:
+    prices, weights = [0.40, 0.20], [0.3, 0.1]
+    counts = allocate(20, prices, weights)
+    assert counts == [contracts_for(15, 0.40), contracts_for(5, 0.20)]
+    spent = sum(n * p + order_fee(p, n) for n, p in zip(counts, prices))
+    assert spent <= 20
+
+
+def test_a_share_too_small_for_a_contract_goes_to_the_rest() -> None:
+    # $1 at a 0.9 weight to 0.1: the favorite's 10 cents can't buy a contract
+    # at 0.85, so the whole dollar goes to the other pick.
+    assert allocate(1, [0.30, 0.85], [0.9, 0.1]) == [contracts_for(1, 0.30), 0]
+    assert allocate(1, [0.30, 0.85], [0.0, 0.0]) == [0, 0]
 
 
 def test_buying_yes_fills_against_no_bids() -> None:

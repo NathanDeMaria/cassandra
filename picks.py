@@ -2,7 +2,7 @@
 
     python picks.py                    # refresh from s3, tonight's scores from ESPN
     python picks.py --offline          # no s3: the copies the last run saved
-    python picks.py --stake 25 --days 8
+    python picks.py --budget 25 --top 8
 
 Run it once the last of the night's games is final. That's when the
 backtest bought, and the edge it measured was gone within a day (see
@@ -26,9 +26,10 @@ backtest bought, and the edge it measured was gone within a day (see
 4. **Price.** It computes the backtest's edge, the cheapest way to take
    it, and Kalshi's fee. `cassandra.picks.skip_reason` says which games
    aren't picks.
-5. **Size.** For each pick it reads the order book: how many contracts are
-   offered within `--slippage` of the best price, and what `--stake`
-   dollars buys.
+5. **Size.** The `--top` picks by edge split `--budget`
+   dollars by Kelly weight (`cassandra.picks.allocate`), and for each it
+   reads the order book: how many contracts are offered within
+   `--slippage` of the best price.
 
 Every matched game, pick or not, goes to
 `~/.cassandra/betting/picks/<league>_<model>_<when>.csv`, so a week's bets
@@ -68,11 +69,12 @@ from cassandra.picks import (
     NOT_HAPPENING,
     Book,
     Fixture,
-    contracts_for,
+    allocate,
     entry,
     event_day,
     fillable,
     kalshi_games,
+    kelly,
     match,
     order_fee,
     previous_games,
@@ -211,7 +213,16 @@ def main() -> None:
         "--min-edge", type=float, default=MIN_EDGE, help="edge over the no-vig price"
     )
     parser.add_argument(
-        "--stake", type=float, default=20.0, help="dollars per pick, fee included"
+        "--budget",
+        type=float,
+        default=20.0,
+        help="dollars across every pick, fees included",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="bet only this many picks, the biggest edges",
     )
     parser.add_argument(
         "--slippage",
@@ -409,9 +420,18 @@ def run(args: argparse.Namespace) -> None:
         print("\nno priced games")
         return
 
-    # 5. Size the picks.
+    # 5. Size the picks: the top `--top` by edge share `--budget`
+    # by Kelly weight (see `allocate`).
+    ranked = frame[frame["skip"].isna()].sort_values("edge", ascending=False)
+    frame.loc[ranked.index[args.top :], "skip"] = f"outside the top {args.top} by edge"
+    picks = frame[frame["skip"].isna()]
+    weights = [kelly(m, c) for m, c in zip(picks["model"], picks["cost"])]
+    counts = allocate(args.budget, list(picks["price"]), weights)
+    unplaced = [i for i, n in zip(picks.index, counts) if n == 0]
+    frame.loc[unplaced, "skip"] = "less than a contract's share of the budget"
     picks = frame[frame["skip"].isna()].copy()
-    contracts, fills = [], []
+    contracts = [n for n in counts if n > 0]
+    fills = []
     for _, row in picks.iterrows():
         found = matched[row["game_id"]]
         side, other = (
@@ -425,7 +445,6 @@ def run(args: argparse.Namespace) -> None:
             book = _kalshi_get(f"/markets/{route.ticker}/orderbook")
             on_offer += fillable(book, route.action, limit)
         fills.append(on_offer)
-        contracts.append(contracts_for(args.stake, row["price"]))
     picks["contracts"] = contracts
     picks["fee"] = [order_fee(p, c) for p, c in zip(picks["price"], contracts)]
     picks["outlay"] = picks["contracts"] * picks["price"] + picks["fee"]
@@ -487,7 +506,7 @@ def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -
     )
     print(
         f"\n=== {len(picks)} picks (edge ≥ {args.min_edge:.0%} over Kalshi's no-vig "
-        f"price), ${args.stake:g} each"
+        f"price), ${args.budget:g} split by Kelly weight over the top {args.top}"
     )
     if not table.empty:
         with pd.option_context("display.width", 250, "display.max_colwidth", 60):
@@ -504,7 +523,7 @@ def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -
         if not short.empty:
             print(
                 f"{len(short)} won't fill at the price (fewer contracts within "
-                f"{round(args.slippage * 100)}c than ${args.stake:g} buys): "
+                f"{round(args.slippage * 100)}c than the order): "
                 + ", ".join(
                     f"{bet} {on_offer:.0f}/{wanted:.0f}"
                     for bet, on_offer, wanted in zip(
