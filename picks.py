@@ -311,13 +311,27 @@ def run(args: argparse.Namespace) -> None:
             else ""
         )
     )
-    if unfinished:
+    # Only the unfinished games a Kalshi game is waiting on are worth a line;
+    # on a Saturday most of the rest are D-III games nobody lists.
+    on_kalshi = {
+        team
+        for f in fixtures
+        if f.game.game_id in priced_ids & matched.keys()
+        for team in (f.game.home, f.game.away)
+    }
+    holding = [g for g in unfinished if {g.home, g.away} & on_kalshi]
+    if holding:
         print(
-            f"\n!! {len(unfinished)} games have kicked off and aren't final "
-            "-- their teams' next games are held back:"
+            f"\n!! {len(holding)} games have kicked off and aren't final "
+            "-- their teams' Kalshi games are held back:"
         )
-        for g in unfinished:
+        for g in holding:
             print(f"   {g.away} @ {g.home}  ({g.status or 'no status'})")
+    if len(unfinished) > len(holding):
+        print(
+            f"   {len(unfinished) - len(holding)} other games aren't final, "
+            "with no Kalshi game waiting on them"
+        )
 
     # 4. Price.
     tier = team_tiers(df, league)
@@ -475,8 +489,9 @@ def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -
         f"\n=== {len(picks)} picks (edge ≥ {args.min_edge:.0%} over Kalshi's no-vig "
         f"price), ${args.stake:g} each"
     )
-    with pd.option_context("display.width", 250, "display.max_colwidth", 60):
-        print(table.to_string(index=False))
+    if not table.empty:
+        with pd.option_context("display.width", 250, "display.max_colwidth", 60):
+            print(table.to_string(index=False))
     if not picks.empty:
         print(
             f"\ntotal outlay ${picks['outlay'].sum():,.2f} on {len(picks)} picks; "
