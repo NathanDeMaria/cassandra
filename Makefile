@@ -59,6 +59,14 @@ betting:
 	poetry run python betting.py $(ARGS)
 
 
+# What to bet on Kalshi this week: the model against the live order books.
+# Run it once the night's last game is final -- the edge `betting` found is
+# at that first price and fades within a day. `--offline` when the AWS login
+# has lapsed, e.g. `make picks ARGS="--offline --stake 25"`.
+picks:
+	poetry run python picks.py $(ARGS)
+
+
 # Build a release for every model in every league, locally. Reads the seasons
 # and odds once for the whole run, so it's minutes rather than the half hour a
 # process per model would spend re-reading s3.
@@ -165,4 +173,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose team-seasons evidence betting publish build push manifest _ecr_login submit
+.PHONY: lint check test report diagnose team-seasons evidence betting picks publish build push manifest _ecr_login submit
