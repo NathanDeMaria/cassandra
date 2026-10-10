@@ -500,7 +500,23 @@ def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -
         )
         dogs = (picks["price"] < 0.5).sum()
         print(f"{dogs} underdogs, {len(picks) - dogs} favorites")
-    skipped = frame["skip"].dropna().str.replace(r":.*", "", regex=True).value_counts()
+        short = picks[picks[offered] < picks["contracts"]]
+        if not short.empty:
+            print(
+                f"{len(short)} won't fill at the price (fewer contracts within "
+                f"{round(args.slippage * 100)}c than ${args.stake:g} buys): "
+                + ", ".join(
+                    f"{bet} {on_offer:.0f}/{wanted:.0f}"
+                    for bet, on_offer, wanted in zip(
+                        short["bet"], short[offered], short["contracts"]
+                    )
+                )
+            )
+    # The reason without its detail (who it's waiting on, how wide the book
+    # is), so each reason is counted once.
+    skipped = (
+        frame["skip"].dropna().str.replace(r"\s*[:(].*", "", regex=True).value_counts()
+    )
     if not skipped.empty:
         print("\nnot picks: " + ", ".join(f"{n} {why}" for why, n in skipped.items()))
 
