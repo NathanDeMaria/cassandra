@@ -17,6 +17,14 @@
         "defense_returning_shift": [
             0,
             5
+        ],
+        "qb_quality_shift": [
+            0,
+            5
+        ],
+        "coach_left_shift": [
+            -6,
+            1
         ]
     },
     "fixed": {
@@ -41,32 +49,28 @@
         "offense_season_sd_increase": 0.3,
         "defense_season_sd_increase": 0.0,
         "defense_season_regression": 0.05553005820011083,
-        "coach_left_shift": -4.699320570170061,
         "new_qb_shift": 0.691496021982303,
-        "qb_quality_shift": 3.897823428003972,
         "offense_initial_sd": 0.19025497629112526,
         "offense_season_regression": 0.7852579223994766
     },
     "fixed_from": "glicko_margin_units_offseason",
-    "n_iter": 100,
+    "n_iter": 120,
     "seeds": [
         {
-            "talent_edge": 2.0,
-            "talent_shift": 0.0,
-            "offense_returning_shift": 2.5,
-            "defense_returning_shift": 2.5
+            "talent_edge": 1.65,
+            "talent_shift": 0.59,
+            "offense_returning_shift": 2.49,
+            "defense_returning_shift": 2.77,
+            "qb_quality_shift": 2.0,
+            "coach_left_shift": -2.35
         },
         {
-            "talent_edge": 2.0,
-            "talent_shift": 0.0,
-            "offense_returning_shift": 0.0,
-            "defense_returning_shift": 0.0
-        },
-        {
-            "talent_edge": 0.0,
-            "talent_shift": 0.0,
-            "offense_returning_shift": 0.0,
-            "defense_returning_shift": 0.0
+            "talent_edge": 1.65,
+            "talent_shift": 0.59,
+            "offense_returning_shift": 2.49,
+            "defense_returning_shift": 2.77,
+            "qb_quality_shift": 2.0,
+            "coach_left_shift": -4.7
         }
     ],
     "objective": "brier_fbs"
