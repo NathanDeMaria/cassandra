@@ -76,6 +76,7 @@ from cassandra.picks import (
     kalshi_games,
     kelly,
     match,
+    max_price,
     order_fee,
     previous_games,
     price,
@@ -397,6 +398,7 @@ def run(args: argparse.Namespace) -> None:
                 if route is None
                 else f"{route.action.upper()} {route.ticker}",
                 "price": None if route is None else route.price,
+                "max_price": max_price(model_side, priced, book, args.min_edge),
                 "cost": priced.cost,
                 "ev": priced.expected_return,
                 "size_at_price": None if route is None else route.size,
@@ -486,6 +488,7 @@ def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -
         "edge": lambda s: s.map("{:+.3f}".format),
         "buy": None,
         "price": lambda s: s.map("{:.2f}".format),
+        "max_price": lambda s: s.map(lambda v: "" if pd.isna(v) else f"{v:.2f}"),
         "ev": lambda s: s.map("{:+.1%}".format),
         "contracts": lambda s: s.map(lambda v: "" if pd.isna(v) else f"{v:.0f}"),
         "outlay": lambda s: s.map(lambda v: "" if pd.isna(v) else f"${v:.2f}"),

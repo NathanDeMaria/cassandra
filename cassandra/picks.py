@@ -420,6 +420,26 @@ def price(model_home: float, matched: Matched) -> Priced | None:
     )
 
 
+def max_price(
+    model: float, priced: Priced, side: Book, min_edge: float = MIN_EDGE
+) -> float | None:
+    """The most the pick's route can cost, to the cent, and still clear `min_edge`.
+
+    The edge is the model against the side's share of the two asks, so a
+    rising price eats it about a point a cent. This holds the overround
+    where it was read -- one side going up as the other comes down -- and
+    lets the route move as far as the side's YES ask can.
+    """
+    if priced.route is None or side.ask is None:
+        return None
+    ceiling = (model - min_edge) * priced.overround
+    cents = [c for c in range(1, 100) if c / 100 + kalshi_fee(c / 100) <= ceiling]
+    if not cents:
+        return None
+    highest = priced.route.price + cents[-1] / 100 - side.ask
+    return min(math.floor(round(highest * 100, 6)) / 100, 0.99)
+
+
 def skip_reason(
     priced: Priced,
     side_division: str | None,
