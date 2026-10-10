@@ -19,6 +19,7 @@ from .picks import (
     kalshi_games,
     kelly,
     match,
+    max_price,
     no_vig_home,
     order_fee,
     previous_games,
@@ -248,6 +249,28 @@ def test_the_model_takes_the_side_it_likes_more_than_the_market() -> None:
     cost = priced.route.price + kalshi_fee(priced.route.price)
     assert priced.cost == pytest.approx(cost)
     assert priced.expected_return == pytest.approx(0.55 / cost - 1)
+
+
+def test_the_max_price_is_the_last_cent_that_clears_the_edge() -> None:
+    matched = _matched(0.60, 0.42)
+    priced = price(0.80, matched)
+    assert priced is not None and priced.route is not None
+    highest = max_price(0.80, priced, matched.home)
+    assert highest is not None and highest > priced.route.price
+
+    def edge_at(ask: float) -> float:
+        return 0.80 - (ask + kalshi_fee(ask)) / priced.overround
+
+    assert edge_at(highest) >= 0.05 > edge_at(highest + 0.01)
+    # NO on the opponent moves with the side's YES ask.
+    cheaper = _matched(0.60, 0.42)._replace(away=_book("A", 0.42, 0.44))
+    via_no = price(0.80, cheaper)
+    assert via_no is not None and via_no.route is not None
+    assert via_no.route.action == "no"
+    found = max_price(0.80, via_no, cheaper.home)
+    moved = max_price(0.80, via_no, cheaper.home._replace(ask=via_no.route.price))
+    assert found is not None and moved is not None
+    assert found == pytest.approx(moved - (0.60 - via_no.route.price))
 
 
 def test_what_isnt_a_pick() -> None:
