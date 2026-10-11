@@ -36,7 +36,8 @@ Every matched game, pick or not, goes to
 can be graded against the close later.
 
 The model assumes both starting quarterbacks play. Check injury news on
-any pick you're about to make.
+any pick you're about to make, and rerun with `--exclude TEAM` to drop a
+game and re-split the budget over the rest.
 """
 
 import argparse
@@ -232,6 +233,13 @@ def main() -> None:
         help="how far past the best price to count contracts on offer",
     )
     parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="TEAM",
+        help="drop games naming this team, e.g. on injury news (repeatable)",
+    )
+    parser.add_argument(
         "--offline", action="store_true", help="skip s3; read the last run's copies"
     )
     parser.add_argument(
@@ -424,6 +432,9 @@ def run(args: argparse.Namespace) -> None:
 
     # 5. Size the picks: the top `--top` by edge share `--budget`
     # by Kelly weight (see `allocate`).
+    for team in args.exclude:
+        named = frame["game"].str.contains(team, case=False, regex=False)
+        frame.loc[named & frame["skip"].isna(), "skip"] = "excluded by hand"
     ranked = frame[frame["skip"].isna()].sort_values("edge", ascending=False)
     frame.loc[ranked.index[args.top :], "skip"] = f"outside the top {args.top} by edge"
     picks = frame[frame["skip"].isna()]
