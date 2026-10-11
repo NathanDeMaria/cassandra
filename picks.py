@@ -14,10 +14,12 @@ backtest bought, and the edge it measured was gone within a day (see
    instead, for when the AWS login has lapsed. The 2026 season is then
    topped up from ESPN directly (`--no-espn` to skip), since tonight's
    scores won't reach s3 until endgame's 08:00 pull. Tonight's games have
-   no play-by-play until then either, so the model rates them on the
-   score alone. Replayed on four 2026 weeks, that kept 101 of 116 picks
-   and the same ROI (+19% vs +20%). The `no plays` column says which teams
-   it applies to.
+   no EPA until then either, so the model rates them on the score alone.
+   Replayed on four 2026 weeks, that kept 101 of 116 picks and the same
+   ROI (+19% vs +20%). The `no plays` column says which teams it applies
+   to. Who played quarterback tonight is read straight off ESPN's plays,
+   by the rule the sweep uses (`cassandra.qb_out_build`); on the games the
+   stored index already had, that agreed on 42 of its 43 flags.
 2. **Replay.** The model is replayed through every result, warmed on its
    search's own priors as `betting.py`'s replay is. The predictor is left
    where the season is now, and predicts the fixtures.
@@ -35,14 +37,18 @@ Every matched game, pick or not, goes to
 `~/.cassandra/betting/picks/<league>_<model>_<when>.csv`, so a week's bets
 can be graded against the close later.
 
-The model assumes both starting quarterbacks play. Check injury news on
-any pick you're about to make, and rerun with `--exclude TEAM` to drop a
-game and re-split the budget over the rest.
+A fixture assumes both starting quarterbacks play unless told otherwise:
+`--qb-out TEAM` says a team's starter misses its next game, and the fit's
+quarterback penalty (about 2 points in college) applies. That is the only
+injury the model reads, so check the news on any pick you're about to
+make; `--exclude TEAM` drops a game and re-splits the budget over the rest.
 """
 
 import argparse
 import asyncio
+import gzip
 import json
+import logging
 import pickle
 import time
 import urllib.parse
@@ -53,10 +59,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pyarrow as pa
 from call_it_what_you_want import ESPN, KALSHI, NCAA, NCAAFB, TeamNamer, default_teams
+from endgame.async_tools import apply_in_parallel
+from endgame.football_plays import FootballLeague, get_game_plays
 from endgame.ncaafb import get_season
 from endgame.types import Game, Season, merge_weekly_seasons
 from endgame_aws import Config
+from endgame_aws.pbp_transform import transform_game_to_table
 
 from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
@@ -86,9 +96,12 @@ from cassandra.picks import (
 )
 from cassandra.predictor import OptimizationConfig, Predictor, load_predictor
 from cassandra.predictor import frame as frames
+from cassandra.predictor.adjustments import MatchupSources
 from cassandra.predictor.config import load_predictor_class
 from cassandra.predictor.epa import EpaIndex
 from cassandra.predictor.opponent_prior import OpponentPriorManager
+from cassandra.predictor.qb_out import QbOutIndex, load_qb_out
+from cassandra.qb_out_build import build as build_qb_out
 from cassandra.replay_cache import AUTHORED_DIR, GENERATED_DIR
 from cassandra.residuals import team_tiers
 from cassandra.save_predictions import join_with_odds, read_all_seasons
@@ -101,6 +114,7 @@ KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2"
 _KALSHI_PACE = 1 / 8
 CENTRAL = ZoneInfo("America/Chicago")
 PICKS_DIR = CASSANDRA_HOME / "picks"
+PLAYS_DIR = PICKS_DIR / "plays"
 OUT_DIR = CASSANDRA_HOME / "betting" / "picks"
 
 
@@ -127,6 +141,91 @@ def _from_cache(league: str) -> list[Season]:
     return pickle.loads(path.read_bytes())
 
 
+class _OneWeek:
+    """`qb_out_build.PlayWeeks` over plays fetched here, all filed as week 1.
+
+    The build keys what it reads by game id, so one week holding every game
+    reads the same as the store's real weeks would.
+    """
+
+    def __init__(self, table: pa.Table) -> None:
+        self._table = table
+
+    async def load_week(self, league: str, season: int, week: int) -> pa.Table | None:
+        return self._table if week == 1 else None
+
+
+async def _game_plays(game_id: str) -> list[dict]:
+    """A finished game's drives from ESPN, kept: they don't change after."""
+    path = PLAYS_DIR / f"{game_id}.json.gz"
+    if path.exists():
+        return json.loads(gzip.decompress(path.read_bytes()))
+    drives = await get_game_plays(game_id, FootballLeague.ncaafb)
+    if drives:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(gzip.compress(json.dumps(drives).encode()))
+    return drives
+
+
+async def _qb_out_tonight(
+    league: str, season: Season, games: list[Game], upcoming: list[Game]
+) -> dict[str, set[str]]:
+    """Who was missing their starter in the games the stored index hasn't read.
+
+    That index is the sweep's, over the plays endgame has stored, and
+    tonight's games aren't in it until the morning. They're read here the
+    way the sweep will read them: `qb_out_build.build` over ESPN's plays.
+    The rule needs a team's season to know who its starter is, so every
+    finished game of a team with an unread one is fetched; only the unread
+    games' flags are kept.
+
+    Only teams with a game coming up, and with plays at all -- a team with
+    no game in the EPA index has none on ESPN, which is most of D-II/III.
+    """
+    epa = EpaIndex.for_league(league)
+    stored = {g.game_id for g in games if g.completed and epa.get(g.game_id)}
+    with_plays = {t for g in games if g.game_id in stored for t in (g.home, g.away)}
+    playing = {t for g in upcoming for t in (g.home, g.away)} & with_plays
+    unread = {
+        g.game_id
+        for g in games
+        if g.completed and g.game_id not in stored and {g.home, g.away} & playing
+    }
+    needy = {t for g in games if g.game_id in unread for t in (g.home, g.away)}
+    needy &= playing
+    wanted = sorted(
+        {g.game_id for g in games if g.completed and {g.home, g.away} & needy}
+    )
+    if not wanted:
+        return {}
+    drives = [d async for d in apply_in_parallel(_game_plays, [(g,) for g in wanted])]
+    table = pa.concat_tables(
+        transform_game_to_table(d, g, league, season.year, 1)
+        for g, d in zip(wanted, drives)
+    )
+    found = await build_qb_out(league, [season], _OneWeek(table))
+    return {g: out & needy for g, out in found.items() if g in unread and out & needy}
+
+
+def _qb_out_named(names: list[str], upcoming: list[Game]) -> dict[str, set[str]]:
+    """`--qb-out` news: each named team out in its next game."""
+    named: dict[str, set[str]] = {}
+    playing = {t for g in upcoming for t in (g.home, g.away)}
+    for name in names:
+        teams = sorted(t for t in playing if t.lower() == name.lower()) or sorted(
+            t for t in playing if name.lower() in t.lower()
+        )
+        if len(teams) != 1:
+            raise SystemExit(
+                f"--qb-out {name!r} matches {teams or 'no team with a game coming up'}"
+            )
+        game = min(
+            (g for g in upcoming if teams[0] in (g.home, g.away)), key=lambda g: g.date
+        )
+        named.setdefault(game.game_id, set()).add(teams[0])
+    return named
+
+
 def _age(path: Path) -> str:
     if not path.exists():
         return "missing"
@@ -143,13 +242,13 @@ async def _with_espn(seasons: list[Season]) -> list[Season]:
 
 
 def _replay(
-    league: str, model: str, seasons: list[Season]
+    league: str, model: str, seasons: list[Season], sources: MatchupSources
 ) -> tuple[Predictor, pd.DataFrame]:
     """The model through every result, warmed the way `betting.py`'s replay is."""
     result = GENERATED_DIR / league / f"{model}_result.json"
     search = AUTHORED_DIR / league / f"{model}.json"
     odds = OddsDatabase({})
-    overrides = {}
+    overrides: dict = {"sources": sources}
     if search.exists():
         config = OptimizationConfig.model_validate_json(search.read_text())
         weeks = frames.weeks_per_season([len(season.weeks) for season in seasons])
@@ -206,6 +305,9 @@ def _fmt_game(game: Game) -> str:
 
 
 def main() -> None:
+    # The transform clamps the odd out-of-range yardline, which says nothing
+    # about who played quarterback.
+    logging.getLogger("endgame_aws.pbp_transform").setLevel(logging.ERROR)
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -240,6 +342,13 @@ def main() -> None:
         help="drop games naming this team, e.g. on injury news (repeatable)",
     )
     parser.add_argument(
+        "--qb-out",
+        action="append",
+        default=[],
+        metavar="TEAM",
+        help="this team's starting QB is out of its next game (repeatable)",
+    )
+    parser.add_argument(
         "--offline", action="store_true", help="skip s3; read the last run's copies"
     )
     parser.add_argument(
@@ -272,19 +381,41 @@ def run(args: argparse.Namespace) -> None:
             f"latest season:  topped up from ESPN at {datetime.now(CENTRAL):%H:%M} CT"
         )
     seasons = without_exhibitions(seasons, league)
-
-    # 2. Replay.
-    clock = time.time()
-    predictor, df = _replay(league, model, seasons)
-    print(f"replayed {len(df):,} games in {time.time() - clock:.0f}s")
-
-    # 3. Fixtures and the market.
     namer = TeamNamer.for_league(league)
     latest = max(seasons, key=lambda s: s.year)
     games = [namer.apply(g) for week in latest.weeks for g in week.games]
-    previous = previous_games(games)
     now = datetime.now(UTC)
     horizon = now + timedelta(days=args.days)
+
+    # The quarterbacks: the stored index, tonight's games read off ESPN's
+    # plays as the sweep will read them, and `--qb-out` news for fixtures.
+    upcoming = [
+        g
+        for g in games
+        if not g.completed and g.status not in NOT_HAPPENING and now < g.date < horizon
+    ]
+    tonight = asyncio.run(_qb_out_tonight(league, latest, games, upcoming))
+    named = _qb_out_named(args.qb_out, upcoming)
+    flags = {game: set(out) for game, out in load_qb_out(league).items()}
+    for extra in (tonight, named):
+        for game, out in extra.items():
+            flags.setdefault(game, set()).update(out)
+    by_id = {g.game_id: g for g in games}
+    for label, extra in (("QB out tonight", tonight), ("QB out next game", named)):
+        for game, out in sorted(extra.items(), key=lambda item: by_id[item[0]].date):
+            print(
+                f"{label + ':':<16}{', '.join(sorted(out))}  ({_fmt_game(by_id[game])})"
+            )
+    sources = MatchupSources.for_league(league)._replace(qb_out=QbOutIndex(flags))
+
+    # 2. Replay.
+    clock = time.time()
+    predictor, df = _replay(league, model, seasons, sources)
+    print(f"replayed {len(df):,} games in {time.time() - clock:.0f}s")
+
+    # 3. Fixtures and the market.
+    previous = previous_games(games)
+    now = datetime.now(UTC)
     # Every unplayed game is matched against, so a Kalshi game near the end
     # of the window still finds its fixture; only the window's are priced.
     fixtures = [
