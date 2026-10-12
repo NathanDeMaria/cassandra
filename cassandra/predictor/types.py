@@ -8,7 +8,7 @@ class Matchup(Protocol):
     """The part of a game that's known *before* it's played.
 
     `Game` satisfies this structurally, so callers can pass one straight
-    through, but a `predict_game` implementation that takes a `Matchup`
+    through, but a `predict_distribution` implementation that takes a `Matchup`
     can't reach the scores.
     """
 

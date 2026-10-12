@@ -193,7 +193,7 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
     """`MarginGlickoPredictor` reading control and EPA alongside the margin.
 
     The parent's update, smoother and state with the observation widened;
-    `predict_game` is the parent's, since the readings change what a game
+    `predict_distribution` is the parent's, since the readings change what a game
     teaches and not how a gap is read. `control_scale` and `epa_scale` at
     `None` are the parent exactly.
     """

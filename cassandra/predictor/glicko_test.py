@@ -295,7 +295,7 @@ def test_a_model_that_never_named_a_prediction_scale_predicts_at_400() -> None:
     predictor = GlickoPredictor("test_league", home_advantage=0)
 
     assert predictor.state_dict()["prediction_scale"] == DEFAULT_PREDICTION_SCALE
-    assert predictor.win_prob(1900, 1500) == pytest.approx(10 / 11)
+    assert predictor.gap_distribution(1900, 1500).win_prob() == pytest.approx(10 / 11)
 
 
 def test_a_wider_prediction_scale_reads_the_same_gap_as_a_closer_game(

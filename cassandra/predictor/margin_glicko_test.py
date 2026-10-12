@@ -167,6 +167,31 @@ def test_the_prediction_is_the_gaussian_win_probability(game: GameFactory) -> No
     )
 
 
+def test_the_distribution_is_the_gaussian_in_points(game: GameFactory) -> None:
+    """What the prediction above collapses: mean 12, the innovation sd."""
+    predictor = _predictor(
+        home_advantage=20, ratings={"A": _Rating(1600, 30), "B": _Rating(1500, 40)}
+    )
+    margin = predictor.predict_distribution(game("A", "B"))
+
+    assert margin.units == "points"
+    assert margin.mean == pytest.approx(12)
+    assert margin.sd == pytest.approx(math.sqrt(100 + 0.01 * (900 + 1600)))
+
+
+def test_a_prediction_scale_is_a_logistic_in_points(game: GameFactory) -> None:
+    """Centred where the Gaussian would be; only the spread is the search's."""
+    ratings = {"A": _Rating(1600, 200), "B": _Rating(1500, 200)}
+    logistic = _predictor(prediction_scale=100, home_advantage=20, ratings=ratings)
+    implied = _predictor(home_advantage=20, ratings=ratings)
+
+    margin = logistic.predict_distribution(game("A", "B"))
+    assert margin.units == "points"
+    assert margin.mean == pytest.approx(
+        implied.predict_distribution(game("A", "B")).mean
+    )
+
+
 def test_an_unsure_rating_predicts_closer_to_even(game: GameFactory) -> None:
     sure = _predictor(ratings={"A": _Rating(1600, 10), "B": _Rating(1500, 10)})
     unsure = _predictor(ratings={"A": _Rating(1600, 200), "B": _Rating(1500, 200)})
@@ -182,7 +207,7 @@ def test_a_prediction_scale_is_the_parents_logistic(game: GameFactory) -> None:
     """The configs' choice: one curve the pipeline's prob->margin fit inverts.
 
     A 100-point gap at a scale of 100 is a 10-to-1 favorite, whatever the
-    deviations say -- the same reading `GlickoPredictor.win_prob` gives.
+    deviations say -- the same reading `GlickoPredictor.gap_distribution` gives.
     """
     logistic = _predictor(
         prediction_scale=100, ratings={"A": _Rating(1600, 200), "B": _Rating(1500, 200)}
