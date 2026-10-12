@@ -251,13 +251,13 @@ from .adjustments import (
 )
 from .base_predictor import Anchor, validated_regression
 from .blend import validated_scale
+from .distribution import MarginDistribution, NormalMargin
 from .epa import EpaIndex
 from .glicko import _Rating
 from .margin_glicko import (
     DEFAULT_OBS_SD,
     DEFAULT_POINTS_PER_RATING,
     MarginGlickoPredictor,
-    _normal_cdf,
 )
 from .opponent_prior import OpponentPriorManager
 from .rest import DEFAULT_REST_ADVANTAGE
@@ -342,8 +342,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
 
     The parent's every method does what it did. What this adds is `_sides`,
     stepped from the EPA index after the parent has stepped on the margin,
-    and read by `predict_game` as a second rating to combine with the first.
-    See the module docstring for the step and the combination.
+    and read by `predict_distribution` as a second rating to combine with
+    the first. See the module docstring for the step and the combination.
     """
 
     def __init__(
@@ -595,7 +595,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             return points
         return points + self._talent_edge * (home - away) / self.points_per_rating
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
         """The parent's prediction, on blended ratings.
 
         Written out rather than delegated because the parent reads
@@ -606,13 +606,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         away = self._blended(matchup.away)
         edge = self.home_edge(matchup) + self.matchup_adjustment(matchup)
         if not self._implied_prediction:
-            return Prediction(
-                team1_win_prob=self.win_prob(home.rating + edge, away.rating)
-            )
+            return self.gap_distribution(home.rating + edge, away.rating)
         expected = self.points_per_rating * (home.rating + edge - away.rating)
-        return Prediction(
-            team1_win_prob=_normal_cdf(expected / self._margin_sd(home, away))
-        )
+        return NormalMargin(expected, self._margin_sd(home, away), "points")
 
     def _update_game(self, game: Game) -> Prediction:
         """The parent's step on the margin, then the two contests on EPA.
@@ -903,8 +899,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         sides average to its unit rating and a 1650 offense reads like a
         1650 team. Teams the index never had a play for carry none.
 
-        Every team carries its `blended` rating, the one `predict_game`
-        reads -- the parent itself for a team with no sides.
+        Every team carries its `blended` rating, the one
+        `predict_distribution` reads -- the parent itself for a team with no
+        sides.
         """
         return {
             team: rating._replace(

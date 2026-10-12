@@ -10,6 +10,7 @@ from .base_predictor import (
     resolved_anchors,
     validated_regression,
 )
+from .distribution import MarginDistribution, decimal_logistic
 from .opponent_prior import OpponentPriorManager
 from .types import Matchup, Prediction, Rating
 
@@ -45,14 +46,13 @@ class Elo538Predictor(Predictor):
         self._prior_manager = opponent_prior_manager or OpponentPriorManager(league)
         self._ratings = ratings or self._prior_manager.get_ratings()
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
         home_rating = self.get_rating(matchup.home)
         adjusted_home_rating = home_rating
         if not matchup.neutral_site:
             adjusted_home_rating = home_rating + self._home_advantage
         away_rating = self.get_rating(matchup.away)
-        win_prob = 1 / (1 + 10 ** ((away_rating - adjusted_home_rating) / 400))
-        return Prediction(team1_win_prob=win_prob)
+        return decimal_logistic(adjusted_home_rating - away_rating, 400, "rating")
 
     def _update_game(self, game: Game) -> Prediction:
         prediction = self.predict_game(game)

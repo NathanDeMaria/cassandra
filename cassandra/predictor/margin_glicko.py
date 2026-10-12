@@ -124,6 +124,12 @@ from .adjustments import (
 )
 from .base_predictor import Anchor
 from .blend import validated_scale
+from .distribution import (
+    LogisticMargin,
+    MarginDistribution,
+    NormalMargin,
+    decimal_logistic,
+)
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Played, _Rating
 from .opponent_prior import OpponentPriorManager
 from .rest import DEFAULT_REST_ADVANTAGE
@@ -262,16 +268,30 @@ class MarginGlickoPredictor(GlickoPredictor):
             * (home.rating_deviation**2 + away.rating_deviation**2)
         )
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
-        """The parent's logistic at `prediction_scale`, or the Gaussian's own answer."""
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
+        """The parent's logistic at `prediction_scale`, or the Gaussian's own answer.
+
+        In points either way. The Gaussian is the innovation the update
+        measures the margin against -- Gaussian even when `nu` makes the
+        update a t's, because that is the win probability this model has
+        always predicted. The logistic is the parent's, in points by
+        `gap_distribution`.
+        """
         if not self._implied_prediction:
-            return super().predict_game(matchup)
+            return super().predict_distribution(matchup)
         home = self.get_rating(matchup.home)
         away = self.get_rating(matchup.away)
         edge = self.home_edge(matchup) + self.matchup_adjustment(matchup)
         expected = self._points_per_rating * (home.rating + edge - away.rating)
-        return Prediction(
-            team1_win_prob=_normal_cdf(expected / self._margin_sd(home, away))
+        return NormalMargin(expected, self._margin_sd(home, away), "points")
+
+    def gap_distribution(
+        self, home_rating: float, away_rating: float
+    ) -> LogisticMargin:
+        """The parent's logistic, read in points at `points_per_rating`."""
+        c = self._points_per_rating
+        return decimal_logistic(
+            c * (home_rating - away_rating), c * self._prediction_scale, "points"
         )
 
     def _update_game(self, game: Game) -> Prediction:
@@ -355,7 +375,3 @@ class MarginGlickoPredictor(GlickoPredictor):
             **params,
             ratings={team: _Rating(r[0], r[1]) for team, r in ratings.items()},
         )
-
-
-def _normal_cdf(z: float) -> float:
-    return 0.5 * (1 + math.erf(z / math.sqrt(2)))

@@ -99,6 +99,32 @@ def test_save_load_round_trips_the_predictions(
     )
 
 
+# The models that measure a gap in points; the rest are on their own rating
+# scale and need the prob->margin fit to read a spread.
+POINTS_MODELS = {
+    MarginEloPredictor,
+    BlendedMarginEloPredictor,
+    MarginGlickoPredictor,
+    VectorMarginGlickoPredictor,
+    UnitMarginGlickoPredictor,
+}
+
+
+@any_model
+def test_the_prediction_is_the_distribution_collapsed(
+    model: Model, game: GameFactory
+) -> None:
+    predictor = model("test_league")
+    predictor.update_game(game("Team A", "Team B", 24, 10))
+    predictor.update_game(game("Team C", "Team A", 3, 31))
+
+    upcoming = game("Team A", "Team C")
+    margin = predictor.predict_distribution(upcoming)
+    assert margin.units == ("points" if model in POINTS_MODELS else "rating")
+    assert predictor.predict_game(upcoming).team1_win_prob == margin.win_prob()
+    assert margin.win_prob() == pytest.approx(1 - margin.cdf(0))
+
+
 @any_model
 def test_the_state_dict_is_plain_json(model: Model, game: GameFactory) -> None:
     """save_state/load_state are one serialization of this, not a second format.

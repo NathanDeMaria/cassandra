@@ -10,6 +10,7 @@ from .base_predictor import (
     resolved_anchors,
     validated_regression,
 )
+from .distribution import LogisticMargin, MarginDistribution, collapse
 from .types import Matchup, Prediction, Rating
 
 # Converting a rating gap to the margin it implies, and back. An Elo gap `d`
@@ -112,8 +113,8 @@ class MarginEloPredictor(Predictor):
         """How much the home team is expected to win by. The model's own output.
 
         Public because it is the number this predictor actually produces --
-        `predict_game` is the pipeline-facing wrapper that turns it into a
-        probability -- and because a caller holding a fitted model shouldn't
+        `predict_distribution` is the pipeline-facing wrapper that puts a
+        spread around it -- and because a caller holding a fitted model shouldn't
         have to round-trip through a prob->margin calibration to ask the one
         question this model answers directly.
         """
@@ -126,28 +127,25 @@ class MarginEloPredictor(Predictor):
             margin += self._home_advantage
         return margin
 
-    def _prediction(self, margin: float) -> Prediction:
-        """The expected margin, as the win probability the pipeline reads.
+    def _distribution(self, margin: float) -> LogisticMargin:
+        """The expected margin, with the logistic spread `margin_scale` gives it.
 
-        The inverse of the conversion in `expected_margin`, which makes this
-        the same logistic in the rating gap that EloPredictor uses. The
-        margin isn't lost on the way out: it's a fixed multiple of the logit,
-        so the prob->margin fit downstream recovers it up to the scale it
-        fits anyway.
+        Its win probability is the inverse of the conversion in
+        `expected_margin`, which makes this the same logistic in the rating
+        gap that EloPredictor uses. In points, but the spread is the one the
+        search fit for brier, not one measured on margins.
         """
-        return Prediction(
-            team1_win_prob=1 / (1 + math.exp(-margin / self._margin_scale))
-        )
+        return LogisticMargin(margin, self._margin_scale, "points")
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
-        return self._prediction(self.expected_margin(matchup))
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
+        return self._distribution(self.expected_margin(matchup))
 
     def _update_game(self, game: Game) -> Prediction:
         # One `expected_margin` for both the prediction and the update: they
         # are the same number, and a search asks for it a hundred million
         # times.
         expected = self.expected_margin(game)
-        prediction = self._prediction(expected)
+        prediction = collapse(self._distribution(expected))
         actual = self._actual_margin(game)
         # The surprise, converted back to the rating scale so `k` is a plain
         # fraction: at k = 0.1 a team that beats its number by 10 gains a
