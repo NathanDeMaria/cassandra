@@ -78,6 +78,58 @@ model at weight 0. `units/seedcheck.py` replays them through the
 production code: train 0.219292 / 0.219355 / 0.219636, held out
 0.217756 / 0.217874 / 0.218827.
 
+## ncaafb
+
+`ncaafb/`: the published `glicko_margin_units_roster` replayed the same
+way, scored as its search is, on FBS v FBS brier. `replay.py` resumes every
+probe from a snapshot at the end of 2013 -- the units have no reading
+before 2014, so nothing earlier depends on a reading knob -- and stops at
+2021 for a search, about a third of the games: 13s a probe against 40s,
+and identical to the full replay to 1e-15. The snapshot needs the season
+clock and the pending quarterback shifts copied over by hand, which a
+predictor's `state_dict` doesn't carry.
+
+**Does success rate break in mismatches?** (`mismatch.py`) No. Per side it
+runs 26-57% (5th-95th), far from either bound. Fit offense + defense per
+season leaving each week out, it is as additive as EPA (observed on
+predicted slope 0.958 against EPA's 0.960) and fits worse on logits.
+
+**Garbage time** (`sweep_weighted.py`): each snap weighted by the
+competitiveness weight behind the weighted EPA. Its own EPA scale is 1.494
+(the unweighted rate's 1.798), and at that scale it is even with the
+unweighted rate on ncaafb (-0.2e-4, t -0.3) and worse on the NFL (held out
+-5.6 against the published model where the unweighted gains -9.5).
+
+**Refits** (`search.py`, the eight reading knobs and `unit_weight` by
+Nelder-Mead on FBS brier through 2021; `compare.py` for the slices), in
+1e-4 against the EPA refit:
+
+| reading | 2014-2026 | t | held out 2022-2026 | t |
+|---|---|---|---|---|
+| unweighted success rate | -1.6 | -0.6 | +3.0 | +0.7 |
+| weighted success rate | -1.9 | -0.7 | +3.3 | +0.7 |
+| weighted success rate + weighted EPA | -2.7 | -0.9 | +2.7 | +0.6 |
+| weighted EPA, no success rate | -0.1 | -0.1 | -4.1 | -1.8 |
+
+Every success-rate fit goes to weight 1. One season alone moves by 20
+(2023: +13 to +19), so none of this is distinguishable from nothing.
+
+**Strength of schedule** (`anchors.py`, `bias.py`). ncaafb's anchors are one
+rating per conference, so the conference's level is the anchor and the
+games across conferences. A reading that moves less across an anchor gap
+than `points_per_epa` converts it to would pull the stronger conferences'
+sides down in every such game, and conference play would never put them
+back. Measured as the slope of an offense's surprise on the anchor gap, in
+FBS games across conferences: -0.25 under the published model (t -15;
+power sides 8-12 points under the Group of Five's at season end), +0.04
+under the EPA refit, -0.06 and -0.09 under the success-rate refits. But
+the success-rate refits overrate Group of Five teams no more than EPA's
+does (power side's outcome less prediction -0.6 to -1.1 points of win
+probability, se 0.9, EPA's -1.1), the held-out loss is not on teams that
+changed conference, and `anchor_epa_scale` at 0.75 to 1.05 moves brier
+by under 1e-4 and the slope away from 0. The slope is not only the
+conversion.
+
 ## Running it
 
 Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
@@ -95,6 +147,21 @@ Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
     python prod.py check               # production code reproduces the harness
     python prod.py full full_b75 fit_b75
     python coach_eval.py full_b75:fit_b75
+
+    cd ../ncaafb                       # after units/sweep_index.py ncaafb
+    python replay.py prep              # seasons from s3, priors from the replay cache
+    python replay.py run published     # one replay; knob=value to move knobs
+    python mismatch.py
+    python sweep_weighted.py ncaafb    # the weighted rate, into its own pickle
+    python search.py nc_fit_epa 0      # NAME WEIGHT, "free" to search the weight
+    python compare.py nc_fit_free:nc_fit_epa
+    python anchors.py record nc_fit_epa; python anchors.py report nc_fit_epa
+    python bias.py
+
+The refits of the weighted rate read `sweep_weighted.py`'s pickle with
+`NCAAFB_INDEX=ncaafb_index_weighted.pkl NCAAFB_SUCCESS_SCALE=1.494,-0.624`,
+which puts it where `success_reading="weighted"` does (checked to 1e-15);
+`NCAAFB_EPA=weighted` puts the units on the weighted EPA.
 
 Run with `PYTHONPATH` at the checkout whose `cassandra` is meant.
 `sweep_index.py` sweeps into a pickle and never writes the shared
