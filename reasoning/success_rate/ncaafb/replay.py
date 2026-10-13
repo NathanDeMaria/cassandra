@@ -34,6 +34,12 @@ from cassandra.predictor.opponent_prior import OpponentPriorManager
 from cassandra.predictor.unit_glicko import SUCCESS_SCALE, UnitMarginGlickoPredictor
 from cassandra.save_predictions import join_with_odds, prepared_for_replay
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from pin import pin  # noqa: E402
+
+# Every replay reads the pinned copy of the shared predictor data; see pin.py.
+pin()
+
 DATA = Path.home() / ".cassandra/success_rate/units"
 SEASONS = DATA / "ncaafb_seasons.pkl"
 PRIORS = DATA / "ncaafb_units_priors.json"

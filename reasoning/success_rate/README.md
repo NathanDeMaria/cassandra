@@ -89,6 +89,12 @@ and identical to the full replay to 1e-15. The snapshot needs the season
 clock and the pending quarterback shifts copied over by hand, which a
 predictor's `state_dict` doesn't carry.
 
+Every replay reads a pinned copy of `~/.cassandra/predictor/data`
+(`pin.py`). Another session refreshed the shared directory from s3 between
+two refits started 14 minutes apart, which moved 2014-on win probabilities
+by up to 0.027; the numbers here are all re-scored on the copy
+(`rescore.py`), which moved them by 0.1-0.3e-4.
+
 **Does success rate break in mismatches?** (`mismatch.py`) No. Per side it
 runs 26-57% (5th-95th), far from either bound. Fit offense + defense per
 season leaving each week out, it is as additive as EPA (observed on
@@ -106,13 +112,24 @@ Nelder-Mead on FBS brier through 2021; `compare.py` for the slices), in
 
 | reading | 2014-2026 | t | held out 2022-2026 | t |
 |---|---|---|---|---|
-| unweighted success rate | -1.6 | -0.6 | +3.0 | +0.7 |
-| weighted success rate | -1.9 | -0.7 | +3.3 | +0.7 |
-| weighted success rate + weighted EPA | -2.7 | -0.9 | +2.7 | +0.6 |
-| weighted EPA, no success rate | -0.1 | -0.1 | -4.1 | -1.8 |
+| unweighted success rate | -1.6 | -0.6 | +2.9 | +0.7 |
+| weighted success rate | -1.8 | -0.7 | +3.1 | +0.7 |
+| weighted success rate + weighted EPA | -2.6 | -0.9 | +2.5 | +0.6 |
+| weighted EPA, no success rate | 0.0 | 0.0 | -4.3 | -2.0 |
 
 Every success-rate fit goes to weight 1. One season alone moves by 20
-(2023: +13 to +19), so none of this is distinguishable from nothing.
+(2023: +13 to +19), so none of this is distinguishable from nothing. The
+held-out loss is the refit's clocks more than its reading: at the
+unweighted fit's knobs, EPA itself is 5.6 worse held out.
+
+**Offense and defense apart** (`defense_success_weight`). At the EPA
+refit's knobs, success rate on the offense alone (0.5) gains 1.4 on
+2014-2026 (t -1.5, 9 seasons of 13) and 1.4 held out, 2.5 after a team's
+fourth game (t -2.7) and 3.4 in Group of Five games (t -2.5), and costs
+1.0 in games 1-4; on the defense alone it gains 0.1 and loses 1.7 held
+out. On the NFL, at the joint refit's knobs, the offense's weight from 0
+to 1 is worth -12.5 on 2014-2026 and the defense's 0.3 at most, though the
+NFL fits hold their defenses nearly still.
 
 **Strength of schedule** (`anchors.py`, `bias.py`). ncaafb's anchors are one
 rating per conference, so the conference's level is the anchor and the
@@ -153,7 +170,11 @@ Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
     python replay.py run published     # one replay; knob=value to move knobs
     python mismatch.py
     python sweep_weighted.py ncaafb    # the weighted rate, into its own pickle
-    python search.py nc_fit_epa 0      # NAME WEIGHT, "free" to search the weight
+    python pin.py                      # (from ..) snapshot the shared predictor data, once
+    python search.py nc_fit_epa --set success_weight=0
+    python search.py nc_c_off --from nc_fit_epa --knobs success_weight,points_per_epa,play_sd \
+        --set success_weight=0.5 defense_success_weight=0
+    python rescore.py nc_fit_epa       # a run's knobs again on the pinned data, as NAME_p
     python compare.py nc_fit_free:nc_fit_epa
     python anchors.py record nc_fit_epa; python anchors.py report nc_fit_epa
     python bias.py

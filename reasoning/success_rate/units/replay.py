@@ -26,6 +26,12 @@ from cassandra.predictor.opponent_prior import OpponentPriorManager
 from cassandra.predictor.unit_glicko import UnitMarginGlickoPredictor
 from cassandra.save_predictions import join_with_odds, prepared_for_replay
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from pin import pin  # noqa: E402
+
+# Every replay reads the pinned copy of the shared predictor data; see pin.py.
+pin()
+
 sys.path.insert(0, str(Path(__file__).parent))
 from readings import build  # noqa: E402
 
