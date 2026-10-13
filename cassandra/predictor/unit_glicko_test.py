@@ -26,6 +26,8 @@ from .unit_glicko import (
     CENTER_PRIOR_SIDES,
     DEFAULT_DEFENSE_INITIAL_SD,
     DEFAULT_OFFENSE_INITIAL_SD,
+    UNWEIGHTED,
+    WEIGHTED,
     UnitMarginGlickoPredictor,
 )
 
@@ -123,6 +125,30 @@ def test_the_same_reading_against_a_better_defense_is_worth_more(
         predictor.update_game(game("A", "B", 0, 0, game_id="g"))
 
     assert weak.get_sides("A").offense.rating < 0 < strong.get_sides("A").offense.rating
+
+
+def test_the_anchor_scale_sets_how_much_of_the_anchor_gap_a_reading_owes(
+    game: GameFactory,
+) -> None:
+    """Linear in the scale, and at 0 the anchors say nothing about a reading."""
+    even = _epa(0.0, 0.0)
+    worth = {}
+    for scale in (0.0, 0.5, 1.0):
+        offense = []
+        for anchor in (1200, 1800):
+            predictor = _predictor({"g": even}, anchors={"B": anchor}, anchor_epa_scale=scale)
+            predictor.update_game(game("A", "B", 0, 0, game_id="g"))
+            offense.append(predictor.get_sides("A").offense.rating)
+        worth[scale] = offense[1] - offense[0]
+
+    assert worth[0.0] == 0
+    assert worth[1.0] > 0
+    assert worth[0.5] == pytest.approx(worth[1.0] / 2)
+
+
+def test_a_negative_anchor_scale_is_refused() -> None:
+    with pytest.raises(ValueError, match="anchor_epa_scale"):
+        _predictor(anchor_epa_scale=-0.5)
 
 
 def test_a_short_game_moves_the_units_less(game: GameFactory) -> None:
@@ -552,13 +578,19 @@ def test_returning_production_is_not_a_matchup_term(game: GameFactory) -> None:
 
 
 # The test league's success rate on EPA's scale: 1.5 x rate - 0.6, so a 60%
-# day reads as +0.3 and a 40% day as 0.0.
+# day reads as +0.3 and a 40% day as 0.0. The weighted rate on its own,
+# which puts 40% at 0.0 too.
 _SCALE = (1.5, -0.6)
+_WEIGHTED_SCALE = (1.0, -0.4)
 
 
 @pytest.fixture
 def scaled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(unit_glicko.SUCCESS_SCALE, "test_league", _SCALE)
+    monkeypatch.setitem(
+        unit_glicko.SUCCESS_SCALE,
+        "test_league",
+        {UNWEIGHTED: _SCALE, WEIGHTED: _WEIGHTED_SCALE},
+    )
 
 
 def _both(epa: float, success: float, plays: int = 70) -> GameEpa:
@@ -615,6 +647,35 @@ def test_a_success_weight_needs_the_league_scale() -> None:
         _predictor(success_weight=0.5)
 
 
+@pytest.mark.usefixtures("scaled")
+def test_the_weighted_reading_reads_the_weighted_rate(game: GameFactory) -> None:
+    """A rout won on its backups' downs: 60% flat, 30% while the game was live."""
+    rout = _both(0.0, 0.6)._replace(home_success_weighted=0.3, away_success_weighted=0.4)
+    flat = _predictor({"g": rout}, success_weight=1.0)
+    weighted = _predictor({"g": rout}, success_weight=1.0, success_reading=WEIGHTED)
+    for predictor in (flat, weighted):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert flat.get_sides("A").offense.rating > 0
+    assert weighted.get_sides("A").offense.rating < 0
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_game_without_a_weighted_rate_reads_its_epa(game: GameFactory) -> None:
+    """An index swept before the weighted rate, or a side that only ever ran out the clock."""
+    plain = _predictor({"g": _both(0.1, 0.6)})
+    weighted = _predictor(
+        {"g": _both(0.1, 0.6)}, success_weight=0.75, success_reading=WEIGHTED
+    )
+    for predictor in (plain, weighted):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert weighted.get_sides("A") == plain.get_sides("A")
+
+
+def test_an_unknown_success_reading_is_refused() -> None:
+    with pytest.raises(ValueError, match="success_reading"):
+        _predictor(success_reading="garbage_time")
+
+
 # --- a new head coach ---------------------------------------------------------
 
 
@@ -668,6 +729,8 @@ def test_a_widened_side_is_not_narrowed_by_a_quiet_week(game: GameFactory) -> No
 def test_the_new_knobs_round_trip() -> None:
     predictor = _predictor(
         success_weight=0.6,
+        success_reading=WEIGHTED,
+        anchor_epa_scale=0.8,
         coach_change_rd=35.0,
         coach_change_offense_sd=0.1,
         coach_change_defense_sd=0.05,
