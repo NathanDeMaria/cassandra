@@ -676,6 +676,55 @@ def test_an_unknown_success_reading_is_refused() -> None:
         _predictor(success_reading="garbage_time")
 
 
+@pytest.mark.usefixtures("scaled")
+def test_each_side_can_step_on_its_own_blend(game: GameFactory) -> None:
+    """A day the offense won its downs and lost its EPA: 60% and -0.2 a play.
+
+    Read as success rate by the offense and as EPA by the defense across
+    from it, the offense comes out ahead and so does the defense that held
+    it to -0.2 -- where one blend for both has the defense losing the day.
+    """
+    day = _both(-0.2, 0.6)
+    split = _predictor({"g": day}, success_weight=1.0, defense_success_weight=0.0)
+    shared = _predictor({"g": day}, success_weight=1.0)
+    for predictor in (split, shared):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert split.get_sides("A").offense == shared.get_sides("A").offense
+    assert split.get_sides("A").offense.rating > 0
+    assert split.get_sides("B").defense.rating > 0 > shared.get_sides("B").defense.rating
+
+
+@pytest.mark.usefixtures("scaled")
+def test_no_defense_weight_is_the_offense_weight(game: GameFactory) -> None:
+    unset = _predictor({"g": _both(-0.2, 0.6)}, success_weight=0.6)
+    same = _predictor({"g": _both(-0.2, 0.6)}, success_weight=0.6, defense_success_weight=0.6)
+    for predictor in (unset, same):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert unset.state_dict() == same.state_dict()
+
+
+@pytest.mark.parametrize("weight", [-0.1, 1.1])
+def test_a_defense_weight_outside_the_blend_is_refused(weight: float) -> None:
+    with pytest.raises(ValueError, match="defense_success_weight"):
+        _predictor(defense_success_weight=weight)
+
+
+def test_a_contest_is_measured_against_the_center_before_its_game(
+    game: GameFactory,
+) -> None:
+    """The away offense's reading moves the center, but not until the game is in.
+
+    The second game, so the center is a running mean by then rather than the
+    0 it opens at.
+    """
+    quiet = _predictor({"g1": _epa(0.1, 0.1), "g2": _epa(0.3, 0.0)})
+    loud = _predictor({"g1": _epa(0.1, 0.1), "g2": _epa(0.3, 0.9)})
+    for predictor in (quiet, loud):
+        predictor.update_game(game("C", "D", 14, 14, game_id="g1"))
+        predictor.update_game(game("A", "B", 21, 7, game_id="g2"))
+    assert quiet.get_sides("A").offense == loud.get_sides("A").offense
+
+
 # --- a new head coach ---------------------------------------------------------
 
 
@@ -730,6 +779,7 @@ def test_the_new_knobs_round_trip() -> None:
     predictor = _predictor(
         success_weight=0.6,
         success_reading=WEIGHTED,
+        defense_success_weight=0.2,
         anchor_epa_scale=0.8,
         coach_change_rd=35.0,
         coach_change_offense_sd=0.1,
