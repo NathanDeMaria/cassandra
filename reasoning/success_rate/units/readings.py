@@ -10,11 +10,12 @@ is the running mean of whatever they read) and only keeps the two means equal.
 
 import sys
 from functools import cache
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, "/workspaces/cassandra/.claude/worktrees/success-rate/reasoning/success_rate")
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from success import load_plays, scrimmage  # noqa: E402
 
 from cassandra.predictor.epa import EpaIndex  # noqa: E402
