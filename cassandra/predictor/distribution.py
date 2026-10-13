@@ -19,18 +19,25 @@ chance the home side fails to cover. `"rating"` is a model's own rating
 scale, where only the sign of the margin means anything to a bettor: those
 models still need the prob->margin fit to say how many points a gap is.
 
-What it isn't yet
------------------
+Continuous and discrete
+-----------------------
 
-Continuous, so there are no ties and no key numbers: `win_prob` is P(margin
-> 0) and a push has no mass. And it is the distribution the model's *win
-probability* implies, not one fitted to margins: the logistic scales were
-searched against brier. Both are the next step's problem, and this module is
-the seam it comes in through.
+What a predictor hands out is continuous, so there are no ties and no key
+numbers: `win_prob` is P(margin > 0) and a push has no mass. And it is the
+distribution the model's *win probability* implies, not one fitted to
+margins: the logistic scales were searched against brier.
+
+`DiscreteMargin` is the other kind: a probability on every integer margin,
+which is what a spread settles on. It comes from a margin kernel fitted to
+final scores (`cassandra.prob_to_margin.kernel`), and it is the one to read
+a line against -- `p_cover` says cover, push and lose, where a continuous
+margin has no push and a mean has no idea that 3 and 7 are special.
 """
 
 import math
 from typing import Literal, NamedTuple, Protocol
+
+import numpy as np
 
 from .types import Prediction
 
@@ -108,6 +115,65 @@ class NormalMargin(NamedTuple):
 
     def win_prob(self) -> float:
         return _normal_cdf(self.loc / self.scale)
+
+
+class Cover(NamedTuple):
+    """How a line settles, from the home side: the three add to one."""
+
+    cover: float
+    push: float
+    lose: float
+
+
+class DiscreteMargin:
+    """A probability on every integer margin from `low` to `low + len(pmf) - 1`.
+
+    The end cells hold the tails: a kernel fitted out to 60 points puts a
+    70-point blowout in the 60 cell, so `mean` and `sd` are of the clipped
+    margin, and `cdf` is exact everywhere inside the range.
+    """
+
+    __slots__ = ("low", "pmf")
+
+    units: MarginUnits = "points"
+
+    def __init__(self, low: int, pmf: np.ndarray) -> None:
+        self.low = low
+        self.pmf = pmf
+
+    @property
+    def margins(self) -> np.ndarray:
+        return np.arange(self.low, self.low + len(self.pmf))
+
+    @property
+    def mean(self) -> float:
+        return float(self.pmf @ self.margins)
+
+    @property
+    def sd(self) -> float:
+        return math.sqrt(float(self.pmf @ (self.margins - self.mean) ** 2))
+
+    def cdf(self, margin: float) -> float:
+        cells = math.floor(margin) - self.low + 1
+        return float(self.pmf[: max(cells, 0)].sum())
+
+    def pmf_at(self, margin: int) -> float:
+        cell = margin - self.low
+        return float(self.pmf[cell]) if 0 <= cell < len(self.pmf) else 0.0
+
+    def win_prob(self) -> float:
+        return 1 - self.cdf(0)
+
+    def p_cover(self, spread: float) -> Cover:
+        """Cover, push and lose for the home side at `spread`.
+
+        Quoted the way `GameDfColumns.SPREAD` is: from the home side, negative
+        when it is favored, and covered when `spread + margin > 0`. A half
+        point has no push.
+        """
+        push = self.pmf_at(int(-spread)) if float(spread).is_integer() else 0.0
+        lose = self.cdf(-spread) - push
+        return Cover(cover=1 - lose - push, push=push, lose=lose)
 
 
 def decimal_logistic(gap: float, scale: float, units: MarginUnits) -> LogisticMargin:
