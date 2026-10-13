@@ -55,7 +55,7 @@ class Recording(UnitMarginGlickoPredictor):
     def _update_sides(self, game, edge):
         epa = self._game_epa.get(game.game_id)
         if epa is not None and epa.home_plays and epa.away_plays:
-            home, away = self._reading(epa)
+            home, away = self._reading(epa, self._success_weight)
             per_play = self.points_per_rating / (2 * self._points_per_epa)
             anchor_home, anchor_away = self.anchor(game.home), self.anchor(game.away)
             center = self.epa_center
