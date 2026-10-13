@@ -1,0 +1,102 @@
+# NFL success rate: team betas, and a reading for the units
+
+2026-10-12 to 2026-10-13. A play is a success when its raw EPA is positive.
+Over an offense's dropbacks and runs -- no punts, kicks, penalties-only
+snaps, kneels or spikes -- that is a rate with a binomial count behind it,
+so a team's success rate is a beta and a game is a beta-binomial draw. This
+is what that model found, and how the same number went into
+`UnitMarginGlickoPredictor` as `success_weight`.
+
+## Team betas, and what happens when they meet
+
+`success.py`, `examples.py`: each offense and defense as a beta posterior
+(league rate as the prior mean, κ plays of prior weight).
+`collide.py` (tests in `collide_test.py`): when offense meets defense, a
+snap succeeds with
+
+    logit p = logit o + logit d - λ ± home
+
+-- the odds-ratio rule, so an average pair succeeds at the league's rate.
+The posterior over both teams after a game is computed on a grid and
+projected back onto two betas by their moments. Teams are stored as logit
+deviations recentred weekly, so λ absorbs the league's drift (40.5% in
+2006, 49.5% in 2021, 46.4% in 2025). The offseason is AR(1): each side
+keeps `carry` of its deviation and refills its variance toward the talent
+spread.
+
+`fit.py` fits the six knobs by walk-forward predictive likelihood on
+2007-2025 (2006 is burn-in), every game scored before it updates anything:
+
+| knob | offense | defense |
+|---|---|---|
+| κ (plays of prior weight) | 246 (sd 3.2 points of success rate) | 512 (sd 2.2) |
+| carryover | 0.65 | 0.61 |
+
+and κ_game 1030 (a 63-snap game behaves like 59 independent snaps), home
+0.027 logit. Against the league rate alone: +0.094 log-likelihood per
+meeting, RMSE 6.88 vs 7.40 points of success rate; on 2026's first five
+weeks, +0.106 (+0.045 without the carryover). The offense carries most of
+it (+0.067 alone, the defense +0.021). Calibrated within 0.4 points by
+decile.
+
+`drift_eval.py`: a weekly variance increase, for injuries, fits 0.0037 a
+week on both sides. Worth +0.0009 per meeting overall, +0.0042 on offenses
+whose quarterback the qb_out index flags out, +0.0062 on the second game
+running he's out -- and still leaves a 1.5-point bias on backup-quarterback
+offenses, which a flag would fix and a drift can't.
+
+## As the units' reading
+
+`units/`: the published NFL `glicko_margin_units_offseason` replayed
+walk-forward with its units rated on success rate instead of EPA per play,
+or a blend. Success rate goes onto EPA's scale first by the ratio of the
+two same-game margin slopes (`readings.py`, `SUCCESS_SCALE` in the
+predictor), so every knob keeps its units. `search.py` refits the eight
+knobs in the reading's units by Nelder-Mead on 1980-2021 for each blend
+weight, and gives EPA the same refit. 2022-2026 is held out.
+
+Results are in `cassandra/predictor/unit_glicko.py`'s "Success rate" and
+"A new head coach" sections. In short, in brier 1e-4:
+
+- 75% success rate with the offense forgetting 0.02 a week: -8.5 against
+  the published model on 2014-2026 (t -2.1, better in 11 seasons of 13
+  and all 5 held out), -5.3 against EPA given the same forgetting.
+- Success rate and the forgetting each carry about half; neither alone
+  clears t 1.6. The forgetting pays most on games the qb_out index flags.
+- Adding success rate from 2006-2013 wins in-sample and loses held out.
+- The coach-change deviations, refit jointly with everything else
+  (`prod.py full`): the record's at 62 rating points, the sides' at 0,
+  -1.0 on 2006-2026 against the same fit without them (t -0.9). Fit
+  alone, the offense's deviation goes to where a new coach's first game
+  rewrites it, and games 1-4 pay +6.3.
+- The units do worse than no units on games a quarterback is flagged out,
+  which is why the config searches `qb_out_penalty` too.
+
+The joint refit and the 0.75 refit are the first two seeds in
+`models/nfl/glicko_margin_units_success.json`; the third is the published
+model at weight 0. `units/seedcheck.py` replays them through the
+production code: train 0.219292 / 0.219355 / 0.219636, held out
+0.217756 / 0.217874 / 0.218827.
+
+## Running it
+
+Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
+
+    python extract_plays.py            # every snap with raw EPA, to nfl_plays.parquet
+    python fit.py fit                  # the collision's knobs, to collide_params.json
+    python examples.py                 # figures, to fig/
+    python collide_examples.py
+
+    cd units
+    python prep.py                     # NFL seasons, pickled once
+    python sweep_index.py nfl          # the EPA index with success rates, in memory
+    python search.py fit_b75 0.75 2014 # one blend's refit
+    python summarize.py; python ablate.py
+    python prod.py check               # production code reproduces the harness
+    python prod.py full full_b75 fit_b75
+    python coach_eval.py full_b75:fit_b75
+
+Run with `PYTHONPATH` at the checkout whose `cassandra` is meant.
+`sweep_index.py` sweeps into a pickle and never writes the shared
+`{league}_epa.json`: other sessions read it, and a checkout from before
+`EpaFit.success` can't parse the new header.
