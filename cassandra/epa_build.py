@@ -21,11 +21,12 @@ down -- this pins it, it doesn't second-guess it.
 """
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 
 from endgame.types import Season
 from lucky_ones import MODELS, GamePlays
-from lucky_ones.epa import DEFAULT_CLIP
+from lucky_ones.epa import DEFAULT_CLIP, PlayEPA
 from lucky_ones.plays import PlaySource
 from lucky_ones.points import FIRST_LEGIBLE_SEASON
 
@@ -79,6 +80,35 @@ WEIGHT_POWER = 0.5
 # an index built to a different floor is found stale rather than merged.
 SINCE = FIRST_LEGIBLE_SEASON
 
+# What a success is, and the snaps a success rate is over. Named in the
+# header because it is the third choice made here about these numbers, and a
+# change to it -- counting penalties, say -- rewrites every success rate while
+# the fits behind them stay identical.
+#
+# A success is a dropback or a run that added expected points: the sign of
+# the snap's raw EPA, which the clip can't move. The denominator is the
+# offense's dropbacks and runs -- sacks, scrambles, interceptions and fumbles
+# included, since those are the plays a defense stopped -- and nothing else:
+# punts and field goals are a decision about the drive rather than a down
+# the defense won, a penalty that wiped the play out has no play in it, and
+# a kneel or a spike is the clock. Measured on the NFL 2006-2026, those are
+# a tenth of regulation snaps; what is left succeeds 45% of the time.
+SUCCESS = "epa>0, dropbacks and runs, no kneels or spikes"
+
+# Kneels and spikes, off the play text: both are filed as an ordinary run or
+# incompletion. Never a bare "spike" -- Takeo and Brandon Spikes made a lot
+# of tackles between them.
+_CLOCK_PLAY = re.compile(r"\bkneels?\b|\bkneel down\b|\btook a knee\b|\bspiked?\s+the\s+ball\b")
+
+# The play types a dropback or a run is filed under, as substrings of the
+# lowered type: "Pass Reception", "Rushing Touchdown", "Sack", "Pass
+# Interception Return", "Fumble Recovery (Own)", "Safety".
+_DOWN_TYPES = ("pass", "rush", "sack", "interception", "fumble", "safety")
+
+# Special teams, which a punt or kick return touchdown and a blocked kick are
+# filed as too.
+_KICKS = ("punt", "field goal")
+
 
 def current_fit(league: str) -> EpaFit:
     """What an index built right now would be built by.
@@ -96,11 +126,50 @@ def current_fit(league: str) -> EpaFit:
         reading=EPA_READING,
         weight_power=WEIGHT_POWER,
         since=SINCE,
+        success=SUCCESS,
+    )
+
+
+def is_down(play_type: str | None, text: str | None) -> bool:
+    """Whether a snap is a dropback or a run -- one a success rate is over.
+
+    A null type is not one, unlike `lucky_ones`' snap filter: that filter
+    keeps what it can't place because a snap left out of expected points is
+    a hole in the curve, where one left out of a success rate is a slightly
+    smaller denominator.
+    """
+    lowered = (play_type or "").lower()
+    if not lowered or lowered == "penalty" or any(kick in lowered for kick in _KICKS):
+        return False
+    if _CLOCK_PLAY.search((text or "").lower()):
+        return False
+    return any(kind in lowered for kind in _DOWN_TYPES)
+
+
+def _success(
+    game: GamePlays, plays: Sequence[PlayEPA]
+) -> tuple[float | None, float | None, int, int]:
+    """Each offense's success rate and its dropbacks and runs: home, away, then counts."""
+    by_id = {play.play_id: play for play in game.plays}
+    won = {True: 0, False: 0}
+    downs = {True: 0, False: 0}
+    for snap in plays:
+        play = by_id.get(snap.play_id)
+        if play is None or not is_down(play.play_type, play.text):
+            continue
+        downs[snap.offense_is_home] += 1
+        won[snap.offense_is_home] += snap.epa > 0
+    home, away = downs[True], downs[False]
+    return (
+        won[True] / home if home else None,
+        won[False] / away if away else None,
+        home,
+        away,
     )
 
 
 def _score(league: str, game: GamePlays) -> GameEpa | None:
-    """One game's EPA per play, both readings, or None if an offense had no snaps.
+    """One game's EPA per play, both readings, and its success rates.
 
     The unweighted reading -- `home_unweighted` and `away_unweighted`, every
     regulation snap counted once -- is what `home` and `away` hold, for the
@@ -114,10 +183,14 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
     no snaps. The weighted reading can be missing on its own -- a side whose
     every snap came with the game decided -- and that is a game with a flat
     reading and no weighted one, which is what the tuple's None means.
+
+    The success rates come off the same snaps' raw EPA, over the dropbacks
+    and runs `is_down` picks out; see `SUCCESS`.
     """
     scored = MODELS[league].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
     if scored.home_unweighted is None or scored.away_unweighted is None:
         return None
+    home_success, away_success, home_downs, away_downs = _success(game, scored.plays)
     return GameEpa(
         home=scored.home_unweighted,
         away=scored.away_unweighted,
@@ -127,6 +200,10 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
         away_weighted=scored.away,
         home_weight=scored.home_weight,
         away_weight=scored.away_weight,
+        home_success=home_success,
+        away_success=away_success,
+        home_success_plays=home_downs,
+        away_success_plays=away_downs,
     )
 
 

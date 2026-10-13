@@ -122,6 +122,12 @@ class EpaFit(BaseModel):
     a different set of games, which is the definition of one that has to
     be rebuilt rather than topped up.
 
+    `success` names the rule that decides which snaps a success rate is
+    over and what counts as one (`cassandra.epa_build.SUCCESS`). Required
+    for the reason `weight_power` is: every file written before the rows
+    carried a success rate fails to parse, and is swept again rather than
+    read as a league whose offenses never succeeded.
+
     Together these are what makes the sweep idempotent: a stage that finds
     its own fit already stored has nothing to do, and one that finds a
     different one has to rebuild rather than merge into numbers from another
@@ -141,6 +147,7 @@ class EpaFit(BaseModel):
     reading: str
     weight_power: float
     since: int
+    success: str
 
 
 class EpaFile(BaseModel):
