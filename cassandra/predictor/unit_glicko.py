@@ -256,15 +256,29 @@ worth. Each has its own constants in `SUCCESS_SCALE`. On the NFL the
 weighted rate is worse: at the 0.75 fit's knobs, -7.4 on 2014-2026 against
 the published model where the unweighted gains -8.5, and -5.6 held out
 against -9.5. On ncaafb the two are even, -0.2 (t -0.3) at the published
-roster model's knobs and -0.3 with each refit.
+roster model's knobs and -0.2 with each refit.
 
-Nor has ncaafb shown it wants success rate at all. Replayed through the
+ncaafb's whole-model refits don't carry over. Replayed through the
 published `glicko_margin_units_roster`, with the eight knobs and
 `unit_weight` refit on FBS v FBS brier through 2021: every success-rate
 fit -- unweighted, weighted, or blended with the weighted EPA -- goes to
-weight 1 and beats the same refit on EPA by 1.6 to 2.7 on FBS games
-2014-2026 and loses by about 3 on the held-out 2022-2026, no |t| above
-1 either way, while one season alone swings by 20. Its weight is 0
+weight 1 and beats the same refit on EPA by 1.6 to 2.6 on FBS games
+2014-2026 and loses by 2.5 to 3.1 on the held-out 2022-2026, no |t|
+above 1 either way, while one season alone swings by 20. The loss is the
+refit's clocks rather than its reading: at those knobs EPA itself is 5.6
+worse held out.
+
+`defense_success_weight` gives the defenses a blend of their own -- None,
+the default, reads `success_weight` for both. A contest then carries two
+readings, and each unit steps on its own innovation against the same
+expectation. Success rate is an offense's number. On the NFL, at the
+joint refit's knobs below, the offense's weight from 0 to 1 moves
+2014-2026 by -12.5 and the defense's by 0.3 at most -- though the NFL's
+fits hold the defense nearly still whatever it reads. On ncaafb, at the
+EPA refit's knobs, the offense alone at 0.5 gains 1.4 on FBS games
+2014-2026 (t -1.5, 9 seasons of 13), 1.4 held out and 2.5 after a
+team's fourth game (t -2.7), and costs 1.0 in its first four; the
+defense alone gains 0.1 and loses 1.7 held out. ncaafb's weights are 0
 until a search says otherwise.
 
 Across conferences
@@ -490,6 +504,9 @@ class _Contest(NamedTuple):
     epa: float
     noise: float
     base: float
+    # What the defense's step reads, where it differs from the offense's --
+    # see `defense_success_weight`. None is the same reading.
+    defense_epa: float | None = None
 
 
 class UnitMarginGlickoPredictor(MarginGlickoPredictor):
@@ -543,6 +560,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # rate, and which success rate; see "Success rate".
         success_weight: float = 0.0,
         success_reading: str = UNWEIGHTED,
+        # The defenses' own blend; None reads `success_weight` for both.
+        defense_success_weight: float | None = None,
         # How far a reading is expected to move across an anchor gap, as a
         # share of what `points_per_epa` converts it to; see "Across
         # conferences".
@@ -661,9 +680,15 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # Teams whose quarterback shift waits on their first game this
         # season. In-season state, like the smoother's ledger.
         self._qb_pending: set[str] = set()
-        if not 0.0 <= success_weight <= 1.0:
-            raise ValueError(f"success_weight must be in [0, 1], got {success_weight}")
-        if success_weight and league not in SUCCESS_SCALE:
+        if defense_success_weight is None:
+            defense_success_weight = success_weight
+        for name, weight in (
+            ("success_weight", success_weight),
+            ("defense_success_weight", defense_success_weight),
+        ):
+            if not 0.0 <= weight <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {weight}")
+        if (success_weight or defense_success_weight) and league not in SUCCESS_SCALE:
             # A blend needs the league's scale, and a guessed one is a
             # weight nobody chose.
             raise ValueError(f"no success-rate scale for {league!r}")
@@ -672,6 +697,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 f"success_reading must be {UNWEIGHTED!r} or {WEIGHTED!r}, got {success_reading!r}"
             )
         self._success_weight = success_weight
+        self._defense_success_weight = defense_success_weight
         self._success_reading = success_reading
         self._anchor_epa_scale = _non_negative("anchor_epa_scale", anchor_epa_scale)
         self._coach_change_rd = _non_negative("coach_change_rd", coach_change_rd)
@@ -903,15 +929,22 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         epa = self._game_epa.get(game.game_id)
         if epa is None or not epa.home_plays or not epa.away_plays:
             return
-        home_reading, away_reading = self._reading(epa)
+        home_reading, away_reading = self._reading(epa, self._success_weight)
+        # Read before this game joins it: a contest is measured against the
+        # league as it stood, not partly against itself.
         center = self.epa_center
-        self._center_sum += home_reading + away_reading
+        if self._defense_success_weight == self._success_weight:
+            home_against = away_against = None
+            self._center_sum += home_reading + away_reading
+        else:
+            home_against, away_against = self._reading(epa, self._defense_success_weight)
+            self._center_sum += (home_reading + away_reading + home_against + away_against) / 2
         self._center_count += 2
         per_play = self.points_per_rating / (2 * self._points_per_epa)
         gap = edge + self._anchor_epa_scale * (self.anchor(game.home) - self.anchor(game.away))
-        for offense, defense, reading, snaps, sign in (
-            (game.home, game.away, home_reading, epa.home_plays, 1.0),
-            (game.away, game.home, away_reading, epa.away_plays, -1.0),
+        for offense, defense, reading, against, snaps, sign in (
+            (game.home, game.away, home_reading, home_against, epa.home_plays, 1.0),
+            (game.away, game.home, away_reading, away_against, epa.away_plays, -1.0),
         ):
             contest = _Contest(
                 offense=offense,
@@ -919,6 +952,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 epa=reading,
                 noise=self._play_sd**2 / snaps,
                 base=center + sign * gap * per_play,
+                defense_epa=against,
             )
             self._contests_this_week.append(contest)
             attack, guard = self._offsets(offense), self._offsets(defense)
@@ -928,16 +962,16 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             self._sides[offense] = attack._replace(offense=new_offense)
             self._sides[defense] = self._offsets(defense)._replace(defense=new_defense)
 
-    def _reading(self, epa: GameEpa) -> tuple[float, float]:
+    def _reading(self, epa: GameEpa, weight: float) -> tuple[float, float]:
         """What each offense read in this game, home then away, on EPA's scale.
 
-        EPA per play at `success_weight` 0, success rate on EPA's scale at
-        1, and the blend between. Over EPA's snap count either way, so a
+        EPA per play at `weight` 0, success rate on EPA's scale at 1, and
+        the blend between: `success_weight` for what the offenses step on,
+        `defense_success_weight` for the defenses. Over EPA's snap count either way, so a
         game's noise is priced as it always was. A game with no success
         rate -- an index swept before it carried one, or a weighted one
         whose every snap came with the game decided -- reads its EPA alone.
         """
-        weight = self._success_weight
         if not weight:
             return epa.home, epa.away
         if self._success_reading == WEIGHTED:
@@ -1117,6 +1151,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "offense_returning_shift": self._offense_returning_shift,
             "defense_returning_shift": self._defense_returning_shift,
             "success_weight": self._success_weight,
+            "defense_success_weight": self._defense_success_weight,
             "success_reading": self._success_reading,
             "anchor_epa_scale": self._anchor_epa_scale,
             "coach_change_rd": self._coach_change_rd,
@@ -1215,19 +1250,23 @@ def _contest_step(
 
     Each unit's gain is its own variance over the innovation's, which is
     both variances and the reading's noise: the joint step's marginals, the
-    cross-covariance it would build dropped as Glicko drops it.
+    cross-covariance it would build dropped as Glicko drops it. A contest
+    with a reading of its own for the defense steps each unit on its own
+    innovation, against the same expectation.
     """
     p2 = offense.rating_deviation**2
     q2 = defense.rating_deviation**2
     total = p2 + q2 + contest.noise
-    innovation = contest.epa - (contest.base + offense.rating - defense.rating)
+    expected = contest.base + offense.rating - defense.rating
+    innovation = contest.epa - expected
+    against = innovation if contest.defense_epa is None else contest.defense_epa - expected
     return (
         _Rating(
             offense.rating + p2 / total * innovation,
             math.sqrt(p2 * (1 - p2 / total)),
         ),
         _Rating(
-            defense.rating - q2 / total * innovation,
+            defense.rating - q2 / total * against,
             math.sqrt(q2 * (1 - q2 / total)),
         ),
     )
