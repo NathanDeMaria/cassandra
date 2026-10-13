@@ -158,6 +158,12 @@ class GameEpa(NamedTuple):
     that reason; see `cassandra.predictor.unit_glicko`. None, like the
     weighted pair, for a side with no dropbacks or runs, and for a row
     built without it.
+
+    `home_success_weighted` and `away_success_weighted` are the same share
+    with each snap weighted as the weighted EPA pair weights it, so a
+    blowout's fourth quarter of backups counts for what it is worth. Over
+    the same dropbacks and runs; None where the weights sum to nothing,
+    like the weighted EPA.
     """
 
     home: float
@@ -172,6 +178,8 @@ class GameEpa(NamedTuple):
     away_success: float | None = None
     home_success_plays: int = 0
     away_success_plays: int = 0
+    home_success_weighted: float | None = None
+    away_success_weighted: float | None = None
 
 
 class Prediction(NamedTuple):
