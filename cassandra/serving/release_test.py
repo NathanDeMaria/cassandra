@@ -27,10 +27,12 @@ from cassandra.predictor import (
 from cassandra.prob_to_margin import (
     IsotonicProbToMarginFitter,
     LogisticProbToMarginFitter,
+    MarginKernelFitter,
 )
 
 from .release import (
     IsotonicMarginCalibration,
+    KernelMarginCalibration,
     LogisticMarginCalibration,
     MarginCalibration,
     Metrics,
@@ -628,4 +630,61 @@ print("numba" in sys.modules)
         check=True,
     )
 
+    assert result.stdout.strip() == "False"
+
+
+def _kernel_calibration() -> KernelMarginCalibration:
+    games = _games()
+    kernel = MarginKernelFitter(max_margin=30).fit(
+        games["team1_win_prob"].to_numpy(), games["team1_mov"].to_numpy()
+    )
+    return KernelMarginCalibration.model_validate(kernel.to_dict())
+
+
+def test_carries_a_margin_kernel_through_json_and_back() -> None:
+    calibration = _kernel_calibration()
+    release = _release().model_copy(update={"margin_kernel": calibration})
+
+    restored = ModelRelease.model_validate_json(release.model_dump_json())
+
+    kernel = restored.kernel()
+    assert kernel is not None
+    probs = np.array([0.25, 0.5, 0.8])
+    assert kernel.pmfs(probs) == pytest.approx(calibration.to_kernel().pmfs(probs))
+    cover = kernel.distribution(0.8).p_cover(-3.5)
+    assert cover.cover + cover.push + cover.lose == pytest.approx(1.0)
+
+
+def test_a_release_from_before_kernels_still_reads() -> None:
+    payload = json.loads(_release().model_dump_json())
+    del payload["margin_kernel"]
+
+    assert ModelRelease.model_validate(payload).kernel() is None
+
+
+def test_reading_a_kernel_never_imports_scipy() -> None:
+    """The kernel's fit needs scipy; reading and applying it must not.
+
+    Same subprocess trick as `test_reading_a_release_never_imports_sklearn`.
+    """
+    source = """
+import json, sys
+from cassandra.serving import ModelRelease
+
+release = ModelRelease.model_validate(json.load(sys.stdin))
+assert release.kernel().distribution(0.7).p_cover(-3.0).cover > 0
+print(any(m == "scipy" or m.startswith(("scipy.", "sklearn")) for m in sys.modules))
+"""
+    payload = (
+        _release()
+        .model_copy(update={"margin_kernel": _kernel_calibration()})
+        .model_dump_json()
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", source],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert result.stdout.strip() == "False"

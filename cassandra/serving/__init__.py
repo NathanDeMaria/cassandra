@@ -25,6 +25,7 @@ from .predictions import (
 )
 from .release import (
     IsotonicMarginCalibration,
+    KernelMarginCalibration,
     LogisticMarginCalibration,
     MarginCalibration,
     Metrics,
