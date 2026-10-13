@@ -29,6 +29,7 @@ from cassandra.epa_build import (
     WEIGHT_POWER,
     build,
     current_fit,
+    is_down,
     sweep,
     write,
 )
@@ -110,6 +111,65 @@ def test_the_weighted_reading_rides_alongside() -> None:
     assert 0 < epa["g1"].home_weight <= epa["g1"].home_plays
 
 
+def test_success_rate_is_the_share_of_dropbacks_and_runs_that_added_points() -> None:
+    """Off the same snaps' raw EPA, with a punt and a kneel left out of it.
+
+    Counted against `lucky_ones`' own per-play numbers on the same game, so
+    what is asserted is the rule -- which snaps, which sign -- and not what
+    a crude fixture's expected points happen to come to.
+    """
+    plays = _plays("g1")
+    punt, kneel = plays[5], plays[9]
+    plays[5] = punt._replace(play_type="Punt")
+    plays[9] = kneel._replace(text="Smith kneels to NE 30 for -1 yards.")
+    game = next(iter(group_by_game(plays)))
+    scored = MODELS[_LEAGUE].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
+    left_out = {punt.play_id, kneel.play_id}
+
+    epa, _ = asyncio.run(
+        sweep(_LEAGUE, [_season(2025, "g1")], _Source({(2025, 1): plays}))
+    )
+
+    for home in (True, False):
+        downs = [
+            p for p in scored.plays if p.offense_is_home is home and p.play_id not in left_out
+        ]
+        expected = sum(p.epa > 0 for p in downs) / len(downs)
+        side = "home" if home else "away"
+        assert getattr(epa["g1"], f"{side}_success_plays") == len(downs)
+        assert getattr(epa["g1"], f"{side}_success") == pytest.approx(expected)
+    assert 0 < epa["g1"].home_success_plays < epa["g1"].home_plays + epa["g1"].away_plays
+
+
+@pytest.mark.parametrize(
+    ("play_type", "text", "counts"),
+    [
+        ("Rush", "Smith up the middle for 4 yards", True),
+        ("Pass Reception", None, True),
+        ("Pass Incompletion", None, True),
+        ("Sack", None, True),
+        ("Pass Interception Return", None, True),
+        ("Fumble Recovery (Own)", None, True),
+        ("Rushing Touchdown", None, True),
+        ("Safety", None, True),
+        ("Punt", None, False),
+        ("Punt Return Touchdown", None, False),
+        ("Field Goal Good", None, False),
+        ("Blocked Field Goal", None, False),
+        ("Penalty", "False Start on Smith", False),
+        ("Rush", "Mahomes kneels to KC 34 for -1 yards.", False),
+        ("Pass Incompletion", "(:08) Allen spiked the ball to stop the clock.", False),
+        # A tackle by a Spikes is a down like any other.
+        ("Rush", "Smith left end to NE 40 for 3 yards (B.Spikes).", True),
+        (None, None, False),
+    ],
+)
+def test_which_snaps_a_success_rate_is_over(
+    play_type: str | None, text: str | None, counts: bool
+) -> None:
+    assert is_down(play_type, text) is counts
+
+
 def test_the_play_counts_are_the_denominators_that_were_used() -> None:
     """The honesty field, and what turns the averages back into points."""
     plays = _plays("g1")
@@ -176,6 +236,7 @@ def test_an_unchanged_fit_only_re_sweeps_the_newest_season() -> None:
         {"reading": "weighted"},
         {"weight_power": 1.0},
         {"since": 2006},
+        {"success": "epa>0, every snap"},
     ],
 )
 def test_any_field_of_the_fit_moving_rebuilds_the_league(changed: dict) -> None:
