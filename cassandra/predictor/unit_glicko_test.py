@@ -8,6 +8,7 @@ that with the weight off or the index empty the parent is all there is.
 """
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 
 from ..offseason import OffseasonFact, OffseasonFacts
 from ..roster import RosterIndex
+from . import unit_glicko
 from .base_predictor import MEAN_RATING, Anchor
 from .conftest import GameFactory
 from .epa import EpaIndex
@@ -544,3 +546,141 @@ def test_returning_production_is_not_a_matchup_term(game: GameFactory) -> None:
     assert read.matchup_adjustment(game("A", "B")) == plain.matchup_adjustment(
         game("A", "B")
     )
+
+
+# --- success rate -------------------------------------------------------------
+
+
+# The test league's success rate on EPA's scale: 1.5 x rate - 0.6, so a 60%
+# day reads as +0.3 and a 40% day as 0.0.
+_SCALE = (1.5, -0.6)
+
+
+@pytest.fixture
+def scaled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(unit_glicko.SUCCESS_SCALE, "test_league", _SCALE)
+
+
+def _both(epa: float, success: float, plays: int = 70) -> GameEpa:
+    """A game the home offense read `epa` and `success` in; the away side read par."""
+    return GameEpa(epa, 0.0, plays, plays, None, None, 0.0, 0.0, success, 0.4, plays, plays)
+
+
+@pytest.mark.usefixtures("scaled")
+def test_no_success_weight_is_the_epa_model(game: GameFactory) -> None:
+    plain = _predictor({"g": LOPSIDED})
+    carried = _predictor({"g": LOPSIDED._replace(home_success=0.2, away_success=0.7)})
+    for predictor in (plain, carried):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert carried.get_sides("A") == plain.get_sides("A")
+    assert carried.get_sides("B") == plain.get_sides("B")
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_full_weight_reads_the_success_rate_and_not_the_epa(game: GameFactory) -> None:
+    """A game that lost EPA on one long turnover and won most of its downs."""
+    predictor = _predictor({"g": _both(-0.2, 0.6)}, success_weight=1.0)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert predictor.get_sides("A").offense.rating > 0
+
+
+@pytest.mark.usefixtures("scaled")
+def test_the_blend_sits_between_its_two_readings(game: GameFactory) -> None:
+    """Linear in the weight: the filter's step is linear in what it reads."""
+    offense = {}
+    for weight in (0.0, 0.5, 1.0):
+        predictor = _predictor({"g": _both(-0.2, 0.6)}, success_weight=weight)
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+        offense[weight] = predictor.get_sides("A").offense.rating
+    assert offense[0.5] == pytest.approx((offense[0.0] + offense[1.0]) / 2)
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_game_without_a_success_rate_reads_its_epa(game: GameFactory) -> None:
+    plain = _predictor({"g": LOPSIDED})
+    blended = _predictor({"g": LOPSIDED}, success_weight=0.75)
+    for predictor in (plain, blended):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert blended.get_sides("A") == plain.get_sides("A")
+
+
+@pytest.mark.parametrize("weight", [-0.1, 1.1])
+def test_a_success_weight_outside_the_blend_is_refused(weight: float) -> None:
+    with pytest.raises(ValueError):
+        _predictor(success_weight=weight)
+
+
+def test_a_success_weight_needs_the_league_scale() -> None:
+    with pytest.raises(ValueError, match="scale"):
+        _predictor(success_weight=0.5)
+
+
+# --- a new head coach ---------------------------------------------------------
+
+
+FIRED = OffseasonFacts({("A", 2024): OffseasonFact("fired", None, 0.0)})
+
+
+def test_a_new_coach_widens_the_record_and_each_side_by_its_own(
+    game: GameFactory,
+) -> None:
+    knobs: dict[str, Any] = {
+        "coach_change_rd": 40.0,
+        "coach_change_offense_sd": 0.2,
+        "coach_change_defense_sd": 0.0,
+    }
+    plain = _predictor({"g": LOPSIDED}, **knobs)
+    fired = _predictor({"g": LOPSIDED}, offseason=FIRED, **knobs)
+    for predictor in (plain, fired):
+        _into_2024(predictor, game)
+
+    before, after = plain.get_rating("A"), fired.get_rating("A")
+    assert after.rating == before.rating
+    assert after.rating_deviation == pytest.approx(
+        min(fired._initial_rd, math.hypot(before.rating_deviation, 40.0))
+    )
+    old, new = plain.get_sides("A"), fired.get_sides("A")
+    # Past the side's own cap: a new staff is more than a season's forgetting.
+    assert new.offense.rating_deviation == pytest.approx(
+        math.hypot(old.offense.rating_deviation, 0.2)
+    )
+    assert new.offense.rating_deviation > DEFAULT_OFFENSE_INITIAL_SD
+    assert new.defense == old.defense
+    assert fired.get_sides("B") == plain.get_sides("B")
+
+
+def test_a_widened_side_is_not_narrowed_by_a_quiet_week(game: GameFactory) -> None:
+    predictor = _predictor(
+        {"g": LOPSIDED},
+        offseason=FIRED,
+        coach_change_offense_sd=0.2,
+        offense_weekly_sd_increase=0.05,
+    )
+    _into_2024(predictor, game)
+    widened = predictor.get_sides("A").offense.rating_deviation
+
+    predictor.pass_week()
+
+    assert predictor.get_sides("A").offense.rating_deviation == widened
+
+
+@pytest.mark.usefixtures("scaled")
+def test_the_new_knobs_round_trip() -> None:
+    predictor = _predictor(
+        success_weight=0.6,
+        coach_change_rd=35.0,
+        coach_change_offense_sd=0.1,
+        coach_change_defense_sd=0.05,
+    )
+    state = json.loads(json.dumps(predictor.state_dict()))
+    loaded = UnitMarginGlickoPredictor.from_state_dict(
+        {
+            **state,
+            "game_epa": EpaIndex(),
+            "offseason": OffseasonFacts(),
+            "talent": RosterIndex(),
+            "offense_returning": RosterIndex(),
+            "defense_returning": RosterIndex(),
+        }
+    )
+    assert loaded.state_dict() == predictor.state_dict()
