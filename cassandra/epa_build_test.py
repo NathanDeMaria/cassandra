@@ -135,10 +135,14 @@ def test_success_rate_is_the_share_of_dropbacks_and_runs_that_added_points() -> 
             p for p in scored.plays if p.offense_is_home is home and p.play_id not in left_out
         ]
         expected = sum(p.epa > 0 for p in downs) / len(downs)
+        weighted = sum(p.weight * (p.epa > 0) for p in downs) / sum(p.weight for p in downs)
         side = "home" if home else "away"
         assert getattr(epa["g1"], f"{side}_success_plays") == len(downs)
         assert getattr(epa["g1"], f"{side}_success") == pytest.approx(expected)
+        assert getattr(epa["g1"], f"{side}_success_weighted") == pytest.approx(weighted)
     assert 0 < epa["g1"].home_success_plays < epa["g1"].home_plays + epa["g1"].away_plays
+    # The fixture is a runaway, so the weights differ and a swap would show.
+    assert epa["g1"].home_success_weighted != pytest.approx(epa["g1"].home_success)
 
 
 @pytest.mark.parametrize(

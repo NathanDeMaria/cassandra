@@ -189,7 +189,7 @@ def test_a_file_written_before_success_rates_is_no_file(tmp_path: Path) -> None:
 
 
 def test_success_rates_round_trip_through_the_file(tmp_path: Path) -> None:
-    game = GameEpa(0.1, -0.05, 64, 58, None, None, 0.0, 0.0, 0.48, 0.41, 56, 51)
+    game = GameEpa(0.1, -0.05, 64, 58, None, None, 0.0, 0.0, 0.48, 0.41, 56, 51, 0.45, 0.43)
     _write(tmp_path, "nfl", {"g1": game})
 
     assert load_epa("nfl")["g1"] == game

@@ -23,6 +23,7 @@ down -- this pins it, it doesn't second-guess it.
 import json
 import re
 from collections.abc import Mapping, Sequence
+from typing import NamedTuple
 
 from endgame.types import Season
 from lucky_ones import MODELS, GamePlays
@@ -93,7 +94,12 @@ SINCE = FIRST_LEGIBLE_SEASON
 # the defense won, a penalty that wiped the play out has no play in it, and
 # a kneel or a spike is the clock. Measured on the NFL 2006-2026, those are
 # a tenth of regulation snaps; what is left succeeds 45% of the time.
-SUCCESS = "epa>0, dropbacks and runs, no kneels or spikes"
+#
+# Two rates off those snaps: every snap once, and each weighted by the
+# competitiveness `WEIGHT_POWER` sets, as the two EPA readings are. ncaafb's
+# units want the second -- a third of a mismatch is backups against backups
+# -- and the NFL's the first; see `cassandra.predictor.unit_glicko`.
+SUCCESS = "epa>0, dropbacks and runs, no kneels or spikes; unweighted and weighted"
 
 # Kneels and spikes, off the play text: both are filed as an ordinary run or
 # incompletion. Never a bare "spike" -- Takeo and Brandon Spikes made a lot
@@ -146,25 +152,38 @@ def is_down(play_type: str | None, text: str | None) -> bool:
     return any(kind in lowered for kind in _DOWN_TYPES)
 
 
-def _success(
-    game: GamePlays, plays: Sequence[PlayEPA]
-) -> tuple[float | None, float | None, int, int]:
-    """Each offense's success rate and its dropbacks and runs: home, away, then counts."""
+class _Success(NamedTuple):
+    home: float | None
+    away: float | None
+    home_downs: int
+    away_downs: int
+    home_weighted: float | None
+    away_weighted: float | None
+
+
+def _success(game: GamePlays, plays: Sequence[PlayEPA]) -> _Success:
+    """Each offense's success rate, unweighted and weighted, and its dropbacks and runs."""
     by_id = {play.play_id: play for play in game.plays}
     won = {True: 0, False: 0}
     downs = {True: 0, False: 0}
+    won_weight = {True: 0.0, False: 0.0}
+    weight = {True: 0.0, False: 0.0}
     for snap in plays:
         play = by_id.get(snap.play_id)
         if play is None or not is_down(play.play_type, play.text):
             continue
-        downs[snap.offense_is_home] += 1
-        won[snap.offense_is_home] += snap.epa > 0
-    home, away = downs[True], downs[False]
-    return (
-        won[True] / home if home else None,
-        won[False] / away if away else None,
-        home,
-        away,
+        side = snap.offense_is_home
+        downs[side] += 1
+        won[side] += snap.epa > 0
+        weight[side] += snap.weight
+        won_weight[side] += snap.weight * (snap.epa > 0)
+    return _Success(
+        home=won[True] / downs[True] if downs[True] else None,
+        away=won[False] / downs[False] if downs[False] else None,
+        home_downs=downs[True],
+        away_downs=downs[False],
+        home_weighted=won_weight[True] / weight[True] if weight[True] else None,
+        away_weighted=won_weight[False] / weight[False] if weight[False] else None,
     )
 
 
@@ -185,12 +204,13 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
     reading and no weighted one, which is what the tuple's None means.
 
     The success rates come off the same snaps' raw EPA, over the dropbacks
-    and runs `is_down` picks out; see `SUCCESS`.
+    and runs `is_down` picks out, once unweighted and once by the same
+    weights as the weighted EPA; see `SUCCESS`.
     """
     scored = MODELS[league].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
     if scored.home_unweighted is None or scored.away_unweighted is None:
         return None
-    home_success, away_success, home_downs, away_downs = _success(game, scored.plays)
+    success = _success(game, scored.plays)
     return GameEpa(
         home=scored.home_unweighted,
         away=scored.away_unweighted,
@@ -200,10 +220,12 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
         away_weighted=scored.away,
         home_weight=scored.home_weight,
         away_weight=scored.away_weight,
-        home_success=home_success,
-        away_success=away_success,
-        home_success_plays=home_downs,
-        away_success_plays=away_downs,
+        home_success=success.home,
+        away_success=success.away,
+        home_success_plays=success.home_downs,
+        away_success_plays=success.away_downs,
+        home_success_weighted=success.home_weighted,
+        away_success_weighted=success.away_weighted,
     )
 
 
