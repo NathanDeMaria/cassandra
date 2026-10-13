@@ -3,6 +3,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import numpy as np
 import pandas as pd
 from endgame.types import Season
 
@@ -12,6 +13,7 @@ from .odds import OddsDatabase
 from .predictor import OptimizationConfig, Predictor, load_predictor
 from .predictor import frame as frames
 from .predictor.config import load_predictor_class
+from .predictor.distribution import DiscreteMargin
 from .predictor.opponent_prior import OpponentPriorManager
 from .prob_to_margin import (
     BaseProbToMarginFitter,
@@ -19,6 +21,8 @@ from .prob_to_margin import (
     IsotonicProbToMarginFitter,
     LogisticProbToMarginFitter,
     MaeLogisticProbToMarginFitter,
+    MarginKernel,
+    MarginKernelFitter,
 )
 from .save_predictions import build_predictions_df, join_with_odds, read_league
 
@@ -31,6 +35,14 @@ DEFAULT_FITTERS: dict[str, BaseProbToMarginFitter] = {
     # margin vs. the margin to bet -- and a release that wants the mean can
     # still be pointed at the fit that estimates it.
     "logistic_mae": MaeLogisticProbToMarginFitter(),
+}
+
+#: Fits that say how likely every margin is, not just which one to expect.
+#: Scored beside `DEFAULT_FITTERS` by evaluate (`score_kernel`), and kept out
+#: of that dict on purpose: publish picks a release's calibration from it,
+#: and the kernels aren't competing for that yet.
+KERNEL_FITTERS: dict[str, MarginKernelFitter] = {
+    "cumulative_logit": MarginKernelFitter(),
 }
 
 
@@ -275,6 +287,87 @@ def _market_metrics(df: pd.DataFrame) -> dict[str, float]:
         "market_brier_score": float(((priced[column] - won) ** 2).mean()),
         "market_game_brier_score": brier_score_df(priced),
         "n_market_games": len(priced),
+    }
+
+
+def score_kernel(df: pd.DataFrame, fitter: MarginKernelFitter) -> ScoredPredictions:
+    """`score_predictions` for a kernel, plus what only a distribution can score.
+
+    Everything `score_predictions` reports, with the kernel's median as the
+    predicted margin, so a kernel's row reads against the other fitters'.
+    Then, on every game:
+
+    - `margin_log_loss`, the mean of -log P(the margin it finished at);
+    - `margin_rps`, the ranked probability score: the squared distance
+      between the predicted and the realized cdf, summed over every margin,
+      so a near miss costs less than a far one;
+    - `kernel_win_prob_gap`, the mean distance between the kernel's own win
+      probability -- ties split -- and the model's, which is the one the
+      pipeline keeps reading.
+
+    And on the lined games, each graded from the home side the way
+    `GameDfColumns.SPREAD` is quoted:
+
+    - `cover_brier`, on P(cover) given no push, over the games that didn't;
+    - `push_brier`, on P(push), over the lines a push was possible on;
+    - `cover_pick_accuracy`, betting whichever side is likelier to cover --
+      the bet the distribution says to make, where `against_spread_accuracy`
+      is the median's. Graded like it: a push counts against the home side.
+    """
+    scored = score_predictions(df, fitter)
+    kernel = scored.margin_predictor
+    if not isinstance(kernel, MarginKernel):
+        raise TypeError(f"{type(fitter).__name__} did not fit a MarginKernel")
+    games = df.assign(team1_mov=lambda x: x.home_score - x.away_score)
+    return ScoredPredictions(
+        metrics={
+            **scored.metrics,
+            **_margin_metrics(games, kernel),
+            **_cover_metrics(games, kernel),
+        },
+        margin_predictor=kernel,
+    )
+
+
+def _margin_metrics(games: pd.DataFrame, kernel: MarginKernel) -> dict[str, float]:
+    k = kernel.max_margin
+    win_probs = games[GameDfColumns.TEAM1_WIN_PROB].to_numpy()
+    cdfs = kernel.cdfs(win_probs)
+    pmfs = np.diff(cdfs, axis=1, prepend=0.0)
+    cells = np.clip(np.rint(games["team1_mov"].to_numpy()).astype(int), -k, k) + k
+    realized = np.arange(2 * k)[None, :] >= cells[:, None]
+    kernel_win = 1 - cdfs[:, k] + 0.5 * pmfs[:, k]
+    return {
+        "margin_log_loss": float(
+            -np.log(np.maximum(pmfs[np.arange(len(cells)), cells], 1e-300)).mean()
+        ),
+        "margin_rps": float(((cdfs[:, :-1] - realized) ** 2).sum(axis=1).mean()),
+        "kernel_win_prob_gap": float(np.abs(kernel_win - win_probs).mean()),
+    }
+
+
+def _cover_metrics(games: pd.DataFrame, kernel: MarginKernel) -> dict[str, float]:
+    lined = games[games[GameDfColumns.SPREAD].notna()]
+    if lined.empty:
+        nan = float("nan")
+        return {"cover_brier": nan, "push_brier": nan, "cover_pick_accuracy": nan}
+    pmfs = kernel.pmfs(lined[GameDfColumns.TEAM1_WIN_PROB].to_numpy())
+    covers = [
+        DiscreteMargin(-kernel.max_margin, pmf).p_cover(spread)
+        for pmf, spread in zip(pmfs, lined[GameDfColumns.SPREAD], strict=True)
+    ]
+    cover = np.array([c.cover for c in covers])
+    push = np.array([c.push for c in covers])
+    lose = np.array([c.lose for c in covers])
+    settled = lined[GameDfColumns.SPREAD].to_numpy() + lined["team1_mov"].to_numpy()
+    pushable = lined[GameDfColumns.SPREAD].map(float.is_integer).to_numpy()
+    decided = settled != 0
+    return {
+        "cover_brier": float(
+            ((cover / (cover + lose) - (settled > 0))[decided] ** 2).mean()
+        ),
+        "push_brier": float(((push - (settled == 0))[pushable] ** 2).mean()),
+        "cover_pick_accuracy": float(((cover > lose) == (settled > 0)).mean()),
     }
 
 

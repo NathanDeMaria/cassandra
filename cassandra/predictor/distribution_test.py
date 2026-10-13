@@ -1,8 +1,10 @@
 import math
 
+import numpy as np
 import pytest
 
 from .distribution import (
+    DiscreteMargin,
     LogisticMargin,
     NormalMargin,
     collapse,
@@ -50,3 +52,36 @@ def test_a_spread_reads_off_the_cdf() -> None:
     margin = NormalMargin(7.0, 14.0, "points")
     assert 1 - margin.cdf(7.0) == pytest.approx(0.5)
     assert 1 - margin.cdf(3.0) > 0.5
+
+
+def _three_or_seven() -> DiscreteMargin:
+    """Home wins by 3 or 7, or loses by 3, in the shares below."""
+    pmf = np.zeros(21)
+    for margin, share in ((-3, 0.2), (3, 0.5), (7, 0.3)):
+        pmf[margin + 10] = share
+    return DiscreteMargin(-10, pmf)
+
+
+def test_a_discrete_margin_reads_its_moments_and_cdf() -> None:
+    margin = _three_or_seven()
+    assert margin.mean == pytest.approx(-0.6 + 1.5 + 2.1)
+    assert margin.cdf(3) == pytest.approx(0.7)
+    assert margin.cdf(2.5) == pytest.approx(0.2)
+    assert margin.cdf(-50) == 0.0
+    assert margin.cdf(50) == pytest.approx(1.0)
+    assert margin.win_prob() == pytest.approx(0.8)
+
+
+def test_a_whole_number_line_can_push() -> None:
+    """Home -3: a 3-point win is a push, a 7-point one covers."""
+    assert _three_or_seven().p_cover(-3.0) == pytest.approx((0.3, 0.5, 0.2))
+
+
+def test_a_half_point_line_cannot() -> None:
+    assert _three_or_seven().p_cover(-3.5) == pytest.approx((0.3, 0.0, 0.7))
+    assert _three_or_seven().p_cover(-2.5) == pytest.approx((0.8, 0.0, 0.2))
+
+
+def test_a_home_underdog_covers_by_losing_close() -> None:
+    """Home +3: losing by 3 pushes, and every win covers."""
+    assert _three_or_seven().p_cover(3.0) == pytest.approx((0.8, 0.2, 0.0))
