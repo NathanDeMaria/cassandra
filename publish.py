@@ -64,6 +64,7 @@ from cassandra.constants import CASSANDRA_HOME
 from cassandra.markets import close_probabilities, market_databases
 from cassandra.model_eval import (
     DEFAULT_FITTERS,
+    KERNEL_FITTERS,
     ScoredPredictions,
     score_predictions,
 )
@@ -78,6 +79,7 @@ from cassandra.predictor import (
 from cassandra.predictor.qb_out import read_qb_out_file
 from cassandra.save_predictions import join_with_odds, read_rated_seasons
 from cassandra.serving import (
+    KernelMarginCalibration,
     ModelRelease,
     RatingHistory,
     TeamRating,
@@ -136,6 +138,17 @@ def _best_fit(df: pd.DataFrame) -> ScoredPredictions:
     for name, candidate in scored.items():
         print(f"  {name}: margin_mae={candidate.metrics['margin_mae']:.4f}")
     return min(scored.values(), key=lambda s: s.metrics["margin_mae"])
+
+
+def _kernel(df: pd.DataFrame) -> KernelMarginCalibration:
+    """The margin kernel, fit on the same predictions as the point margin.
+
+    Fit on every scored game, the way evaluate fits it, so a release's kernel
+    is the one evaluate's `cumulative_logit` row scores.
+    """
+    games = df.assign(team1_mov=lambda x: x.home_score - x.away_score)
+    kernel = KERNEL_FITTERS["cumulative_logit"].fit_df(games)
+    return KernelMarginCalibration.model_validate(kernel.to_dict())
 
 
 def _with_records(
@@ -220,6 +233,7 @@ def build_release(
         params=config.params,
         ratings=_with_records(ratings_from_predictor(predictor), df),
         margin_calibration=calibration_from_predictor(scored.margin_predictor),
+        margin_kernel=_kernel(df),
         metrics=metrics_from_scored(scored.metrics),
         trained_through=_trained_through(df),
         created_at=created_at,

@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from cassandra.predictor import Predictor, Rating, Unit, Units, load_predictor_class
-from cassandra.prob_to_margin import BaseProbToMarginPredictor
+from cassandra.prob_to_margin import BaseProbToMarginPredictor, MarginKernel
 
 
 class UnitRating(BaseModel):
@@ -187,6 +187,30 @@ class LogisticMarginCalibration(_MarginCalibrationBase):
     scale: float
 
 
+class KernelMarginCalibration(BaseModel):
+    """A probability on every integer margin, for reading a line against.
+
+    What `MarginKernel.to_dict` emits: the slope on the win probability's
+    logit, and the log of each gap between the cutpoints of the upper half
+    (the lower half is their mirror image). See `prob_to_margin.kernel`.
+
+    Not one of the `MarginCalibration` kinds, and not a replacement for
+    `margin_calibration`: that is still the fit publish chose for the point
+    margin. This is what turns a win probability into cover, push and lose at
+    any spread -- `kernel().distribution(p).p_cover(spread)` -- and its
+    P(margin > 0) is close to the win probability, not equal to it, so the
+    release's own win probability stays the one to show.
+    """
+
+    kind: Literal["cumulative_logit"]
+    slope: float
+    log_gaps: list[float]
+
+    def to_kernel(self) -> MarginKernel:
+        """Rebuild the kernel. numpy only: no scipy, no refit."""
+        return MarginKernel.from_dict(self.model_dump())
+
+
 MarginCalibration = Annotated[
     IsotonicMarginCalibration | LogisticMarginCalibration,
     Field(discriminator="kind"),
@@ -285,6 +309,8 @@ class ModelRelease(BaseModel):
     params: dict[str, float | str] = Field(default_factory=dict)
     ratings: dict[str, TeamRating] = Field(default_factory=dict)
     margin_calibration: MarginCalibration | None = None
+    # None for a release written before kernels were published.
+    margin_kernel: KernelMarginCalibration | None = None
     metrics: Metrics
     trained_through: TrainedThrough
     created_at: datetime
@@ -296,6 +322,12 @@ class ModelRelease(BaseModel):
         if self.margin_calibration is None:
             return None
         return self.margin_calibration.to_predictor()
+
+    def kernel(self) -> MarginKernel | None:
+        """The margin kernel as something you can call, or None if absent."""
+        if self.margin_kernel is None:
+            return None
+        return self.margin_kernel.to_kernel()
 
     def rating_predictor(self) -> Predictor:
         """The rating model, rebuilt from `predictor_class`, params and ratings.

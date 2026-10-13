@@ -893,3 +893,15 @@ class TestTheQuarterbackIndexIsPublishedBesideTheModels:
         assert (out / "models" / "nfl" / "qb_out.json").exists()
         assert (out / "models" / "nfl" / "elo" / "latest.json").exists()
         assert not (out / "models" / "mens" / "qb_out.json").exists()
+
+
+def test_a_release_carries_the_margin_kernel(tmp_path: Path) -> None:
+    """Fit beside the point margin, and readable on the far side of the file."""
+    release = _published(_config(), tmp_path)
+
+    kernel = release.kernel()
+    assert kernel is not None
+    assert release.margin_kernel is not None
+    assert release.margin_kernel.kind == "cumulative_logit"
+    cover = kernel.distribution(0.7).p_cover(-2.5)
+    assert cover.cover + cover.push + cover.lose == pytest.approx(1.0)
