@@ -107,7 +107,7 @@ from cassandra.residuals import team_tiers
 from cassandra.save_predictions import join_with_odds, read_all_seasons
 
 LEAGUE = "ncaafb"
-DEFAULT_MODEL = "glicko_margin_units_roster"
+DEFAULT_MODEL = "glicko_margin_units_success"
 KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2"
 # Kalshi's basic tier allows about 20 requests a second; gold-rush paces
 # itself at 8, and so does this.
