@@ -131,6 +131,23 @@ out. On the NFL, at the joint refit's knobs, the offense's weight from 0
 to 1 is worth -12.5 on 2014-2026 and the defense's 0.3 at most, though the
 NFL fits hold their defenses nearly still.
 
+Refit with only the weights, `points_per_epa` and `play_sd` free, in 1e-4
+against the published roster model, which saw 2022-2026 in its own search:
+
+| run | weights (offense, defense) | 2014-2026 | t | held out | t |
+|---|---|---|---|---|---|
+| `nc_c_off`, EPA refit's clocks | 0.70, 0 | -3.2 | -1.3 | -0.3 | -0.1 |
+| `nc_c_off_w`, the weighted rate | 0.61, 0 | -3.3 | -1.4 | -0.7 | -0.2 |
+| `nc_c_split` | 0.88, 1.0 | -4.6 | -1.8 | +0.4 | +0.1 |
+| `nc_p_epa`, published clocks, `unit_weight` free | EPA | -1.2 | -2.3 | -1.4 | -1.7 |
+| `nc_p_off`, the same | 0.59, 0 | -2.0 | -2.2 | -2.4 | -1.6 |
+
+`nc_p_off` against `nc_p_epa` is what success rate adds on the published
+clocks: -0.9 (t -1.0), -1.0 held out, -1.5 after week 4 (t -1.9), -3.4 in
+Group of Five games (t -2.5). The NFL's split refits (`units/prod.py
+split`) send the defense's weight to 0 and gain at most 1.5 held out
+(t -0.9) against the joint refit.
+
 **Strength of schedule** (`anchors.py`, `bias.py`). ncaafb's anchors are one
 rating per conference, so the conference's level is the anchor and the
 games across conferences. A reading that moves less across an anchor gap
