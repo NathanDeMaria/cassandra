@@ -176,6 +176,76 @@ changed conference, and `anchor_epa_scale` at 0.75 to 1.05 moves brier
 by under 1e-4 and the slope away from 0. The slope is not only the
 conversion.
 
+## Combining the signals
+
+2026-10-14. The units model predicts from the record and the units averaged
+by precision, and the units read success rate and EPA blended before
+anything learns from them. `combine/` asks what is lost by that: whether
+each signal -- efficiency, explosiveness, the margin's other points -- needs
+an estimate and an uncertainty of its own. Everything is fit through 2021
+and scored on 2022-2026, in 1e-4 brier unless it says points.
+
+**Explosiveness** (`persistence.py`). EPA per play splits into what the
+success rate implies and the rest, `epa = alpha + beta * success + x`
+(ncaafb beta 1.794, `SUCCESS_SCALE`'s 1.798; NFL 1.479). Opponent-adjusted
+within a season, for offenses:
+
+| | ncaafb efficiency | ncaafb explosiveness | NFL efficiency | NFL explosiveness |
+|---|---|---|---|---|
+| true spread, EPA/play | 0.090 | 0.024 | 0.040 | 0.021 |
+| season reliability | 0.84 | 0.39 | 0.73 | 0.40 |
+| prior it needs, plays | 176 | 1392 | 639 | 3166 |
+
+Real, a third to a half the size, and wanting five to eight times the
+shrinkage. Next to a rating on margins, efficiency predicts the next week
+(ncaafb t 7.1) and explosiveness points the wrong way (t -3.3) -- the
+scoreboard already banked those points -- without helping held out.
+
+**Re-weighting what the model has** (`stack.py`). A logistic regression
+over each game's recorded ingredients -- the record's gap, each team's units
+less its record, each source's share of what the two know: free weights
+that move with what each side has learned gain -1.2 (ncaafb) and -0.9
+(NFL), what recalibrating the published probability alone gains. The
+precision blend is about as good as its ingredients allow. A separate
+explosiveness gap adds nothing beside success-rate units.
+
+**Uncertainty in the probability** (`uncertainty.py`). Predicting from
+`N(mu, sigma^2 + c^2 (v_home + v_away))` instead of one fitted scale gains
+-0.3 to -0.5: the ratings' uncertainty on a gap, about 10 points, is small
+beside a game's own 19 (ncaafb) or 28 (NFL).
+
+**The margin's parts** (`residual.py`). A margin is `k * (efficiency +
+explosiveness EPA margins) + rest`, the rest being special teams, the clip
+and the expected points model's error. Per team, in points per game:
+
+| | true spread | season reliability | prior it needs, games |
+|---|---|---|---|
+| ncaafb margin, whole | 11.9 | 0.87 | 1.6 |
+| efficiency | 9.7 | 0.84 | 2.1 |
+| explosiveness | 2.6 | 0.39 | 17.5 |
+| rest | 0.8 | 0.18 | 49 |
+
+(NFL: 4.7, 2.9, 1.6, 0.6 points; 6.8, 8.7, 33, 58 games.) The record shrinks
+its margins by the margin's 1.6 games where the rest wants 49. On
+season-to-date ratings, the whole margin with its parts beside it gains
+-7.8 on ncaafb (t -2.0) by subtracting some of the explosiveness and rest
+gaps, -4.0 on the NFL (t -0.8).
+
+**Discounting them** (`discount.py`). The record stepping on `margin -
+lam_expl * explosiveness - lam_rest * rest` in the forward step and the
+smoother, against a refit of `obs_sd` and `prediction_scale` alone. ncaafb,
+from the published roster model: `lam_rest` 0.57, `lam_expl` 0.11, -3.0
+through 2021, -2.6 held out (3 seasons of 5), -5.3 on 2014-2026 (t -2.2).
+From the success model: -2.6, -1.8 held out (2 of 5), -4.4 (t -2.0); the
+rest alone does nearly as well. Its steadiest slice is close games
+(favorite 0.50-0.65, -14, better in 12 seasons of 13). The NFL's fit puts
+both near 0. Not built: held out, it is two seasons of five.
+
+The upshot: the variance worth an estimate of its own is efficiency's,
+which success-rate units already carry; explosiveness's would be shrunk to
+almost nothing; and the record's over-trust of its least lasting points is
+real on ncaafb but small next to a held-out season's noise.
+
 ## Running it
 
 Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
@@ -207,6 +277,14 @@ Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
     python compare.py nc_fit_free:nc_fit_epa
     python anchors.py record nc_fit_epa; python anchors.py report nc_fit_epa
     python bias.py
+
+    cd ../combine                      # reads the replays above and the swept indexes
+    python persistence.py ncaafb       # explosiveness against efficiency
+    python stack.py ncaafb             # the recorded ingredients, re-weighted
+    python uncertainty.py ncaafb       # after stack.py, from its recording
+    python residual.py ncaafb          # the margin's parts
+    python discount.py ncaafb disc_s --from nc_p_off \
+        --knobs lam_expl,lam_rest,obs_sd,prediction_scale
 
 The refits of the weighted rate read `sweep_weighted.py`'s pickle with
 `NCAAFB_INDEX=ncaafb_index_weighted.pkl NCAAFB_SUCCESS_SCALE=1.494,-0.624`,
