@@ -366,6 +366,37 @@ so the mean of a team's two sides is its unit rating -- and `from_ratings`
 takes them back. The center isn't carried, which only matters to a rebuilt
 model that goes on updating; a prediction never reads it.
 
+And each side's success rate, for a reader (`Rating.success`). What the
+units read is a blend on EPA's scale, or EPA alone, so no side carries a
+success rate a person would recognize. Beside them, every units model keeps
+a second pair per team that reads the flat success rate only: the same
+contest, the same anchors and edge (turned into a rate through
+`points_per_epa`, the league's `SUCCESS_SCALE` and a slope the replay
+measures), a center that is the league's average rate, and a binomial
+reading, `p (1 - p) / downs`. Out of
+it comes each offense's rate against an average defense on a neutral field,
+and the rate each defense allows an average offense -- `center +` the
+team's anchor against an average opponent's `+` its offset -- with the
+offset's deviation as the uncertainty. An average opponent is the upper
+tier's: on ncaafb the FBS (`_SuccessRates`).
+
+Nothing predicts from it, so no model's numbers move, and it doesn't go
+through the smoother, coach widening or quarterback shifts, which are about
+what to predict. Its clocks are measured rather than searched
+(`SUCCESS_RATE_CLOCKS`), and `from_ratings` drops it: a rebuilt model that
+goes on updating starts it again, which is a display coming back, not a
+prediction moving. A release written before it reads as before, and a
+reader from before it ignores the field.
+
+Replayed through the published models, every prediction is unchanged. On
+ncaafb in 2026 the average FBS offense reads 42.8% and the average FBS
+defense allows 42.1%, against a league center of 42.1%; the best offenses
+sit near 50% (Georgia, Ohio State), the best defenses near 33% (Oklahoma).
+The NFL's best offenses read 48-49%, its best defenses 44-45%, around a
+center of 46.2%. Every units model reads the same rates: the slope absorbs
+`points_per_epa`, 0.38 at the roster model's 75 and 0.44 at the success
+model's 87.
+
 What it was measured to be worth
 --------------------------------
 
@@ -396,7 +427,7 @@ knows how an FCS offense moves against FBS defenses fixes a lot of it.
 """
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, NamedTuple, Self
 
 from endgame.types import Game
@@ -420,7 +451,16 @@ from .margin_glicko import (
 )
 from .opponent_prior import OpponentPriorManager
 from .rest import DEFAULT_REST_ADVANTAGE
-from .types import GameEpa, Matchup, Prediction, Rating, Unit, Units
+from .types import (
+    GameEpa,
+    Matchup,
+    Prediction,
+    Rate,
+    Rating,
+    SuccessRates,
+    Unit,
+    Units,
+)
 
 #: Margin points per EPA per play of differential between the two offenses,
 #: over a game. The slope of the margin on `home - away` per-play EPA over
@@ -495,6 +535,38 @@ SUCCESS_SCALE: Mapping[str, Mapping[str, tuple[float, float]]] = {
     "nfl": {UNWEIGHTED: (1.362, -0.645), WEIGHTED: (1.311, -0.621)},
     "ncaafb": {UNWEIGHTED: (1.798, -0.751), WEIGHTED: (1.494, -0.624)},
 }
+
+
+class RateClock(NamedTuple):
+    """One side's clock for the displayed success rate; see "What a release carries"."""
+
+    #: The spread of true rates: where a side starts, and the cap it widens to.
+    initial_sd: float
+    #: The share of a side's offset it keeps over the summer, its deviation
+    #: refilling toward `initial_sd` as the rest is forgotten (AR(1)).
+    carry: float
+    #: How much a side's deviation widens each week.
+    weekly_sd: float
+
+
+#: The displayed success rate's clocks, offense then defense, per league.
+#: The spreads and carries are `reasoning/success_rate/combine/
+#: persistence.py`'s: the true spread of each side's opponent-adjusted
+#: efficiency, over EPA per play on the success rate (1.794 ncaafb, 1.479
+#: NFL), and its season-to-season correlation over its reliability. The
+#: weekly widening is the NFL's measured drift, 0.0037 logits a week, about
+#: 0.001 of a rate; ncaafb's isn't measured and takes the same.
+SUCCESS_RATE_CLOCKS: Mapping[str, tuple[RateClock, RateClock]] = {
+    "ncaafb": (RateClock(0.050, 0.85, 0.001), RateClock(0.044, 0.86, 0.001)),
+    "nfl": (RateClock(0.027, 0.58, 0.001), RateClock(0.019, 0.59, 0.001)),
+}
+
+#: A rate the binomial reading is priced at, kept off the ends.
+_RATE_FLOOR = 0.05
+
+#: How much evidence the displayed rate's gap slope starts with, at 1, in
+#: squared rate of expected gap: about forty games across a 0.05 gap.
+GAP_SLOPE_PRIOR = 0.1
 
 
 class _Sides(NamedTuple):
@@ -594,6 +666,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # any season with plays), and this season's sum and count of sides.
         # Carried so a loaded model keeps centering where the replay left it.
         epa_center_state: Sequence[float | None] = (None, 0.0, 0),
+        # The displayed success rates' sides and center, carried like the
+        # units'; see "What a release carries".
+        success_rates_state: Mapping[str, Any] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
         unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         game_epa: EpaIndex | None = None,
@@ -653,6 +728,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._center_sum = float(total or 0.0)
         self._center_count = int(count or 0)
         self._game_epa = game_epa or EpaIndex.for_league(league)
+        self._success_rates = _SuccessRates(league, success_rates_state)
         # The smoother's ledger for the units, as the parent keeps one for
         # the ratings: where the season's sides started, and its contests.
         self._sides_preseason = dict(self._sides)
@@ -975,6 +1051,13 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             )
             self._sides[offense] = attack._replace(offense=new_offense)
             self._sides[defense] = self._offsets(defense)._replace(defense=new_defense)
+        if self._success_rates.enabled:
+            self._success_rates.add_game(
+                game,
+                epa,
+                gap * per_play / SUCCESS_SCALE[self._league][UNWEIGHTED][0],
+                (self.anchor(game.home), self.anchor(game.away)),
+            )
 
     def _reading(self, epa: GameEpa, weight: float) -> tuple[float, float]:
         """What each offense read in this game, home then away, on EPA's scale.
@@ -1005,6 +1088,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._contest_weeks.append(self._contests_this_week)
         self._contests_this_week = []
         self._sides = self._aged_sides(self._sides, self._weekly_sd_increase)
+        if self._success_rates.enabled:
+            self._success_rates.pass_week()
         super().pass_week()
 
     def _aged_sides(
@@ -1110,6 +1195,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         if self._center_count:
             self._center_previous = self._center_sum / self._center_count
         self._center_sum, self._center_count = 0.0, 0
+        if self._success_rates.enabled:
+            self._success_rates.roll_over()
         self._sides_preseason = dict(self._sides)
         self._contest_weeks = []
         self._contests_this_week = []
@@ -1176,6 +1263,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 self._center_sum,
                 self._center_count,
             ],
+            "success_rates_state": self._success_rates.state(),
             "sides": {
                 team: [
                     pair.offense.rating,
@@ -1206,12 +1294,24 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
 
         Every team carries its `blended` rating, the one
         `predict_distribution` reads -- the parent itself for a team with no
-        sides.
+        sides -- and, where its success rates have been read, those; see
+        "What a release carries".
         """
+        per_rating = (
+            self._anchor_epa_scale
+            * self.points_per_rating
+            / (2 * self._points_per_epa)
+            / SUCCESS_SCALE[self._league][UNWEIGHTED][0]
+            if self._success_rates.enabled
+            else 0.0
+        )
         return {
             team: rating._replace(
                 units=self._absolute_units(team) if team in self._sides else None,
                 blended=self._blended(team).rating,
+                success=self._success_rates.rates(team, self.anchor, per_rating)
+                if self._success_rates.enabled
+                else None,
             )
             for team, rating in super().ratings.items()
         }
@@ -1296,6 +1396,215 @@ def _widened(unit: _Rating, increase: float, cap: float) -> _Rating:
             math.sqrt(unit.rating_deviation**2 + increase**2),
         ),
     )
+
+
+def _carried(unit: _Rating, clock: RateClock) -> _Rating:
+    """A displayed side over the summer: its offset kept at `carry`, its
+    deviation refilled toward the spread by what was forgotten."""
+    return _Rating(
+        clock.carry * unit.rating,
+        math.sqrt(
+            clock.carry**2 * unit.rating_deviation**2
+            + (1 - clock.carry**2) * clock.initial_sd**2
+        ),
+    )
+
+
+class _SuccessRates:
+    """The displayed success rate: a pair of sides per team on the flat rate.
+
+    See "What a release carries". Stepped by `add_game` from the units'
+    `_update_sides`, aged by `pass_week`, carried over the summer by
+    `roll_over`. The offsets are in rate, from the team's anchor-implied
+    level; the center is the league's average rate, a running mean of every
+    side read this season with last season's as a prior, as `epa_center` is.
+
+    "An average opponent" is the average side of the league's upper tier:
+    the mean anchor, by contests, of the sides at or above the mean anchor of
+    every side read, ever. On ncaafb that is the FBS -- the index also reads
+    FCS games, and an opponent averaged over both puts every FBS offense
+    eight points of success rate above the rate it posts against its own --
+    and on a league without tiers it is every side. Anchors don't move, so
+    the count of sides read at each is all it takes.
+
+    A gap -- home edge and anchors -- goes into rate through the units'
+    `points_per_epa` and `SUCCESS_SCALE`, and then through a slope measured as
+    the replay goes: each game's rate difference on its expected one, from
+    1 with `GAP_SLOPE_PRIOR` behind it. A success rate moves less across the
+    anchors than EPA does -- on ncaafb, at the success model's 87 points per
+    EPA, 0.45 of what the conversion says, at every size of gap -- and taken
+    at face value the conversion put FBS offenses three points under their
+    anchors and FCS ones near 10%.
+    """
+
+    def __init__(self, league: str, state: Mapping[str, Any] | None) -> None:
+        self._clocks = SUCCESS_RATE_CLOCKS.get(league)
+        state = state or {}
+        self._sides: dict[str, _Sides] = {
+            team: _Sides(_Rating(s[0], s[1]), _Rating(s[2], s[3]))
+            for team, s in state.get("sides", {}).items()
+        }
+        previous, total, count = state.get("center", (None, 0.0, 0))
+        self._previous = None if previous is None else float(previous)
+        self._sum, self._count = float(total), int(count)
+        self._anchors: dict[float, int] = {
+            float(anchor): int(count) for anchor, count in state.get("anchors", [])
+        }
+        xy, xx = state.get("gap", (0.0, 0.0))
+        self._gap_xy, self._gap_xx = float(xy), float(xx)
+
+    @property
+    def gap_slope(self) -> float:
+        """How far a rate moves per unit of the gap the conversion expects."""
+        return (self._gap_xy + GAP_SLOPE_PRIOR) / (self._gap_xx + GAP_SLOPE_PRIOR)
+
+    @property
+    def enabled(self) -> bool:
+        """Whether this league has clocks to keep the rates on."""
+        return self._clocks is not None
+
+    @property
+    def center(self) -> float | None:
+        """The league's average rate this season; None before any side is read."""
+        if self._previous is None:
+            return self._sum / self._count if self._count else None
+        return (self._previous * CENTER_PRIOR_SIDES + self._sum) / (
+            CENTER_PRIOR_SIDES + self._count
+        )
+
+    def _offsets(self, team: str) -> _Sides:
+        assert self._clocks is not None
+        offense, defense = self._clocks
+        return self._sides.get(
+            team,
+            _Sides(_Rating(0.0, offense.initial_sd), _Rating(0.0, defense.initial_sd)),
+        )
+
+    def add_game(
+        self,
+        game: Game,
+        epa: GameEpa,
+        shift: float,
+        anchors: tuple[float, float],
+    ) -> None:
+        """Both contests, against the center before the game joins it.
+
+        `shift` is what the home offense is expected to read above the
+        center, in rate -- the home edge and the anchor gap -- and the away
+        offense the same below it. A game without both rates, or the downs
+        under them, has nothing to say.
+        """
+        if (
+            epa.home_success is None
+            or epa.away_success is None
+            or not epa.home_success_plays
+            or not epa.away_success_plays
+        ):
+            return
+        center = self.center
+        expected = self.gap_slope * shift
+        if center is not None:
+            p = min(max(center, _RATE_FLOOR), 1 - _RATE_FLOOR)
+            for offense, defense, rate, downs, sign in (
+                (game.home, game.away, epa.home_success, epa.home_success_plays, 1.0),
+                (game.away, game.home, epa.away_success, epa.away_success_plays, -1.0),
+            ):
+                contest = _Contest(
+                    offense=offense,
+                    defense=defense,
+                    epa=rate,
+                    noise=p * (1 - p) / downs,
+                    base=center + sign * expected,
+                )
+                attack = self._offsets(offense)
+                new_offense, new_defense = _contest_step(
+                    attack.offense, self._offsets(defense).defense, contest
+                )
+                self._sides[offense] = attack._replace(offense=new_offense)
+                self._sides[defense] = self._offsets(defense)._replace(
+                    defense=new_defense
+                )
+            self._gap_xy += shift * (epa.home_success - epa.away_success) / 2
+            self._gap_xx += shift**2
+        self._sum += epa.home_success + epa.away_success
+        self._count += 2
+        for anchor in anchors:
+            self._anchors[anchor] = self._anchors.get(anchor, 0) + 1
+
+    def pass_week(self) -> None:
+        assert self._clocks is not None
+        offense, defense = self._clocks
+        self._sides = {
+            team: _Sides(
+                _widened(pair.offense, offense.weekly_sd, offense.initial_sd),
+                _widened(pair.defense, defense.weekly_sd, defense.initial_sd),
+            )
+            for team, pair in self._sides.items()
+        }
+
+    def roll_over(self) -> None:
+        assert self._clocks is not None
+        offense, defense = self._clocks
+        self._sides = {
+            team: _Sides(_carried(pair.offense, offense), _carried(pair.defense, defense))
+            for team, pair in self._sides.items()
+        }
+        if self._count:
+            self._previous = self._sum / self._count
+        self._sum, self._count = 0.0, 0
+
+    def rates(
+        self, team: str, anchor_of: Callable[[str], float], per_rating: float
+    ) -> SuccessRates | None:
+        """`team`'s offense against an average defense, and its defense
+        against an average offense, on a neutral field; None for a team
+        never read. `per_rating` is rate per rating point of anchor gap.
+
+        The anchor is asked for only for a team that has been read, as the
+        units ask only for teams with sides: `ratings` is read at the
+        rollover between the anchor cache being cleared and the unfiled
+        teams' prior moving, and an anchor cached there would be last
+        season's for the whole of the next.
+        """
+        center = self.center
+        if team not in self._sides or center is None:
+            return None
+        anchor = anchor_of(team)
+        level = self.gap_slope * (anchor - self._reference(anchor)) * per_rating
+        pair = self._sides[team]
+        return SuccessRates(
+            Rate(_as_rate(center + level + pair.offense.rating), pair.offense.rating_deviation),
+            Rate(_as_rate(center - level - pair.defense.rating), pair.defense.rating_deviation),
+        )
+
+    def _reference(self, fallback: float) -> float:
+        """The anchor of an average opponent: the upper tier's mean side."""
+        if not self._anchors:
+            return fallback
+        count = sum(self._anchors.values())
+        mean = sum(a * n for a, n in self._anchors.items()) / count
+        upper = [(a, n) for a, n in self._anchors.items() if a >= mean]
+        return sum(a * n for a, n in upper) / sum(n for _, n in upper)
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "sides": {
+                team: [
+                    pair.offense.rating,
+                    pair.offense.rating_deviation,
+                    pair.defense.rating,
+                    pair.defense.rating_deviation,
+                ]
+                for team, pair in self._sides.items()
+            },
+            "center": [self._previous, self._sum, self._count],
+            "anchors": [[anchor, count] for anchor, count in self._anchors.items()],
+            "gap": [self._gap_xy, self._gap_xx],
+        }
+
+
+def _as_rate(value: float) -> float:
+    return min(max(value, 0.0), 1.0)
 
 
 def _non_negative(name: str, value: float) -> float:

@@ -21,8 +21,10 @@ from cassandra.predictor import (
     GlickoPredictor,
     Predictor,
     RatingsUnsupported,
+    UnitMarginGlickoPredictor,
     UnknownPredictorClass,
     predict_matchup,
+    unit_glicko,
 )
 from cassandra.prob_to_margin import (
     IsotonicProbToMarginFitter,
@@ -475,6 +477,56 @@ def test_a_release_written_before_results_still_reads() -> None:
     assert predict_matchup(rebuilt, "Team A", "Team B").team1_win_prob == (
         pytest.approx(predict_matchup(original, "Team A", "Team B").team1_win_prob)
     )
+
+
+def _with_success_rates() -> UnitMarginGlickoPredictor:
+    """A units model whose games carry success rates, in a league with clocks for them."""
+    epa = {
+        game.game_id: GameEpa(
+            0.1, -0.1, 70, 70, None, None, 0.0, 0.0, 0.5, 0.4, 60, 60
+        )
+        for game in _SEASON
+    }
+    predictor = UnitMarginGlickoPredictor(
+        "test_league", game_epa=EpaIndex(epa), unit_weight=1.0
+    )
+    _trained(predictor)
+    return predictor
+
+
+@pytest.fixture
+def rate_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        unit_glicko.SUCCESS_SCALE,
+        "test_league",
+        {unit_glicko.UNWEIGHTED: (1.5, -0.6), unit_glicko.WEIGHTED: (1.5, -0.6)},
+    )
+    monkeypatch.setitem(
+        unit_glicko.SUCCESS_RATE_CLOCKS,
+        "test_league",
+        (unit_glicko.RateClock(0.05, 0.8, 0.001), unit_glicko.RateClock(0.04, 0.8, 0.001)),
+    )
+
+
+@pytest.mark.usefixtures("rate_clocks")
+def test_a_release_carries_each_sides_success_rate_and_a_rebuild_drops_it() -> None:
+    """For a reader: the rates survive the JSON, and predicting never needed them."""
+    original = _with_success_rates()
+    release = _snapshot(original, "UnitMarginGlickoPredictor", {"unit_weight": 1.0})
+
+    success = release.ratings["Team A"].success
+    assert success is not None
+    assert 0 < success.offense.rate < 1 and 0 < success.defense.rate < 1
+    assert success.offense.sd > 0 and success.defense.sd > 0
+    rebuilt = release.rating_predictor()
+    assert predict_matchup(rebuilt, "Team A", "Team B").team1_win_prob == (
+        pytest.approx(predict_matchup(original, "Team A", "Team B").team1_win_prob)
+    )
+
+
+def test_a_release_written_before_success_rates_still_reads() -> None:
+    rating = TeamRating.model_validate({"rating": 1500, "rd": 100})
+    assert rating.success is None
 
 
 def test_a_side_without_its_pair_is_not_a_side() -> None:

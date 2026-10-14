@@ -19,7 +19,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from cassandra.predictor import Predictor, Rating, Unit, Units, load_predictor_class
+from cassandra.predictor import (
+    Predictor,
+    Rating,
+    SuccessRates,
+    Unit,
+    Units,
+    load_predictor_class,
+)
 from cassandra.prob_to_margin import BaseProbToMarginPredictor, MarginKernel
 
 
@@ -33,6 +40,26 @@ class UnitRating(BaseModel):
 
     rating: float
     rd: float
+
+
+class RateRating(BaseModel):
+    """One side's success rate, a share of its downs from 0 to 1, and its deviation."""
+
+    rate: float
+    sd: float
+
+
+class SuccessRating(BaseModel):
+    """A team's offense's success rate and the rate its defense allows.
+
+    Opponent-adjusted: each against an average opponent on a neutral field.
+    For a reader only -- the units models keep it beside their sides and
+    never predict from it, and `rating_predictor` drops it. See
+    `UnitMarginGlickoPredictor`'s "What a release carries".
+    """
+
+    offense: RateRating
+    defense: RateRating
 
 
 class TeamRating(BaseModel):
@@ -60,6 +87,10 @@ class TeamRating(BaseModel):
     since rebuilding from the blend would blend the sides in a second time.
     A reader from before the field does exactly that, which is why the field
     was read for a release before it was written.
+
+    `success` is each side's success rate, from a units model, and None
+    where the model keeps none or the team has no plays; see
+    `SuccessRating`.
     """
 
     rating: float
@@ -69,6 +100,7 @@ class TeamRating(BaseModel):
     results: UnitRating | None = None
     offense: UnitRating | None = None
     defense: UnitRating | None = None
+    success: SuccessRating | None = None
 
 
 def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
@@ -86,6 +118,7 @@ def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
             results=_results(rating),
             offense=_unit_rating(rating.units.offense) if rating.units else None,
             defense=_unit_rating(rating.units.defense) if rating.units else None,
+            success=_success(rating.success),
         )
         for team, rating in predictor.ratings.items()
     }
@@ -107,6 +140,15 @@ def _results(rating: Rating) -> UnitRating | None:
 
 def _unit_rating(unit: Unit) -> UnitRating:
     return UnitRating(rating=unit.rating, rd=unit.rd)
+
+
+def _success(rates: SuccessRates | None) -> SuccessRating | None:
+    if rates is None:
+        return None
+    return SuccessRating(
+        offense=RateRating(rate=rates.offense.rate, sd=rates.offense.sd),
+        defense=RateRating(rate=rates.defense.rate, sd=rates.defense.sd),
+    )
 
 
 def _state(rating: TeamRating) -> Rating:
