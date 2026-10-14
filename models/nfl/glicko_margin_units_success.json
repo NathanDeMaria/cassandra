@@ -1,0 +1,126 @@
+{
+    "predictor_class": "UnitMarginGlickoPredictor",
+    "league": "nfl",
+    "parameters": {
+        "success_weight": [
+            0,
+            1
+        ],
+        "points_per_epa": [
+            60,
+            600
+        ],
+        "play_sd": [
+            0.5,
+            4.5
+        ],
+        "offense_initial_sd": [
+            0.03,
+            0.6
+        ],
+        "defense_initial_sd": [
+            0.002,
+            0.3
+        ],
+        "offense_weekly_sd_increase": [
+            0,
+            0.08
+        ],
+        "defense_weekly_sd_increase": [
+            0,
+            0.5
+        ],
+        "offense_season_sd_increase": [
+            0,
+            0.6
+        ],
+        "defense_season_sd_increase": [
+            0,
+            0.5
+        ],
+        "coach_change_rd": [
+            0,
+            150
+        ],
+        "coach_change_offense_sd": [
+            0,
+            0.3
+        ],
+        "coach_change_defense_sd": [
+            0,
+            0.3
+        ],
+        "qb_out_penalty": [
+            0,
+            86
+        ]
+    },
+    "fixed": {
+        "points_per_rating": 0.1208,
+        "travel_advantage": 0.0,
+        "season_regression": 0.1151108598194098,
+        "obs_sd": 27.991108960913543,
+        "prediction_scale": 192.44048015907717,
+        "initial_rd": 177.2743124577264,
+        "weekly_rd_increase": 10.755385849871807,
+        "season_rd_increase": 77.93933469327749,
+        "home_advantage": 21.68346272285814,
+        "rest_advantage": 17.696800945221295,
+        "passes": 2,
+        "unit_weight": 1.0,
+        "defense_season_regression": 1.0,
+        "offense_season_regression": 0.0,
+        "coach_left_shift": 0.0,
+        "new_qb_shift": -1.3353167575213734,
+        "qb_quality_shift": 1.9471047999404052
+    },
+    "fixed_from": "glicko_margin_units_offseason",
+    "n_iter": 600,
+    "seeds": [
+        {
+            "success_weight": 0.849,
+            "points_per_epa": 280.6,
+            "play_sd": 1.044,
+            "offense_initial_sd": 0.0745,
+            "defense_initial_sd": 0.0027,
+            "offense_weekly_sd_increase": 0.0192,
+            "defense_weekly_sd_increase": 0.378,
+            "offense_season_sd_increase": 0.0392,
+            "defense_season_sd_increase": 0.0824,
+            "coach_change_rd": 61.6,
+            "coach_change_offense_sd": 0.0014,
+            "coach_change_defense_sd": 0.0,
+            "qb_out_penalty": 32.2
+        },
+        {
+            "success_weight": 0.75,
+            "points_per_epa": 286.0,
+            "play_sd": 1.016,
+            "offense_initial_sd": 0.0747,
+            "defense_initial_sd": 0.0165,
+            "offense_weekly_sd_increase": 0.0174,
+            "defense_weekly_sd_increase": 0.0355,
+            "offense_season_sd_increase": 0.0455,
+            "defense_season_sd_increase": 0.5,
+            "coach_change_rd": 0.0,
+            "coach_change_offense_sd": 0.0,
+            "coach_change_defense_sd": 0.0,
+            "qb_out_penalty": 32.2
+        },
+        {
+            "success_weight": 0.0,
+            "points_per_epa": 106.76,
+            "play_sd": 3.435,
+            "offense_initial_sd": 0.262,
+            "defense_initial_sd": 0.05,
+            "offense_weekly_sd_increase": 0.0,
+            "defense_weekly_sd_increase": 0.12,
+            "offense_season_sd_increase": 0.161,
+            "defense_season_sd_increase": 0.257,
+            "coach_change_rd": 0.0,
+            "coach_change_offense_sd": 0.0,
+            "coach_change_defense_sd": 0.0,
+            "qb_out_penalty": 32.2
+        }
+    ]
+}

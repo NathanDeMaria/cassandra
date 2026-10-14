@@ -1,7 +1,8 @@
 from typing import Any, Self
 
 from .base_predictor import Predictor
-from .types import Matchup, Prediction
+from .distribution import LogisticMargin, MarginDistribution
+from .types import Matchup
 
 
 class FlatPredictor(Predictor):
@@ -12,8 +13,8 @@ class FlatPredictor(Predictor):
     overridden with something that pretends.
     """
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
-        return Prediction(team1_win_prob=0.5)
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
+        return LogisticMargin(0.0, 1.0, "rating")
 
     def state_dict(self) -> dict[str, Any]:
         return {"league": self._league}

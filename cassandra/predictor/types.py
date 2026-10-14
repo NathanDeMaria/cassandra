@@ -8,7 +8,7 @@ class Matchup(Protocol):
     """The part of a game that's known *before* it's played.
 
     `Game` satisfies this structurally, so callers can pass one straight
-    through, but a `predict_game` implementation that takes a `Matchup`
+    through, but a `predict_distribution` implementation that takes a `Matchup`
     can't reach the scores.
     """
 
@@ -146,6 +146,24 @@ class GameEpa(NamedTuple):
     `cassandra.predictor.compound`. Neither reading is named in the fields:
     which is which is a property of the whole file, and lives in the
     `EpaFit` header rather than being repeated on sixteen thousand rows.
+
+    `home_success` and `away_success` are a third reading off the same
+    snaps: the share of an offense's dropbacks and runs that added expected
+    points -- success rate, with `home_success_plays` and
+    `away_success_plays` the dropbacks and runs it is over (punts, field
+    goals, penalties that wiped the play out, kneels and spikes left out;
+    `cassandra.epa_build` says what counts). A sign rather than a size, so
+    the one long touchdown that owns a game's EPA is one success among
+    sixty, and it predicts the next game better than EPA does for exactly
+    that reason; see `cassandra.predictor.unit_glicko`. None, like the
+    weighted pair, for a side with no dropbacks or runs, and for a row
+    built without it.
+
+    `home_success_weighted` and `away_success_weighted` are the same share
+    with each snap weighted as the weighted EPA pair weights it, so a
+    blowout's fourth quarter of backups counts for what it is worth. Over
+    the same dropbacks and runs; None where the weights sum to nothing,
+    like the weighted EPA.
     """
 
     home: float
@@ -156,6 +174,12 @@ class GameEpa(NamedTuple):
     away_weighted: float | None = None
     home_weight: float = 0.0
     away_weight: float = 0.0
+    home_success: float | None = None
+    away_success: float | None = None
+    home_success_plays: int = 0
+    away_success_plays: int = 0
+    home_success_weighted: float | None = None
+    away_success_weighted: float | None = None
 
 
 class Prediction(NamedTuple):

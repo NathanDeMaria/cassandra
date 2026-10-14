@@ -8,6 +8,7 @@ that with the weight off or the index empty the parent is all there is.
 """
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 
 from ..offseason import OffseasonFact, OffseasonFacts
 from ..roster import RosterIndex
+from . import unit_glicko
 from .base_predictor import MEAN_RATING, Anchor
 from .conftest import GameFactory
 from .epa import EpaIndex
@@ -24,6 +26,8 @@ from .unit_glicko import (
     CENTER_PRIOR_SIDES,
     DEFAULT_DEFENSE_INITIAL_SD,
     DEFAULT_OFFENSE_INITIAL_SD,
+    UNWEIGHTED,
+    WEIGHTED,
     UnitMarginGlickoPredictor,
 )
 
@@ -121,6 +125,30 @@ def test_the_same_reading_against_a_better_defense_is_worth_more(
         predictor.update_game(game("A", "B", 0, 0, game_id="g"))
 
     assert weak.get_sides("A").offense.rating < 0 < strong.get_sides("A").offense.rating
+
+
+def test_the_anchor_scale_sets_how_much_of_the_anchor_gap_a_reading_owes(
+    game: GameFactory,
+) -> None:
+    """Linear in the scale, and at 0 the anchors say nothing about a reading."""
+    even = _epa(0.0, 0.0)
+    worth = {}
+    for scale in (0.0, 0.5, 1.0):
+        offense = []
+        for anchor in (1200, 1800):
+            predictor = _predictor({"g": even}, anchors={"B": anchor}, anchor_epa_scale=scale)
+            predictor.update_game(game("A", "B", 0, 0, game_id="g"))
+            offense.append(predictor.get_sides("A").offense.rating)
+        worth[scale] = offense[1] - offense[0]
+
+    assert worth[0.0] == 0
+    assert worth[1.0] > 0
+    assert worth[0.5] == pytest.approx(worth[1.0] / 2)
+
+
+def test_a_negative_anchor_scale_is_refused() -> None:
+    with pytest.raises(ValueError, match="anchor_epa_scale"):
+        _predictor(anchor_epa_scale=-0.5)
 
 
 def test_a_short_game_moves_the_units_less(game: GameFactory) -> None:
@@ -544,3 +572,228 @@ def test_returning_production_is_not_a_matchup_term(game: GameFactory) -> None:
     assert read.matchup_adjustment(game("A", "B")) == plain.matchup_adjustment(
         game("A", "B")
     )
+
+
+# --- success rate -------------------------------------------------------------
+
+
+# The test league's success rate on EPA's scale: 1.5 x rate - 0.6, so a 60%
+# day reads as +0.3 and a 40% day as 0.0. The weighted rate on its own,
+# which puts 40% at 0.0 too.
+_SCALE = (1.5, -0.6)
+_WEIGHTED_SCALE = (1.0, -0.4)
+
+
+@pytest.fixture
+def scaled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        unit_glicko.SUCCESS_SCALE,
+        "test_league",
+        {UNWEIGHTED: _SCALE, WEIGHTED: _WEIGHTED_SCALE},
+    )
+
+
+def _both(epa: float, success: float, plays: int = 70) -> GameEpa:
+    """A game the home offense read `epa` and `success` in; the away side read par."""
+    return GameEpa(epa, 0.0, plays, plays, None, None, 0.0, 0.0, success, 0.4, plays, plays)
+
+
+@pytest.mark.usefixtures("scaled")
+def test_no_success_weight_is_the_epa_model(game: GameFactory) -> None:
+    plain = _predictor({"g": LOPSIDED})
+    carried = _predictor({"g": LOPSIDED._replace(home_success=0.2, away_success=0.7)})
+    for predictor in (plain, carried):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert carried.get_sides("A") == plain.get_sides("A")
+    assert carried.get_sides("B") == plain.get_sides("B")
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_full_weight_reads_the_success_rate_and_not_the_epa(game: GameFactory) -> None:
+    """A game that lost EPA on one long turnover and won most of its downs."""
+    predictor = _predictor({"g": _both(-0.2, 0.6)}, success_weight=1.0)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert predictor.get_sides("A").offense.rating > 0
+
+
+@pytest.mark.usefixtures("scaled")
+def test_the_blend_sits_between_its_two_readings(game: GameFactory) -> None:
+    """Linear in the weight: the filter's step is linear in what it reads."""
+    offense = {}
+    for weight in (0.0, 0.5, 1.0):
+        predictor = _predictor({"g": _both(-0.2, 0.6)}, success_weight=weight)
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+        offense[weight] = predictor.get_sides("A").offense.rating
+    assert offense[0.5] == pytest.approx((offense[0.0] + offense[1.0]) / 2)
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_game_without_a_success_rate_reads_its_epa(game: GameFactory) -> None:
+    plain = _predictor({"g": LOPSIDED})
+    blended = _predictor({"g": LOPSIDED}, success_weight=0.75)
+    for predictor in (plain, blended):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert blended.get_sides("A") == plain.get_sides("A")
+
+
+@pytest.mark.parametrize("weight", [-0.1, 1.1])
+def test_a_success_weight_outside_the_blend_is_refused(weight: float) -> None:
+    with pytest.raises(ValueError):
+        _predictor(success_weight=weight)
+
+
+def test_a_success_weight_needs_the_league_scale() -> None:
+    with pytest.raises(ValueError, match="scale"):
+        _predictor(success_weight=0.5)
+
+
+@pytest.mark.usefixtures("scaled")
+def test_the_weighted_reading_reads_the_weighted_rate(game: GameFactory) -> None:
+    """A rout won on its backups' downs: 60% flat, 30% while the game was live."""
+    rout = _both(0.0, 0.6)._replace(home_success_weighted=0.3, away_success_weighted=0.4)
+    flat = _predictor({"g": rout}, success_weight=1.0)
+    weighted = _predictor({"g": rout}, success_weight=1.0, success_reading=WEIGHTED)
+    for predictor in (flat, weighted):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert flat.get_sides("A").offense.rating > 0
+    assert weighted.get_sides("A").offense.rating < 0
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_game_without_a_weighted_rate_reads_its_epa(game: GameFactory) -> None:
+    """An index swept before the weighted rate, or a side that only ever ran out the clock."""
+    plain = _predictor({"g": _both(0.1, 0.6)})
+    weighted = _predictor(
+        {"g": _both(0.1, 0.6)}, success_weight=0.75, success_reading=WEIGHTED
+    )
+    for predictor in (plain, weighted):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert weighted.get_sides("A") == plain.get_sides("A")
+
+
+def test_an_unknown_success_reading_is_refused() -> None:
+    with pytest.raises(ValueError, match="success_reading"):
+        _predictor(success_reading="garbage_time")
+
+
+@pytest.mark.usefixtures("scaled")
+def test_each_side_can_step_on_its_own_blend(game: GameFactory) -> None:
+    """A day the offense won its downs and lost its EPA: 60% and -0.2 a play.
+
+    Read as success rate by the offense and as EPA by the defense across
+    from it, the offense comes out ahead and so does the defense that held
+    it to -0.2 -- where one blend for both has the defense losing the day.
+    """
+    day = _both(-0.2, 0.6)
+    split = _predictor({"g": day}, success_weight=1.0, defense_success_weight=0.0)
+    shared = _predictor({"g": day}, success_weight=1.0)
+    for predictor in (split, shared):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert split.get_sides("A").offense == shared.get_sides("A").offense
+    assert split.get_sides("A").offense.rating > 0
+    assert split.get_sides("B").defense.rating > 0 > shared.get_sides("B").defense.rating
+
+
+@pytest.mark.usefixtures("scaled")
+def test_no_defense_weight_is_the_offense_weight(game: GameFactory) -> None:
+    unset = _predictor({"g": _both(-0.2, 0.6)}, success_weight=0.6)
+    same = _predictor({"g": _both(-0.2, 0.6)}, success_weight=0.6, defense_success_weight=0.6)
+    for predictor in (unset, same):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert unset.state_dict() == same.state_dict()
+
+
+@pytest.mark.parametrize("weight", [-0.1, 1.1])
+def test_a_defense_weight_outside_the_blend_is_refused(weight: float) -> None:
+    with pytest.raises(ValueError, match="defense_success_weight"):
+        _predictor(defense_success_weight=weight)
+
+
+def test_a_contest_is_measured_against_the_center_before_its_game(
+    game: GameFactory,
+) -> None:
+    """The away offense's reading moves the center, but not until the game is in.
+
+    The second game, so the center is a running mean by then rather than the
+    0 it opens at.
+    """
+    quiet = _predictor({"g1": _epa(0.1, 0.1), "g2": _epa(0.3, 0.0)})
+    loud = _predictor({"g1": _epa(0.1, 0.1), "g2": _epa(0.3, 0.9)})
+    for predictor in (quiet, loud):
+        predictor.update_game(game("C", "D", 14, 14, game_id="g1"))
+        predictor.update_game(game("A", "B", 21, 7, game_id="g2"))
+    assert quiet.get_sides("A").offense == loud.get_sides("A").offense
+
+
+# --- a new head coach ---------------------------------------------------------
+
+
+FIRED = OffseasonFacts({("A", 2024): OffseasonFact("fired", None, 0.0)})
+
+
+def test_a_new_coach_widens_the_record_and_each_side_by_its_own(
+    game: GameFactory,
+) -> None:
+    knobs: dict[str, Any] = {
+        "coach_change_rd": 40.0,
+        "coach_change_offense_sd": 0.2,
+        "coach_change_defense_sd": 0.0,
+    }
+    plain = _predictor({"g": LOPSIDED}, **knobs)
+    fired = _predictor({"g": LOPSIDED}, offseason=FIRED, **knobs)
+    for predictor in (plain, fired):
+        _into_2024(predictor, game)
+
+    before, after = plain.get_rating("A"), fired.get_rating("A")
+    assert after.rating == before.rating
+    assert after.rating_deviation == pytest.approx(
+        min(fired._initial_rd, math.hypot(before.rating_deviation, 40.0))
+    )
+    old, new = plain.get_sides("A"), fired.get_sides("A")
+    # Past the side's own cap: a new staff is more than a season's forgetting.
+    assert new.offense.rating_deviation == pytest.approx(
+        math.hypot(old.offense.rating_deviation, 0.2)
+    )
+    assert new.offense.rating_deviation > DEFAULT_OFFENSE_INITIAL_SD
+    assert new.defense == old.defense
+    assert fired.get_sides("B") == plain.get_sides("B")
+
+
+def test_a_widened_side_is_not_narrowed_by_a_quiet_week(game: GameFactory) -> None:
+    predictor = _predictor(
+        {"g": LOPSIDED},
+        offseason=FIRED,
+        coach_change_offense_sd=0.2,
+        offense_weekly_sd_increase=0.05,
+    )
+    _into_2024(predictor, game)
+    widened = predictor.get_sides("A").offense.rating_deviation
+
+    predictor.pass_week()
+
+    assert predictor.get_sides("A").offense.rating_deviation == widened
+
+
+@pytest.mark.usefixtures("scaled")
+def test_the_new_knobs_round_trip() -> None:
+    predictor = _predictor(
+        success_weight=0.6,
+        success_reading=WEIGHTED,
+        defense_success_weight=0.2,
+        anchor_epa_scale=0.8,
+        coach_change_rd=35.0,
+        coach_change_offense_sd=0.1,
+        coach_change_defense_sd=0.05,
+    )
+    state = json.loads(json.dumps(predictor.state_dict()))
+    loaded = UnitMarginGlickoPredictor.from_state_dict(
+        {
+            **state,
+            "game_epa": EpaIndex(),
+            "offseason": OffseasonFacts(),
+            "talent": RosterIndex(),
+            "offense_returning": RosterIndex(),
+            "defense_returning": RosterIndex(),
+        }
+    )
+    assert loaded.state_dict() == predictor.state_dict()

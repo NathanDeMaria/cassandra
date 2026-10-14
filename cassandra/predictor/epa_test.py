@@ -21,6 +21,7 @@ _FIT = EpaFit(
     reading="unweighted",
     weight_power=0.5,
     since=2014,
+    success="epa>0, dropbacks and runs, no kneels or spikes",
 )
 
 
@@ -169,3 +170,26 @@ def test_a_file_this_schema_cannot_read_is_no_file(tmp_path: Path) -> None:
 
     assert read_epa_file("nfl") is None
     assert load_epa("nfl") == {}
+
+
+def test_a_file_written_before_success_rates_is_no_file(tmp_path: Path) -> None:
+    """Its rows have no success rate, so a model reading one would blend in nothing."""
+    path = tmp_path / "nfl_epa.json"
+    path.write_text(
+        json.dumps(
+            {
+                "league": "nfl",
+                "fit": {k: v for k, v in _FIT.model_dump().items() if k != "success"},
+                "games": {"g1": [0.1, 0.0, 60, 60, 0.1, 0.0, 50.0, 50.0]},
+            }
+        )
+    )
+
+    assert read_epa_file("nfl") is None
+
+
+def test_success_rates_round_trip_through_the_file(tmp_path: Path) -> None:
+    game = GameEpa(0.1, -0.05, 64, 58, None, None, 0.0, 0.0, 0.48, 0.41, 56, 51, 0.45, 0.43)
+    _write(tmp_path, "nfl", {"g1": game})
+
+    assert load_epa("nfl")["g1"] == game

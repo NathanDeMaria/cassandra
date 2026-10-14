@@ -17,8 +17,9 @@ from .predictor import (
     GlickoPredictor,
     Predictor,
 )
+from .predictor.distribution import LogisticMargin, MarginDistribution
 from .predictor.opponent_prior import OpponentPriorManager
-from .predictor.types import Matchup, Prediction
+from .predictor.types import Matchup
 from .save_predictions import (
     _Prediction,
     generate_predictions,
@@ -95,9 +96,9 @@ class _RecordingPredictor(Predictor):
         super().__init__(league)
         self.seen: list[str] = []
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
         self.seen.append(matchup.game_id)
-        return Prediction(team1_win_prob=0.5)
+        return LogisticMargin(0.0, 1.0, "rating")
 
     def state_dict(self) -> dict[str, Any]:
         raise NotImplementedError

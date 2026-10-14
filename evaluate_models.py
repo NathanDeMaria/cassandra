@@ -11,8 +11,10 @@ import pandas as pd
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.model_eval import (
     DEFAULT_FITTERS,
+    KERNEL_FITTERS,
     SpreadCoverageDropped,
     get_predictions,
+    score_kernel,
     score_predictions,
     spread_coverage_drops,
 )
@@ -67,8 +69,16 @@ async def _main(leagues: Collection[str] | None = None):
             # since the csv is only written once everything has finished.
             print(f"  FAILED {league}/{model_name}: {e!r}")
             continue
-        for fitter_name, fitter in DEFAULT_FITTERS.items():
-            scored = score_predictions(predictions_df, fitter)
+        # The kernels get a row each like any fitter, scored on the same
+        # columns plus their own; see `score_kernel`.
+        every_fit = [
+            (name, score_predictions(predictions_df, fitter))
+            for name, fitter in DEFAULT_FITTERS.items()
+        ] + [
+            (name, score_kernel(predictions_df, fitter))
+            for name, fitter in KERNEL_FITTERS.items()
+        ]
+        for fitter_name, scored in every_fit:
             all_evaluations.append(
                 {
                     "league": league,

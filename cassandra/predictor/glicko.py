@@ -22,6 +22,7 @@ from .base_predictor import (
     validated_regression,
 )
 from .blend import validated_scale
+from .distribution import LogisticMargin, MarginDistribution, decimal_logistic
 from .opponent_prior import OpponentPriorManager
 from .rest import DEFAULT_REST_ADVANTAGE
 from .smoothing import Floats, Ints, compiled_sweep
@@ -251,7 +252,7 @@ class GlickoPredictor(Predictor):
             )
         return edge
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
         home_rating = self.get_rating(matchup.home)
         adjusted_home_rating = home_rating.rating + self.home_edge(matchup)
         # Outside the neutral-site guard on purpose: nobody is at home in a
@@ -260,19 +261,21 @@ class GlickoPredictor(Predictor):
         # term zeroes itself there -- see `MatchupAdjustments.travel_points`.
         adjusted_home_rating += self.matchup_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
-        return Prediction(
-            team1_win_prob=self.win_prob(adjusted_home_rating, away_rating.rating)
-        )
+        return self.gap_distribution(adjusted_home_rating, away_rating.rating)
 
-    def win_prob(self, home_rating: float, away_rating: float) -> float:
-        """How a rating gap reads as a win probability, at `prediction_scale`.
+    def gap_distribution(
+        self, home_rating: float, away_rating: float
+    ) -> LogisticMargin:
+        """How a rating gap reads as a margin: a logistic at `prediction_scale`.
 
-        Here rather than inline in `predict_game` because a subclass that
-        predicts from a different rating -- `CompoundGlickoPredictor` blends
-        the record's with the units' -- still has to read the gap the way
-        the parent does, or its `unit_weight` 0 stops being the parent.
+        Here rather than inline in `predict_distribution` because a subclass
+        that predicts from a different rating -- `CompoundGlickoPredictor`
+        blends the record's with the units' -- still has to read the gap the
+        way the parent does, or its `unit_weight` 0 stops being the parent.
         """
-        return 1 / (1 + 10 ** ((away_rating - home_rating) / self._prediction_scale))
+        return decimal_logistic(
+            home_rating - away_rating, self._prediction_scale, "rating"
+        )
 
     def _update_game(self, game: Game) -> Prediction:
         prediction = self.predict_game(game)

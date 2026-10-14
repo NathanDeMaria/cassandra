@@ -10,6 +10,7 @@ from .conftest import season_for
 from .model_eval import (
     prior_path,
     rebuild_priors,
+    score_kernel,
     score_predictions,
     spread_coverage_drops,
 )
@@ -21,7 +22,13 @@ from .predictor import (
     GlickoPredictor,
     opponent_prior,
 )
-from .prob_to_margin import BaseProbToMarginFitter, BaseProbToMarginPredictor
+from .predictor.distribution import DiscreteMargin
+from .prob_to_margin import (
+    BaseProbToMarginFitter,
+    BaseProbToMarginPredictor,
+    MarginKernel,
+    MarginKernelFitter,
+)
 
 
 class _FixedMarginFitter(BaseProbToMarginFitter):
@@ -368,3 +375,102 @@ def test_rebuild_priors_can_keep_its_file_out_of_the_shared_directory(
     # Warm from the file it built, and not from the shared one's "x".
     assert warm.ratings != {}
     assert "x" not in warm.ratings
+
+
+class _FixedKernelFitter(MarginKernelFitter):
+    """Hands back one kernel whatever the games, so the grading is checkable."""
+
+    def __init__(self, kernel: MarginKernel) -> None:
+        super().__init__(max_margin=kernel.max_margin)
+        self._kernel = kernel
+
+    def fit(self, win_probs: np.ndarray, margins: np.ndarray) -> MarginKernel:
+        return self._kernel
+
+
+# Gaps of a point at a time out to 30, so margins land on every integer.
+_KERNEL = MarginKernel(slope=1.5, log_gaps=np.log(np.full(30, 0.12)))
+
+
+def _lined_games() -> pd.DataFrame:
+    """`_games`, and two more lined games: a push, and a half-point line."""
+    extra = pd.DataFrame(
+        [
+            {
+                "home_score": 17,
+                "away_score": 10,  # team1_mov = +7, a push at -7
+                "team1_win": True,
+                "team1_win_prob": 0.75,
+                "spread": -7.0,
+            },
+            {
+                "home_score": 21,
+                "away_score": 20,  # team1_mov = +1, covers +2.5
+                "team1_win": True,
+                "team1_win_prob": 0.45,
+                "spread": 2.5,
+            },
+        ]
+    )
+    return pd.concat([_games(), extra], ignore_index=True)
+
+
+def test_a_kernel_is_scored_like_any_fit_and_on_its_distribution() -> None:
+    plain = score_predictions(_lined_games(), _FixedKernelFitter(_KERNEL)).metrics
+    metrics = score_kernel(_lined_games(), _FixedKernelFitter(_KERNEL)).metrics
+
+    assert {k: v for k, v in metrics.items() if k in plain} == pytest.approx(
+        plain, nan_ok=True
+    )
+    for name in (
+        "margin_log_loss",
+        "margin_rps",
+        "kernel_win_prob_gap",
+        "cover_brier",
+        "push_brier",
+        "cover_pick_accuracy",
+    ):
+        assert np.isfinite(metrics[name]), name
+
+
+def test_the_lines_are_graded_from_the_home_side() -> None:
+    games = _lined_games()
+    metrics = score_kernel(games, _FixedKernelFitter(_KERNEL)).metrics
+
+    lined = games[games["spread"].notna()]
+    covers = [
+        DiscreteMargin(-30, _KERNEL.pmfs(np.array([p]))[0]).p_cover(spread)
+        for p, spread in zip(lined["team1_win_prob"], lined["spread"])
+    ]
+    # Covered, missed, pushed, covered -- in the order the games are listed.
+    outcomes = [1, 0, None, 1]
+    decided = [
+        (c.cover / (c.cover + c.lose) - o) ** 2
+        for c, o in zip(covers, outcomes)
+        if o is not None
+    ]
+    assert metrics["cover_brier"] == pytest.approx(np.mean(decided))
+    # The half-point line can't push, so three of the four lines count.
+    pushes = [(c.push - (o is None)) ** 2 for c, o in zip(covers[:3], outcomes)]
+    assert metrics["push_brier"] == pytest.approx(np.mean(pushes))
+    picks = [(c.cover > c.lose) == (o == 1) for c, o in zip(covers, outcomes)]
+    assert metrics["cover_pick_accuracy"] == pytest.approx(np.mean(picks))
+
+
+def test_a_kernel_with_no_lines_still_scores_the_margins() -> None:
+    metrics = score_kernel(
+        _games().assign(spread=None), _FixedKernelFitter(_KERNEL)
+    ).metrics
+
+    assert np.isfinite(metrics["margin_rps"])
+    assert np.isfinite(metrics["margin_log_loss"])
+    assert np.isnan(metrics["cover_brier"])
+    assert np.isnan(metrics["push_brier"])
+    assert np.isnan(metrics["cover_pick_accuracy"])
+
+
+def test_the_kernel_is_fit_on_real_games() -> None:
+    """The real fitter, end to end: nothing about it needs a test double."""
+    scored = score_kernel(_lined_games(), MarginKernelFitter(max_margin=25))
+    assert isinstance(scored.margin_predictor, MarginKernel)
+    assert scored.margin_predictor.max_margin == 25

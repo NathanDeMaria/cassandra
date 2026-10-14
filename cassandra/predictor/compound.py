@@ -245,6 +245,7 @@ from .adjustments import (
 )
 from .base_predictor import Anchor
 from .blend import validated_fraction, validated_scale
+from .distribution import MarginDistribution
 from .epa import EpaIndex
 from .glicko import DEFAULT_PREDICTION_SCALE, GlickoPredictor, _Rating, glicko_step
 from .opponent_prior import OpponentPriorManager
@@ -305,7 +306,8 @@ class CompoundGlickoPredictor(GlickoPredictor):
     The parent's every method does what it did. What this adds is a second
     dictionary of ratings, `_units`, updated by `_update_units` from the EPA
     index after the parent has updated from the score, and read by
-    `predict_game` as a second rating for each team to blend with the first.
+    `predict_distribution` as a second rating for each team to blend with
+    the first.
 
     `scoring_method` and `sigmoid_scale` are the parent's and are passed
     through. The children read `sigmoid_scale` too -- it is what puts a
@@ -575,7 +577,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
             parent_precision + earned
         )
 
-    def predict_game(self, matchup: Matchup) -> Prediction:
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
         """The parent's arithmetic on a blended rating.
 
         The parent's own prediction is a logistic of a rating gap, and the
@@ -588,7 +590,7 @@ class CompoundGlickoPredictor(GlickoPredictor):
         home_rating = self._blended_rating(matchup.home)
         home_rating += self.home_edge(matchup) + self.matchup_adjustment(matchup)
         away_rating = self._blended_rating(matchup.away)
-        return Prediction(team1_win_prob=self.win_prob(home_rating, away_rating))
+        return self.gap_distribution(home_rating, away_rating)
 
     def _update_game(self, game: Game) -> Prediction:
         """The parent's update, then the children's.
@@ -840,10 +842,10 @@ class CompoundGlickoPredictor(GlickoPredictor):
         prior with the initial deviation, which a consumer could not tell
         from a measured pair that happens to sit there.
 
-        Every team carries its `blended` rating, the one `predict_game`
-        reads, including a team with no sides -- for which it is the parent
-        -- so that a consumer ranking on `overall` ranks this model by one
-        number throughout.
+        Every team carries its `blended` rating, the one
+        `predict_distribution` reads, including a team with no sides -- for
+        which it is the parent -- so that a consumer ranking on `overall`
+        ranks this model by one number throughout.
         """
         return {
             team: rating._replace(

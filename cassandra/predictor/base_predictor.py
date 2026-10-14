@@ -10,6 +10,7 @@ from endgame.types import Game
 from cassandra.constants import CASSANDRA_HOME
 
 from .adjustments import MatchupAdjustments
+from .distribution import MarginDistribution, collapse
 from .types import Matchup, Prediction, Rating
 
 _ANCHOR_DIR = CASSANDRA_HOME / "predictor" / "data"
@@ -203,10 +204,20 @@ class Predictor(ABC):
         return self._league
 
     @abstractmethod
+    def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
+        """The home side's margin, as the distribution the model believes.
+
+        The one prediction a model makes; everything else is read off it.
+        A Matchup is only the pre-game half of a Game, so implementations
+        can't peek at the results.
+        """
+
     def predict_game(self, matchup: Matchup) -> Prediction:
-        # A Matchup is only the pre-game half of a Game, so implementations
-        # can't peek at the results.
-        ...
+        """`predict_distribution`, collapsed to the win probability.
+
+        What the pipeline reads, and all it has read so far.
+        """
+        return collapse(self.predict_distribution(matchup))
 
     def update_game(self, game: Game) -> Prediction:
         """Predict a game and fold its result in. Not for overriding.
