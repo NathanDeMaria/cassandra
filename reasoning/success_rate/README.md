@@ -141,12 +141,24 @@ against the published roster model, which saw 2022-2026 in its own search:
 | `nc_c_split` | 0.88, 1.0 | -4.6 | -1.8 | +0.4 | +0.1 |
 | `nc_p_epa`, published clocks, `unit_weight` free | EPA | -1.2 | -2.3 | -1.4 | -1.7 |
 | `nc_p_off`, the same | 0.59, 0 | -2.0 | -2.2 | -2.4 | -1.6 |
+| `nc_p_epa_uw`, `unit_weight` uncapped (5.0) | EPA | -1.7 | -0.8 | +0.7 | +0.2 |
+| `nc_p_off_uw`, the same (5.95) | 0.78, 0 | -3.7 | -1.4 | -1.5 | -0.4 |
+| run 20261014-010003, every season in-sample | 0.54, 0 | -3.3 | -2.2 | -4.2 | -1.7 |
 
 `nc_p_off` against `nc_p_epa` is what success rate adds on the published
 clocks: -0.9 (t -1.0), -1.0 held out, -1.5 after week 4 (t -1.9), -3.4 in
 Group of Five games (t -2.5). The NFL's split refits (`units/prod.py
 split`) send the defense's weight to 0 and gain at most 1.5 held out
 (t -0.9) against the joint refit.
+
+`unit_weight` above 1 is where the fits overfit: the published clocks' refits
+stop at the replay's old cap of 1, and uncapped (`search.py` now searches it
+as a positive knob) they run to 5-6, win through 2021 and lose held out.
+The Batch search over every season, boxed at 2, stopped at 1.92 (`rescore.py
+batch_nc_success` replays it, 0.174148 against the run's 0.174144). Its NFL
+twin is the joint refit itself -- 600 probes never beat that seed -- so its
+-10.7 on 2022-2026 against the published model (t -1.5, 4 seasons of 5) is
+held out.
 
 **Strength of schedule** (`anchors.py`, `bias.py`). ncaafb's anchors are one
 rating per conference, so the conference's level is the anchor and the
