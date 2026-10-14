@@ -12,7 +12,14 @@ October 2026, edge over Kalshi's no-vig price (`no_vig_home`):
 Under five points the overround eats the edge. Over five it held up in
 both seasons. In 2026 it faded as the book caught up: +21% at entry, +19%
 six hours later, +13% at twelve, +4% after a day. So the bet is placed the
-night the previous week's games end, against the price up then. This
+night the previous week's games end, against the price up then.
+
+The default is the success-rate model (`glicko_margin_units_success`)
+since 2026-10-14: it forecasts better held out, and on these books the two
+can't be told apart -- over 2025-26 at the entry, brier 0.1535 against
+the roster model's 0.1537 (the book's 0.1601), weight on the model 0.80
+against 0.79, and at five points of edge +11% ROI (568 bets) against +14%
+(559), at ten +27% (241) against +20% (249). This
 module is that bet, made live. It takes every open Kalshi game in the next
 few days, finds its ESPN fixture, and prices it against the model the way
 the backtest did.
