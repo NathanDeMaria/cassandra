@@ -1,0 +1,69 @@
+{
+    "predictor_class": "UnitMarginGlickoPredictor",
+    "league": "ncaafb",
+    "parameters": {
+        "success_weight": [
+            0,
+            1
+        ],
+        "points_per_epa": [
+            40,
+            250
+        ],
+        "play_sd": [
+            0.5,
+            3
+        ],
+        "unit_weight": [
+            0.3,
+            2
+        ]
+    },
+    "fixed": {
+        "points_per_rating": 0.1403,
+        "travel_advantage": 0.0,
+        "season_regression": 0.0,
+        "obs_sd": 18.738552847098447,
+        "prediction_scale": 167.04790817058102,
+        "initial_rd": 192.2683793552397,
+        "weekly_rd_increase": 3.248017274775874,
+        "season_rd_increase": 85.40651050259638,
+        "home_advantage": 16.913495929368022,
+        "rest_advantage": 9.766579539190591,
+        "qb_out_penalty": 15.162296246928598,
+        "passes": 3,
+        "defense_initial_sd": 0.19981197734074174,
+        "offense_weekly_sd_increase": 0.12,
+        "defense_weekly_sd_increase": 0.0,
+        "offense_season_sd_increase": 0.3,
+        "defense_season_sd_increase": 0.0,
+        "defense_season_regression": 0.05553005820011083,
+        "new_qb_shift": 0.691496021982303,
+        "offense_initial_sd": 0.19025497629112526,
+        "offense_season_regression": 0.7852579223994766,
+        "talent_edge": 1.7395394220123153,
+        "talent_shift": 0.5998387222459705,
+        "offense_returning_shift": 2.838618672165674,
+        "defense_returning_shift": 2.8642696557947946,
+        "qb_quality_shift": 2.0852913015995935,
+        "coach_left_shift": -2.452336484818029,
+        "defense_success_weight": 0.0
+    },
+    "fixed_from": "glicko_margin_units_roster",
+    "n_iter": 150,
+    "seeds": [
+        {
+            "success_weight": 0.0,
+            "points_per_epa": 74.9904369927647,
+            "play_sd": 1.4926006985517768,
+            "unit_weight": 0.5937501661969301
+        },
+        {
+            "success_weight": 0.5891,
+            "points_per_epa": 86.9467,
+            "play_sd": 1.6686,
+            "unit_weight": 1.0
+        }
+    ],
+    "objective": "brier_fbs"
+}

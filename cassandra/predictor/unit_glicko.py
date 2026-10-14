@@ -278,8 +278,18 @@ fits hold the defense nearly still whatever it reads. On ncaafb, at the
 EPA refit's knobs, the offense alone at 0.5 gains 1.4 on FBS games
 2014-2026 (t -1.5, 9 seasons of 13), 1.4 held out and 2.5 after a
 team's fourth game (t -2.7), and costs 1.0 in its first four; the
-defense alone gains 0.1 and loses 1.7 held out. ncaafb's weights are 0
-until a search says otherwise.
+defense alone gains 0.1 and loses 1.7 held out. Refit with the two weights
+free, the NFL's defense goes to 0 and ncaafb's to 1, which wins through
+2021 and loses held out.
+
+So `models/ncaafb/glicko_margin_units_success.json` searches the offense's
+weight alone, with `points_per_epa`, `play_sd` and `unit_weight`, on the
+roster model's pins, the defenses on EPA. The same four refit through 2021
+from the published roster model: the offense goes to 0.59 and gains 0.9 on
+FBS games 2014-2026 against EPA given the same refit (t -1.0), 1.0 held
+out, 1.5 after a team's fourth game (t -1.9) and 3.4 in Group of Five
+games (t -2.5). Both fits go to the `unit_weight` 1 the replay capped them
+at, which is why the config lets it past 1.
 
 Across conferences
 ------------------
