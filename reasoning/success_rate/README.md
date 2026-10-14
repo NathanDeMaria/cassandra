@@ -241,6 +241,28 @@ rest alone does nearly as well. Its steadiest slice is close games
 (favorite 0.50-0.65, -14, better in 12 seasons of 13). The NFL's fit puts
 both near 0. Not built: held out, it is two seasons of five.
 
+**On the margin distribution** (`distribution.py`). A release also carries
+a margin kernel, a cumulative logit on every integer margin with the win
+probability as its one covariate, which is what a line is read against.
+Each model's kernel fit through 2021 and scored on 2022-2026, margin log
+loss in 1e-3 nats and ranked probability score in 1e-2:
+
+| | log loss | RPS | brier, 1e-4 |
+|---|---|---|---|
+| ncaafb success model vs published roster | -1.53 (t -3.0) | -1.41 (t -3.0) | -2.39 (t -1.6) |
+| NFL success model vs published offseason | -0.76 (t -0.4) | -1.37 (t -1.0) | -10.71 (t -1.5) |
+| ncaafb discount, success model vs control | -0.58 (t -0.5) | -0.54 (t -0.6) | -1.79 (t -0.6) |
+| NFL discount vs control | +0.99 (t +0.6) | -0.45 (t -2.0) | -1.82 (t -1.6) |
+
+The ncaafb success model's margins are better held out more surely than
+its win probabilities; the discount's brier gain doesn't carry to the
+margin. And the kernel scaled per game by the ratings' uncertainty on the
+gap -- wider where the record or the units are unsure -- fits a scale of
+0.00 on ncaafb and -0.06 to +0.01 on the NFL, gaining nothing held out:
+the deviations the filters carry don't say which games end farther from
+the call. Carrying them into the distribution would need them calibrated
+first.
+
 The upshot: the variance worth an estimate of its own is efficiency's,
 which success-rate units already carry; explosiveness's would be shrunk to
 almost nothing; and the record's over-trust of its least lasting points is
@@ -285,6 +307,7 @@ Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
     python residual.py ncaafb          # the margin's parts
     python discount.py ncaafb disc_s --from nc_p_off \
         --knobs lam_expl,lam_rest,obs_sd,prediction_scale
+    python distribution.py ncaafb      # the comparisons and the uncertainty, on margins
 
 The refits of the weighted rate read `sweep_weighted.py`'s pickle with
 `NCAAFB_INDEX=ncaafb_index_weighted.pkl NCAAFB_SUCCESS_SCALE=1.494,-0.624`,
