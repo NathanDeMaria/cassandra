@@ -38,9 +38,10 @@ POSITIVE = {
     "offense_season_sd_increase": (0.02, 0.1),
     "defense_season_sd_increase": (0.02, 0.1),
     "anchor_epa_scale": (0.05, 0.2),
+    "unit_weight": (0.05, 0.3),
 }
 #: Knobs in [0, 1], searched on their own scale.
-SHARES = {"unit_weight", "success_weight", "defense_success_weight"}
+SHARES = {"success_weight", "defense_success_weight"}
 DEFAULT_KNOBS = [*list(POSITIVE)[:8], "unit_weight"]
 
 

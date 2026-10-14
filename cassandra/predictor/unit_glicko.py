@@ -288,8 +288,12 @@ roster model's pins, the defenses on EPA. The same four refit through 2021
 from the published roster model: the offense goes to 0.59 and gains 0.9 on
 FBS games 2014-2026 against EPA given the same refit (t -1.0), 1.0 held
 out, 1.5 after a team's fourth game (t -1.9) and 3.4 in Group of Five
-games (t -2.5). Both fits go to the `unit_weight` 1 the replay capped them
-at, which is why the config lets it past 1.
+games (t -2.5). Both fits go to `unit_weight` 1, where the replay capped
+them. Let past it, both run on to 5-6 with `play_sd` near 3, win through
+2021 and lose held out (0.9 with success rate, 2.1 without, 2 seasons of 5
+better), and the first search over every season (run 20261014-010003,
+`unit_weight` up to 2) stopped at 1.92. The config caps it at 1; success
+rate's own share held in every one of these, 1.0 to 2.2 held out.
 
 Across conferences
 ------------------
