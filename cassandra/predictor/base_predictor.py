@@ -315,9 +315,9 @@ class Predictor(ABC):
         `[year, rating]` history. The cache is cleared in `pass_season`,
         the only thing that moves either input -- the clock, and (for an
         unfiled team) the running estimate `_note_unanchored` folds the
-        season's teams into. Both move there, and `_note_unanchored` runs
-        before the regression that reads them, so nothing can read a value
-        cached from before the rollover.
+        season's teams into. Cleared once both have moved and before the
+        regression that reads them, so nothing after the rollover reads a
+        value cached before it.
         """
         hit = self._anchor_cache.get(team)
         if hit is not None:
@@ -410,11 +410,6 @@ class Predictor(ABC):
         """
         if year is not None:
             self._season = year
-        # Whatever `anchor` answered last season was answered for last
-        # season's clock, and for an unfiled team against an estimate that
-        # `_note_unanchored` is about to fold this season's teams into. Both
-        # move below, and both move before anything reads an anchor again.
-        self._anchor_cache.clear()
         # A team's last game of one season says nothing about how rested it
         # is for the next, and the gap between them is an offseason rather
         # than a bye. Cleared here rather than clamped, because clamping
@@ -424,6 +419,14 @@ class Predictor(ABC):
         # Before the rollover, so an unfiled team is counted at the rating it
         # earned rather than at the one regression is about to pull back.
         self._note_unanchored()
+        # Whatever `anchor` answered last season was answered for last
+        # season's clock, and for an unfiled team against the estimate
+        # `_note_unanchored` has just folded this season's teams into. After
+        # it rather than before, because it reads `ratings`, and a model
+        # whose sides sit on their anchors looks one up for every team that
+        # has them: cleared first, the cache would hand an unfiled team the
+        # estimate from before the fold for the whole of next season.
+        self._anchor_cache.clear()
         self._roll_over()
         self._played_this_season = set()
 

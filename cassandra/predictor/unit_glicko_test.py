@@ -937,11 +937,10 @@ def test_the_success_rates_round_trip_through_the_state_dict(game: GameFactory) 
 
 @pytest.mark.usefixtures("rated")
 def test_success_rates_leave_an_unfiled_teams_anchor_alone(game: GameFactory) -> None:
-    """`ratings` is read at the rollover, between the anchor cache clearing and
-    the unfiled teams' prior moving, so an anchor asked for there is cached a
-    season stale. U has no anchor and no plays -- a lower-division opponent --
-    so nothing but the rates could ask for its anchor there. Four unfiled
-    teams already seen, so U is the fifth and the prior moves off the mean.
+    """`ratings` is read at the rollover, before the unfiled teams' prior
+    moves. U has no anchor and no plays -- a lower-division opponent -- so
+    nothing but the rates could ask for its anchor there. Four unfiled teams
+    already seen, so U is the fifth and the prior moves off the mean.
     """
     predictor = _predictor(
         {"g1": _rates(0.5, 0.4), "g3": _rates(0.4, 0.6)},
@@ -953,6 +952,28 @@ def test_success_rates_leave_an_unfiled_teams_anchor_alone(game: GameFactory) ->
     predictor.update_game(game("B", "A", 0, 42, game_id="g3"))
     predictor.pass_season()
     assert predictor.unanchored_prior() != MEAN_RATING
+    assert predictor.anchor("U") == predictor.unanchored_prior()
+
+
+def test_an_unfiled_team_with_sides_is_anchored_where_the_fold_left_it(
+    game: GameFactory,
+) -> None:
+    """Its sides sit on its anchor, so the rollover's read of `ratings` asks
+    for it -- and asked before the unfiled teams were folded in, the answer
+    was cached for the whole of next season. U has no anchor and plays; four
+    unfiled teams already seen, so U is the fifth and the prior moves.
+    """
+    predictor = _predictor(
+        {"g1": LOPSIDED, "g2": _epa(0.2, -0.2)},
+        anchors={"A": 1600, "B": 1400},
+        unanchored_seen=(4 * 1100.0, 4 * 1100.0**2, 4),
+    )
+    predictor.update_game(game("A", "B", 21, 7, game_id="g1"))
+    predictor.update_game(game("B", "U", 35, 3, game_id="g2"))
+    assert predictor.ratings["U"].units is not None
+    before = predictor.unanchored_prior()
+    predictor.pass_season()
+    assert predictor.unanchored_prior() != before
     assert predictor.anchor("U") == predictor.unanchored_prior()
 
 

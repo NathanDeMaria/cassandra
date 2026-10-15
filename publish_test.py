@@ -21,9 +21,12 @@ from cassandra.odds import OddsDatabase
 from cassandra.predictor import (
     Predictor,
     PredictorConfig,
+    epa,
     predict_matchup,
+    unit_glicko,
 )
 from cassandra.predictor.base_predictor import MEAN_RATING
+from cassandra.predictor.types import GameEpa
 from cassandra.prob_to_margin import (
     BaseProbToMarginFitter,
     BaseProbToMarginPredictor,
@@ -67,14 +70,16 @@ _SCHEDULE: dict[int, list[list[tuple[str, str, int, int]]]] = {
 }
 
 
-def _seasons() -> list[Season]:
+def _seasons(
+    schedule: dict[int, list[list[tuple[str, str, int, int]]]] = _SCHEDULE,
+) -> list[Season]:
     """`_SCHEDULE` as Seasons, one week per list.
 
     Each week gets its own day because `iter_weeks` refuses a season whose
     weeks overlap in time.
     """
     seasons = []
-    for year, weeks in _SCHEDULE.items():
+    for year, weeks in schedule.items():
         season_weeks = []
         for number, games in enumerate(weeks, start=1):
             date = datetime(year, 1, number, tzinfo=timezone.utc)
@@ -905,3 +910,125 @@ def test_a_release_carries_the_margin_kernel(tmp_path: Path) -> None:
     assert release.margin_kernel.kind == "cumulative_logit"
     cover = kernel.distribution(0.7).p_cover(-2.5)
     assert cover.cover + cover.push + cover.lose == pytest.approx(1.0)
+
+
+# ------------------------------------------------------------------------------
+# A units model's success rates, the way a publish reads them
+# ------------------------------------------------------------------------------
+
+_UNFILED_TEAMS = [f"Team {name}" for name in "ABCDEFG"]
+
+
+def _round_robin(year: int) -> list[list[tuple[str, str, int, int]]]:
+    """Every pair once, by the circle method, one team sitting out each week.
+
+    The bye is the point: teams that have played different numbers of games
+    carry different deviations, so their games stop being zero-sum and the
+    ratings stop averaging to a round number. Scores off a fixed pecking
+    order, so the sides have something to learn.
+    """
+    teams: list[str | None] = [*_UNFILED_TEAMS, None]
+    weeks = []
+    for week in range(len(teams) - 1):
+        games = []
+        for i in range(len(teams) // 2):
+            home, away = teams[i], teams[-1 - i]
+            if home is None or away is None:
+                continue
+            edge = _UNFILED_TEAMS.index(away) - _UNFILED_TEAMS.index(home)
+            games.append((home, away, 24 + 3 * edge + week, 20 + year % 3))
+        weeks.append(games)
+        teams = [teams[0], teams[-1], *teams[1:-1]]
+    return weeks
+
+
+def _success_epa(seasons: list[Season]) -> dict[str, GameEpa]:
+    """Each game's offenses at par EPA, winning downs in step with the score.
+
+    Nothing for the first season, as the NFL's play-by-play starts decades
+    into its results: the first sides are read only once the unfiled teams'
+    estimate has moved off the mean.
+    """
+    return {
+        game.game_id: GameEpa(
+            0.0,
+            0.0,
+            60,
+            60,
+            None,
+            None,
+            0.0,
+            0.0,
+            0.42 + (game.home_score - game.away_score) / 400,
+            0.42 - (game.home_score - game.away_score) / 400,
+            55,
+            55,
+        )
+        for season in seasons[1:]
+        for week in season.weeks
+        for game in week.games
+        if game.home_score is not None and game.away_score is not None
+    }
+
+
+def test_a_league_without_tiers_publishes_its_success_rates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The publish reads `ratings` every week for the history, which no other
+    replay does -- so display arithmetic that breaks on a league's shape
+    breaks here first. #109's did: every NFL side sat on one unfiled
+    estimate, no round number, and its mean over enough sides rounded above
+    itself.
+
+    Seven teams, none of them filed, with plays from the second season on:
+    by then the unfiled teams' estimate is off the mean, and every side sits
+    on it.
+    """
+    # The first season with plays three times over, as long as an NFL one:
+    # whether the average opponent's arithmetic rounds the wrong way is a
+    # matter of how many sides it has counted.
+    seasons = _seasons(
+        {
+            2024: _round_robin(2024),
+            2025: _round_robin(2025) * 3,
+            2026: _round_robin(2026),
+        }
+    )
+    monkeypatch.setattr(epa, "load_epa", lambda league: _success_epa(seasons))
+    monkeypatch.setitem(
+        unit_glicko.SUCCESS_SCALE,
+        _LEAGUE,
+        {unit_glicko.UNWEIGHTED: (1.5, -0.6), unit_glicko.WEIGHTED: (1.5, -0.6)},
+    )
+    monkeypatch.setitem(
+        unit_glicko.SUCCESS_RATE_CLOCKS,
+        _LEAGUE,
+        (
+            unit_glicko.RateClock(0.05, 0.8, 0.001),
+            unit_glicko.RateClock(0.04, 0.8, 0.001),
+        ),
+    )
+    config = _config("UnitMarginGlickoPredictor", unit_weight=1.0)
+    history = RatingHistory()
+    predictor, df = publish._predictions(
+        publish._Job(config.league, _MODEL, config),
+        seasons,
+        OddsDatabase({}),
+        now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        week_observer=history,
+    )
+    assert predictor.unanchored_prior() != round(predictor.unanchored_prior())
+
+    write_artifacts(
+        build_artifacts(build_release(config, _MODEL, predictor, df), history, df),
+        tmp_path,
+    )
+    release = ModelRelease.model_validate(
+        json.loads((tmp_path / "models" / _LEAGUE / _MODEL / "latest.json").read_text())
+    )
+    assert set(release.ratings) == set(_UNFILED_TEAMS)
+    for rating in release.ratings.values():
+        assert rating.success is not None
+        for side in (rating.success.offense, rating.success.defense):
+            assert 0 < side.rate < 1
+            assert side.sd > 0
