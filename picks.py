@@ -3,6 +3,7 @@
     python picks.py                    # refresh from s3, tonight's scores from ESPN
     python picks.py --offline          # no s3: the copies the last run saved
     python picks.py --budget 25 --top 8
+    python picks.py --place            # ...then buy them, after asking
 
 Run it once the last of the night's games is final. That's when the
 backtest bought, and the edge it measured was gone within a day (see
@@ -42,6 +43,30 @@ A fixture assumes both starting quarterbacks play unless told otherwise:
 quarterback penalty (about 2 points in college) applies. That is the only
 injury the model reads, so check the news on any pick you're about to
 make; `--exclude TEAM` drops a game and re-splits the budget over the rest.
+Under the orders, each pick lists the injury sentences in its two teams'
+last two AP stories, and the next game's preview once there is one
+(`cassandra.injuries`); `QB!` marks one naming a quarterback.
+
+**Placing.** `--place` buys the picks, with a Kalshi API key (see
+`cassandra.kalshi_trade` for where it's read from; `--demo` for the demo
+exchange). It first reads the account: a `--budget` over the cash on hand
+stops the run, and any game the account already holds a position or a
+resting order in is skipped, so a Sunday rerun doesn't double up. Then it
+prints the numbered orders and asks: `y` places them, numbers drop those
+games and re-split the budget, `q` stops. Each order is a limit order:
+
+- its price is at most `--slippage` past the ask, and never past
+  `max_price`, the most that still clears `--min-edge`;
+- its contracts are counted at that price, so the worst fill of every
+  order together costs no more than `--budget`, and no one order more
+  than `--max-bet`;
+- it's immediate-or-cancel, so what isn't on offer now is dropped (books
+  this thin rarely hold a whole order). `--rest HOURS` leaves the rest at
+  the limit until then instead -- the backtest's edge was mostly gone by
+  twelve hours.
+
+The cheapest route is tried first and what it left goes to the other one.
+What filled is written to `~/.cassandra/betting/orders/`.
 """
 
 import argparse
@@ -53,6 +78,7 @@ import pickle
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -68,9 +94,11 @@ from endgame.types import Game, Season, merge_weekly_seasons
 from endgame_aws import Config
 from endgame_aws.pbp_transform import transform_game_to_table
 
+from cassandra import injuries
 from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
+from cassandra.kalshi_trade import KalshiClient, KalshiError
 from cassandra.model_eval import rebuild_priors
 from cassandra.odds import OddsDatabase
 from cassandra.picks import (
@@ -81,6 +109,7 @@ from cassandra.picks import (
     Book,
     Fixture,
     allocate,
+    contracts_for,
     entry,
     event_day,
     fillable,
@@ -116,6 +145,13 @@ CENTRAL = ZoneInfo("America/Chicago")
 PICKS_DIR = CASSANDRA_HOME / "picks"
 PLAYS_DIR = PICKS_DIR / "plays"
 OUT_DIR = CASSANDRA_HOME / "betting" / "picks"
+ORDERS_DIR = CASSANDRA_HOME / "betting" / "orders"
+SUMMARIES_DIR = PICKS_DIR / "summaries"
+ESPN_SUMMARY = (
+    "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary"
+)
+#: How many of each team's last games' stories are read for injury news.
+NEWS_GAMES = 2
 
 
 def _seasons_cache(league: str) -> Path:
@@ -357,6 +393,38 @@ def main() -> None:
     parser.add_argument(
         "--all", action="store_true", help="print every matched game, not just picks"
     )
+    parser.add_argument(
+        "--max-bet",
+        type=float,
+        default=5.0,
+        help="most dollars on any one pick, fee included",
+    )
+    parser.add_argument(
+        "--place",
+        action="store_true",
+        help="after showing the orders and asking, buy them on Kalshi",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="with --place: Kalshi's demo exchange and its key",
+    )
+    parser.add_argument(
+        "--rest",
+        type=float,
+        metavar="HOURS",
+        help="leave what doesn't fill resting at the limit this long "
+        "(default: immediate-or-cancel)",
+    )
+    parser.add_argument(
+        "--no-news", action="store_true", help="skip the injury read of ESPN's stories"
+    )
+    parser.add_argument(
+        "--news-lines",
+        type=int,
+        default=4,
+        help="injury sentences shown per pick",
+    )
     args = parser.parse_args()
     run(args)
 
@@ -562,19 +630,93 @@ def run(args: argparse.Namespace) -> None:
         return
 
     # 5. Size the picks: the top `--top` by edge share `--budget`
-    # by Kelly weight (see `allocate`).
+    # by Kelly weight (see `allocate`), each at its limit price.
+    client = None
+    if args.place:
+        client = KalshiClient.from_env(demo=args.demo)
+        cash = client.balance()
+        held = client.held_events()
+        print(
+            f"\nKalshi{' DEMO' if args.demo else ''}: ${cash:,.2f} cash, "
+            f"{len(held)} events already held or ordered"
+        )
+        if args.budget > cash:
+            raise SystemExit(
+                f"--budget ${args.budget:g} is more than the ${cash:,.2f} on hand"
+            )
+        mine = frame["event"].isin(held.keys()) & frame["skip"].isna()
+        frame.loc[mine, "skip"] = [
+            f"already held on Kalshi ({held[e]})" for e in frame.loc[mine, "event"]
+        ]
     for team in args.exclude:
         named = frame["game"].str.contains(team, case=False, regex=False)
         frame.loc[named & frame["skip"].isna(), "skip"] = "excluded by hand"
+    frame["limit"] = [
+        _limit(p, m, args.slippage) for p, m in zip(frame["price"], frame["max_price"])
+    ]
+    priced_skips = frame["skip"].copy()
+    dropped: set[str] = set()
+    news: dict[str, list[injuries.Note]] = {}
+    out = OUT_DIR / f"{league}_{model}_{started.astimezone(CENTRAL):%Y%m%d-%H%M}.csv"
+    while True:
+        frame["skip"] = priced_skips
+        frame.loc[frame["game_id"].isin(dropped), "skip"] = "dropped at the prompt"
+        sized, picks = _size(frame, matched, args)
+        if not args.no_news:
+            fresh = picks[~picks["game_id"].isin(news.keys())]
+            news.update(_injury_news(fresh, games, namer))
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        sized.to_csv(out, index=False)
+        _print(sized, picks, args)
+        _print_orders(picks, news, args)
+        print(f"\nevery matched game: {out}")
+        if client is None or picks.empty:
+            return
+        answer = _ask(len(picks))
+        if answer is None:
+            print("nothing placed")
+            return
+        if not answer:
+            break
+        order = picks.sort_values(["kickoff", "edge"], ascending=[True, False])
+        dropped |= {order["game_id"].iloc[i - 1] for i in answer}
+
+    _place(client, picks, matched, args, out)
+
+
+def _limit(price: float, ceiling: float | None, slippage: float) -> float:
+    """The most an order pays a contract: `--slippage` past the ask, never past
+    the price that still clears the edge (`max_price`)."""
+    limit = price + slippage
+    if ceiling is not None and not pd.isna(ceiling):
+        limit = min(limit, max(ceiling, price))
+    return round(min(limit, 0.99), 2)
+
+
+def _size(
+    frame: pd.DataFrame, matched: dict, args: argparse.Namespace
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The picks and their contracts, and every game with what was bet on it.
+
+    Contracts are counted at the limit price, so an order filling at its
+    worst still costs no more than its share of `--budget`, and none more
+    than `--max-bet`.
+    """
+    frame = frame.copy()
     ranked = frame[frame["skip"].isna()].sort_values("edge", ascending=False)
     frame.loc[ranked.index[args.top :], "skip"] = f"outside the top {args.top} by edge"
     picks = frame[frame["skip"].isna()]
     weights = [kelly(m, c) for m, c in zip(picks["model"], picks["cost"])]
-    counts = allocate(args.budget, list(picks["price"]), weights)
+    counts = allocate(args.budget, list(picks["limit"]), weights)
+    counts = [
+        min(n, contracts_for(args.max_bet, limit))
+        for n, limit in zip(counts, picks["limit"])
+    ]
     unplaced = [i for i, n in zip(picks.index, counts) if n == 0]
     frame.loc[unplaced, "skip"] = "less than a contract's share of the budget"
     picks = frame[frame["skip"].isna()].copy()
     contracts = [n for n in counts if n > 0]
+    offered = f"offered_within_{round(args.slippage * 100)}c"
     fills = []
     for _, row in picks.iterrows():
         found = matched[row["game_id"]]
@@ -582,37 +724,243 @@ def run(args: argparse.Namespace) -> None:
             (found.home, found.away) if row["bet_home"] else (found.away, found.home)
         )
         # Both routes to the same side count: YES on it and NO on the
-        # opponent fill on the same result.
-        limit = row["price"] + args.slippage
+        # opponent fill on the same result, and `_place` tries both.
         on_offer = 0.0
         for route in routes(side, other):
             book = _kalshi_get(f"/markets/{route.ticker}/orderbook")
-            on_offer += fillable(book, route.action, limit)
+            on_offer += fillable(book, route.action, row["limit"])
         fills.append(on_offer)
     picks["contracts"] = contracts
-    picks["fee"] = [order_fee(p, c) for p, c in zip(picks["price"], contracts)]
-    picks["outlay"] = picks["contracts"] * picks["price"] + picks["fee"]
-    picks[f"offered_within_{round(args.slippage * 100)}c"] = fills
+    picks["fee"] = [order_fee(p, c) for p, c in zip(picks["limit"], contracts)]
+    picks["outlay"] = picks["contracts"] * picks["limit"] + picks["fee"]
+    picks[offered] = fills
     frame = frame.merge(
-        picks[
-            [
-                "game_id",
-                "contracts",
-                "fee",
-                "outlay",
-                f"offered_within_{round(args.slippage * 100)}c",
-            ]
-        ],
+        picks[["game_id", "contracts", "fee", "outlay", offered]],
         on="game_id",
         how="left",
     )
+    return frame, picks
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    out = OUT_DIR / f"{league}_{model}_{started.astimezone(CENTRAL):%Y%m%d-%H%M}.csv"
-    frame.to_csv(out, index=False)
 
-    _print(frame, picks, args)
-    print(f"\nevery matched game: {out}")
+def _espn_summary(game_id: str, final: bool) -> dict:
+    """ESPN's summary of a game: box score and AP story. A final one is kept."""
+    path = SUMMARIES_DIR / f"{game_id}.json.gz"
+    if final and path.exists():
+        return json.loads(gzip.decompress(path.read_bytes()))
+    request = urllib.request.Request(
+        f"{ESPN_SUMMARY}?event={game_id}", headers={"User-Agent": "cassandra-picks"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            summary = json.load(response)
+    except OSError as error:
+        logging.warning("no ESPN summary for %s: %s", game_id, error)
+        return {}
+    # A recap can land after the final whistle, so don't keep a summary
+    # without one.
+    if final and (summary.get("article") or {}).get("story"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(gzip.compress(json.dumps(summary).encode()))
+    return summary
+
+
+def _injury_news(
+    picks: pd.DataFrame, games: list[Game], namer: TeamNamer
+) -> dict[str, list[injuries.Note]]:
+    """Injury sentences on each pick's two teams, from their last two games' stories.
+
+    The upcoming game's preview is read too, once ESPN has one.
+    """
+    by_id = {g.game_id: g for g in games}
+    wanted: dict[str, list[tuple[str, bool, str]]] = {}
+    for game_id in picks["game_id"]:
+        fixture = by_id[game_id]
+        stories = [(fixture.game_id, False, "preview")]
+        for team in (fixture.home, fixture.away):
+            played = sorted(
+                (g for g in games if g.completed and team in (g.home, g.away)),
+                key=lambda g: g.date,
+            )[-NEWS_GAMES:]
+            for g in reversed(played):
+                when = g.date.astimezone(CENTRAL)
+                stories.append((g.game_id, True, f"{_fmt_game(g)}, {when:%b %d}"))
+        wanted[game_id] = list(dict.fromkeys(stories))
+    calls = {(g, final) for stories in wanted.values() for g, final, _ in stories}
+    with ThreadPoolExecutor(8) as pool:
+        summaries = dict(zip(calls, pool.map(lambda c: _espn_summary(*c), calls)))
+    news: dict[str, list[injuries.Note]] = {}
+    for game_id, stories in wanted.items():
+        fixture = by_id[game_id]
+        teams = {
+            namer.espn_id(t): t
+            for t in (fixture.home, fixture.away)
+            if namer.espn_id(t)
+        }
+        read = [summaries[(g, final)] for g, final, _ in stories]
+        rosters = injuries.rosters(read, teams)
+        found: dict[str, injuries.Note] = {}
+        for summary, (_, _, label) in zip(read, stories):
+            got = injuries.story(summary)
+            if got is None:
+                continue
+            kind, text = got
+            for note in injuries.notes(text, rosters, f"{kind}: {label}"):
+                found.setdefault(note.sentence, note)
+        news[game_id] = list(found.values())
+    return news
+
+
+def _print_orders(
+    picks: pd.DataFrame,
+    news: dict[str, list[injuries.Note]],
+    args: argparse.Namespace,
+) -> None:
+    """The orders `--place` would send, numbered, with the injury news under each."""
+    if picks.empty:
+        return
+    tif = (
+        "immediate-or-cancel"
+        if args.rest is None
+        else f"resting {args.rest:g}h, then cancelled"
+    )
+    print(f"\n=== {'orders' if args.place else 'orders --place would send'} ({tif})")
+    order = picks.sort_values(["kickoff", "edge"], ascending=[True, False])
+    flagged = []
+    for number, (_, row) in enumerate(order.iterrows(), start=1):
+        notes = news.get(row["game_id"], [])
+        qb = [n for n in notes if n.qb]
+        mark = "QB!" if qb else ("inj" if notes else "   ")
+        if qb:
+            flagged.append(number)
+        print(
+            f"{number:>3}. {mark} {row['kickoff']:%a %H:%M}  {row['bet']:<28} "
+            f"{row['buy']:<40} {row['contracts']:>3.0f} @ ≤{row['limit']:.2f}  "
+            f"≤${row['outlay']:.2f}   ({row['game']}, edge {row['edge']:+.3f})"
+        )
+        for note in sorted(notes, key=lambda n: not n.qb)[: args.news_lines]:
+            who = note.team or "?"
+            print(f"         {'QB ' if note.qb else ''}[{who}] {note.sentence[:220]}")
+            print(f"            -- {note.source}")
+        if len(notes) > args.news_lines:
+            print(f"         (+{len(notes) - args.news_lines} more injury sentences)")
+    print(
+        f"\nworst case ${picks['outlay'].sum():,.2f} across {len(picks)} orders "
+        f"(budget ${args.budget:g}, at most ${args.max_bet:g} a bet)"
+    )
+    if flagged:
+        print(
+            f"QB news on {', '.join(map(str, flagged))}: if a starter is out of the "
+            "next game, quit and rerun with --qb-out TEAM so the model prices it."
+        )
+
+
+def _ask(count: int) -> set[int] | None:
+    """What to do with the orders: an empty set to place them all, the numbers
+    to drop (the rest are re-sized), or None to stop."""
+    while True:
+        try:
+            answer = (
+                input(
+                    "\nplace these orders? [y = place all / numbers to drop, "
+                    "e.g. '3 7' / q = quit]: "
+                )
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            return None
+        if answer in ("y", "yes"):
+            return set()
+        if answer in ("q", "quit", "n", "no", ""):
+            return None
+        numbers = answer.replace(",", " ").split()
+        if all(n.isdigit() and 1 <= int(n) <= count for n in numbers):
+            return {int(n) for n in numbers}
+        print(f"  '{answer}': y, q, or numbers from 1 to {count}")
+
+
+def _place(
+    client: KalshiClient,
+    picks: pd.DataFrame,
+    matched: dict,
+    args: argparse.Namespace,
+    out: Path,
+) -> None:
+    """Send the orders: the cheapest route first, what it left on the other.
+
+    Each is a limit order at the pick's `limit`, so nothing fills at a price
+    that doesn't clear the edge. Immediate-or-cancel unless `--rest`.
+    """
+    expires = (
+        None
+        if args.rest is None
+        else int((datetime.now(UTC) + timedelta(hours=args.rest)).timestamp())
+    )
+    rows = []
+    for _, row in picks.sort_values("kickoff").iterrows():
+        found = matched[row["game_id"]]
+        side, other = (
+            (found.home, found.away) if row["bet_home"] else (found.away, found.home)
+        )
+        wanted = int(row["contracts"])
+        for route in routes(side, other):
+            if wanted <= 0:
+                break
+            if route.price > row["limit"] + 1e-9 and expires is None:
+                continue
+            try:
+                done = client.buy(
+                    route.ticker, route.action, wanted, row["limit"], expires
+                )
+            except KalshiError as error:
+                print(f"  !! {row['bet']}: {error}")
+                rows.append(
+                    {"bet": row["bet"], "ticker": route.ticker, "error": str(error)}
+                )
+                break
+            rows.append(
+                {
+                    "placed_at": datetime.now(CENTRAL),
+                    "game": row["game"],
+                    "game_id": row["game_id"],
+                    "bet": row["bet"],
+                    "ticker": route.ticker,
+                    "action": route.action,
+                    "ordered": wanted,
+                    "limit": row["limit"],
+                    "filled": done.filled,
+                    "resting": done.resting,
+                    "fill_price": done.price,
+                    "fee": done.fee,
+                    "model": row["model"],
+                    "edge": row["edge"],
+                    "order_id": done.order_id,
+                    "demo": args.demo,
+                }
+            )
+            price = "" if done.price is None else f" at {done.price:.2f}"
+            rest = f", {done.resting:.0f} resting" if expires and done.resting else ""
+            print(
+                f"  {row['bet']:<28} {route.action.upper()} {route.ticker}: "
+                f"{done.filled:.0f}/{wanted} filled{price}{rest}"
+            )
+            # A resting order holds the rest; only an IOC's leftover moves on.
+            wanted = 0 if expires else wanted - int(done.filled)
+    placed = pd.DataFrame(rows)
+    if placed.empty:
+        return
+    ORDERS_DIR.mkdir(parents=True, exist_ok=True)
+    log = ORDERS_DIR / out.name.replace(".csv", "_orders.csv")
+    placed.to_csv(log, index=False)
+    if "filled" not in placed:
+        print(f"\nnothing filled; errors: {log}")
+        return
+    filled = placed[placed["filled"].fillna(0) > 0]
+    spent = (filled["filled"] * filled["fill_price"] + filled["fee"].fillna(0)).sum()
+    print(
+        f"\nfilled {filled['filled'].sum():.0f} contracts on "
+        f"{filled['game_id'].nunique()} games for ${spent:,.2f}; orders: {log}"
+    )
 
 
 def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -> None:
@@ -630,6 +978,7 @@ def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -
         "edge": lambda s: s.map("{:+.3f}".format),
         "buy": None,
         "price": lambda s: s.map("{:.2f}".format),
+        "limit": lambda s: s.map("{:.2f}".format),
         "max_price": lambda s: s.map(lambda v: "" if pd.isna(v) else f"{v:.2f}"),
         "ev": lambda s: s.map("{:+.1%}".format),
         "contracts": lambda s: s.map(lambda v: "" if pd.isna(v) else f"{v:.0f}"),
