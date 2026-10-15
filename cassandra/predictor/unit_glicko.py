@@ -1562,10 +1562,7 @@ class _SuccessRates:
         never read. `per_rating` is rate per rating point of anchor gap.
 
         The anchor is asked for only for a team that has been read, as the
-        units ask only for teams with sides: `ratings` is read at the
-        rollover between the anchor cache being cleared and the unfiled
-        teams' prior moving, and an anchor cached there would be last
-        season's for the whole of the next.
+        units ask only for teams with sides.
         """
         center = self.center
         if team not in self._sides or center is None:
