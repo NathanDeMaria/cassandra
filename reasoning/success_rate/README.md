@@ -263,6 +263,36 @@ the deviations the filters carry don't say which games end farther from
 the call. Carrying them into the distribution would need them calibrated
 first.
 
+**Success rate's own posterior** (`posterior.py`). Since #108 every units
+model keeps, for the ratings page, a second pair of sides per team on the
+success rate alone, each with its own deviation: the estimate this section
+said success rate didn't have. Replayed in the published success model and
+put beside its probability (2022-2026, 1e-4 brier against the published
+model; recalibrating it alone is the first row):
+
+| | ncaafb | t | NFL | t |
+|---|---|---|---|---|
+| published, recalibrated | -0.60 | -0.3 | -0.83 | -0.4 |
+| rates' gap alone | +151 | +7.9 | +98 | +3.8 |
+| published + rates' gap | +3.39 | +0.8 | -1.09 | -0.5 |
+| + the gap times its deviation | +3.25 | +0.8 | -1.20 | -0.4 |
+| + offense and defense apart | +3.31 | +0.8 | -1.27 | -0.5 |
+
+Nothing. The NFL puts no weight on the gap (-0.01); ncaafb fits +0.30
+through 2021 and loses it held out, two seasons of five better. The
+deviation doesn't change how far to trust a gap either. The units already
+read success rate, and the deviation of a posterior mean can only say the
+mean is worth more or less than it claims; it says neither.
+
+The deviation a reader is shown is about honest. Each offense's rate in a
+game against what the two teams' displayed rates expected, over their
+deviations plus the game's binomial noise, 2022 on: z spread 1.10 on
+ncaafb and 1.05 on the NFL, 64% and 65% within one, 93% and 94% within two.
+The game's noise (6.1 and 6.4 points of rate) dwarfs the ratings' (3.0 and
+2.3); what the expectation missed by beyond it, 4.3 and 3.3, is an upper
+bound on what they should have claimed, since the field and the tiers'
+gap in the game are left out.
+
 The upshot: the variance worth an estimate of its own is efficiency's,
 which success-rate units already carry; explosiveness's would be shrunk to
 almost nothing; and the record's over-trust of its least lasting points is
@@ -308,6 +338,7 @@ Data lives under `~/.cassandra/success_rate/`, never beside the scripts.
     python discount.py ncaafb disc_s --from nc_p_off \
         --knobs lam_expl,lam_rest,obs_sd,prediction_scale
     python distribution.py ncaafb      # the comparisons and the uncertainty, on margins
+    python posterior.py ncaafb         # the displayed rates beside the published model
 
 The refits of the weighted rate read `sweep_weighted.py`'s pickle with
 `NCAAFB_INDEX=ncaafb_index_weighted.pkl NCAAFB_SUCCESS_SCALE=1.494,-0.624`,
