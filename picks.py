@@ -67,6 +67,17 @@ games and re-split the budget, `q` stops. Each order is a limit order:
 
 The cheapest route is tried first and what it left goes to the other one.
 What filled is written to `~/.cassandra/betting/orders/`.
+
+To rehearse without money, step by step:
+- no `--place`: no key, nothing sent;
+- `--place --dry-run`: the real key reads the balance and what's held,
+  then the orders are printed rather than sent. The client refuses any
+  request but a GET, and with a read-only key Kalshi would too;
+- `--place --demo`: the whole thing on Kalshi's demo exchange, with fake
+  money. It lists the FBS games under the same tickers but its books are
+  empty, so an order is accepted and fills nothing (FCS games aren't
+  there, and those orders error). With `--rest 1` the orders rest instead,
+  and a rerun should skip those games as already held.
 """
 
 import argparse
@@ -410,6 +421,12 @@ def main() -> None:
         help="with --place: Kalshi's demo exchange and its key",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --place: read the account with the real key, then print "
+        "the orders instead of sending them",
+    )
+    parser.add_argument(
         "--rest",
         type=float,
         metavar="HOURS",
@@ -633,11 +650,12 @@ def run(args: argparse.Namespace) -> None:
     # by Kelly weight (see `allocate`), each at its limit price.
     client = None
     if args.place:
-        client = KalshiClient.from_env(demo=args.demo)
+        client = KalshiClient.from_env(demo=args.demo, dry_run=args.dry_run)
         cash = client.balance()
         held = client.held_events()
+        mode = (" DEMO" if args.demo else "") + (" (dry run)" if args.dry_run else "")
         print(
-            f"\nKalshi{' DEMO' if args.demo else ''}: ${cash:,.2f} cash, "
+            f"\nKalshi{mode}: ${cash:,.2f} cash, "
             f"{len(held)} events already held or ordered"
         )
         if args.budget > cash:
@@ -936,6 +954,7 @@ def _place(
                     "edge": row["edge"],
                     "order_id": done.order_id,
                     "demo": args.demo,
+                    "dry_run": args.dry_run,
                 }
             )
             price = "" if done.price is None else f" at {done.price:.2f}"
@@ -945,7 +964,9 @@ def _place(
                 f"{done.filled:.0f}/{wanted} filled{price}{rest}"
             )
             # A resting order holds the rest; only an IOC's leftover moves on.
-            wanted = 0 if expires else wanted - int(done.filled)
+            # A dry run shows the first order only: nothing filled to say
+            # what the second would be.
+            wanted = 0 if expires or args.dry_run else wanted - int(done.filled)
     placed = pd.DataFrame(rows)
     if placed.empty:
         return

@@ -146,9 +146,12 @@ class KalshiClient:
     key_id: str
     private_key: Any
     base: str = LIVE_API
+    #: Read the account but never write to it: `buy` prints the order it
+    #: would send, and any request but a GET is refused before it's made.
+    dry_run: bool = False
 
     @classmethod
-    def from_env(cls, demo: bool = False) -> "KalshiClient":
+    def from_env(cls, demo: bool = False, dry_run: bool = False) -> "KalshiClient":
         prefix, stem = ("KALSHI_DEMO_", "demo_") if demo else ("KALSHI_", "")
         key_id = os.environ.get(f"{prefix}KEY_ID")
         id_file = _KEY_DIR / f"{stem}key_id"
@@ -165,9 +168,11 @@ class KalshiClient:
         private_key = serialization.load_pem_private_key(
             key_file.read_bytes(), password=None
         )
-        return cls(key_id, private_key, DEMO_API if demo else LIVE_API)
+        return cls(key_id, private_key, DEMO_API if demo else LIVE_API, dry_run)
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+        if self.dry_run and method != "GET":
+            raise KalshiError(f"dry run: refusing to send {method} {path}")
         url = urllib.parse.urlsplit(self.base + path)
         timestamp = str(int(time.time() * 1000))
         headers = {
@@ -235,4 +240,9 @@ class KalshiClient:
         expires_at: int | None = None,
     ) -> Fill:
         body = order_body(ticker, action, count, limit, expires_at)
+        if self.dry_run:
+            print(
+                f"    dry run, not sent: POST /portfolio/events/orders {json.dumps(body)}"
+            )
+            return Fill("dry-run", 0.0, 0.0, None, None)
         return fill(self._request("POST", "/portfolio/events/orders", body), action)

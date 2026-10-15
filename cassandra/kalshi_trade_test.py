@@ -5,7 +5,15 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .kalshi_trade import event_of, fill, order_body, sign
+from .kalshi_trade import (
+    Fill,
+    KalshiClient,
+    KalshiError,
+    event_of,
+    fill,
+    order_body,
+    sign,
+)
 
 
 def test_rsa_signature_covers_timestamp_method_and_path_without_query():
@@ -81,6 +89,22 @@ def test_fill_reads_a_no_at_its_own_price():
         ).price
         is None
     )
+
+
+def test_a_dry_run_sends_nothing_but_reads(monkeypatch):
+    client = KalshiClient("id", Ed25519PrivateKey.generate(), dry_run=True)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("a dry run reached the network")
+
+    monkeypatch.setattr("urllib.request.urlopen", no_network)
+    assert client.buy("T-A", "yes", 3, 0.4) == Fill("dry-run", 0.0, 0.0, None, None)
+    with pytest.raises(KalshiError, match="refusing"):
+        client._request("POST", "/portfolio/events/orders", {})
+    with pytest.raises(KalshiError, match="refusing"):
+        client._request("DELETE", "/portfolio/orders")
+    with pytest.raises(AssertionError, match="network"):
+        client._request("GET", "/portfolio/balance")
 
 
 def test_event_of():
