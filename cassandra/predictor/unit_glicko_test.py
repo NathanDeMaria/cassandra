@@ -966,3 +966,25 @@ def test_the_gap_slope_learns_how_far_a_rate_moves(game: GameFactory) -> None:
     for _ in range(400):
         rates.add_game(played, _rates(0.4 + shift / 2, 0.4 - shift / 2), shift, (1500.0, 1500.0))
     assert rates.gap_slope == pytest.approx(0.5, abs=0.05)
+
+
+@pytest.mark.usefixtures("rated")
+def test_one_anchor_for_every_side_is_its_own_average_opponent() -> None:
+    """A league without tiers reads every side at one anchor -- the NFL's
+    unfiled prior, which is no round number -- and its mean can round a hair
+    above it, leaving no side "at or above the mean" to average. That emptied
+    the NFL's publish (run 20261014-232537) on a `ZeroDivisionError`.
+    """
+    anchor = next(v for v in (1500 + i / 7 for i in range(1, 1000)) if v * 3 / 3 > v)
+    rates = unit_glicko._SuccessRates(
+        "test_league",
+        {
+            "sides": {"A": [0.01, 0.03, -0.01, 0.03]},
+            "center": [None, 0.84, 2],
+            "anchors": [[anchor, 3]],
+        },
+    )
+    success = rates.rates("A", lambda team: anchor, 0.001)
+    assert success is not None
+    assert success.offense.rate == pytest.approx(0.43)
+    assert success.defense.rate == pytest.approx(0.43)

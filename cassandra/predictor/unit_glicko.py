@@ -393,9 +393,10 @@ ncaafb in 2026 the average FBS offense reads 42.8% and the average FBS
 defense allows 42.1%, against a league center of 42.1%; the best offenses
 sit near 50% (Georgia, Ohio State), the best defenses near 33% (Oklahoma).
 The NFL's best offenses read 48-49%, its best defenses 44-45%, around a
-center of 46.2%. Every units model reads the same rates: the slope absorbs
-`points_per_epa`, 0.38 at the roster model's 75 and 0.44 at the success
-model's 87.
+center of 46.2%. On ncaafb every units model reads the same rates: the slope
+absorbs `points_per_epa`, 0.38 at the roster model's 75 and 0.44 at the
+success model's 87. The NFL's differ in the third place, its slope fit on
+the home edge alone.
 
 What it was measured to be worth
 --------------------------------
@@ -1583,7 +1584,10 @@ class _SuccessRates:
             return fallback
         count = sum(self._anchors.values())
         mean = sum(a * n for a, n in self._anchors.items()) / count
-        upper = [(a, n) for a, n in self._anchors.items() if a >= mean]
+        # The tier's floor sits a hair under the mean: with every side at one
+        # anchor, as on a league without tiers, the mean can round above it.
+        floor = mean - 1e-9 * max(1.0, abs(mean))
+        upper = [(a, n) for a, n in self._anchors.items() if a >= floor]
         return sum(a * n for a, n in upper) / sum(n for _, n in upper)
 
     def state(self) -> dict[str, Any]:
