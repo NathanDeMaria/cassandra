@@ -109,6 +109,49 @@ turned out to be a team changing under the model after a bad blowout, which
 no observation model fixes. The clocks' meaning changes completely -- under a
 Kalman gain `glicko_full`'s `initial_rd` of 663 lets the first game replace
 the prior -- so nothing is pinned from that fit but the matchup terms.
+
+Lopsided games
+--------------
+
+The step measures a margin against `mu = c * gap`, linear however lopsided
+the game. A scoreboard isn't: past a few touchdowns the starters sit and the
+clock runs. On the published ncaafb success model's replay, 2002-2021, a
+favorite's mean surprise runs -0.7 points at 7-14 expected, -2.4 at 28-35
+and -6.6 at 45 and up, so every cupcake marks the favorite down for winning
+by less than linear -- by enough to show in its next game against a real
+opponent (|expected| < 14), which it beats by +0.48 points after a 21-plus
+favorite game against -0.12 after a close one, and +0.49 against -0.14 on
+2022-2026.
+
+The step's *size* is right: a team's next surprise doesn't depend on this
+one's in any bin of expected margin (every slope within 0.007 of 0 on
+2002-2021). So the fix is the expectation, not the gain. `mismatch_scale`,
+`M` in points, makes the step the extended Kalman filter's for a margin that
+saturates:
+
+    f(mu)  = M tanh(mu / M)            what the margin is expected to be
+    H      = c (1 - tanh^2(mu / M))    how far it moves per rating unit there
+
+with `H` in place of `c` in the observation noise and the step. A lopsided
+game is measured against what lopsided games end at, says less about the gap
+because the margin moves less with it there, and shrinks the deviation less
+-- the "update less" a cupcake should get, from the likelihood rather than a
+discount. `None` is the linear step exactly. The prediction is untouched: a
+win probability or a release's kernel already reads a lopsided gap as what
+it is, and what changes is what the ratings learn.
+
+Least squares of `M tanh(mu / M)` on the published model's margins through
+2021 puts `M` at 74 points; replayed through 2026 on its knobs, brier on FBS
+v FBS games against `None`, in 1e-4:
+
+    M            200    120     90     70     55     45
+    2014-2021   -0.2   -0.4   -0.4   -0.2   +0.9   +2.9
+    2022-2026   -0.2   -0.5   -0.6   -0.5   +0.1   +1.4
+
+Small and consistent, no slice significant on its own -- both teams in their
+first five games -1.0 and -1.1 -- and at 90 the bias after a 21-plus game
+falls from +0.36 to +0.18 on 2014-2021. Found and measured in
+`reasoning/component_margin` on branch `claude/component-margin`.
 """
 
 import math
@@ -151,6 +194,11 @@ DEFAULT_OBS_SD = 14.0
 #: here. Not a finding about the right stretch; see the module docstring.
 DEFAULT_POINTS_PER_RATING = 0.14
 
+#: The least share of `points_per_rating` a saturating step's slope keeps, so
+#: a game far past `mismatch_scale` still divides by something: at 1e-6 its
+#: observation noise is a trillion times the margin's, which is no evidence.
+_MIN_SLOPE_SHARE = 1e-6
+
 
 class MarginGlickoPredictor(GlickoPredictor):
     """Glicko with a Gaussian or Student-t observation of the margin.
@@ -179,6 +227,7 @@ class MarginGlickoPredictor(GlickoPredictor):
         nu: float | None = None,
         points_per_rating: float = DEFAULT_POINTS_PER_RATING,
         prediction_scale: float | None = None,
+        mismatch_scale: float | None = None,
         passes: int = 1,
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
@@ -221,6 +270,11 @@ class MarginGlickoPredictor(GlickoPredictor):
             "points_per_rating", points_per_rating
         )
         self._implied_prediction = prediction_scale is None
+        self._mismatch_scale = (
+            None
+            if mismatch_scale is None
+            else validated_scale("mismatch_scale", mismatch_scale)
+        )
 
     @property
     def obs_sd(self) -> float:
@@ -237,6 +291,11 @@ class MarginGlickoPredictor(GlickoPredictor):
         """Points of margin one rating unit is worth."""
         return self._points_per_rating
 
+    @property
+    def mismatch_scale(self) -> float | None:
+        """Where the step's expected margin saturates, in points; `None` is linear."""
+        return self._mismatch_scale
+
     def _step(
         self, my: _Rating, opp: _Rating, margin: float, home_adjustment: float
     ) -> _Rating:
@@ -248,15 +307,24 @@ class MarginGlickoPredictor(GlickoPredictor):
         """
         c = self._points_per_rating
         expected = c * (my.rating + home_adjustment - opp.rating)
+        # The margin's points per rating unit at the expectation: `c` for the
+        # linear step, less where a saturating one flattens.
+        slope = c
+        if self._mismatch_scale is not None:
+            squashed = math.tanh(expected / self._mismatch_scale)
+            expected = self._mismatch_scale * squashed
+            slope *= max(1 - squashed**2, _MIN_SLOPE_SHARE)
         innovation = margin - expected
         noise = self._obs_sd**2
         if self._nu is not None:
-            total = noise + c**2 * (my.rating_deviation**2 + opp.rating_deviation**2)
+            total = noise + slope**2 * (
+                my.rating_deviation**2 + opp.rating_deviation**2
+            )
             noise /= (self._nu + 1) / (self._nu + innovation**2 / total)
-        observation = noise / c**2 + opp.rating_deviation**2
+        observation = noise / slope**2 + opp.rating_deviation**2
         gain = my.rating_deviation**2 / (my.rating_deviation**2 + observation)
         return _Rating(
-            my.rating + gain * innovation / c,
+            my.rating + gain * innovation / slope,
             math.sqrt(my.rating_deviation**2 * (1 - gain)),
         )
 
@@ -364,6 +432,7 @@ class MarginGlickoPredictor(GlickoPredictor):
             ),
             "obs_sd": self._obs_sd,
             "nu": self._nu,
+            "mismatch_scale": self._mismatch_scale,
             "points_per_rating": self._points_per_rating,
         }
 

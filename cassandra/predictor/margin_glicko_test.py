@@ -151,6 +151,82 @@ def test_a_scale_of_zero_or_less_is_refused(value: float) -> None:
         MarginGlickoPredictor("test_league", points_per_rating=value)
     with pytest.raises(ValueError, match="prediction_scale"):
         MarginGlickoPredictor("test_league", prediction_scale=value)
+    with pytest.raises(ValueError, match="mismatch_scale"):
+        MarginGlickoPredictor("test_league", mismatch_scale=value)
+
+
+def test_a_saturating_step_is_the_extended_kalman_update(game: GameFactory) -> None:
+    """Checked against the algebra: the expectation squashed, `c` its slope there.
+
+    A 600 rating units up on B, at 0.1 points a unit, expects 60 linear;
+    at a mismatch scale of 50 that is 50 tanh(1.2), and the margin moves
+    0.1 (1 - tanh^2(1.2)) points per rating unit there.
+    """
+    ratings = {"A": _Rating(1800, 100), "B": _Rating(1200, 100)}
+    predictor = _predictor(ratings=dict(ratings), mismatch_scale=50)
+    predictor.update_game(game("A", "B", 40, 0))
+
+    squashed = math.tanh(60 / 50)
+    move, rd = _kalman(100, 100, 10, 0.1 * (1 - squashed**2), 40 - 50 * squashed)
+    assert predictor.get_rating("A").rating == pytest.approx(1800 + move)
+    assert predictor.get_rating("B").rating == pytest.approx(1200 - move)
+    assert predictor.get_rating("A").rating_deviation == pytest.approx(rd)
+
+
+def test_a_cupcake_won_by_what_cupcakes_end_at_marks_nobody_down(
+    game: GameFactory,
+) -> None:
+    """The point of the knob: a favorite isn't charged for coasting.
+
+    60 points up, won by 42. Linear, that is an 18-point disappointment and
+    the favorite drops; saturating at 50, 42 is about what such a game ends
+    at, and the rating barely moves.
+    """
+    ratings = {"A": _Rating(1800, 100), "B": _Rating(1200, 100)}
+    linear = _predictor(ratings=dict(ratings))
+    saturating = _predictor(ratings=dict(ratings), mismatch_scale=50)
+    linear.update_game(game("A", "B", 42, 0))
+    saturating.update_game(game("A", "B", 42, 0))
+
+    assert linear.get_rating("A").rating < 1800 - 50
+    assert abs(saturating.get_rating("A").rating - 1800) < 5
+    # And the game says less about the gap, so the deviation shrinks less.
+    assert (
+        saturating.get_rating("A").rating_deviation
+        > linear.get_rating("A").rating_deviation
+    )
+
+
+def test_a_level_game_is_the_linear_step(game: GameFactory) -> None:
+    """tanh is linear through 0: an even game saturates nothing."""
+    linear, saturating = _predictor(), _predictor(mismatch_scale=74)
+    linear.update_game(game("A", "B", 20, 0))
+    saturating.update_game(game("A", "B", 20, 0))
+
+    assert saturating.get_rating("A") == pytest.approx(linear.get_rating("A"))
+
+
+def test_a_large_mismatch_scale_is_the_linear_step(game: GameFactory) -> None:
+    ratings = {"A": _Rating(1800, 100), "B": _Rating(1200, 100)}
+    linear = _predictor(ratings=dict(ratings))
+    nearly = _predictor(ratings=dict(ratings), mismatch_scale=1e9)
+    linear.update_game(game("A", "B", 42, 0))
+    nearly.update_game(game("A", "B", 42, 0))
+
+    assert nearly.get_rating("A") == pytest.approx(linear.get_rating("A"))
+
+
+def test_the_saturating_step_leaves_the_prediction_alone(game: GameFactory) -> None:
+    """What the ratings learn changes; how a gap is read doesn't."""
+    ratings = {"A": _Rating(1800, 100), "B": _Rating(1200, 100)}
+    linear = _predictor(ratings=dict(ratings), prediction_scale=170)
+    saturating = _predictor(
+        ratings=dict(ratings), prediction_scale=170, mismatch_scale=50
+    )
+
+    assert saturating.predict_game(game("A", "B")) == linear.predict_game(
+        game("A", "B")
+    )
 
 
 def test_the_prediction_is_the_gaussian_win_probability(game: GameFactory) -> None:
@@ -294,12 +370,24 @@ def test_the_state_carries_this_models_knobs_and_not_the_parents(
     )
 
 
+def test_a_mismatch_scale_round_trips(game: GameFactory) -> None:
+    predictor = _predictor(mismatch_scale=74)
+    predictor.update_game(game("A", "B", 20, 3))
+    state = predictor.state_dict()
+    assert state["mismatch_scale"] == 74
+
+    restored = MarginGlickoPredictor.from_state_dict(state)
+    assert restored.mismatch_scale == 74
+    assert restored.state_dict() == state
+
+
 def test_a_gaussian_round_trips_its_absent_nu_and_scale(game: GameFactory) -> None:
     predictor = _predictor()
     predictor.update_game(game("A", "B", 20, 3))
     state = predictor.state_dict()
     assert state["nu"] is None
     assert state["prediction_scale"] is None
+    assert state["mismatch_scale"] is None
     restored = MarginGlickoPredictor.from_state_dict(state)
     assert restored.nu is None
     # Still the implied prediction, deviations and all, after the round trip.

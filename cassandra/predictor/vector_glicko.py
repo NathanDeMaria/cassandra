@@ -519,7 +519,10 @@ class VectorMarginGlickoPredictor(MarginGlickoPredictor):
 
     def state_dict(self) -> dict[str, Any]:
         state = super().state_dict()
+        # Both are the parent's scalar step's, which this model's vector step
+        # replaces; neither is a knob here.
         state.pop("nu", None)
+        state.pop("mismatch_scale", None)
         return {
             **state,
             "control_scale": self._control_scale,

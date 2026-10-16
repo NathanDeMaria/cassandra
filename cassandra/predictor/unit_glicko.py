@@ -617,6 +617,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         nu: float | None = None,
         points_per_rating: float = DEFAULT_POINTS_PER_RATING,
         prediction_scale: float | None = None,
+        mismatch_scale: float | None = None,
         # Both the parent's ratings and the units are re-walked this many
         # times a week; see `GlickoPredictor.passes`.
         passes: int = 1,
@@ -689,6 +690,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             nu=nu,
             points_per_rating=points_per_rating,
             prediction_scale=prediction_scale,
+            mismatch_scale=mismatch_scale,
             passes=passes,
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,

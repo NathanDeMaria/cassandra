@@ -424,8 +424,22 @@ def test_a_quarterback_shift_survives_the_smoother(game: GameFactory) -> None:
     assert moved > 0.5 / new.points_per_rating
 
 
+def test_the_units_take_the_saturating_record_step(game: GameFactory) -> None:
+    """`mismatch_scale` is the parent's: at weight 0 the units model is the
+    margin model with it, game by game."""
+    units = _predictor({"0": LOPSIDED}, unit_weight=0.0, mismatch_scale=30)
+    margin = MarginGlickoPredictor("test_league", anchors={}, mismatch_scale=30)
+    for played in (
+        game("A", "B", 45, 0, game_id="0"),
+        game("A", "C", 38, 3, game_id="1"),
+    ):
+        assert units.update_game(played) == margin.update_game(played)
+    assert _parents(units) == margin.ratings
+
+
 def test_the_shift_knobs_round_trip(game: GameFactory) -> None:
     predictor = _predictor(
+        mismatch_scale=74,
         coach_left_shift=-2.5,
         new_qb_shift=-1.1,
         qb_quality_shift=1.7,
