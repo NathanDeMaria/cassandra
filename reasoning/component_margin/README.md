@@ -111,6 +111,89 @@ held out: post-hoc (`qb/qb_heldout.py`), from +0.2 to +4.6 per FBS game-season d
 on the form. In the parts' replay at 1 point per 0.1 (`component_qb.py`) it is -0.9
 (t -0.9) on 2014-2021 and +0.8 (t +0.5) after.
 
+## The distribution's shape, and the earned-only parts (2026-10-16)
+
+**A kernel on the parts' mean fixes the shape** (`kernel_mu.py`). It is the release's
+cumulative logit, with mu in place of the win probability's logit; a location-scale
+version also lets the game's own sd widen it. Fit on every game 2014-2021, scored on
+FBS v FBS against the published kernel, log loss in 1e-3 nats:
+
+| kernel | 2014-21 | held out |
+|---|---|---|
+| on the parts' own win probability | +3.2 (t +1.3) | +12.1 (t +3.5) |
+| on mu (slope 1.03 per 10 points) | +0.4 (t +0.2) | +12.0 (t +4.0) |
+| on mu and sd (g +0.64) | +1.1 (t +0.5) | +12.2 (t +4.1) |
+
+The 0.17 nats the Normal gave up is all shape. On mu the kernel is even with the
+published one in the years it was fit, and the per-game sd adds nothing, as it added
+nothing to the published kernel. What is left held out is the mean's quality, the same
+gap brier shows.
+
+**Earned-only parts don't transfer** (`earned_weight`). Counting a side by
+`w e / (w e + 1 / prior)` of its mean, as the units model does, costs +94 to +220 in
+brier at every prior width, w and summer rule tried. Here L and the sides are learned
+jointly, so a side holds information L never got. Shrinking it at prediction throws that
+away, where the units model falls back on a record that learned the margins on its own.
+
+## Lopsided games (2026-10-16)
+
+Nathan's question: do the early-season games against overmatched opponents pull a good
+team off its preseason rating? Asked of the published success model's own replay
+(`batch_nc_success_cap_p`, 2002-2026).
+
+**The step's size is right** (`mismatch_efficiency.py`). In a filter that weighs each
+game right, a team's surprise next game is uncorrelated with its surprise this game. Per
+team, consecutive games, next surprise on this one, binned by this game's |expected
+margin|, SE clustered by team-season: every beta on 2002-2021 is within 0.007 of 0
+(|t| <= 1.3), lopsided bins included. A lopsided game doesn't move a rating too far for
+its surprise.
+
+**Its expectation isn't.** A favorite's mean surprise grows with the expected margin:
+
+| expected margin | 7-14 | 14-21 | 21-28 | 28-35 | 35-45 | 45+ |
+|---|---|---|---|---|---|---|
+| favorite's mean surprise, 2002-21 | -0.7 | -1.1 | -1.6 | -2.4 | -3.4 | -6.6 |
+
+So every lopsided game marks the favorite down for winning by less than linear. It shows
+in the favorite's next competitive game, |expected| < 14 (`mismatch_next.py`): +0.48 ±
+0.18 after a 21+ favorite game in 2002-2021 and +0.49 ± 0.32 in 2022-2026, against -0.12
+after a close game. That replicates in both windows. Lopsided games *so far this season*
+show no build-up past the most recent one.
+
+**The fix that follows from that is a saturating expectation, not a smaller step**
+(`saturated.py`). The record's step measures the margin against `M tanh(mu / M)`, with
+the observation's slope there, `c (1 - tanh^2)`, in place of `c`. That is the extended
+Kalman step for a margin that saturates. A lopsided game then says less because the
+margin moves less with the gap there, and the deviation shrinks less with it: the
+"confidence" part. Per-play readings don't saturate (`diag_scale.py`), so only the record
+changes.
+
+- **M from the margins alone:** least squares of `M tanh(mu / M)` on the published
+  model's 2002-2021 games gives 74 points (mse 257.4 against 260.4 linear).
+- **M by brier**, each replayed through 2026 on the published model's knobs. The control
+  reproduces the published replay to 6 decimals. Brier 1e-4 against it:
+
+| M | 2014-21 | 2022-26 |
+|---|---|---|
+| 200 | -0.2 | -0.2 |
+| 120 | -0.4 | -0.5 |
+| 90 | -0.4 | -0.6 |
+| 70 | -0.2 | -0.5 |
+| 55 | +0.9 | +0.1 |
+| 45 | +2.9 | +1.4 |
+
+- **At M = 90**, by slice (`saturation_check.py`), every one is small and none
+  significant. FBS v FBS games where both teams are in their first five: -1.0 (2014-21)
+  and -1.1 (2022-26). Coming off a lopsided game, 2022-26: -2.6 (t -0.7).
+- **The bias after a 21+ favorite game falls** from +0.36 to +0.18 on 2014-2021. After a
+  35+ game in 2022-2026 it falls from +1.07 to +0.63. Only partly removed, and within its
+  noise.
+
+Principled, estimated from the margins, a small consistent gain in both windows, and not
+significant. Worth a knob on `MarginGlickoPredictor` searched beside `obs_sd` and
+`prediction_scale`, which haven't been refit around it. It won't fix the cupcake effect by
+itself.
+
 ## Where to go from here
 
 - **The distribution's shape** is the biggest single loss and the most separable one. A

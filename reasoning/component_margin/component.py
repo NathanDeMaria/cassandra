@@ -170,6 +170,7 @@ class ComponentMarginPredictor(UnitMarginGlickoPredictor):
         returning_on_level: float = 0.0,
         persist_sides: float = 0.0,
         level_from_margin: float = 0.0,
+        earned_weight: float = 0.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(league, **kwargs)
@@ -189,6 +190,11 @@ class ComponentMarginPredictor(UnitMarginGlickoPredictor):
         # 1 steps L on the whole margin in every game, the record's way, and
         # leaves the readings to O and D alone (deviations from what L implies).
         self._level_from_margin = bool(level_from_margin)
+        # Above 0, a side counts in the prediction only by what it has earned
+        # past its prior, the units model's shrink kept inside the sum: a
+        # side's mean times w e / (w e + 1 / prior), e its precision less the
+        # prior's. 1 is 1 - var / prior. 0 is every side at full weight.
+        self._earned_weight = earned_weight
         self._rest: dict[str, _Rating] = {}
         self._rest_preseason: dict[str, _Rating] = {}
         self._game_weeks: list[list[_Game]] = []
@@ -214,7 +220,7 @@ class ComponentMarginPredictor(UnitMarginGlickoPredictor):
         edge = self.home_edge(matchup) + self.matchup_adjustment(matchup)
         mu = (
             c * (home.rating - away.rating + edge)
-            + s * (sh.offense.rating + sh.defense.rating - sa.offense.rating - sa.defense.rating)
+            + s * (self._counted(sh) - self._counted(sa))
             + self._rest_of(matchup.home).rating
             - self._rest_of(matchup.away).rating
         )
@@ -222,6 +228,17 @@ class ComponentMarginPredictor(UnitMarginGlickoPredictor):
             home.rating_deviation**2 + away.rating_deviation**2
         )
         return NormalMargin(mu, math.sqrt(var), "points")
+
+    def _counted(self, pair: _Sides) -> float:
+        """O + D as the prediction counts them; see `earned_weight`."""
+        if not self._earned_weight:
+            return pair.offense.rating + pair.defense.rating
+        total = 0.0
+        for unit, initial in ((pair.offense, self._initial_sd.offense), (pair.defense, self._initial_sd.defense)):
+            prior = 1 / initial**2
+            earned = self._earned_weight * max(0.0, 1 / unit.rating_deviation**2 - prior)
+            total += unit.rating * earned / (earned + prior)
+        return total
 
     # ---- one game --------------------------------------------------------
 
