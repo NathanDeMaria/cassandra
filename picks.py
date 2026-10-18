@@ -719,6 +719,7 @@ def run(args: argparse.Namespace) -> None:
     # 5. Size the picks (`_size`), each at its limit price.
     client = None
     frame["held"] = 0.0
+    frame["held_as"] = ""
     args.cash = None
     if args.place:
         client = KalshiClient.from_env(demo=args.demo, dry_run=args.dry_run)
@@ -746,6 +747,16 @@ def run(args: argparse.Namespace) -> None:
             )
             mine, against = held_on(positions, side, other)
             frame.at[i, "held"] = mine
+            # The same outcome can be held through either contract, and a
+            # top-up may buy the other one: say which is held.
+            frame.at[i, "held_as"] = ", ".join(
+                f"{count:g} {action} {ticker.rsplit('-', 1)[-1]}"
+                for ticker, action, count in (
+                    (side.ticker, "YES", positions.get(side.ticker, 0.0)),
+                    (other.ticker, "NO", -positions.get(other.ticker, 0.0)),
+                )
+                if count > 0
+            )
             if not pd.isna(row["skip"]):
                 continue
             if row["event"] in resting:
@@ -1017,7 +1028,7 @@ def _print_orders(
             f"{number:>3}. {mark} {row['kickoff']:%a %H:%M}  {row['bet']:<28} "
             f"{row['buy']:<40} {row['contracts']:>3.0f} @ ≤{row['limit']:.2f}  "
             f"≤${row['outlay']:.2f}   ({row['game']}, edge {row['edge']:+.3f})"
-            + (f"  [topping up {row['held']:g} held]" if row["held"] else "")
+            + (f"  [topping up: holds {row['held_as']}]" if row["held"] else "")
         )
         for note in sorted(notes, key=lambda n: not n.qb)[: args.news_lines]:
             who = note.team or "?"
