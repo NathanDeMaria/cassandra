@@ -223,18 +223,32 @@ class KalshiClient:
         """Cash on hand, in dollars."""
         return self.account()[0]
 
-    def positions(self) -> dict[str, float]:
-        """Each market's open position: YES contracts positive, NO negative."""
-        found: dict[str, float] = {}
-        for position in self._pages(
+    def market_positions(self) -> list[dict]:
+        """Every unsettled market position as Kalshi sends it: `position_fp`
+        (YES positive, NO negative), `market_exposure_dollars` (what it cost),
+        `fees_paid_dollars`, and so on."""
+        return self._pages(
             "/portfolio/positions",
             "market_positions",
             {"count_filter": "position", "settlement_status": "unsettled"},
-        ):
+        )
+
+    def positions(self) -> dict[str, float]:
+        """Each market's open position: YES contracts positive, NO negative."""
+        found: dict[str, float] = {}
+        for position in self.market_positions():
             count = float(position.get("position_fp") or position.get("position") or 0)
             if count:
                 found[position["ticker"]] = count
         return found
+
+    def market(self, ticker: str) -> dict:
+        """One market: its title, quotes and status."""
+        return self._request("GET", f"/markets/{ticker}")["market"]
+
+    def event(self, event_ticker: str) -> dict:
+        """One event: its title, e.g. "Houston at Utah"."""
+        return self._request("GET", f"/events/{event_ticker}")["event"]
 
     def resting_events(self) -> set[str]:
         """Every event with a resting order in it."""
