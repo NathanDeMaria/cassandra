@@ -521,13 +521,15 @@ def skip_reason(
     waiting_on: Sequence[str],
     since_entry: timedelta | None,
     min_edge: float = MIN_EDGE,
+    max_since_entry: timedelta = MAX_SINCE_ENTRY,
+    max_overround: float = MAX_OVERROUND,
 ) -> str | None:
     """Why a priced game isn't a pick, or None if it is. See the module docstring."""
     if waiting_on:
         return f"previous game not final: {', '.join(waiting_on)}"
-    if since_entry is not None and since_entry > MAX_SINCE_ENTRY:
+    if since_entry is not None and since_entry > max_since_entry:
         return "past the entry window"
-    if priced.overround > MAX_OVERROUND:
+    if priced.overround > max_overround:
         return f"book too wide ({priced.overround:.2f})"
     if priced.route is None:
         return "nothing on offer"
