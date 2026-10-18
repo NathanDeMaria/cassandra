@@ -1,4 +1,12 @@
-from .injuries import Roster, box_players, notes, opponents, rosters, sentences
+from .injuries import (
+    Roster,
+    box_players,
+    notes,
+    opponents,
+    passing,
+    rosters,
+    sentences,
+)
 
 UCLA = Roster(
     "UCLA",
@@ -109,3 +117,39 @@ def test_an_opponents_quarterback_is_the_opponents_news():
     )
     (note,) = notes(story, rosters([summary], teams) + [pitt], "Recap")
     assert (note.team, note.qb) == ("Pitt", True)
+
+
+def test_passing_reads_completions_and_attempts_most_attempts_first():
+    summary = {
+        "boxscore": {
+            "players": [
+                {
+                    "team": {"id": "26"},
+                    "statistics": [
+                        {
+                            "name": "passing",
+                            "labels": ["C/ATT", "YDS"],
+                            "athletes": [
+                                {
+                                    "athlete": {"displayName": "Backup"},
+                                    "stats": ["1/2", "9"],
+                                },
+                                {
+                                    "athlete": {"displayName": "Starter"},
+                                    "stats": ["24/31", "250"],
+                                },
+                                {
+                                    "athlete": {"displayName": "Team"},
+                                    "stats": ["0/0", "0"],
+                                },
+                            ],
+                        }
+                    ],
+                },
+                {"team": {"id": "2483"}, "statistics": []},
+            ]
+        }
+    }
+    assert passing(summary, "26") == [("Starter", 24, 31), ("Backup", 1, 2)]
+    assert passing(summary, "2483") == []
+    assert passing({}, "26") == []

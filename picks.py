@@ -115,6 +115,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -854,7 +855,7 @@ def run(args: argparse.Namespace) -> None:
     # in the top `--top`, and a game nobody has read the news on shouldn't
     # take one: answering is about the list on the screen.
     listed: set[str] | None = None
-    news: dict[str, list[injuries.Note]] = {}
+    news: dict[str, News] = {}
     out = OUT_DIR / f"{league}_{model}_{started.astimezone(CENTRAL):%Y%m%d-%H%M}.csv"
     while True:
         frame["skip"] = priced_skips
@@ -1031,21 +1032,25 @@ def _espn_summary(game_id: str, final: bool) -> dict:
 
 def _injury_news(
     picks: pd.DataFrame, games: list[Game], namer: TeamNamer
-) -> dict[str, list[injuries.Note]]:
-    """Injury sentences on each pick's two teams, from their last two games' stories.
+) -> dict[str, "News"]:
+    """Injury sentences on each pick's two teams, from their last two games' stories,
+    and who threw for each in those games' box scores.
 
     The upcoming game's preview is read too, once ESPN has one.
     """
     by_id = {g.game_id: g for g in games}
     wanted: dict[str, list[tuple[str, bool, str]]] = {}
+    recent: dict[str, dict[str, list[Game]]] = {}
     for game_id in picks["game_id"]:
         fixture = by_id[game_id]
         stories = [(fixture.game_id, False, "preview")]
+        recent[game_id] = {}
         for team in (fixture.home, fixture.away):
             played = sorted(
                 (g for g in games if g.completed and team in (g.home, g.away)),
                 key=lambda g: g.date,
             )[-NEWS_GAMES:]
+            recent[game_id][team] = list(reversed(played))
             for g in reversed(played):
                 when = g.date.astimezone(CENTRAL)
                 stories.append((g.game_id, True, f"{_fmt_game(g)}, {when:%b %d}"))
@@ -1053,7 +1058,7 @@ def _injury_news(
     calls = {(g, final) for stories in wanted.values() for g, final, _ in stories}
     with ThreadPoolExecutor(8) as pool:
         summaries = dict(zip(calls, pool.map(lambda c: _espn_summary(*c), calls)))
-    news: dict[str, list[injuries.Note]] = {}
+    news: dict[str, News] = {}
     for game_id, stories in wanted.items():
         fixture = by_id[game_id]
         teams = {
@@ -1075,13 +1080,34 @@ def _injury_news(
                 # News of last week's opponent isn't news of this game.
                 if note.team is None or note.team in teams.values():
                     found.setdefault(note.sentence, note)
-        news[game_id] = list(found.values())
+        passers = []
+        for espn_id, team in teams.items():
+            thrown = []
+            for g in recent[game_id][team]:
+                who = injuries.passing(summaries[(g.game_id, True)], espn_id)
+                # The starter, and anyone else who threw five times.
+                shown = [p for i, p in enumerate(who) if i == 0 or p[2] >= 5]
+                when = f"{g.date.astimezone(CENTRAL):%b %d}"
+                thrown.append(
+                    f"{when} "
+                    + (", ".join(f"{n} {c}/{a}" for n, c, a in shown) or "no box score")
+                )
+            passers.append(f"{team}: {' · '.join(thrown)}")
+        news[game_id] = News(list(found.values()), passers)
     return news
+
+
+class News(NamedTuple):
+    """What a pick's order is shown with: injury sentences, and who threw lately."""
+
+    notes: list[injuries.Note]
+    #: Per team, its last games' passers, e.g. "UCLA Bruins: Oct 17 ...".
+    passers: list[str]
 
 
 def _print_orders(
     picks: pd.DataFrame,
-    news: dict[str, list[injuries.Note]],
+    news: dict[str, News],
     args: argparse.Namespace,
 ) -> None:
     """The orders `--place` would send, numbered, with the injury news under each."""
@@ -1096,7 +1122,7 @@ def _print_orders(
     order = picks.sort_values(["kickoff", "edge"], ascending=[True, False])
     flagged = []
     for number, (_, row) in enumerate(order.iterrows(), start=1):
-        notes = news.get(row["game_id"], [])
+        notes, passers = news.get(row["game_id"], News([], []))
         qb = [n for n in notes if n.qb]
         mark = "QB!" if qb else ("inj" if notes else "   ")
         if qb:
@@ -1107,6 +1133,8 @@ def _print_orders(
             f"≤${row['outlay']:.2f}   ({row['game']}, edge {row['edge']:+.3f})"
             + (f"  [topping up: holds {row['held_as']}]" if row["held"] else "")
         )
+        for line in passers:
+            print(f"         passing  {line}")
         for note in sorted(notes, key=lambda n: not n.qb)[: args.news_lines]:
             who = note.team or "?"
             print(f"         {'QB ' if note.qb else ''}[{who}] {note.sentence[:220]}")

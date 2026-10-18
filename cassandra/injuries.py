@@ -129,6 +129,31 @@ def box_players(summary: Mapping) -> dict[str, tuple[set[str], set[str], set[str
     return teams
 
 
+def passing(summary: Mapping, espn_id: str) -> list[tuple[str, int, int]]:
+    """Who threw for a team in a game: (name, completions, attempts), most attempts first.
+
+    Who started at quarterback last week is the injury check a recap can't
+    be counted on for: a starter missing from the box score is news even
+    when no sentence says so.
+    """
+    found = []
+    for side in (summary.get("boxscore") or {}).get("players") or []:
+        if str((side.get("team") or {}).get("id")) != str(espn_id):
+            continue
+        for category in side.get("statistics") or []:
+            if category.get("name") != "passing":
+                continue
+            labels = category.get("labels") or []
+            at = labels.index("C/ATT") if "C/ATT" in labels else 0
+            for athlete in category.get("athletes") or []:
+                name = ((athlete.get("athlete") or {}).get("displayName") or "").strip()
+                stats = athlete.get("stats") or []
+                made, _, tried = (stats[at] if len(stats) > at else "").partition("/")
+                if name and name != "Team" and made.isdigit() and tried.isdigit():
+                    found.append((name, int(made), int(tried)))
+    return sorted(found, key=lambda p: -p[2])
+
+
 def rosters(summaries: Iterable[Mapping], teams: Mapping[str, str]) -> list[Roster]:
     """`teams` (ESPN id → name) as each is in a set of game summaries."""
     pooled: dict[str, tuple[set[str], set[str], set[str]]] = {
