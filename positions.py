@@ -18,8 +18,8 @@ from cassandra.kalshi_trade import KalshiClient
 from cassandra.picks import event_day
 
 
-def _dollars(value: object) -> float:
-    return float(value or 0)
+def _dollars(value: str | float | None) -> float:
+    return float(value) if value else 0.0
 
 
 def main() -> None:

@@ -41,6 +41,18 @@ _KEY_DIR = Path.home() / ".kalshi"
 _PACE = 1 / 8
 
 
+def public_get(path: str, params: dict | None = None) -> dict:
+    """A GET of Kalshi's public market data, which needs no key: markets,
+    events, order books."""
+    query = f"?{urllib.parse.urlencode(params)}" if params else ""
+    request = urllib.request.Request(
+        f"{LIVE_API}{path}{query}", headers={"User-Agent": "cassandra-picks"}
+    )
+    time.sleep(_PACE)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
 def sign(private_key: Any, timestamp_ms: str, method: str, path: str) -> str:
     """Kalshi's request signature: timestamp, method and path, no query string.
 
