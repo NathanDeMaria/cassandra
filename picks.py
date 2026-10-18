@@ -45,6 +45,9 @@ injury the model reads, so check the news on any pick you're about to
 make. When one of the last 18 hours' games has no plays on ESPN yet,
 whether its teams' starters played is unknown, and their next games wait
 for a later run ("QB check incomplete"). `--exclude TEAM` drops a game.
+News that lasts -- a starter out for the season -- goes in
+`~/.cassandra/betting/overrides.toml` instead, with the date it ends
+(`cassandra.overrides`), and every run applies it until then.
 Under the orders, each pick lists the injury sentences in its two teams'
 last two AP stories, and the next game's preview once there is one
 (`cassandra.injuries`); `QB!` marks one naming a quarterback.
@@ -124,7 +127,7 @@ from endgame.types import Game, Season, merge_weekly_seasons
 from endgame_aws import Config
 from endgame_aws.pbp_transform import transform_game_to_table
 
-from cassandra import injuries
+from cassandra import injuries, overrides
 from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
@@ -181,6 +184,7 @@ PLAYS_DIR = PICKS_DIR / "plays"
 OUT_DIR = CASSANDRA_HOME / "betting" / "picks"
 ORDERS_DIR = CASSANDRA_HOME / "betting" / "orders"
 SUMMARIES_DIR = PICKS_DIR / "summaries"
+OVERRIDES = CASSANDRA_HOME / "betting" / "overrides.toml"
 ESPN_SUMMARY = (
     "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary"
 )
@@ -300,14 +304,46 @@ async def _qb_out_tonight(
     return flags, blind
 
 
-def _qb_out_named(names: list[str], upcoming: list[Game]) -> dict[str, set[str]]:
-    """`--qb-out` news: each named team out in its next game."""
+def _overrides(args: argparse.Namespace) -> list[overrides.Override]:
+    """The `--overrides` file's news still applying today, each printed."""
+    if args.no_overrides:
+        return []
+    try:
+        found = overrides.load(args.overrides)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    active, expired = overrides.split(found, datetime.now(CENTRAL).date())
+    for override in active:
+        print(
+            f"{'override:':<16}{override.kind.replace('_', ' ')} {override.team} "
+            f"through {override.until:%b %d}"
+            + (f" ({override.note})" if override.note else "")
+        )
+    for override in expired:
+        print(
+            f"{'expired:':<16}{override.kind.replace('_', ' ')} {override.team} "
+            f"ended {override.until:%b %d}, not applied -- renew or delete it in "
+            f"{args.overrides}"
+        )
+    return active
+
+
+def _qb_out_named(
+    names: list[str], upcoming: list[Game], strict: bool = True
+) -> dict[str, set[str]]:
+    """`--qb-out` news: each named team out in its next game.
+
+    A name matching no team with a game coming up is an error, unless not
+    `strict`, when it's skipped.
+    """
     named: dict[str, set[str]] = {}
     playing = {t for g in upcoming for t in (g.home, g.away)}
     for name in names:
         teams = sorted(t for t in playing if t.lower() == name.lower()) or sorted(
             t for t in playing if name.lower() in t.lower()
         )
+        if not teams and not strict:
+            continue
         if len(teams) != 1:
             raise SystemExit(
                 f"--qb-out {name!r} matches {teams or 'no team with a game coming up'}"
@@ -453,6 +489,16 @@ def main() -> None:
         help="this team's starting QB is out of its next game (repeatable)",
     )
     parser.add_argument(
+        "--overrides",
+        type=Path,
+        default=OVERRIDES,
+        help="--qb-out / --exclude news that lasts, each until a date "
+        "(see cassandra.overrides)",
+    )
+    parser.add_argument(
+        "--no-overrides", action="store_true", help="ignore the --overrides file"
+    )
+    parser.add_argument(
         "--offline", action="store_true", help="skip s3; read the last run's copies"
     )
     parser.add_argument(
@@ -538,7 +584,15 @@ def run(args: argparse.Namespace) -> None:
     ]
     tonight, blind = asyncio.run(_qb_out_tonight(league, latest, games, upcoming))
     unread_teams = {t for teams in blind.values() for t in teams}
+    lasting = _overrides(args)
     named = _qb_out_named(args.qb_out, upcoming)
+    # A lasting QB out for a team with no game in the window (a bye) has
+    # nothing to apply to this run.
+    for game, out in _qb_out_named(
+        overrides.teams(lasting, "qb_out"), upcoming, strict=False
+    ).items():
+        named.setdefault(game, set()).update(out)
+    args.exclude = [*args.exclude, *overrides.teams(lasting, "exclude")]
     flags = {game: set(out) for game, out in load_qb_out(league).items()}
     for extra in (tonight, named):
         for game, out in extra.items():
