@@ -332,6 +332,73 @@ def allocate(
     return [0] * len(prices)
 
 
+def kelly_counts(
+    probabilities: Sequence[float],
+    costs: Sequence[float],
+    limits: Sequence[float],
+    bankroll: float,
+    fraction: float,
+    max_bet: float,
+) -> list[int]:
+    """Contracts for each pick staked on its own: `fraction` of Kelly on `bankroll`.
+
+    Unlike `allocate`, no pick's stake depends on how many others there
+    are, so picks that turn up an hour apart are sized alike. Each stake is
+    at most `max_bet`, and the contracts are counted at the pick's limit
+    price, fee included, so a fill at the limit costs no more than the stake.
+    """
+    return [
+        contracts_for(min(fraction * kelly(p, c) * bankroll, max_bet), limit)
+        for p, c, limit in zip(probabilities, costs, limits)
+    ]
+
+
+def held_on(
+    positions: Mapping[str, float], side: Book, other: Book
+) -> tuple[float, float]:
+    """Contracts already held for `side` winning, and for it losing.
+
+    Kalshi signs a market's position: YES contracts positive, NO negative.
+    YES on `side` and NO on `other` both pay when `side` wins.
+    """
+    on_side = positions.get(side.ticker, 0.0)
+    on_other = positions.get(other.ticker, 0.0)
+    return (
+        max(on_side, 0.0) + max(-on_other, 0.0),
+        max(-on_side, 0.0) + max(on_other, 0.0),
+    )
+
+
+def top_up(target: int, held: float) -> int:
+    """Whole contracts still to buy for a pick sized at `target` with `held` in hand.
+
+    Kalshi fills in hundredths of a contract, so what's held can be
+    fractional; what's ordered here is whole.
+    """
+    return max(math.floor(target - held + 1e-9), 0)
+
+
+def fit_to_cash(
+    counts: Sequence[int], limits: Sequence[float], cash: float
+) -> list[int]:
+    """`counts` scaled down together until their worst-case cost fits `cash`."""
+
+    def cost(found: Sequence[int]) -> float:
+        return sum(n * p + order_fee(p, n) for n, p in zip(found, limits) if n > 0)
+
+    total = cost(counts)
+    if total <= cash:
+        return list(counts)
+    scale = cash / total
+    scaled = [math.floor(n * scale) for n in counts]
+    # Fees round up per order, so a proportional cut can still be a cent
+    # over; trim the largest order until it fits.
+    while cost(scaled) > cash and any(scaled):
+        largest = max(range(len(scaled)), key=lambda i: scaled[i] * limits[i])
+        scaled[largest] -= 1
+    return scaled
+
+
 def fillable(orderbook: Mapping, action: str, limit: float) -> float:
     """Contracts on offer at or below `limit` for buying `action` in one market.
 

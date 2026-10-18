@@ -67,10 +67,11 @@ picks:
 	poetry run python picks.py $(ARGS)
 
 # The same, then buy the picks on Kalshi after showing them and asking. Needs
-# a Kalshi API key (see cassandra/kalshi_trade.py), e.g.
-# `make bet ARGS="--offline --budget 20 --max-bet 5"`.
+# a Kalshi API key (see cassandra/kalshi_trade.py). Each pick is staked on its
+# own, a quarter of Kelly on the account, at most $10; e.g.
+# `make bet ARGS="--offline --exclude 'Syracuse Orange'"`.
 bet:
-	poetry run python picks.py --place $(ARGS)
+	poetry run python picks.py --place --kelly-fraction 0.25 --max-bet 10 $(ARGS)
 
 
 # Build a release for every model in every league, locally. Reads the seasons
