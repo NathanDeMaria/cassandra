@@ -16,8 +16,11 @@ from .picks import (
     entry,
     event_day,
     fillable,
+    fit_to_cash,
+    held_on,
     kalshi_games,
     kelly,
+    kelly_counts,
     match,
     max_price,
     no_vig_home,
@@ -26,6 +29,7 @@ from .picks import (
     price,
     routes,
     skip_reason,
+    top_up,
 )
 
 SATURDAY = datetime(2026, 10, 17, 18, 0, tzinfo=UTC)
@@ -295,3 +299,37 @@ def test_what_isnt_a_pick() -> None:
     assert (skip_reason(wide, "FBS", "FBS", [], fresh) or "").startswith(
         "book too wide"
     )
+
+
+def test_kelly_counts_stake_each_pick_on_its_own():
+    # Kelly at p .6, cost .5 is .2: a quarter of it on $100 is $5.
+    alone = kelly_counts([0.6], [0.5], [0.5], 100, 0.25, 10)
+    paired = kelly_counts([0.6, 0.9], [0.5, 0.5], [0.5, 0.5], 100, 0.25, 10)
+    assert alone[0] == paired[0] == contracts_for(5, 0.5)
+    # Kelly .8 is $20 a quarter, over the $10 cap.
+    assert paired[1] == contracts_for(10, 0.5)
+    assert kelly_counts([0.4], [0.5], [0.5], 100, 0.25, 10) == [0]
+
+
+def test_held_on_reads_both_markets_by_sign():
+    home, away = _book("HOME", 0.40, 0.42), _book("AWAY", 0.57, 0.59)
+    positions = {home.ticker: 3.84, away.ticker: -7.0}
+    assert held_on(positions, home, away) == (10.84, 0.0)
+    assert held_on(positions, away, home) == (0.0, 10.84)
+    assert held_on({}, home, away) == (0.0, 0.0)
+
+
+def test_top_up_buys_whole_contracts_to_the_target():
+    assert top_up(12, 0.79) == 11
+    assert top_up(12, 10.84) == 1
+    assert top_up(12, 12.0) == 0
+    assert top_up(5, 9.0) == 0
+
+
+def test_fit_to_cash_scales_every_order_down():
+    counts, limits = [20, 10], [0.5, 0.25]
+    assert fit_to_cash(counts, limits, 100) == counts
+    fitted = fit_to_cash(counts, limits, 6)
+    assert all(f <= c for f, c in zip(fitted, counts))
+    assert sum(n * p + order_fee(p, n) for n, p in zip(fitted, limits) if n) <= 6
+    assert fitted[0] > 0 and fitted[1] > 0

@@ -210,25 +210,46 @@ class KalshiClient:
             if not cursor or not page.get(key):
                 return found
 
-    def balance(self) -> float:
-        """Cash on hand, in dollars."""
+    def account(self) -> tuple[float, float]:
+        """Cash on hand, and what the open positions are worth, in dollars."""
         response = self._request("GET", "/portfolio/balance")
         if response.get("balance_dollars") is not None:
-            return float(response["balance_dollars"])
-        return float(response["balance"]) / 100
+            cash = float(response["balance_dollars"])
+        else:
+            cash = float(response["balance"]) / 100
+        return cash, float(response.get("portfolio_value") or 0) / 100
 
-    def held_events(self) -> dict[str, str]:
-        """Every event the account is already in, and how: a position or a resting order."""
-        held: dict[str, str] = {}
+    def balance(self) -> float:
+        """Cash on hand, in dollars."""
+        return self.account()[0]
+
+    def positions(self) -> dict[str, float]:
+        """Each market's open position: YES contracts positive, NO negative."""
+        found: dict[str, float] = {}
         for position in self._pages(
             "/portfolio/positions",
             "market_positions",
             {"count_filter": "position", "settlement_status": "unsettled"},
         ):
-            if float(position.get("position_fp") or position.get("position") or 0):
-                held[event_of(position["ticker"])] = "position"
-        for order in self._pages("/portfolio/orders", "orders", {"status": "resting"}):
-            held.setdefault(event_of(order["ticker"]), "resting order")
+            count = float(position.get("position_fp") or position.get("position") or 0)
+            if count:
+                found[position["ticker"]] = count
+        return found
+
+    def resting_events(self) -> set[str]:
+        """Every event with a resting order in it."""
+        return {
+            event_of(order["ticker"])
+            for order in self._pages(
+                "/portfolio/orders", "orders", {"status": "resting"}
+            )
+        }
+
+    def held_events(self) -> dict[str, str]:
+        """Every event the account is already in, and how: a position or a resting order."""
+        held = {event_of(ticker): "position" for ticker in self.positions()}
+        for event in self.resting_events():
+            held.setdefault(event, "resting order")
         return held
 
     def buy(

@@ -42,24 +42,42 @@ A fixture assumes both starting quarterbacks play unless told otherwise:
 `--qb-out TEAM` says a team's starter misses its next game, and the fit's
 quarterback penalty (about 2 points in college) applies. That is the only
 injury the model reads, so check the news on any pick you're about to
-make; `--exclude TEAM` drops a game and re-splits the budget over the rest.
+make. When one of the last 18 hours' games has no plays on ESPN yet,
+whether its teams' starters played is unknown, and their next games wait
+for a later run ("QB check incomplete"). `--exclude TEAM` drops a game.
 Under the orders, each pick lists the injury sentences in its two teams'
 last two AP stories, and the next game's preview once there is one
 (`cassandra.injuries`); `QB!` marks one naming a quarterback.
 
 **Placing.** `--place` buys the picks, with a Kalshi API key (see
 `cassandra.kalshi_trade` for where it's read from; `--demo` for the demo
-exchange). It first reads the account: a `--budget` over the cash on hand
-stops the run, and any game the account already holds a position or a
-resting order in is skipped, so a Sunday rerun doesn't double up. Then it
-prints the numbered orders and asks: `y` places them, numbers drop those
-games and re-split the budget, `q` stops. Each order is a limit order:
+exchange). It first reads the account: its cash, its open positions and
+its resting orders. A `--budget` over the cash on hand stops the run. Then
+it prints the numbered orders and asks: `y` places them, numbers drop those
+games and re-size the rest, `q` stops.
+
+**Sizing.** Each pick has a target number of contracts:
+
+- with `--kelly-fraction F`, F of the Kelly stake on the bankroll -- the
+  account's cash plus what its open positions are worth, or `--bankroll`.
+  Each pick is sized on its own, so a run every half hour sizes a pick the
+  same whichever run finds it, and there's no need to know how many picks
+  the week holds;
+- without it, a Kelly-weighted share of `--budget` (default $20) over this
+  run's picks, as the backtest's weekly bet was sized.
+
+A pick's target is at most `--max-bet`. Contracts already held on its side
+count toward it and only the rest is bought, so a partial fill is topped up
+on a later run while the pick still clears the edge. A game held on the
+other side, or with a resting order, is skipped. If the run's orders would
+cost more than `--budget` or the cash on hand, they're cut down together.
+
+Each order is a limit order:
 
 - its price is at most `--slippage` past the ask, and never past
   `max_price`, the most that still clears `--min-edge`;
-- its contracts are counted at that price, so the worst fill of every
-  order together costs no more than `--budget`, and no one order more
-  than `--max-bet`;
+- its contracts are counted at that price, so the worst fill costs no more
+  than the pick's target;
 - it's immediate-or-cancel, so what isn't on offer now is dropped (books
   this thin rarely hold a whole order). `--rest HOURS` leaves the rest at
   the limit until then instead -- the backtest's edge was mostly gone by
@@ -124,8 +142,11 @@ from cassandra.picks import (
     entry,
     event_day,
     fillable,
+    fit_to_cash,
+    held_on,
     kalshi_games,
     kelly,
+    kelly_counts,
     match,
     max_price,
     order_fee,
@@ -133,6 +154,7 @@ from cassandra.picks import (
     price,
     routes,
     skip_reason,
+    top_up,
 )
 from cassandra.predictor import OptimizationConfig, Predictor, load_predictor
 from cassandra.predictor import frame as frames
@@ -163,6 +185,12 @@ ESPN_SUMMARY = (
 )
 #: How many of each team's last games' stories are read for injury news.
 NEWS_GAMES = 2
+#: How long after kickoff a game ESPN has no plays for is taken to be
+#: missing them for now, not for good. Its teams' next games wait.
+QB_PLAYS_GRACE = timedelta(hours=18)
+#: Dollars split over a run's picks when neither --budget nor
+#: --kelly-fraction says otherwise.
+DEFAULT_BUDGET = 20.0
 
 
 def _seasons_cache(league: str) -> Path:
@@ -216,8 +244,9 @@ async def _game_plays(game_id: str) -> list[dict]:
 
 async def _qb_out_tonight(
     league: str, season: Season, games: list[Game], upcoming: list[Game]
-) -> dict[str, set[str]]:
-    """Who was missing their starter in the games the stored index hasn't read.
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Who was missing their starter in the games the stored index hasn't read,
+    and the recent games that couldn't be read: no plays from ESPN yet.
 
     That index is the sweep's, over the plays endgame has stored, and
     tonight's games aren't in it until the morning. They're read here the
@@ -244,14 +273,30 @@ async def _qb_out_tonight(
         {g.game_id for g in games if g.completed and {g.home, g.away} & needy}
     )
     if not wanted:
-        return {}
+        return {}, {}
     drives = [d async for d in apply_in_parallel(_game_plays, [(g,) for g in wanted])]
+    # A game that ended in the last few hours with no plays from ESPN may
+    # just not have them yet; who played quarterback in it is unknown, not
+    # known to be the starter. Older ones without plays are games ESPN
+    # never covered play by play.
+    by_id = {g.game_id: g for g in games}
+    recent = datetime.now(UTC) - QB_PLAYS_GRACE
+    blind = {
+        g: {by_id[g].home, by_id[g].away} & needy
+        for g, d in zip(wanted, drives)
+        if not d and g in unread and by_id[g].date > recent
+    }
     table = pa.concat_tables(
         transform_game_to_table(d, g, league, season.year, 1)
         for g, d in zip(wanted, drives)
     )
     found = await build_qb_out(league, [season], _OneWeek(table))
-    return {g: out & needy for g, out in found.items() if g in unread and out & needy}
+    flags = {g: out & needy for g, out in found.items() if g in unread and out & needy}
+    print(
+        f"QB check:       {len(unread) - len(blind)} of {len(unread)} unread games "
+        "read off ESPN's plays"
+    )
+    return flags, blind
 
 
 def _qb_out_named(names: list[str], upcoming: list[Game]) -> dict[str, set[str]]:
@@ -366,8 +411,19 @@ def main() -> None:
     parser.add_argument(
         "--budget",
         type=float,
-        default=20.0,
-        help="dollars across every pick, fees included",
+        help="most dollars this run spends, fees included; split over the "
+        f"picks by Kelly weight unless --kelly-fraction (default ${DEFAULT_BUDGET:g})",
+    )
+    parser.add_argument(
+        "--kelly-fraction",
+        type=float,
+        help="stake each pick on its own: this fraction of Kelly on the bankroll "
+        "(the account's cash plus open positions with --place), e.g. 0.25",
+    )
+    parser.add_argument(
+        "--bankroll",
+        type=float,
+        help="with --kelly-fraction: the bankroll to size on, instead of the account's",
     )
     parser.add_argument(
         "--top",
@@ -479,7 +535,8 @@ def run(args: argparse.Namespace) -> None:
         for g in games
         if not g.completed and g.status not in NOT_HAPPENING and now < g.date < horizon
     ]
-    tonight = asyncio.run(_qb_out_tonight(league, latest, games, upcoming))
+    tonight, blind = asyncio.run(_qb_out_tonight(league, latest, games, upcoming))
+    unread_teams = {t for teams in blind.values() for t in teams}
     named = _qb_out_named(args.qb_out, upcoming)
     flags = {game: set(out) for game, out in load_qb_out(league).items()}
     for extra in (tonight, named):
@@ -555,6 +612,15 @@ def run(args: argparse.Namespace) -> None:
         if f.game.game_id in priced_ids & matched.keys()
         for team in (f.game.home, f.game.away)
     }
+    # Most games ESPN has no plays for are D-II/III games it never covers
+    # play by play; only the ones a Kalshi game is waiting on are worth a line.
+    for game in sorted(blind, key=lambda g: by_id[g].date):
+        if blind[game] & on_kalshi:
+            print(
+                f"!! no plays from ESPN yet for {_fmt_game(by_id[game])}: "
+                f"{', '.join(sorted(blind[game] & on_kalshi))}'s next game waits "
+                "for a run that can read who played quarterback"
+            )
     holding = [g for g in unfinished if {g.home, g.away} & on_kalshi]
     if holding:
         print(
@@ -602,6 +668,9 @@ def run(args: argparse.Namespace) -> None:
         reason = skip_reason(
             priced, division(side), division(other), waiting, since_entry, args.min_edge
         )
+        unknown = sorted({game.home, game.away} & unread_teams)
+        if reason is None and unknown:
+            reason = f"QB check incomplete: {', '.join(unknown)}"
         book = found.home if priced.home else found.away
         route = priced.route
         model_side = model_home if priced.home else 1 - model_home
@@ -649,23 +718,42 @@ def run(args: argparse.Namespace) -> None:
     # 5. Size the picks: the top `--top` by edge share `--budget`
     # by Kelly weight (see `allocate`), each at its limit price.
     client = None
+    frame["held"] = 0.0
+    args.cash = None
     if args.place:
         client = KalshiClient.from_env(demo=args.demo, dry_run=args.dry_run)
-        cash = client.balance()
-        held = client.held_events()
+        cash, invested = client.account()
+        positions = client.positions()
+        resting = client.resting_events()
+        args.cash = cash
+        if args.kelly_fraction is not None and args.bankroll is None:
+            args.bankroll = cash + invested
         mode = (" DEMO" if args.demo else "") + (" (dry run)" if args.dry_run else "")
         print(
-            f"\nKalshi{mode}: ${cash:,.2f} cash, "
-            f"{len(held)} events already held or ordered"
+            f"\nKalshi{mode}: ${cash:,.2f} cash, ${invested:,.2f} in "
+            f"{len(positions)} open positions, {len(resting)} events with resting orders"
         )
-        if args.budget > cash:
+        if args.budget is not None and args.budget > cash:
             raise SystemExit(
                 f"--budget ${args.budget:g} is more than the ${cash:,.2f} on hand"
             )
-        mine = frame["event"].isin(held.keys()) & frame["skip"].isna()
-        frame.loc[mine, "skip"] = [
-            f"already held on Kalshi ({held[e]})" for e in frame.loc[mine, "event"]
-        ]
+        for i, row in frame.iterrows():
+            found = matched[row["game_id"]]
+            side, other = (
+                (found.home, found.away)
+                if row["bet_home"]
+                else (found.away, found.home)
+            )
+            mine, against = held_on(positions, side, other)
+            frame.at[i, "held"] = mine
+            if not pd.isna(row["skip"]):
+                continue
+            if row["event"] in resting:
+                frame.at[i, "skip"] = "resting order on Kalshi"
+            elif against:
+                frame.at[i, "skip"] = f"held on the other side ({against:g})"
+    if args.kelly_fraction is not None and args.bankroll is None:
+        raise SystemExit("--kelly-fraction without --place needs --bankroll")
     for team in args.exclude:
         named = frame["game"].str.contains(team, case=False, regex=False)
         frame.loc[named & frame["skip"].isna(), "skip"] = "excluded by hand"
@@ -702,6 +790,29 @@ def run(args: argparse.Namespace) -> None:
     _place(client, picks, matched, args, out)
 
 
+def _sizing(args: argparse.Namespace) -> str:
+    """How this run sizes its bets, in a line."""
+    if args.kelly_fraction is not None:
+        found = (
+            f"{args.kelly_fraction:g} Kelly on a ${args.bankroll:,.2f} bankroll, "
+            f"at most ${args.max_bet:g} a bet"
+        )
+    else:
+        found = (
+            f"${_budget(args):g} split by Kelly weight, at most ${args.max_bet:g} a bet"
+        )
+    if args.kelly_fraction is not None and args.budget is not None:
+        found += f", ${args.budget:g} this run"
+    if args.cash is not None:
+        found += f", ${args.cash:,.2f} cash"
+    return found
+
+
+def _budget(args: argparse.Namespace) -> float:
+    """`--budget`, or the old default of $20 when splitting with no fraction."""
+    return DEFAULT_BUDGET if args.budget is None else args.budget
+
+
 def _limit(price: float, ceiling: float | None, slippage: float) -> float:
     """The most an order pays a contract: `--slippage` past the ask, never past
     the price that still clears the edge (`max_price`)."""
@@ -716,22 +827,46 @@ def _size(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The picks and their contracts, and every game with what was bet on it.
 
-    Contracts are counted at the limit price, so an order filling at its
-    worst still costs no more than its share of `--budget`, and none more
-    than `--max-bet`.
+    Each pick gets a target: `--kelly-fraction` of Kelly on the bankroll,
+    or with no fraction its Kelly-weighted share of `--budget`. Either way
+    it's at most `--max-bet`, counted at the limit price, so an order
+    filling at its worst still costs no more than that. What's already held
+    on the pick's side counts toward its target, and only the rest is
+    bought. The whole run's worst case then fits `--budget` and the cash.
     """
     frame = frame.copy()
     ranked = frame[frame["skip"].isna()].sort_values("edge", ascending=False)
     frame.loc[ranked.index[args.top :], "skip"] = f"outside the top {args.top} by edge"
     picks = frame[frame["skip"].isna()]
-    weights = [kelly(m, c) for m, c in zip(picks["model"], picks["cost"])]
-    counts = allocate(args.budget, list(picks["limit"]), weights)
-    counts = [
-        min(n, contracts_for(args.max_bet, limit))
-        for n, limit in zip(counts, picks["limit"])
-    ]
-    unplaced = [i for i, n in zip(picks.index, counts) if n == 0]
-    frame.loc[unplaced, "skip"] = "less than a contract's share of the budget"
+    limits = list(picks["limit"])
+    if args.kelly_fraction is not None:
+        targets = kelly_counts(
+            list(picks["model"]),
+            list(picks["cost"]),
+            limits,
+            args.bankroll,
+            args.kelly_fraction,
+            args.max_bet,
+        )
+    else:
+        weights = [kelly(m, c) for m, c in zip(picks["model"], picks["cost"])]
+        targets = [
+            min(n, contracts_for(args.max_bet, limit))
+            for n, limit in zip(allocate(_budget(args), limits, weights), limits)
+        ]
+    counts = [top_up(t, h) for t, h in zip(targets, picks["held"])]
+    caps = [c for c in (args.budget, args.cash) if c is not None]
+    if caps:
+        counts = fit_to_cash(counts, limits, min(caps))
+    for i, target, count, held in zip(picks.index, targets, counts, picks["held"]):
+        if count:
+            continue
+        if held:
+            frame.at[i, "skip"] = f"already held ({held:g} of {target})"
+        elif target:
+            frame.at[i, "skip"] = "no cash left for it"
+        else:
+            frame.at[i, "skip"] = "less than a contract's stake"
     picks = frame[frame["skip"].isna()].copy()
     contracts = [n for n in counts if n > 0]
     offered = f"offered_within_{round(args.slippage * 100)}c"
@@ -854,6 +989,7 @@ def _print_orders(
             f"{number:>3}. {mark} {row['kickoff']:%a %H:%M}  {row['bet']:<28} "
             f"{row['buy']:<40} {row['contracts']:>3.0f} @ ≤{row['limit']:.2f}  "
             f"≤${row['outlay']:.2f}   ({row['game']}, edge {row['edge']:+.3f})"
+            + (f"  [topping up {row['held']:g} held]" if row["held"] else "")
         )
         for note in sorted(notes, key=lambda n: not n.qb)[: args.news_lines]:
             who = note.team or "?"
@@ -863,7 +999,7 @@ def _print_orders(
             print(f"         (+{len(notes) - args.news_lines} more injury sentences)")
     print(
         f"\nworst case ${picks['outlay'].sum():,.2f} across {len(picks)} orders "
-        f"(budget ${args.budget:g}, at most ${args.max_bet:g} a bet)"
+        f"({_sizing(args)})"
     )
     if flagged:
         print(
@@ -961,12 +1097,12 @@ def _place(
             rest = f", {done.resting:.0f} resting" if expires and done.resting else ""
             print(
                 f"  {row['bet']:<28} {route.action.upper()} {route.ticker}: "
-                f"{done.filled:.0f}/{wanted} filled{price}{rest}"
+                f"{done.filled:g}/{wanted} filled{price}{rest}"
             )
             # A resting order holds the rest; only an IOC's leftover moves on.
             # A dry run shows the first order only: nothing filled to say
             # what the second would be.
-            wanted = 0 if expires or args.dry_run else wanted - int(done.filled)
+            wanted = 0 if expires or args.dry_run else top_up(wanted, done.filled)
     placed = pd.DataFrame(rows)
     if placed.empty:
         return
@@ -1021,7 +1157,7 @@ def _print(frame: pd.DataFrame, picks: pd.DataFrame, args: argparse.Namespace) -
     )
     print(
         f"\n=== {len(picks)} picks (edge ≥ {args.min_edge:.0%} over Kalshi's no-vig "
-        f"price), ${args.budget:g} split by Kelly weight over the top {args.top}"
+        f"price), top {args.top} by edge; {_sizing(args)}"
     )
     if not table.empty:
         with pd.option_context("display.width", 250, "display.max_colwidth", 60):
