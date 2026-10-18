@@ -69,7 +69,8 @@ picks:
 # The same, then buy the picks on Kalshi after showing them and asking. Needs
 # a Kalshi API key (see cassandra/kalshi_trade.py). Each pick is staked on its
 # own, a quarter of Kelly on the account, at most $10; e.g.
-# `make bet ARGS="--offline --exclude 'Syracuse Orange'"`.
+# `make bet ARGS="--offline"`. Injury news that lasts (a starter out for the
+# season) goes in ~/.cassandra/betting/overrides.toml, not ARGS.
 bet:
 	poetry run python picks.py --place --kelly-fraction 0.25 --max-bet 10 $(ARGS)
 

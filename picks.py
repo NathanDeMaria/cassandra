@@ -132,10 +132,12 @@ from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
 from cassandra.kalshi_trade import KalshiClient, KalshiError
+from cassandra.markets import MAX_OVERROUND
 from cassandra.model_eval import rebuild_priors
 from cassandra.odds import OddsDatabase
 from cassandra.picks import (
     EASTERN,
+    MAX_SINCE_ENTRY,
     MIN_EDGE,
     NCAAFB_SERIES,
     NOT_HAPPENING,
@@ -446,6 +448,20 @@ def main() -> None:
         "--min-edge", type=float, default=MIN_EDGE, help="edge over the no-vig price"
     )
     parser.add_argument(
+        "--max-since-entry",
+        type=float,
+        default=MAX_SINCE_ENTRY.total_seconds() / 3600,
+        metavar="HOURS",
+        help="skip games whose entry (both previous games over) was longer ago; "
+        "the 2025-26 edge was +15%% in the first 6h, +3%% at 12-24h",
+    )
+    parser.add_argument(
+        "--max-overround",
+        type=float,
+        default=MAX_OVERROUND,
+        help="skip books whose two costs sum past this: too wide to price",
+    )
+    parser.add_argument(
         "--budget",
         type=float,
         help="most dollars this run spends, fees included; split over the "
@@ -721,7 +737,14 @@ def run(args: argparse.Namespace) -> None:
         ]
 
         reason = skip_reason(
-            priced, division(side), division(other), waiting, since_entry, args.min_edge
+            priced,
+            division(side),
+            division(other),
+            waiting,
+            since_entry,
+            args.min_edge,
+            timedelta(hours=args.max_since_entry),
+            args.max_overround,
         )
         unknown = sorted({game.home, game.away} & unread_teams)
         if reason is None and unknown:
