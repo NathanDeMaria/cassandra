@@ -29,10 +29,10 @@ backtest bought, and the edge it measured was gone within a day (see
 4. **Price.** It computes the backtest's edge, the cheapest way to take
    it, and Kalshi's fee. `cassandra.picks.skip_reason` says which games
    aren't picks.
-5. **Size.** The `--top` picks by edge split `--budget`
-   dollars by Kelly weight (`cassandra.picks.allocate`), and for each it
-   reads the order book: how many contracts are offered within
-   `--slippage` of the best price.
+5. **Size.** The `--top` picks by edge with something left to buy -- a
+   pick already held in full doesn't count -- are sized (see "Sizing"),
+   and for each it reads the order book: how many contracts are offered
+   within `--slippage` of the best price.
 
 Every matched game, pick or not, goes to
 `~/.cassandra/betting/picks/<league>_<model>_<when>.csv`, so a week's bets
@@ -54,7 +54,8 @@ last two AP stories, and the next game's preview once there is one
 exchange). It first reads the account: its cash, its open positions and
 its resting orders. A `--budget` over the cash on hand stops the run. Then
 it prints the numbered orders and asks: `y` places them, numbers drop those
-games and re-size the rest, `q` stops.
+games and re-size the rest, `q` stops. A drop never brings in a game that
+wasn't on the first list, even when it frees a place in the `--top`.
 
 **Sizing.** Each pick has a target number of contracts:
 
@@ -715,8 +716,7 @@ def run(args: argparse.Namespace) -> None:
         print("\nno priced games")
         return
 
-    # 5. Size the picks: the top `--top` by edge share `--budget`
-    # by Kelly weight (see `allocate`), each at its limit price.
+    # 5. Size the picks (`_size`), each at its limit price.
     client = None
     frame["held"] = 0.0
     args.cash = None
@@ -762,12 +762,21 @@ def run(args: argparse.Namespace) -> None:
     ]
     priced_skips = frame["skip"].copy()
     dropped: set[str] = set()
+    # The games on the first list asked about. Dropping some frees places
+    # in the top `--top`, and a game nobody has read the news on shouldn't
+    # take one: answering is about the list on the screen.
+    listed: set[str] | None = None
     news: dict[str, list[injuries.Note]] = {}
     out = OUT_DIR / f"{league}_{model}_{started.astimezone(CENTRAL):%Y%m%d-%H%M}.csv"
     while True:
         frame["skip"] = priced_skips
         frame.loc[frame["game_id"].isin(dropped), "skip"] = "dropped at the prompt"
+        if listed is not None:
+            unlisted = ~frame["game_id"].isin(listed) & frame["skip"].isna()
+            frame.loc[unlisted, "skip"] = "not on the list answered"
         sized, picks = _size(frame, matched, args)
+        if listed is None:
+            listed = set(picks["game_id"])
         if not args.no_news:
             fresh = picks[~picks["game_id"].isin(news.keys())]
             news.update(_injury_news(fresh, games, namer))
@@ -822,6 +831,26 @@ def _limit(price: float, ceiling: float | None, slippage: float) -> float:
     return round(min(limit, 0.99), 2)
 
 
+def _targets(picks: pd.DataFrame, args: argparse.Namespace) -> list[int]:
+    """Each pick's contracts before what's held: Kelly on the bankroll, or a
+    Kelly-weighted share of the budget. Either way at most `--max-bet`."""
+    limits = list(picks["limit"])
+    if args.kelly_fraction is not None:
+        return kelly_counts(
+            list(picks["model"]),
+            list(picks["cost"]),
+            limits,
+            args.bankroll,
+            args.kelly_fraction,
+            args.max_bet,
+        )
+    weights = [kelly(m, c) for m, c in zip(picks["model"], picks["cost"])]
+    return [
+        min(n, contracts_for(args.max_bet, limit))
+        for n, limit in zip(allocate(_budget(args), limits, weights), limits)
+    ]
+
+
 def _size(
     frame: pd.DataFrame, matched: dict, args: argparse.Namespace
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -835,40 +864,35 @@ def _size(
     bought. The whole run's worst case then fits `--budget` and the cash.
     """
     frame = frame.copy()
+    # The top `--top` are taken from the games with something left to buy,
+    # so a pick already held in full doesn't take a place a new one could.
+    # Under a split budget a pick's target depends on which others share
+    # it, so the cut is retaken until none in it is held in full.
     ranked = frame[frame["skip"].isna()].sort_values("edge", ascending=False)
-    frame.loc[ranked.index[args.top :], "skip"] = f"outside the top {args.top} by edge"
-    picks = frame[frame["skip"].isna()]
-    limits = list(picks["limit"])
-    if args.kelly_fraction is not None:
-        targets = kelly_counts(
-            list(picks["model"]),
-            list(picks["cost"]),
-            limits,
-            args.bankroll,
-            args.kelly_fraction,
-            args.max_bet,
+    while True:
+        top = ranked.iloc[: args.top]
+        targets = pd.Series(_targets(top, args), index=top.index, dtype=int)
+        counts = pd.Series(
+            [top_up(t, h) for t, h in zip(targets, top["held"])], index=top.index
         )
-    else:
-        weights = [kelly(m, c) for m, c in zip(picks["model"], picks["cost"])]
-        targets = [
-            min(n, contracts_for(args.max_bet, limit))
-            for n, limit in zip(allocate(_budget(args), limits, weights), limits)
-        ]
-    counts = [top_up(t, h) for t, h in zip(targets, picks["held"])]
+        full = top.index[(top["held"] > 0) & (counts == 0)]
+        if full.empty:
+            break
+        for i in full:
+            frame.at[i, "skip"] = (
+                f"already held ({frame.at[i, 'held']:g} of {targets[i]})"
+            )
+        ranked = ranked.drop(full)
+    frame.loc[ranked.index[args.top :], "skip"] = f"outside the top {args.top} by edge"
     caps = [c for c in (args.budget, args.cash) if c is not None]
     if caps:
-        counts = fit_to_cash(counts, limits, min(caps))
-    for i, target, count, held in zip(picks.index, targets, counts, picks["held"]):
-        if count:
-            continue
-        if held:
-            frame.at[i, "skip"] = f"already held ({held:g} of {target})"
-        elif target:
-            frame.at[i, "skip"] = "no cash left for it"
-        else:
-            frame.at[i, "skip"] = "less than a contract's stake"
+        counts[:] = fit_to_cash(list(counts), list(top["limit"]), min(caps))
+    for i in top.index[counts == 0]:
+        frame.at[i, "skip"] = (
+            "no cash left for it" if targets[i] else "less than a contract's stake"
+        )
     picks = frame[frame["skip"].isna()].copy()
-    contracts = [n for n in counts if n > 0]
+    contracts = list(counts[picks.index])
     offered = f"offered_within_{round(args.slippage * 100)}c"
     fills = []
     for _, row in picks.iterrows():
