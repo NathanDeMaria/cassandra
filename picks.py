@@ -974,7 +974,9 @@ def _injury_news(
             if namer.espn_id(t)
         }
         read = [summaries[(g, final)] for g, final, _ in stories]
-        rosters = injuries.rosters(read, teams)
+        # The pick's own teams first, so a sentence naming one of theirs and
+        # an opponent's is theirs.
+        rosters = injuries.rosters(read, teams) + injuries.opponents(read, teams)
         found: dict[str, injuries.Note] = {}
         for summary, (_, _, label) in zip(read, stories):
             got = injuries.story(summary)
@@ -982,7 +984,9 @@ def _injury_news(
                 continue
             kind, text = got
             for note in injuries.notes(text, rosters, f"{kind}: {label}"):
-                found.setdefault(note.sentence, note)
+                # News of last week's opponent isn't news of this game.
+                if note.team is None or note.team in teams.values():
+                    found.setdefault(note.sentence, note)
         news[game_id] = list(found.values())
     return news
 
