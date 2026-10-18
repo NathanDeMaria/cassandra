@@ -74,6 +74,11 @@ picks:
 bet:
 	poetry run python picks.py --place --kelly-fraction 0.25 --max-bet 10 $(ARGS)
 
+# The Kalshi account, read-only: cash, and each open position's cost and what
+# it would sell for now.
+positions:
+	poetry run python positions.py $(ARGS)
+
 
 # Build a release for every model in every league, locally. Reads the seasons
 # and odds once for the whole run, so it's minutes rather than the half hour a
@@ -181,4 +186,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose team-seasons evidence betting picks bet publish build push manifest _ecr_login submit
+.PHONY: lint check test report diagnose team-seasons evidence betting picks bet positions publish build push manifest _ecr_login submit
