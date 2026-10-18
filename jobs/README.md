@@ -125,6 +125,21 @@ design. A *stale* fit -- a `lucky-ones` bump, a new `MODELS[league].run_id` --
 makes both of the first two sweep every season from scratch, and that now
 lands on the daily publish's critical path rather than the weekly run's.
 
+### Sweeps after finals
+
+Between daily publishes, `epa` and `qb_out` also run whenever football games
+go final. EndGame's finals watcher starts its intraday chain as games end, and
+the moment that chain's `intraday-process-football-plays-<league>-chained-run`
+job succeeds, an EventBridge rule here submits the two sweeps for that league
+alone (`cassandra-epa-after-finals-<league>`, `cassandra-qb-out-after-finals-<league>`).
+So a game's EPA, success rates and quarterback are in the indexes minutes
+after it ends -- what a bet on its teams' next games is priced from. Nothing
+is published: the site still moves once a day.
+
+That job name is the whole contract with EndGame, spelled out in `main.tf`. A
+renamed chain step stops these without an error anywhere; on a Saturday,
+`*-after-finals-*` jobs in Batch are how to tell they're running.
+
 ## State between stages
 
 The stages don't share a disk, so `~/.cassandra` goes through s3, mirrored
