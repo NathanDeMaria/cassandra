@@ -110,10 +110,10 @@ def box_players(summary: Mapping) -> dict[str, tuple[set[str], set[str], set[str
     teams: dict[str, tuple[set[str], set[str], set[str]]] = {}
     for side in (summary.get("boxscore") or {}).get("players") or []:
         team = side.get("team") or {}
-        names = {
-            team.get(k)
+        names: set[str] = {
+            name
             for k in ("location", "shortDisplayName", "displayName")
-            if team.get(k)
+            if (name := team.get(k))
         }
         players: set[str] = set()
         passers: set[str] = set()
