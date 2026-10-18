@@ -1,4 +1,4 @@
-from .injuries import Roster, box_players, notes, rosters, sentences
+from .injuries import Roster, box_players, notes, opponents, rosters, sentences
 
 UCLA = Roster(
     "UCLA",
@@ -76,3 +76,36 @@ def test_rosters_pool_box_scores_by_espn_id():
     assert ucla.passers == {"Nico Iamaleava"}
     assert ucla.players == {"Nico Iamaleava", "Wayne Knight"}
     assert ucla.names == {"UCLA", "UCLA Bruins"}
+
+
+def _box(espn_id: str, names: dict, passers: list[str]) -> dict:
+    return {
+        "team": {"id": espn_id, **names},
+        "statistics": [
+            {
+                "name": "passing",
+                "athletes": [{"athlete": {"displayName": p}} for p in passers],
+            }
+        ],
+    }
+
+
+def test_an_opponents_quarterback_is_the_opponents_news():
+    # Boston College's recap, 2026-10-17: the injured QB was Pittsburgh's.
+    summary = {
+        "boxscore": {
+            "players": [
+                _box("103", {"location": "Boston College"}, ["Mason McKenzie"]),
+                _box("221", {"location": "Pitt"}, ["Corey Dailey"]),
+            ]
+        }
+    }
+    teams = {"103": "Boston College Eagles"}
+    (pitt,) = opponents([summary], teams)
+    assert pitt.team == "Pitt" and pitt.passers == {"Corey Dailey"}
+    story = (
+        "<p>Making his first career start after QB Mason Heintschel was lost for "
+        "the season with a torn ACL, true freshman Corey Dailey threw for 193.</p>"
+    )
+    (note,) = notes(story, rosters([summary], teams) + [pitt], "Recap")
+    assert (note.team, note.qb) == ("Pitt", True)
