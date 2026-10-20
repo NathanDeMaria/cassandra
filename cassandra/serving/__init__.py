@@ -30,6 +30,8 @@ from .release import (
     MarginCalibration,
     Metrics,
     ModelRelease,
+    RateRating,
+    SuccessRating,
     TeamRating,
     TrainedThrough,
     UnitRating,

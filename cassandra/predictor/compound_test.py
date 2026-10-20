@@ -191,6 +191,27 @@ def test_units_sit_on_the_anchor_before_they_have_played(game: GameFactory) -> N
     assert predictor.unit_rating("B") == MEAN_RATING
 
 
+def test_an_unfiled_team_with_units_is_anchored_where_the_fold_left_it(
+    game: GameFactory,
+) -> None:
+    """Its units sit on its anchor, so the rollover's read of `ratings` asks
+    for it -- and asked before the unfiled teams were folded in, the answer
+    was cached for the whole of next season. U has no anchor and plays; four
+    unfiled teams already seen, so U is the fifth and the prior moves.
+    """
+    predictor = _predictor(
+        {"g1": LOPSIDED, "g2": _epa(0.2, -0.2)}, anchors={"A": 1600, "B": 1400}
+    )
+    predictor._unanchored_seen = (4 * 1100.0, 4 * 1100.0**2, 4)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g1"))
+    predictor.update_game(game("B", "U", 35, 3, game_id="g2"))
+    assert predictor.ratings["U"].units is not None
+    before = predictor.unanchored_prior()
+    predictor.pass_season()
+    assert predictor.unanchored_prior() != before
+    assert predictor.anchor("U") == predictor.unanchored_prior()
+
+
 def test_at_full_parent_share_units_sit_on_the_parent(game: GameFactory) -> None:
     predictor = _predictor(parent_share=1.0)
     predictor.update_game(game("A", "B", 21, 7))  # no EPA: only the parent moves
