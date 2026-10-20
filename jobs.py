@@ -7,6 +7,7 @@
     python jobs.py evaluate --league mens
     python jobs.py publish --league mens
     python jobs.py submit --league mens           # launch the whole DAG
+    python jobs.py picks                          # email new Kalshi picks
 
 Every stage is independently runnable, which is the point: a job definition
 per stage means "re-publish mens without re-optimizing anything" is a job
@@ -417,6 +418,170 @@ async def _publish(
         sys.exit(1)
 
 
+class _Tee:
+    """stdout that's also kept, so a run's printout can be emailed."""
+
+    def __init__(self, stream) -> None:
+        self.stream = stream
+        self.kept: list[str] = []
+
+    def write(self, text: str) -> int:
+        self.kept.append(text)
+        return self.stream.write(text)
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+    def text(self) -> str:
+        return "".join(self.kept)
+
+
+def _kalshi_key(secret_id: str | None) -> bool:
+    """Put the Kalshi key where `KalshiClient.from_env` reads it, from Secrets
+    Manager. False when there's no secret or it has no value yet: the run
+    then sizes on `--budget` and can't place."""
+    if not secret_id:
+        return False
+    from botocore.exceptions import ClientError
+
+    from cassandra.picks_job import client
+
+    try:
+        value = client("secretsmanager").get_secret_value(SecretId=secret_id)
+    except ClientError as error:
+        print(f"no Kalshi key ({error.response['Error']['Code']}): emailing only")
+        return False
+    key = json.loads(value["SecretString"])
+    pem = CASSANDRA_HOME / "kalshi" / "private_key.pem"
+    pem.parent.mkdir(parents=True, exist_ok=True)
+    pem.touch(mode=0o600)
+    pem.write_text(key["private_key"])
+    os.environ["KALSHI_KEY_ID"] = key["key_id"]
+    os.environ["KALSHI_KEY_FILE"] = str(pem)
+    return True
+
+
+def _picks(kelly_fraction: float, max_bet: float, budget: float) -> None:
+    import contextlib
+    import logging
+    import uuid
+
+    import picks as picks_script
+    from cassandra import picks_job
+    from cassandra.constants import temp_bucket
+    from cassandra.placing import CENTRAL
+
+    logging.getLogger("endgame_aws.pbp_transform").setLevel(logging.ERROR)
+    s3 = picks_job.client("s3")
+    bucket, scratch = _bucket(), temp_bucket()
+    now = picks_job.now_utc()
+    if not picks_job.acquire(
+        s3, scratch, now, os.environ.get("AWS_BATCH_JOB_ID", str(uuid.uuid4()))
+    ):
+        print("another picks run holds the lock; this one has nothing to add")
+        return
+    try:
+        try:
+            found = s3.get_object(Bucket=bucket, Key=picks_job.OVERRIDES_KEY)
+            picks_script.OVERRIDES.parent.mkdir(parents=True, exist_ok=True)
+            picks_script.OVERRIDES.write_bytes(found["Body"].read())
+        except s3.exceptions.NoSuchKey:
+            print(f"no s3://{bucket}/{picks_job.OVERRIDES_KEY}: no lasting overrides")
+
+        # A rehearsal of bedtime: the real key reads the account, the orders
+        # are printed rather than sent, and the night's budget isn't charged.
+        rehearsal = bool(os.environ.get("CASSANDRA_PICKS_DRY_RUN"))
+        keyed = rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))
+        night = picks_job.bedtime(s3, bucket)
+        asleep = (
+            keyed and night is not None and night.asleep(now) and night.remaining >= 1
+        )
+        if asleep:
+            argv = [
+                "--place",
+                "--yes",
+                "--kelly-fraction",
+                str(night.kelly_fraction),
+                "--max-bet",
+                str(night.max_bet),
+                "--budget",
+                f"{night.remaining:.2f}",
+                "--rest",
+                f"{night.rest_hours(now):.2f}",
+            ]
+            if rehearsal:
+                argv.append("--dry-run")
+            print(
+                f"bedtime until {night.until.astimezone(CENTRAL):%a %H:%M} CT, "
+                f"${night.remaining:,.2f} of ${night.budget:,.2f} left: placing"
+            )
+        elif keyed:
+            # Sized on the real account, and what's held or resting is known,
+            # so a game already bet isn't emailed as a pick.
+            argv = [
+                "--notify",
+                "--place",
+                "--dry-run",
+                "--kelly-fraction",
+                str(kelly_fraction),
+                "--max-bet",
+                str(max_bet),
+            ]
+        else:
+            argv = ["--notify", "--budget", str(budget), "--max-bet", str(max_bet)]
+
+        tee = _Tee(sys.stdout)
+        with contextlib.redirect_stdout(tee):
+            args = picks_script.parse(argv)
+            outcome = picks_script.run(args)
+
+        sent, _ = picks_job.read_json(s3, bucket, picks_job.SENT_KEY)
+        sent = sent or {}
+        at = now.astimezone(CENTRAL)
+        if asleep:
+            placed = outcome.placed
+            if placed is None or placed.empty:
+                print("bedtime: nothing placed")
+                return
+            if not rehearsal:
+                night = picks_job.charge(s3, bucket, picks_job.committed(placed))
+            shown = outcome.picks[
+                outcome.picks["game_id"].isin(set(placed.get("game_id", [])))
+            ]
+            fresh = shown
+            subject = picks_job.subject(shown, fresh, placed=True, at=at)
+        else:
+            shown = outcome.picks
+            fresh = picks_job.unsent(shown, sent)
+            if fresh.empty:
+                print(f"{len(shown)} picks, none new: no email")
+                return
+            subject = picks_job.subject(shown, fresh, placed=False, at=at)
+            placed = None
+        text = picks_job.body(
+            shown, fresh, tee.text(), placed, night if asleep else None, args.slippage
+        )
+        topic = os.environ.get("CASSANDRA_PICKS_TOPIC_ARN")
+        if topic:
+            picks_job.client("sns").publish(
+                TopicArn=topic, Subject=subject, Message=text[:250_000]
+            )
+            print(f"emailed: {subject}")
+        else:
+            print(
+                f"no CASSANDRA_PICKS_TOPIC_ARN; would have emailed: {subject}\n{text}"
+            )
+        if not rehearsal:
+            picks_job.write_json(
+                s3,
+                bucket,
+                picks_job.SENT_KEY,
+                picks_job.record(sent, fresh, now, subject),
+            )
+    finally:
+        picks_job.release(s3, scratch)
+
+
 class Jobs:
     """Subcommands, one per node in the DAG."""
 
@@ -523,6 +688,18 @@ class Jobs:
         spend probes on a term that is always zero.
         """
         asyncio.run(_qb_out(_as_list(league), index, upload))
+
+    def picks(
+        self, kelly_fraction: float = 0.25, max_bet: float = 10.0, budget: float = 20.0
+    ) -> None:
+        """Price the Kalshi ncaafb books and email the new picks, or place them
+        at bedtime. See `cassandra.picks_job`.
+
+        The sizing flags are the awake run's, and match `make bet`'s defaults:
+        with the Kalshi key it sizes `--kelly-fraction` on the real account,
+        without it it splits `--budget`. Bedtime brings its own.
+        """
+        _picks(kelly_fraction, max_bet, budget)
 
     def optimize(
         self,

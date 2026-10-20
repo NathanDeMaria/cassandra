@@ -74,6 +74,24 @@ picks:
 bet:
 	poetry run python picks.py --place --kelly-fraction 0.25 --max-bet 10 $(ARGS)
 
+# The cloud picks job (`jobs.py picks`, cassandra/picks_job.py) emails new
+# picks on its own. At bedtime it places them instead, resting until the
+# wake-up time, e.g. `make bedtime ARGS="--until 08:00 --budget 40"`; `make
+# awake` turns that off. The job reads its overrides from s3: `make
+# push-overrides` after editing ~/.cassandra/betting/overrides.toml.
+# `make picks-status` lists the last emails' picks with their --only ids.
+bedtime:
+	poetry run python -m cassandra.picks_job bedtime $(ARGS)
+
+awake:
+	poetry run python -m cassandra.picks_job awake
+
+push-overrides:
+	poetry run python -m cassandra.picks_job push-overrides
+
+picks-status:
+	poetry run python -m cassandra.picks_job status
+
 # The Kalshi account, read-only: cash, and each open position's cost and what
 # it would sell for now.
 positions:
@@ -186,4 +204,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose team-seasons evidence betting picks bet positions publish build push manifest _ecr_login submit
+.PHONY: lint check test report diagnose team-seasons evidence betting picks bet bedtime awake push-overrides picks-status positions publish build push manifest _ecr_login submit
