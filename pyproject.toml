@@ -33,7 +33,11 @@ python = "^3.14"
 # pulls failed every Sunday, and NHL preseason failed outright. EndGame #88
 # and #91. `endgame_aws` below resolves `endgame` at exactly this rev, so the
 # two stay one package's worth of agreement about what a Game is.
-endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9", subdirectory = "py-endgame"}
+#
+# Then to the ESPN cache buster: `site.api.espn.com` serves a URL read on an
+# interval its own previous read's copy, so `picks.py`'s top-up of tonight's
+# scores could miss the games that just went final. EndGame #110.
+endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "19c1055cd0941465c0ae8a8e4239fdcea729bf37", subdirectory = "py-endgame"}
 # Team knowledge: which names are the same team, and what division and
 # conference each played in. Pure python apart from its extras, so it costs a
 # serving install one dependency it already has.
@@ -151,7 +155,10 @@ numba = "^0.68.0"
 # that carry them are what this rev is -- a fix in py-endgame does nothing
 # for the job until py-endgame-aws resolves it. See `OddsCoverageDropped` in
 # `cassandra.odds` for what the alarm looked like from here.
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "36ec13c527013e1c8366065d107e03c7100b652b", subdirectory = "py-endgame-aws"}
+#
+# And for the cache buster, which `endgame` above is pinned to: this is the
+# py-endgame-aws rev that resolves it there.
+endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "1b61e1856cf2524f07cc9249f2ac657cf8bff5b1", subdirectory = "py-endgame-aws"}
 # In-game win probability, and the `game_control` number cassandra turns into
 # an alternate score line. The fits ship inside the package, so pinning the
 # rev pins the model: which win probability curve a rating was built against

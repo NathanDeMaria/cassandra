@@ -780,8 +780,8 @@ python-dateutil = "^2.8.2"
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/EndGame.git"
-reference = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9"
-resolved_reference = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9"
+reference = "19c1055cd0941465c0ae8a8e4239fdcea729bf37"
+resolved_reference = "19c1055cd0941465c0ae8a8e4239fdcea729bf37"
 subdirectory = "py-endgame"
 
 [[package]]
@@ -797,15 +797,15 @@ develop = false
 [package.dependencies]
 aiobotocore = "^3.9.0"
 dataclasses-json = ">=0.5.7,<1.0"
-endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "c98f199fbd4f18e70a3272d21aaefb8de1a212d9", subdirectory = "py-endgame"}
+endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "19c1055cd0941465c0ae8a8e4239fdcea729bf37", subdirectory = "py-endgame"}
 fire = ">=0.4.0,<1.0"
 pyarrow = "^25.0"
 
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/EndGame.git"
-reference = "36ec13c527013e1c8366065d107e03c7100b652b"
-resolved_reference = "36ec13c527013e1c8366065d107e03c7100b652b"
+reference = "1b61e1856cf2524f07cc9249f2ac657cf8bff5b1"
+resolved_reference = "1b61e1856cf2524f07cc9249f2ac657cf8bff5b1"
 subdirectory = "py-endgame-aws"
 
 [[package]]
@@ -3583,4 +3583,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "04bd2b8e6610d62465b0b722154fe8d2d7a70ff7bedbb64526403e215d96f58e"
+content-hash = "7d154dd3683c7bae8c68a2a25ccc2cbab66cbc33fe5b4861ecd261a9dc3e8eaf"
