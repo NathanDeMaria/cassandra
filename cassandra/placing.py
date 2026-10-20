@@ -359,7 +359,7 @@ def place(
     matched: dict,
     args: argparse.Namespace,
     out: Path,
-) -> None:
+) -> pd.DataFrame | None:
     """Send the orders: the cheapest route first, what it left on the other.
 
     Each is a limit order at the pick's `limit`, so nothing fills at a price
@@ -425,19 +425,20 @@ def place(
             wanted = 0 if expires or args.dry_run else top_up(wanted, done.filled)
     placed = pd.DataFrame(rows)
     if placed.empty:
-        return
+        return None
     ORDERS_DIR.mkdir(parents=True, exist_ok=True)
     log = ORDERS_DIR / out.name.replace(".csv", "_orders.csv")
     placed.to_csv(log, index=False)
     if "filled" not in placed:
         print(f"\nnothing filled; errors: {log}")
-        return
+        return placed
     filled = placed[placed["filled"].fillna(0) > 0]
     spent = (filled["filled"] * filled["fill_price"] + filled["fee"].fillna(0)).sum()
     print(
         f"\nfilled {filled['filled'].sum():.0f} contracts on "
         f"{filled['game_id'].nunique()} games for ${spent:,.2f}; orders: {log}"
     )
+    return placed
 
 
 def print_picks(

@@ -40,3 +40,8 @@ output "ci_image_role_arn" {
   description = "role-to-assume for the image push (main only)"
   value       = aws_iam_role.ci_image.arn
 }
+
+output "picks_topic_arn" {
+  description = "The SNS topic the picks job emails through; subscribe an address to it by hand."
+  value       = aws_sns_topic.picks.arn
+}

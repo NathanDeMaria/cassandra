@@ -140,6 +140,32 @@ That job name is the whole contract with EndGame, spelled out in `main.tf`. A
 renamed chain step stops these without an error anywhere; on a Saturday,
 `*-after-finals-*` jobs in Batch are how to tell they're running.
 
+### Picks
+
+`cassandra-picks` runs `jobs.py picks`: `picks.py` against the live Kalshi
+ncaafb books, and an email (SNS topic `cassandra-picks`) whenever there's a
+pick no earlier email carried. It runs after every ncaafb finals sweep --
+the run that sees a next-week matchup's second team finish -- and hourly
+through `picks_schedules` (Saturday afternoon to Sunday night, weeknights).
+At bedtime (`make bedtime ARGS="--until 08:00 --budget 40"`, off with `make
+awake`) it places the picks itself, resting until the wake-up time, and
+emails what it placed. `cassandra.picks_job` has the state it keeps in s3.
+
+Two things by hand, once:
+
+```bash
+aws sns subscribe --topic-arn "$(terraform output -raw picks_topic_arn)" \
+  --protocol email --notification-endpoint you@example.com   # then click the link
+aws secretsmanager put-secret-value --secret-id cassandra/kalshi-key \
+  --secret-string "$(jq -n --arg id "$(cat ~/.kalshi/key_id)" \
+    --rawfile pem ~/.kalshi/private_key.pem '{key_id: $id, private_key: $pem}')"
+```
+
+Without the key it still emails, sized on `--budget`, and never places.
+`CASSANDRA_PICKS_DRY_RUN=1` rehearses bedtime: the orders are printed, not
+sent. The job reads overrides from s3, so `make push-overrides` after
+editing `~/.cassandra/betting/overrides.toml`.
+
 ## State between stages
 
 The stages don't share a disk, so `~/.cassandra` goes through s3, mirrored

@@ -173,3 +173,14 @@ variable "shared_role_names" {
   type        = list(string)
   default     = ["batch-execution-role", "batch-scheduler-role"]
 }
+
+variable "picks_schedules" {
+  description = "When the picks job looks at the Kalshi books, besides after every ncaafb finals sweep. EventBridge Scheduler cron expressions in schedule_timezone, keyed by a name for each schedule."
+  type        = map(string)
+  default = {
+    saturday  = "cron(0 14-23 ? * SAT *)"
+    sunday    = "cron(0 * ? * SUN *)"
+    weeknight = "cron(0 21-23 ? * TUE-FRI *)"
+    overnight = "cron(0 0-9 ? * WED-SAT *)"
+  }
+}

@@ -136,6 +136,20 @@ data "aws_iam_policy_document" "job" {
     resources = ["arn:aws:s3:::${var.artifacts_bucket}/*"]
   }
 
+  # The picks job: email what it found, and read the Kalshi key it places
+  # with at bedtime. Both scoped to the one topic and the one secret.
+  statement {
+    sid       = "EmailPicks"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.picks.arn]
+  }
+
+  statement {
+    sid       = "ReadKalshiKey"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.kalshi.arn]
+  }
+
   statement {
     sid = "SubmitOwnJobs"
     # The launcher runs as this role and submits the rest of the DAG. Batch
@@ -376,6 +390,32 @@ module "publish" {
   environment_variables = local.job_environment
 }
 
+# Prices the Kalshi ncaafb books against the model and emails the picks no
+# earlier email had -- or, at bedtime, places them (`cassandra.picks_job`).
+# Publish's memory, since it replays every stored season the way a release
+# build does.
+#
+# One attempt, not three: a run that placed half its orders and then lost
+# its host would place them again on a retry. A run that dies is picked up
+# by the next hour's, which skips anything already held or resting.
+module "picks" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
+
+  job_name           = "cassandra-picks"
+  image              = local.image
+  command            = ["picks"]
+  execution_role_arn = local.shared.batch_execution_role_arn
+  job_role_arn       = aws_iam_role.job.arn
+  memory             = var.publish_memory
+  retry_attempts     = 1
+  timeout_seconds    = 1800
+
+  environment_variables = concat(local.job_environment, [
+    { name = "CASSANDRA_PICKS_TOPIC_ARN", value = aws_sns_topic.picks.arn },
+    { name = "CASSANDRA_KALSHI_SECRET", value = aws_secretsmanager_secret.kalshi.arn },
+  ])
+}
+
 # The launcher: submits the other four with the right dependencies. It's a
 # Batch job rather than a Lambda so it runs the same image as the work it
 # submits -- the manifest it sizes the array against is the one the children
@@ -520,6 +560,36 @@ resource "aws_cloudwatch_event_target" "sweep_after_finals" {
   })
 }
 
+# And once a finals sweep has rebuilt the quarterback index -- the slower of
+# the two -- the picks job prices the books again. That's the run that sees a
+# next-week matchup's second team finish: its game is in the season, its
+# plays and quarterback are read, and the entry window has just opened.
+resource "aws_cloudwatch_event_rule" "picks_after_finals" {
+  name        = "${var.resource_name_prefix}-picks-after-finals"
+  description = "A finals sweep rebuilt ncaafb's quarterback index"
+
+  event_pattern = jsonencode({
+    source      = ["aws.batch"]
+    detail-type = ["Batch Job State Change"]
+    detail = {
+      status  = ["SUCCEEDED"]
+      jobName = ["${var.resource_name_prefix}-qb-out-after-finals-ncaafb"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "picks_after_finals" {
+  rule      = aws_cloudwatch_event_rule.picks_after_finals.name
+  target_id = "picks"
+  arn       = local.shared.job_queue_arn
+  role_arn  = aws_iam_role.sweeps_after_finals.arn
+
+  batch_target {
+    job_definition = module.picks.name
+    job_name       = "${var.resource_name_prefix}-picks-after-finals"
+  }
+}
+
 resource "aws_iam_role" "sweeps_after_finals" {
   name = "${var.resource_name_prefix}-sweeps-after-finals"
 
@@ -545,21 +615,67 @@ resource "aws_iam_role_policy" "sweeps_after_finals" {
       {
         Effect = "Allow"
         Action = "batch:SubmitJob"
-        # The two sweeps' definitions, bare and at any revision -- a
-        # submission by name resolves to the latest -- and the queue they run
-        # on.
+        # The two sweeps' definitions and the picks job's, bare and at any
+        # revision -- a submission by name resolves to the latest -- and the
+        # queue they run on.
         Resource = concat(
           [local.shared.job_queue_arn],
           flatten([
-            for sweep in ["epa", "qb_out"] : [
-              "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${local.job_definitions[sweep]}",
-              "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${local.job_definitions[sweep]}:*",
+            for name in [local.job_definitions.epa, local.job_definitions.qb_out, module.picks.name] : [
+              "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${name}",
+              "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${name}:*",
             ]
           ]),
         )
       }
     ]
   })
+}
+
+# ------------------------------------------------------------------------------
+# Picks: when to look, where to email, and the key to place with
+# ------------------------------------------------------------------------------
+# Hourly through the windows a matchup's book goes from wide to priced: the
+# backtest's entries after Saturday games tightened Sat 9pm-Sun 3am, and the
+# edge was mostly gone by twelve hours (`picks.py --max-since-entry`). The
+# finals rule above catches each entry as it opens; these catch the books
+# that tighten after it. Weekday nights are for the midweek games.
+module "picks_schedule" {
+  source   = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/job_schedule?ref=main"
+  for_each = var.picks_schedules
+
+  schedule_name       = "${var.resource_name_prefix}-picks-${each.key}"
+  schedule_expression = each.value
+  schedule_timezone   = var.schedule_timezone
+  job_definition      = module.picks.name
+  job_queue_arn       = local.shared.job_queue_arn
+  scheduler_role_arn  = local.shared.batch_scheduler_role_arn
+  command             = ["picks"]
+}
+
+# Where the picks go. Subscribed by hand rather than here, so no address is
+# in the repo -- an email subscription needs a click on its confirmation
+# anyway, which terraform can't make:
+#
+#   aws sns subscribe --topic-arn "$(terraform output -raw picks_topic_arn)" \
+#     --protocol email --notification-endpoint you@example.com
+resource "aws_sns_topic" "picks" {
+  name = "${var.resource_name_prefix}-picks"
+}
+
+# The Kalshi API key the job places with at bedtime, and reads the account
+# with otherwise. Declared empty: the value is put by hand, so the key is
+# never in terraform state --
+#
+#   aws secretsmanager put-secret-value --secret-id cassandra/kalshi-key \
+#     --secret-string "$(jq -n --arg id "$(cat ~/.kalshi/key_id)" \
+#       --rawfile pem ~/.kalshi/private_key.pem '{key_id: $id, private_key: $pem}')"
+#
+# Until it has a value the job emails picks sized on `--budget`, and never
+# places.
+resource "aws_secretsmanager_secret" "kalshi" {
+  name        = "${var.resource_name_prefix}/kalshi-key"
+  description = "Kalshi API key id and private key PEM, for cassandra-picks"
 }
 
 # ------------------------------------------------------------------------------

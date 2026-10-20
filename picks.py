@@ -59,6 +59,15 @@ its resting orders. A `--budget` over the cash on hand stops the run. Then
 it prints the numbered orders and asks: `y` places them, numbers drop those
 games and re-size the rest, `q` stops. A drop never brings in a game that
 wasn't on the first list, even when it frees a place in the `--top`.
+`--only GAME` prices every game as usual and picks only the ones named,
+by ESPN game id or team: the line each pick in the picks email carries.
+
+**Unattended.** `jobs.py picks` runs this in the cloud, on a schedule and
+after every finals sweep (`cassandra.picks_job`). Awake, it runs with
+`--notify` -- size and print, then stop -- and emails the picks no earlier
+email had. At bedtime it runs with `--place --yes --rest`: no prompt, a
+`--budget` over the cash cut to the cash, and orders that rest until the
+wake-up time.
 
 **Sizing.** Each pick has a target number of contracts:
 
@@ -112,6 +121,7 @@ import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 import pyarrow as pa
@@ -393,10 +403,17 @@ def _kalshi_markets(series: tuple[str, ...]) -> list[dict]:
     return markets
 
 
-def main() -> None:
-    # The transform clamps the odd out-of-range yardline, which says nothing
-    # about who played quarterback.
-    logging.getLogger("endgame_aws.pbp_transform").setLevel(logging.ERROR)
+class Outcome(NamedTuple):
+    """What a run priced, picked, and placed, for `jobs.py picks`."""
+
+    #: Every priced game, with its skip reason and, for picks, its order.
+    frame: pd.DataFrame
+    picks: pd.DataFrame
+    #: The orders sent, as `placing.place` logs them; None when none were.
+    placed: pd.DataFrame | None
+
+
+def parse(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -447,6 +464,14 @@ def main() -> None:
         type=float,
         default=0.01,
         help="how far past the best price to count contracts on offer",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="GAME",
+        help="price every game but pick only these: an ESPN game id, as the "
+        "picks email gives it, or a team (repeatable)",
     )
     parser.add_argument(
         "--exclude",
@@ -504,6 +529,18 @@ def main() -> None:
         "the orders instead of sending them",
     )
     parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="with --place: place the orders without asking, and cut --budget "
+        "to the cash on hand rather than stop (what bedtime runs with)",
+    )
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="stop once the picks are sized and printed, for `jobs.py picks` to "
+        "email; with --place --dry-run they're sized on the real account",
+    )
+    parser.add_argument(
         "--rest",
         type=float,
         metavar="HOURS",
@@ -519,11 +556,17 @@ def main() -> None:
         default=4,
         help="injury sentences shown per pick",
     )
-    args = parser.parse_args()
-    run(args)
+    return parser.parse_args(argv)
 
 
-def run(args: argparse.Namespace) -> None:
+def main() -> None:
+    # The transform clamps the odd out-of-range yardline, which says nothing
+    # about who played quarterback.
+    logging.getLogger("endgame_aws.pbp_transform").setLevel(logging.ERROR)
+    run(parse())
+
+
+def run(args: argparse.Namespace) -> Outcome:
     started = datetime.now(UTC)
     league, model = LEAGUE, args.model
 
@@ -749,7 +792,7 @@ def run(args: argparse.Namespace) -> None:
     frame = pd.DataFrame(rows)
     if frame.empty:
         print("\nno priced games")
-        return
+        return Outcome(frame, frame, None)
 
     # 5. Size the picks (`placing.size`), each at its limit price.
     client = None
@@ -769,6 +812,9 @@ def run(args: argparse.Namespace) -> None:
             f"\nKalshi{mode}: ${cash:,.2f} cash, ${invested:,.2f} in "
             f"{len(positions)} open positions, {len(resting)} events with resting orders"
         )
+        if args.budget is not None and args.budget > cash and args.yes:
+            print(f"--budget ${args.budget:g} cut to the ${cash:,.2f} on hand")
+            args.budget = cash
         if args.budget is not None and args.budget > cash:
             raise SystemExit(
                 f"--budget ${args.budget:g} is more than the ${cash:,.2f} on hand"
@@ -803,6 +849,11 @@ def run(args: argparse.Namespace) -> None:
     for team in args.exclude:
         named = frame["game"].str.contains(team, case=False, regex=False)
         frame.loc[named & frame["skip"].isna(), "skip"] = "excluded by hand"
+    if args.only:
+        asked = frame["game_id"].isin(args.only)
+        for team in args.only:
+            asked |= frame["game"].str.contains(team, case=False, regex=False)
+        frame.loc[~asked & frame["skip"].isna(), "skip"] = "not asked for (--only)"
     frame["limit"] = [
         placing.limit_price(p, m, args.slippage)
         for p, m in zip(frame["price"], frame["max_price"])
@@ -833,18 +884,18 @@ def run(args: argparse.Namespace) -> None:
         placing.print_picks(sized, picks, args)
         placing.print_orders(picks, news, args)
         print(f"\nevery matched game: {out}")
-        if client is None or picks.empty:
-            return
-        answer = placing.ask(len(picks))
+        if client is None or picks.empty or args.notify:
+            return Outcome(sized, picks, None)
+        answer = set() if args.yes else placing.ask(len(picks))
         if answer is None:
             print("nothing placed")
-            return
+            return Outcome(sized, picks, None)
         if not answer:
             break
         order = picks.sort_values(["kickoff", "edge"], ascending=[True, False])
         dropped |= {order["game_id"].iloc[i - 1] for i in answer}
 
-    placing.place(client, picks, matched, args, out)
+    return Outcome(sized, picks, placing.place(client, picks, matched, args, out))
 
 
 if __name__ == "__main__":
