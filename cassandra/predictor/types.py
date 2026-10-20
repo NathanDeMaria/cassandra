@@ -48,6 +48,24 @@ class Units(NamedTuple):
     defense: Unit
 
 
+class Rate(NamedTuple):
+    """One side's success rate -- a share of its downs -- and its deviation."""
+
+    rate: float
+    sd: float
+
+
+class SuccessRates(NamedTuple):
+    """A team's success rate on offense, and the rate its defense allows.
+
+    Each against an average opponent on a neutral field, for a reader: see
+    `UnitMarginGlickoPredictor`'s "What a release carries".
+    """
+
+    offense: Rate
+    defense: Rate
+
+
 class Rating(NamedTuple):
     """One team's standing, in the shape every predictor can express.
 
@@ -71,12 +89,16 @@ class Rating(NamedTuple):
     the model predicts from, which is the number to rank on. Derived, so
     `from_ratings` ignores it and a `Rating` built without it is the same
     model.
+
+    `success` is for a reader too, and ignored the same way: the success
+    rates a units model keeps beside its sides and never predicts from.
     """
 
     rating: float
     rd: float | None = None
     units: Units | None = None
     blended: float | None = None
+    success: SuccessRates | None = None
 
     @property
     def overall(self) -> float:

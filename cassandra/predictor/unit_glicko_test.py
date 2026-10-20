@@ -28,6 +28,7 @@ from .unit_glicko import (
     DEFAULT_OFFENSE_INITIAL_SD,
     UNWEIGHTED,
     WEIGHTED,
+    RateClock,
     UnitMarginGlickoPredictor,
 )
 
@@ -797,3 +798,214 @@ def test_the_new_knobs_round_trip() -> None:
         }
     )
     assert loaded.state_dict() == predictor.state_dict()
+
+
+# --- the success rate a reader sees --------------------------------------------
+
+_CARRY = 0.8
+
+
+@pytest.fixture
+def rated(scaled: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test league with clocks for the displayed success rate."""
+    monkeypatch.setitem(
+        unit_glicko.SUCCESS_RATE_CLOCKS,
+        "test_league",
+        (RateClock(0.05, _CARRY, 0.001), RateClock(0.04, _CARRY, 0.001)),
+    )
+
+
+def _rates(home: float, away: float, downs: int = 60) -> GameEpa:
+    """A game whose offenses won `home` and `away` of their downs, at par EPA."""
+    return GameEpa(0.0, 0.0, 70, 70, None, None, 0.0, 0.0, home, away, downs, downs)
+
+
+# Two games to read the center from, so the third is measured against one.
+_WARM = {"w1": _rates(0.42, 0.42), "w2": _rates(0.42, 0.42)}
+
+
+def _warmed(predictor: UnitMarginGlickoPredictor, game: GameFactory) -> None:
+    predictor.update_game(game("C", "D", 14, 14, game_id="w1"))
+    predictor.update_game(game("D", "C", 14, 14, game_id="w2"))
+
+
+def test_a_league_without_rate_clocks_carries_no_success_rates(game: GameFactory) -> None:
+    predictor = _predictor({**_WARM, "g": _rates(0.6, 0.3)})
+    _warmed(predictor, game)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert all(rating.success is None for rating in predictor.ratings.values())
+
+
+@pytest.mark.usefixtures("rated")
+def test_the_offense_that_won_more_downs_rates_higher_and_its_victim_allows_more(
+    game: GameFactory,
+) -> None:
+    predictor = _predictor({**_WARM, "g": _rates(0.6, 0.3)})
+    _warmed(predictor, game)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+
+    ratings = predictor.ratings
+    a, b = ratings["A"].success, ratings["B"].success
+    assert a is not None and b is not None
+    assert a.offense.rate > 0.42 > b.offense.rate
+    assert b.defense.rate > 0.42 > a.defense.rate
+    assert 0 < a.offense.sd < 0.05 and 0 < a.defense.sd < 0.04
+
+
+@pytest.mark.usefixtures("rated")
+def test_the_same_rate_against_a_better_conference_is_worth_more(
+    game: GameFactory,
+) -> None:
+    """Opponent-adjusted: the anchors say what each offense was expected to win.
+
+    The same games in both, but A's opponent: so both read the same anchors,
+    and an average opponent is the same team in each.
+    """
+    anchors = {"A": 1500, "B": 1500, "C": 1500, "D": 1500, "E": 1700}
+    epa = {**_WARM, "g": _rates(0.5, 0.42), "h": _rates(0.42, 0.42)}
+    weak = _predictor(epa, anchors=anchors)
+    strong = _predictor(epa, anchors=anchors)
+    _warmed(weak, game)
+    _warmed(strong, game)
+    weak.update_game(game("A", "B", 21, 7, game_id="g"))
+    weak.update_game(game("E", "C", 14, 14, game_id="h"))
+    strong.update_game(game("A", "E", 21, 7, game_id="g"))
+    strong.update_game(game("B", "C", 14, 14, game_id="h"))
+    against_weak, against_strong = weak.ratings["A"].success, strong.ratings["A"].success
+    assert against_weak is not None and against_strong is not None
+    assert against_strong.offense.rate > against_weak.offense.rate
+
+
+@pytest.mark.usefixtures("rated")
+def test_success_rates_never_move_a_prediction(game: GameFactory) -> None:
+    """Display only: the same games with and without their rates predict alike.
+
+    Three games, so A's second is read against a center.
+    """
+    epa = {"g1": _epa(0.2, -0.1), "g2": _epa(-0.1, 0.3), "g3": _epa(0.1, 0.0)}
+    plain = _predictor(epa)
+    shown = _predictor(
+        {
+            g: e._replace(
+                home_success=0.55,
+                away_success=0.35,
+                home_success_plays=60,
+                away_success_plays=60,
+            )
+            for g, e in epa.items()
+        }
+    )
+    for predictor in (plain, shown):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g1"))
+        predictor.update_game(game("B", "C", 10, 17, game_id="g2"))
+        predictor.pass_week()
+        predictor.update_game(game("C", "A", 3, 24, game_id="g3"))
+        predictor.pass_week()
+    assert shown.ratings["A"].success is not None
+    for home, away in (("A", "B"), ("C", "A")):
+        assert shown.predict_game(game(home, away)) == plain.predict_game(game(home, away))
+    assert {t: r._replace(success=None) for t, r in shown.ratings.items()} == plain.ratings
+
+
+@pytest.mark.usefixtures("rated")
+def test_a_summer_keeps_carry_of_each_offset(game: GameFactory) -> None:
+    predictor = _predictor({**_WARM, "g": _rates(0.6, 0.3)})
+    _warmed(predictor, game)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    before = predictor.ratings["A"].success
+    predictor.pass_season()
+    after = predictor.ratings["A"].success
+    assert before is not None and after is not None
+    # The center doesn't move over the summer: last season's mean is this
+    # season's prior, and nothing has been read yet.
+    center = (0.42 * 4 + 0.6 + 0.3) / 6
+    assert after.offense.rate - center == pytest.approx(_CARRY * (before.offense.rate - center))
+    assert after.offense.sd > before.offense.sd
+
+
+@pytest.mark.usefixtures("rated")
+def test_the_success_rates_round_trip_through_the_state_dict(game: GameFactory) -> None:
+    predictor = _predictor({**_WARM, "g": _rates(0.6, 0.3)})
+    _warmed(predictor, game)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+
+    state = json.loads(json.dumps(predictor.state_dict()))
+    loaded = UnitMarginGlickoPredictor.from_state_dict({**state, "game_epa": EpaIndex()})
+    assert loaded.ratings["A"].success == predictor.ratings["A"].success
+    assert loaded.state_dict() == predictor.state_dict()
+
+
+@pytest.mark.usefixtures("rated")
+def test_success_rates_leave_an_unfiled_teams_anchor_alone(game: GameFactory) -> None:
+    """`ratings` is read at the rollover, before the unfiled teams' prior
+    moves. U has no anchor and no plays -- a lower-division opponent -- so
+    nothing but the rates could ask for its anchor there. Four unfiled teams
+    already seen, so U is the fifth and the prior moves off the mean.
+    """
+    predictor = _predictor(
+        {"g1": _rates(0.5, 0.4), "g3": _rates(0.4, 0.6)},
+        anchors={"A": 1600, "B": 1400},
+        unanchored_seen=(4 * 1100.0, 4 * 1100.0**2, 4),
+    )
+    predictor.update_game(game("A", "B", 21, 7, game_id="g1"))
+    predictor.update_game(game("B", "U", 35, 3, game_id="g2"))
+    predictor.update_game(game("B", "A", 0, 42, game_id="g3"))
+    predictor.pass_season()
+    assert predictor.unanchored_prior() != MEAN_RATING
+    assert predictor.anchor("U") == predictor.unanchored_prior()
+
+
+def test_an_unfiled_team_with_sides_is_anchored_where_the_fold_left_it(
+    game: GameFactory,
+) -> None:
+    """Its sides sit on its anchor, so the rollover's read of `ratings` asks
+    for it -- and asked before the unfiled teams were folded in, the answer
+    was cached for the whole of next season. U has no anchor and plays; four
+    unfiled teams already seen, so U is the fifth and the prior moves.
+    """
+    predictor = _predictor(
+        {"g1": LOPSIDED, "g2": _epa(0.2, -0.2)},
+        anchors={"A": 1600, "B": 1400},
+        unanchored_seen=(4 * 1100.0, 4 * 1100.0**2, 4),
+    )
+    predictor.update_game(game("A", "B", 21, 7, game_id="g1"))
+    predictor.update_game(game("B", "U", 35, 3, game_id="g2"))
+    assert predictor.ratings["U"].units is not None
+    before = predictor.unanchored_prior()
+    predictor.pass_season()
+    assert predictor.unanchored_prior() != before
+    assert predictor.anchor("U") == predictor.unanchored_prior()
+
+
+@pytest.mark.usefixtures("rated")
+def test_the_gap_slope_learns_how_far_a_rate_moves(game: GameFactory) -> None:
+    """Games whose rates differ by half what their gaps convert to pull the
+    slope from 1 toward a half; nothing else in the units moves it."""
+    rates = unit_glicko._SuccessRates("test_league", None)
+    shift = 0.05
+    played = game("A", "B", 21, 7)
+    for _ in range(400):
+        rates.add_game(played, _rates(0.4 + shift / 2, 0.4 - shift / 2), shift, (1500.0, 1500.0))
+    assert rates.gap_slope == pytest.approx(0.5, abs=0.05)
+
+
+@pytest.mark.usefixtures("rated")
+def test_one_anchor_for_every_side_is_its_own_average_opponent() -> None:
+    """A league without tiers reads every side at one anchor -- the NFL's
+    unfiled prior, which is no round number -- and its mean can round a hair
+    above it, leaving no side "at or above the mean" to average. That emptied
+    the NFL's publish (run 20261014-232537) on a `ZeroDivisionError`.
+    """
+    anchor = next(v for v in (1500 + i / 7 for i in range(1, 1000)) if v * 3 / 3 > v)
+    rates = unit_glicko._SuccessRates(
+        "test_league",
+        {
+            "sides": {"A": [0.01, 0.03, -0.01, 0.03]},
+            "center": [None, 0.84, 2],
+            "anchors": [[anchor, 3]],
+        },
+    )
+    success = rates.rates("A", lambda team: anchor, 0.001)
+    assert success is not None
+    assert success.offense.rate == pytest.approx(0.43)
+    assert success.defense.rate == pytest.approx(0.43)
