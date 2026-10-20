@@ -41,7 +41,9 @@ from .types import (
     GameResult,
     Matchup,
     Prediction,
+    Rate,
     Rating,
+    SuccessRates,
     Unit,
     Units,
 )

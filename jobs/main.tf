@@ -445,6 +445,124 @@ module "daily_publish" {
 }
 
 # ------------------------------------------------------------------------------
+# Sweeps after finals
+# ------------------------------------------------------------------------------
+# EndGame starts its intraday football chain when games go final (its
+# finals_watcher.tf), and the chain's last job writes the week's processed
+# plays. The moment that job succeeds, this runs the two play-by-play sweeps a
+# bet on the teams' next games reads: EPA, which carries the success rates,
+# and who played quarterback. So a game that ended is in both indexes a few
+# minutes later, instead of waiting for the next daily publish -- and a bet
+# placed the night of a final is priced on everything its teams did in it.
+#
+# The contract between the two repos is EndGame's job name and nothing else:
+# EndGame names no cassandra job, and nothing here reaches into its stack. A
+# renamed chain step would stop these quietly, so the name is spelled out
+# below rather than built from a pattern -- grep for it there.
+#
+# Each sweep is scoped to the league whose plays changed, and runs the
+# definition the launcher runs, at its latest revision, with the command the
+# DAG would give it. EPA re-sweeps the season in progress; qb_out rebuilds its
+# index whole, which takes a couple of minutes.
+locals {
+  # The job that writes a league's processed plays, in EndGame's intraday
+  # chain (`intraday-process-football-plays-<league>`, plus the chain
+  # module's `-chained-run`).
+  football_plays_processed_jobs = {
+    ncaafb = "intraday-process-football-plays-ncaafb-chained-run"
+    nfl    = "intraday-process-football-plays-nfl-chained-run"
+  }
+
+  sweeps_after_finals = {
+    for pair in setproduct(keys(local.football_plays_processed_jobs), ["epa", "qb_out"]) :
+    "${pair[0]}-${pair[1]}" => { league = pair[0], sweep = pair[1] }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "football_plays_processed" {
+  for_each = local.football_plays_processed_jobs
+
+  name        = "${var.resource_name_prefix}-football-plays-processed-${each.key}"
+  description = "EndGame's intraday chain wrote ${each.key}'s processed plays"
+
+  event_pattern = jsonencode({
+    source      = ["aws.batch"]
+    detail-type = ["Batch Job State Change"]
+    detail = {
+      status  = ["SUCCEEDED"]
+      jobName = [each.value]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "sweep_after_finals" {
+  for_each = local.sweeps_after_finals
+
+  rule      = aws_cloudwatch_event_rule.football_plays_processed[each.value.league].name
+  target_id = each.value.sweep
+  arn       = local.shared.job_queue_arn
+  role_arn  = aws_iam_role.sweeps_after_finals.arn
+
+  batch_target {
+    # By name, so a submission gets the latest revision -- what the launcher
+    # submits too.
+    job_definition = local.job_definitions[each.value.sweep]
+    job_name       = "${var.resource_name_prefix}-${replace(each.value.sweep, "_", "-")}-after-finals-${each.value.league}"
+  }
+
+  # EventBridge maps a `ContainerOverrides` key in a Batch target's input onto
+  # SubmitJob's containerOverrides (command, environment, memory and vcpus
+  # only).
+  input = jsonencode({
+    ContainerOverrides = {
+      Command = [each.value.sweep, "--league", each.value.league]
+    }
+  })
+}
+
+resource "aws_iam_role" "sweeps_after_finals" {
+  name = "${var.resource_name_prefix}-sweeps-after-finals"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action    = "sts:AssumeRole"
+        Effect    = "Allow"
+        Principal = { Service = "events.amazonaws.com" }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "sweeps_after_finals" {
+  name = "${var.resource_name_prefix}-sweeps-after-finals"
+  role = aws_iam_role.sweeps_after_finals.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = "batch:SubmitJob"
+        # The two sweeps' definitions, bare and at any revision -- a
+        # submission by name resolves to the latest -- and the queue they run
+        # on.
+        Resource = concat(
+          [local.shared.job_queue_arn],
+          flatten([
+            for sweep in ["epa", "qb_out"] : [
+              "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${local.job_definitions[sweep]}",
+              "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${local.job_definitions[sweep]}:*",
+            ]
+          ]),
+        )
+      }
+    ]
+  })
+}
+
+# ------------------------------------------------------------------------------
 # Failure notification
 # ------------------------------------------------------------------------------
 # None here: aws-batch-optimization's alerts.tf emails on any job failing on
