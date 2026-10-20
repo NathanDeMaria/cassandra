@@ -86,6 +86,8 @@ pydantic = "^2.12.5"
 # `cassandra/__init__.py` defers its fit-path re-exports for the same reason.
 [tool.poetry.group.fit.dependencies]
 scikit-learn = "^1.8.0"
+# Signs the Kalshi orders `picks.py --place` sends (`cassandra.kalshi_trade`).
+cryptography = ">=46"
 # Parquet, for `history.parquet` and `predictions.parquet`. pandas resolves
 # the engine inside `to_parquet`/`read_parquet` rather than at import, which
 # is what lets `cassandra.serving.history` and `.predictions` define their
