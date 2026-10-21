@@ -97,6 +97,16 @@ picks-status:
 positions:
 	poetry run python positions.py $(ARGS)
 
+# Every Kalshi bet so far, rebuilt from the account each run. It writes
+# ~/.cassandra/betting/ledger/report.md: the record, the model's and the
+# close's expected P&L, and CLV; the result types and game-flow tags added up
+# across weeks; each week's games, each with a theme; and the open bets.
+# Themes are written by hand into themes.toml there. `ARGS=--digest` prints
+# the box score and recap of each settled game still without one. Without an
+# AWS login, `ARGS=--offline`: bedtime bets then have no model price.
+ledger:
+	poetry run python ledger.py $(ARGS)
+
 
 # Build a release for every model in every league, locally. Reads the seasons
 # and odds once for the whole run, so it's minutes rather than the half hour a
@@ -204,4 +214,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose team-seasons evidence betting picks bet bedtime awake push-overrides picks-status positions publish build push manifest _ecr_login submit
+.PHONY: lint check test report diagnose team-seasons evidence betting picks bet bedtime awake push-overrides picks-status positions ledger publish build push manifest _ecr_login submit

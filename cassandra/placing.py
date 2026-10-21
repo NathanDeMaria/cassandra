@@ -322,7 +322,7 @@ def cancel(
     return lines
 
 
-def _espn_summary(game_id: str, final: bool) -> dict:
+def espn_summary(game_id: str, final: bool) -> dict:
     """ESPN's summary of a game: box score and AP story. A final one is kept."""
     path = SUMMARIES_DIR / f"{game_id}.json.gz"
     if final and path.exists():
@@ -371,7 +371,7 @@ def injury_news(
         wanted[game_id] = list(dict.fromkeys(stories))
     calls = {(g, final) for stories in wanted.values() for g, final, _ in stories}
     with ThreadPoolExecutor(8) as pool:
-        summaries = dict(zip(calls, pool.map(lambda c: _espn_summary(*c), calls)))
+        summaries = dict(zip(calls, pool.map(lambda c: espn_summary(*c), calls)))
     news: dict[str, News] = {}
     for game_id, stories in wanted.items():
         fixture = by_id[game_id]
