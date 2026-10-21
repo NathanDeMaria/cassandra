@@ -262,6 +262,19 @@ class KalshiClient:
         """One event: its title, e.g. "Houston at Utah"."""
         return self._request("GET", f"/events/{event_ticker}")["event"]
 
+    def fills(self) -> list[dict]:
+        """Every fill the account has had: `ticker`, `order_id`, `count_fp`,
+        `created_time`, `fee_cost`. Its `side`/`action` pair isn't the
+        contract held -- a NO bought through the V2 ask shows as a `sell` of
+        `no` -- so what's held is read from positions and settlements."""
+        return self._pages("/portfolio/fills", "fills", {})
+
+    def settlements(self) -> list[dict]:
+        """Every market the account held to its settlement: each side's count
+        and cost (`yes_count_fp`, `no_total_cost_dollars`), `revenue` in
+        cents, and the fees paid trading it (`fee_cost`)."""
+        return self._pages("/portfolio/settlements", "settlements", {})
+
     def resting_events(self) -> set[str]:
         """Every event with a resting order in it."""
         return {
