@@ -461,7 +461,7 @@ def _kalshi_key(secret_id: str | None) -> bool:
     return True
 
 
-def _picks(kelly_fraction: float, max_bet: float, budget: float) -> None:
+def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> None:
     import contextlib
     import logging
     import uuid
@@ -529,6 +529,9 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float) -> None:
             ]
         else:
             argv = ["--notify", "--budget", str(budget), "--max-bet", str(max_bet)]
+
+        if not espn:
+            argv.append("--no-espn")
 
         tee = _Tee(sys.stdout)
         with contextlib.redirect_stdout(tee):
@@ -689,8 +692,25 @@ class Jobs:
         """
         asyncio.run(_qb_out(_as_list(league), index, upload))
 
+    def sweeps(self, league: str) -> None:
+        """Both play-by-play sweeps a bet reads, EPA then quarterbacks, in one
+        container: what a final submits.
+
+        One job rather than two, because the picks run that follows has to
+        wait for both, and EventBridge can only start it off one. Two jobs
+        also meant two queue waits, and on a busy queue Batch ran them one
+        after the other anyway -- on 2026-10-20 the EPA sweep finished seven
+        seconds after the picks run had started off the quarterbacks'.
+        """
+        asyncio.run(_epa([league], None, rebuild=False, upload=True))
+        asyncio.run(_qb_out([league], None, upload=True))
+
     def picks(
-        self, kelly_fraction: float = 0.25, max_bet: float = 10.0, budget: float = 20.0
+        self,
+        kelly_fraction: float = 0.25,
+        max_bet: float = 10.0,
+        budget: float = 20.0,
+        espn: bool = True,
     ) -> None:
         """Price the Kalshi ncaafb books and email the new picks, or place them
         at bedtime. See `cassandra.picks_job`.
@@ -698,8 +718,14 @@ class Jobs:
         The sizing flags are the awake run's, and match `make bet`'s defaults:
         with the Kalshi key it sizes `--kelly-fraction` on the real account,
         without it it splits `--budget`. Bedtime brings its own.
+
+        `--espn=False` skips the season's top-up from ESPN (`picks.py
+        --no-espn`). The run after a final passes it: the chain that wrote
+        that final to s3 finished minutes ago, and the top-up is 54
+        scoreboard reads that would only say it again. The hourly runs keep
+        it, since they're the ones that catch a final no chain has written.
         """
-        _picks(kelly_fraction, max_bet, budget)
+        _picks(kelly_fraction, max_bet, budget, espn)
 
     def optimize(
         self,

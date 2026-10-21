@@ -500,10 +500,13 @@ module "daily_publish" {
 # renamed chain step would stop these quietly, so the name is spelled out
 # below rather than built from a pattern -- grep for it there.
 #
-# Each sweep is scoped to the league whose plays changed, and runs the
-# definition the launcher runs, at its latest revision, with the command the
-# DAG would give it. EPA re-sweeps the season in progress; qb_out rebuilds its
-# index whole, which takes a couple of minutes.
+# Both sweeps run in one job (`jobs.py sweeps`), scoped to the league whose
+# plays changed: EPA re-sweeps the season in progress, then qb_out rebuilds
+# its index whole, which takes a couple of minutes. One job because the picks
+# run below has to start off the both of them, and EventBridge starts a
+# target off one event -- as two jobs, the picks run started off the
+# quarterbacks' and could beat the EPA upload. It runs EPA's definition (the
+# bigger memory of the two), at its latest revision.
 locals {
   # The job that writes a league's processed plays, in EndGame's intraday
   # chain (`intraday-process-football-plays-<league>`, plus the chain
@@ -511,11 +514,6 @@ locals {
   football_plays_processed_jobs = {
     ncaafb = "intraday-process-football-plays-ncaafb-chained-run"
     nfl    = "intraday-process-football-plays-nfl-chained-run"
-  }
-
-  sweeps_after_finals = {
-    for pair in setproduct(keys(local.football_plays_processed_jobs), ["epa", "qb_out"]) :
-    "${pair[0]}-${pair[1]}" => { league = pair[0], sweep = pair[1] }
   }
 }
 
@@ -535,19 +533,19 @@ resource "aws_cloudwatch_event_rule" "football_plays_processed" {
   })
 }
 
-resource "aws_cloudwatch_event_target" "sweep_after_finals" {
-  for_each = local.sweeps_after_finals
+resource "aws_cloudwatch_event_target" "sweeps_after_finals" {
+  for_each = local.football_plays_processed_jobs
 
-  rule      = aws_cloudwatch_event_rule.football_plays_processed[each.value.league].name
-  target_id = each.value.sweep
+  rule      = aws_cloudwatch_event_rule.football_plays_processed[each.key].name
+  target_id = "sweeps"
   arn       = local.shared.job_queue_arn
   role_arn  = aws_iam_role.sweeps_after_finals.arn
 
   batch_target {
     # By name, so a submission gets the latest revision -- what the launcher
     # submits too.
-    job_definition = local.job_definitions[each.value.sweep]
-    job_name       = "${var.resource_name_prefix}-${replace(each.value.sweep, "_", "-")}-after-finals-${each.value.league}"
+    job_definition = local.job_definitions.epa
+    job_name       = "${var.resource_name_prefix}-sweeps-after-finals-${each.key}"
   }
 
   # EventBridge maps a `ContainerOverrides` key in a Batch target's input onto
@@ -555,25 +553,26 @@ resource "aws_cloudwatch_event_target" "sweep_after_finals" {
   # only).
   input = jsonencode({
     ContainerOverrides = {
-      Command = [each.value.sweep, "--league", each.value.league]
+      Command = ["sweeps", "--league", each.key]
     }
   })
 }
 
-# And once a finals sweep has rebuilt the quarterback index -- the slower of
-# the two -- the picks job prices the books again. That's the run that sees a
-# next-week matchup's second team finish: its game is in the season, its
-# plays and quarterback are read, and the entry window has just opened.
+# And once the finals sweeps have rebuilt both indexes, the picks job prices
+# the books again. That's the run that sees a next-week matchup's second team
+# finish: its game is in the season, its plays and quarterback are read, and
+# the entry window has just opened. It skips its ESPN top-up (`--espn=False`):
+# the chain wrote the season to s3 minutes ago.
 resource "aws_cloudwatch_event_rule" "picks_after_finals" {
   name        = "${var.resource_name_prefix}-picks-after-finals"
-  description = "A finals sweep rebuilt ncaafb's quarterback index"
+  description = "The finals sweeps rebuilt ncaafb's EPA and quarterback indexes"
 
   event_pattern = jsonencode({
     source      = ["aws.batch"]
     detail-type = ["Batch Job State Change"]
     detail = {
       status  = ["SUCCEEDED"]
-      jobName = ["${var.resource_name_prefix}-qb-out-after-finals-ncaafb"]
+      jobName = ["${var.resource_name_prefix}-sweeps-after-finals-ncaafb"]
     }
   })
 }
@@ -588,6 +587,12 @@ resource "aws_cloudwatch_event_target" "picks_after_finals" {
     job_definition = module.picks.name
     job_name       = "${var.resource_name_prefix}-picks-after-finals"
   }
+
+  input = jsonencode({
+    ContainerOverrides = {
+      Command = ["picks", "--espn=False"]
+    }
+  })
 }
 
 resource "aws_iam_role" "sweeps_after_finals" {
@@ -615,13 +620,13 @@ resource "aws_iam_role_policy" "sweeps_after_finals" {
       {
         Effect = "Allow"
         Action = "batch:SubmitJob"
-        # The two sweeps' definitions and the picks job's, bare and at any
+        # The sweeps' definition and the picks job's, bare and at any
         # revision -- a submission by name resolves to the latest -- and the
         # queue they run on.
         Resource = concat(
           [local.shared.job_queue_arn],
           flatten([
-            for name in [local.job_definitions.epa, local.job_definitions.qb_out, module.picks.name] : [
+            for name in [local.job_definitions.epa, module.picks.name] : [
               "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${name}",
               "arn:${data.aws_partition.current.partition}:batch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:job-definition/${name}:*",
             ]
