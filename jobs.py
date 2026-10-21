@@ -204,13 +204,15 @@ async def _qb_out(
     leagues: list[str] | None,
     index: int | None,
     upload: bool,
+    latest: bool = False,
 ) -> None:
     # Late, like the sweeps above: this pulls pyarrow, and `jobs.py submit`
     # runs on a laptop to send a SubmitJob and has no reason to import a
     # fitting stack.
     from endgame_aws.pbp_parquet import get_processed_plays_store
 
-    from cassandra.qb_out_build import build, write
+    from cassandra.predictor.qb_out import load_qb_out, read_qb_out_file
+    from cassandra.qb_out_build import build, with_season, write
     from cassandra.save_predictions import read_all_seasons
 
     if leagues is None:
@@ -229,7 +231,14 @@ async def _qb_out(
     for league in leagues:
         print(f"=== {league} / quarterback availability ===")
         seasons = [s async for s in read_all_seasons(league, bucket)]
-        missing = await build(league, seasons, _Weeks())
+        # With nothing stored to keep (a new league, a deleted file) the
+        # other seasons would be lost, so that rebuilds whole.
+        if latest and read_qb_out_file(league) is not None:
+            season = max(seasons, key=lambda s: s.year)
+            fresh = await build(league, [season], _Weeks())
+            missing = with_season(load_qb_out(league), season, fresh)
+        else:
+            missing = await build(league, seasons, _Weeks())
         write(league, missing)
         flagged = sum(len(teams) for teams in missing.values())
         print(f"  {len(missing):,} games with somebody out, {flagged:,} team-games")
@@ -673,6 +682,7 @@ class Jobs:
         league: list[str] | str | None = None,
         index: int | None = None,
         upload: bool = True,
+        latest: bool = False,
     ) -> None:
         """Sweep play-by-play into a league's quarterback availability index.
 
@@ -689,12 +699,20 @@ class Jobs:
         `qb_out_penalty`, so this has to have run at least once or that
         parameter is a dimension over an empty index -- the search would
         spend probes on a term that is always zero.
+
+        `--latest` is the exception, for the run after a final: it rebuilds
+        the season being played and keeps the stored copy's others
+        (`qb_out_build.with_season`). Thirteen seconds against minutes --
+        the whole rebuild reads 750 weeks of plays to change one season.
         """
-        asyncio.run(_qb_out(_as_list(league), index, upload))
+        asyncio.run(_qb_out(_as_list(league), index, upload, latest))
 
     def sweeps(self, league: str) -> None:
         """Both play-by-play sweeps a bet reads, EPA then quarterbacks, in one
         container: what a final submits.
+
+        The quarterbacks rebuild only the season being played (`qb_out
+        --latest`); the daily publish still rebuilds every season.
 
         One job rather than two, because the picks run that follows has to
         wait for both, and EventBridge can only start it off one. Two jobs
@@ -703,7 +721,7 @@ class Jobs:
         seconds after the picks run had started off the quarterbacks'.
         """
         asyncio.run(_epa([league], None, rebuild=False, upload=True))
-        asyncio.run(_qb_out([league], None, upload=True))
+        asyncio.run(_qb_out([league], None, upload=True, latest=True))
 
     def picks(
         self,

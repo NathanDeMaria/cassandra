@@ -1,8 +1,11 @@
 """Tests for deriving availability from parsed quarterback data."""
 
+from datetime import UTC, datetime
+
+from endgame.types import Game, Season, Week
 from say_youll_remember_me.qb import TeamGameQb
 
-from cassandra.qb_out_build import home_away_ids, out_teams
+from cassandra.qb_out_build import home_away_ids, out_teams, with_season
 
 
 def _qb(starter: str, snaps: tuple[str, ...]) -> TeamGameQb:
@@ -268,3 +271,23 @@ def test_a_missing_score_column_is_skipped_not_counted() -> None:
     away = [None, 0, 7]
 
     assert home_away_ids(offense, home, away) == ("10", "20")
+
+
+def test_a_fresh_season_replaces_only_its_own_games() -> None:
+    def game(game_id: str) -> Game:
+        return Game(
+            home="Ohio",
+            home_score=0,
+            away="Kent",
+            away_score=0,
+            neutral_site=False,
+            completed=True,
+            date=datetime(2026, 10, 17, tzinfo=UTC),
+            game_id=game_id,
+        )
+
+    season = Season([Week([game("new1"), game("new2")], 1)], 2026)
+    stored = {"old": ["Kent"], "new1": ["Ohio"], "new2": ["Kent"]}
+    # The fresh build re-read new1 as nobody out, and flags new2 for Ohio.
+    merged = with_season(stored, season, {"new2": {"Ohio"}})
+    assert merged == {"old": {"Kent"}, "new2": {"Ohio"}}

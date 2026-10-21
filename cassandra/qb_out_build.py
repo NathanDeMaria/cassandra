@@ -77,7 +77,7 @@ game itself, which nobody has at kickoff.
 
 import json
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol
 
 from call_it_what_you_want import TeamNamer
@@ -302,6 +302,32 @@ async def build(
             ).items():
                 missing.setdefault(game_id, set()).update(teams)
     return missing
+
+
+def with_season(
+    stored: Mapping[str, Iterable[str]],
+    season: Season,
+    fresh: Mapping[str, set[str]],
+) -> dict[str, set[str]]:
+    """The stored index with one season's games replaced by a fresh build of
+    that season alone.
+
+    Exact, not an approximation: the rule never looks past a season's own
+    games (a team's first game names its starter), so building one season
+    gives its games the flags a whole rebuild would. Every game of the
+    season is dropped from the stored copy first, so a game the fresh build
+    no longer flags -- a corrected box score, a starter re-read -- leaves
+    rather than lingering.
+
+    This is the one place two builds share a file, which the whole rebuild
+    exists to avoid. The stored copy is the daily publish's whole rebuild,
+    by the same image unless one shipped since, and the next daily rebuild
+    puts the file back on one parser either way.
+    """
+    ids = {game.game_id for week in season.weeks for game in week.games}
+    merged = {game: set(teams) for game, teams in stored.items() if game not in ids}
+    merged.update({game: set(teams) for game, teams in fresh.items()})
+    return merged
 
 
 def write(league: str, games: Mapping[str, set[str]]) -> None:
