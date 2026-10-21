@@ -22,6 +22,11 @@ Three objects in s3, each small JSON or TOML:
 The overrides file (`cassandra.overrides`) lives at
 `cassandra/betting/overrides.toml` for the job; `make push-overrides`
 copies a laptop's up.
+
+A bedtime run that places also copies its picks and orders files to
+`cassandra/betting/picks/` and `orders/` (`keep`). They say what the
+model gave each bet, and `make ledger` reads them; the container's copies
+go when it does.
 """
 
 import json
@@ -33,11 +38,18 @@ import botocore.session
 import pandas as pd
 from botocore.exceptions import ClientError
 
+from cassandra.constants import CASSANDRA_HOME
 from cassandra.picks import order_fee
 
 SENT_KEY = "cassandra/betting/sent.json"
 BEDTIME_KEY = "cassandra/betting/bedtime.json"
 OVERRIDES_KEY = "cassandra/betting/overrides.toml"
+#: Where a run writes every game it priced (`picks.py`) and the orders it
+#: sent (`placing.place`), by the s3 prefix `keep` copies them to.
+RUN_FILES = {
+    "cassandra/betting/picks/": CASSANDRA_HOME / "betting" / "picks",
+    "cassandra/betting/orders/": CASSANDRA_HOME / "betting" / "orders",
+}
 LOCK_KEY = "cassandra/picks.lock"
 #: A run takes about five minutes; one holding the lock this long has died.
 LOCK_STALE = timedelta(minutes=30)
@@ -109,6 +121,19 @@ def acquire(s3: Any, bucket: str, now: datetime, owner: str) -> bool:
 
 def release(s3: Any, bucket: str) -> None:
     s3.delete_object(Bucket=bucket, Key=LOCK_KEY)
+
+
+def keep(s3: Any, bucket: str, since: datetime) -> list[str]:
+    """Copy the picks and orders files written since `since` -- this run's --
+    up to s3, for `make ledger`. The keys they went to."""
+    kept = []
+    for prefix, directory in RUN_FILES.items():
+        for path in sorted(directory.glob("*.csv")):
+            if datetime.fromtimestamp(path.stat().st_mtime, UTC) < since:
+                continue
+            s3.put_object(Bucket=bucket, Key=prefix + path.name, Body=path.read_bytes())
+            kept.append(prefix + path.name)
+    return kept
 
 
 # ------------------------------------------------------------------------------

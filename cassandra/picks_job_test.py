@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -155,3 +156,23 @@ def test_the_email_numbers_picks_and_says_how_to_place_each():
     assert 'make bet ARGS="--only 2"' in text
     assert 'make bet ARGS="--only 1 --only 2"' in text
     assert text.endswith("REPORT")
+
+
+def test_keep_copies_up_only_this_runs_picks_and_orders(tmp_path, monkeypatch):
+    picks_dir, orders_dir = tmp_path / "picks", tmp_path / "orders"
+    picks_dir.mkdir()
+    orders_dir.mkdir()
+    monkeypatch.setattr(picks_job, "RUN_FILES", {"p/": picks_dir, "o/": orders_dir})
+    started = datetime.now(UTC)
+    earlier = picks_dir / "ncaafb_m_20261017-2252.csv"
+    earlier.write_text("an earlier run's")
+    hour_ago = started.timestamp() - 3600
+    os.utime(earlier, (hour_ago, hour_ago))
+    (picks_dir / "ncaafb_m_20261021-0130.csv").write_text("priced")
+    (orders_dir / "ncaafb_m_20261021-0130_orders.csv").write_text("placed")
+    s3 = FakeS3()
+    assert picks_job.keep(s3, "b", started) == [
+        "p/ncaafb_m_20261021-0130.csv",
+        "o/ncaafb_m_20261021-0130_orders.csv",
+    ]
+    assert s3.objects[("b", "o/ncaafb_m_20261021-0130_orders.csv")][0] == b"placed"
