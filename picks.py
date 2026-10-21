@@ -181,6 +181,14 @@ OVERRIDES = CASSANDRA_HOME / "betting" / "overrides.toml"
 #: How long after kickoff a game ESPN has no plays for is taken to be
 #: missing them for now, not for good. Its teams' next games wait.
 QB_PLAYS_GRACE = timedelta(hours=18)
+#: How far back a finished game missing from the stored index is still read
+#: off ESPN. Older than this, a sweep has run since it ended -- one after its
+#: final, and the daily publish's -- so it's missing because ESPN has no
+#: plays for it, which is most D-II/III games against teams that do have
+#: some. Reading those was ~400 ESPN summaries a run, every hour, in
+#: a container that starts with no copies. A day and a half covers a final
+#: whose own sweep failed and the daily one that follows.
+QB_UNREAD_WINDOW = timedelta(hours=36)
 
 
 def _seasons_cache(league: str) -> Path:
@@ -232,6 +240,30 @@ async def _game_plays(game_id: str) -> list[dict]:
     return drives
 
 
+def qb_reads(
+    games: list[Game], stored: set[str], upcoming: list[Game], now: datetime
+) -> tuple[set[str], set[str], list[str]]:
+    """What `_qb_out_tonight` reads off ESPN: the unread games, the teams
+    with one and a game coming up, and every finished game of those teams."""
+    with_plays = {t for g in games if g.game_id in stored for t in (g.home, g.away)}
+    playing = {t for g in upcoming for t in (g.home, g.away)} & with_plays
+    since = now - QB_UNREAD_WINDOW
+    unread = {
+        g.game_id
+        for g in games
+        if g.completed
+        and g.date > since
+        and g.game_id not in stored
+        and {g.home, g.away} & playing
+    }
+    needy = {t for g in games if g.game_id in unread for t in (g.home, g.away)}
+    needy &= playing
+    wanted = sorted(
+        {g.game_id for g in games if g.completed and {g.home, g.away} & needy}
+    )
+    return unread, needy, wanted
+
+
 async def _qb_out_tonight(
     league: str, season: Season, games: list[Game], upcoming: list[Game]
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
@@ -246,22 +278,12 @@ async def _qb_out_tonight(
     games' flags are kept.
 
     Only teams with a game coming up, and with plays at all -- a team with
-    no game in the EPA index has none on ESPN, which is most of D-II/III.
+    no game in the EPA index has none on ESPN, which is most of D-II/III --
+    and only games from the last `QB_UNREAD_WINDOW`.
     """
     epa = EpaIndex.for_league(league)
     stored = {g.game_id for g in games if g.completed and epa.get(g.game_id)}
-    with_plays = {t for g in games if g.game_id in stored for t in (g.home, g.away)}
-    playing = {t for g in upcoming for t in (g.home, g.away)} & with_plays
-    unread = {
-        g.game_id
-        for g in games
-        if g.completed and g.game_id not in stored and {g.home, g.away} & playing
-    }
-    needy = {t for g in games if g.game_id in unread for t in (g.home, g.away)}
-    needy &= playing
-    wanted = sorted(
-        {g.game_id for g in games if g.completed and {g.home, g.away} & needy}
-    )
+    unread, needy, wanted = qb_reads(games, stored, upcoming, datetime.now(UTC))
     if not wanted:
         return {}, {}
     drives = [d async for d in apply_in_parallel(_game_plays, [(g,) for g in wanted])]

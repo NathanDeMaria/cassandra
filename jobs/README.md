@@ -130,8 +130,9 @@ lands on the daily publish's critical path rather than the weekly run's.
 Between daily publishes, `epa` and `qb_out` also run whenever football games
 go final. EndGame's finals watcher starts its intraday chain as games end, and
 the moment that chain's `intraday-process-football-plays-<league>-chained-run`
-job succeeds, an EventBridge rule here submits the two sweeps for that league
-alone (`cassandra-epa-after-finals-<league>`, `cassandra-qb-out-after-finals-<league>`).
+job succeeds, an EventBridge rule here submits `jobs.py sweeps` for that
+league alone (`cassandra-sweeps-after-finals-<league>`): EPA, then the
+quarterbacks, in one container.
 So a game's EPA, success rates and quarterback are in the indexes minutes
 after it ends -- what a bet on its teams' next games is priced from. Nothing
 is published: the site still moves once a day.
@@ -145,7 +146,8 @@ renamed chain step stops these without an error anywhere; on a Saturday,
 `cassandra-picks` runs `jobs.py picks`: `picks.py` against the live Kalshi
 ncaafb books, and an email (SNS topic `cassandra-picks`) whenever there's a
 pick no earlier email carried. It runs after every ncaafb finals sweep --
-the run that sees a next-week matchup's second team finish -- and hourly
+the run that sees a next-week matchup's second team finish, and skips the
+ESPN top-up since the chain just wrote the season -- and hourly
 through `picks_schedules` (Saturday afternoon to Sunday night, weeknights).
 At bedtime (`make bedtime ARGS="--until 08:00 --budget 40"`, off with `make
 awake`) it places the picks itself, resting until the wake-up time, and
