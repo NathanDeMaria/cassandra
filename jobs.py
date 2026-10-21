@@ -586,6 +586,8 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
                 return
             if not rehearsal:
                 night = picks_job.charge(s3, bucket, picks_job.committed(placed))
+                for key in picks_job.keep(s3, bucket, now):
+                    print(f"kept s3://{bucket}/{key}")
             shown = outcome.picks[
                 outcome.picks["game_id"].isin(set(placed.get("game_id", [])))
             ]
