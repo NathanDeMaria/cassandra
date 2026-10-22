@@ -91,3 +91,90 @@ def test_the_limit_is_slippage_past_the_ask_but_never_past_the_max_price():
     assert placing.limit_price(0.40, 0.40, 0.01) == 0.40
     assert placing.limit_price(0.40, None, 0.01) == 0.41
     assert placing.limit_price(0.99, None, 0.01) == 0.99
+
+
+def _priced(
+    model: float = 0.60, max_price: float | None = 0.50
+) -> tuple[pd.DataFrame, dict]:
+    matched = {"g0": _Matched(_book("EV-HOME"), _book("EV-AWAY"))}
+    frame = pd.DataFrame(
+        [
+            {
+                "game_id": "g0",
+                "event": "EV",
+                "game": "Away Team @ Home Team",
+                "bet": "Home Team",
+                "bet_home": True,
+                "model": model,
+                "price": 0.42,
+                "max_price": max_price,
+                "skip": "past the entry window",
+            }
+        ]
+    )
+    return frame, matched
+
+
+def _rung(ticker: str, book_side: str, yes_price: float) -> dict:
+    return {
+        "order_id": f"{ticker}-{book_side}",
+        "client_order_id": "rung-x",
+        "ticker": ticker,
+        "outcome_side": "yes",
+        "book_side": book_side,
+        "yes_price_dollars": f"{yes_price:.2f}",
+    }
+
+
+def test_a_rung_stays_while_the_model_still_backs_its_price():
+    frame, matched = _priced()
+    # YES on the home team at 0.40, and NO on the away team at 0.40: both
+    # back the home team, under the 0.50 that still clears the edge.
+    orders = [_rung("EV-HOME", "bid", 0.40), _rung("EV-AWAY", "ask", 0.60)]
+    assert placing.stale_rungs(orders, frame, matched) == []
+
+
+def test_a_rung_goes_when_its_price_no_longer_clears_the_edge():
+    frame, matched = _priced(max_price=0.38)
+    [(order, why)] = placing.stale_rungs(
+        [_rung("EV-HOME", "bid", 0.40)], frame, matched
+    )
+    assert why.startswith("0.40 is over the 0.38")
+    frame, matched = _priced(max_price=None)
+    [(_, why)] = placing.stale_rungs([_rung("EV-HOME", "bid", 0.40)], frame, matched)
+    assert why == "no price clears the edge now"
+
+
+def test_a_rung_goes_when_the_model_switches_sides_or_the_game_is_excluded():
+    frame, matched = _priced()
+    # YES on the away team: the pick now backs home.
+    [(_, why)] = placing.stale_rungs([_rung("EV-AWAY", "bid", 0.55)], frame, matched)
+    assert why == "the model backs Home Team now"
+    found = placing.stale_rungs(
+        [_rung("EV-HOME", "bid", 0.40)], frame, matched, exclude=["home team"]
+    )
+    assert [why for _, why in found] == ["excluded by hand"]
+    # A game this run didn't price is left alone.
+    assert placing.stale_rungs([_rung("OTHER-X", "bid", 0.4)], frame, matched) == []
+
+
+def test_rungs_come_after_the_picks_out_of_the_cash(no_books):
+    frame, matched = _frame([0])
+    frame["event"] = "E0"
+    frame["price"] = 0.42
+    args = _args(rungs=(0.02, 0.04), rung_events=set(), cash=50.0)
+    _, picks = placing.size(frame, matched, args)
+    ladder = picks["rungs"].iloc[0]
+    assert [p for p, _ in ladder] == [0.40, 0.38]
+    # Too little cash for the rungs: the pick keeps its contracts.
+    entry = picks["outlay"].iloc[0]
+    _, tight = placing.size(
+        frame, matched, _args(rungs=(0.02, 0.04), rung_events=set(), cash=entry + 0.5)
+    )
+    assert tight["contracts"].iloc[0] == picks["contracts"].iloc[0]
+    assert tight["rung_outlay"].iloc[0] <= 0.5
+    # A game with rungs already resting gets none.
+    _, again = placing.size(
+        frame, matched, _args(rungs=(0.02, 0.04), rung_events={"E0"})
+    )
+    assert again["rungs"].iloc[0] == []

@@ -353,6 +353,55 @@ def kelly_counts(
     ]
 
 
+#: How far under a pick's price its rungs rest: limit bids left on the book
+#: until kickoff, filling if the price comes back down to them. On the
+#: 2025-26 entries (701 picks, Kalshi's hourly candles) a bid 2 cents under
+#: filled 68% of the time and a bid 4 under 46%, and those fills returned
+#: +15% and +24% against +6% and +8% for the entry on the same games -- a
+#: lower price, and no taker fee. What fills is a little worse than the
+#: model says, the market having moved for a reason, but by under a point
+#: through 4 cents; by 6 it was 4 points and most of the gain.
+RUNGS_UNDER = (0.02, 0.04)
+
+
+def rungs(
+    probability: float,
+    price: float,
+    covered: float,
+    covered_cost: float,
+    unders: Sequence[float],
+    bankroll: float,
+    fraction: float,
+    max_bet: float,
+) -> list[tuple[float, int]]:
+    """The rungs under a pick: (price, contracts) for each of `unders`.
+
+    Each rung buys what Kelly adds at its lower price over what the pick
+    and the rungs above it already cover (`covered` contracts, costing at
+    most `covered_cost`), so with every rung filled the position is the
+    Kelly stake at the lowest price, never more. All of it stays within
+    `max_bet`, counted at each rung's limit with the taker fee.
+    """
+    found = []
+    for under in unders:
+        at = round(price - under, 2)
+        if at < 0.01:
+            break
+        stake = min(
+            fraction * kelly(probability, at + kalshi_fee(at)) * bankroll, max_bet
+        )
+        count = min(
+            top_up(contracts_for(stake, at), covered),
+            contracts_for(max(max_bet - covered_cost, 0.0), at),
+        )
+        if count <= 0:
+            continue
+        found.append((at, count))
+        covered += count
+        covered_cost += count * at + order_fee(at, count)
+    return found
+
+
 def held_on(
     positions: Mapping[str, float], side: Book, other: Book
 ) -> tuple[float, float]:

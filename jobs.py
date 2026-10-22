@@ -536,6 +536,10 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
                 "--max-bet",
                 str(max_bet),
             ]
+            # Nothing is placed awake, but the night's rungs rest until
+            # kickoff, and one the model has stopped backing comes off.
+            if not rehearsal:
+                argv.append("--cancel-rungs")
         else:
             argv = ["--notify", "--budget", str(budget), "--max-bet", str(max_bet)]
 
@@ -565,13 +569,21 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
         else:
             shown = outcome.picks
             fresh = picks_job.unsent(shown, sent)
-            if fresh.empty:
+            if fresh.empty and not outcome.cancelled:
                 print(f"{len(shown)} picks, none new: no email")
                 return
-            subject = picks_job.subject(shown, fresh, placed=False, at=at)
+            subject = picks_job.subject(
+                shown, fresh, placed=False, at=at, cancelled=len(outcome.cancelled)
+            )
             placed = None
         text = picks_job.body(
-            shown, fresh, tee.text(), placed, night if asleep else None, args.slippage
+            shown,
+            fresh,
+            tee.text(),
+            placed,
+            night if asleep else None,
+            args.slippage,
+            outcome.cancelled,
         )
         topic = os.environ.get("CASSANDRA_PICKS_TOPIC_ARN")
         if topic:

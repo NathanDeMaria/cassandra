@@ -155,3 +155,16 @@ def test_the_email_numbers_picks_and_says_how_to_place_each():
     assert 'make bet ARGS="--only 2"' in text
     assert 'make bet ARGS="--only 1 --only 2"' in text
     assert text.endswith("REPORT")
+
+
+def test_an_email_for_cancelled_rungs_alone_says_so():
+    picks = _picks(("1", "Toledo Rockets", 0.09))
+    sent = picks_job.record({}, picks, NOW, "s")
+    fresh = picks_job.unsent(picks, sent)
+    assert picks_job.subject(
+        picks, fresh, placed=False, at=NOW, cancelled=2
+    ).startswith("Cancelled 2 resting Kalshi rungs")
+    text = picks_job.body(
+        picks, fresh, "REPORT", None, None, 0.01, ["  cancelled the 0.40 rung"]
+    )
+    assert text.startswith("Took resting rungs off the book:\ncancelled the 0.40 rung")

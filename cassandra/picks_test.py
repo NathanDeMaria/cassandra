@@ -333,3 +333,29 @@ def test_fit_to_cash_scales_every_order_down():
     assert all(f <= c for f, c in zip(fitted, counts))
     assert sum(n * p + order_fee(p, n) for n, p in zip(fitted, limits) if n) <= 6
     assert fitted[0] > 0 and fitted[1] > 0
+
+
+def test_rungs_add_what_kelly_adds_at_the_lower_price():
+    from .picks import contracts_for, kelly, rungs
+
+    # 0.25 Kelly on $100 at a 0.50 entry: 12 contracts.
+    entry = contracts_for(0.25 * kelly(0.60, 0.50 + kalshi_fee(0.50)) * 100, 0.51)
+    found = rungs(0.60, 0.50, entry, entry * 0.51, (0.02, 0.04), 100, 0.25, 10)
+    assert [p for p, _ in found] == [0.48, 0.46]
+    lowest = contracts_for(0.25 * kelly(0.60, 0.46 + kalshi_fee(0.46)) * 100, 0.46)
+    # Every rung filled is the Kelly stake at the lowest price.
+    assert entry + sum(n for _, n in found) == lowest
+
+
+def test_rungs_stay_within_the_max_bet():
+    from .picks import order_fee, rungs
+
+    found = rungs(
+        0.80, 0.50, 19, 19 * 0.50 + order_fee(0.50, 19), (0.02, 0.04), 1000, 1, 10
+    )
+    spent = 19 * 0.50 + order_fee(0.50, 19)
+    spent += sum(n * p + order_fee(p, n) for p, n in found)
+    assert spent <= 10
+    # Nothing rests under a cent.
+    low = rungs(0.60, 0.03, 0, 0, (0.02, 0.04), 100, 0.25, 10)
+    assert [p for p, _ in low] == [0.01]
