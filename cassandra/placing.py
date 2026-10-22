@@ -189,7 +189,9 @@ def size(
     picks["fee"] = [order_fee(p, c) for p, c in zip(picks["limit"], contracts)]
     picks["outlay"] = picks["contracts"] * picks["limit"] + picks["fee"]
     picks[offered] = fills
-    picks["rungs"] = _rungs(picks, args, min(caps) if caps else None)
+    # A column of lists, one ladder per pick; pandas-stubs types a column
+    # assignment's value as scalars or a flat sequence.
+    picks["rungs"] = _rungs(picks, args, min(caps) if caps else None)  # ty: ignore[invalid-assignment]
     picks["rung_outlay"] = [
         sum(n * p + order_fee(p, n) for p, n in found) for found in picks["rungs"]
     ]
