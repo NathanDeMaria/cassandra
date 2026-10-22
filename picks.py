@@ -99,6 +99,18 @@ Each order is a limit order:
 The cheapest route is tried first and what it left goes to the other one.
 What filled is written to `~/.cassandra/betting/orders/`.
 
+**Rungs.** Under `--kelly-fraction`, each pick also leaves limit bids
+`--rungs` cents under its price (2 and 4 by default), resting until
+kickoff, for the price to come back down to; see `cassandra.picks.rungs`
+for how they're sized and what the backtest found. They're paid for out
+of the same `--budget` and cash, after the picks themselves. A rung
+doesn't keep a later run off its game the way a resting order does: the
+pick can still be topped up, and gets no second set of rungs. Every run
+with the key checks the rungs already resting against the model's price
+now and cancels any it no longer backs (`placing.stale_rungs`) -- a
+starter ruled out, the model gone to the other side, or the game
+excluded. `--no-rungs` places none.
+
 To rehearse without money, step by step:
 - no `--place`: no key, nothing sent;
 - `--place --dry-run`: the real key reads the balance and what's held,
@@ -137,7 +149,7 @@ from cassandra import overrides, placing
 from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
-from cassandra.kalshi_trade import KalshiClient, public_get
+from cassandra.kalshi_trade import KalshiClient, event_of, is_rung, public_get
 from cassandra.markets import MAX_OVERROUND
 from cassandra.model_eval import rebuild_priors
 from cassandra.odds import OddsDatabase
@@ -147,6 +159,7 @@ from cassandra.picks import (
     MIN_EDGE,
     NCAAFB_SERIES,
     NOT_HAPPENING,
+    RUNGS_UNDER,
     Book,
     Fixture,
     entry,
@@ -433,6 +446,8 @@ class Outcome(NamedTuple):
     picks: pd.DataFrame
     #: The orders sent, as `placing.place` logs them; None when none were.
     placed: pd.DataFrame | None
+    #: A line per resting rung this run cancelled.
+    cancelled: tuple[str, ...] = ()
 
 
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
@@ -570,6 +585,21 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "(default: immediate-or-cancel)",
     )
     parser.add_argument(
+        "--rungs",
+        default=",".join(f"{u * 100:g}" for u in RUNGS_UNDER),
+        help="with --kelly-fraction: cents under each pick's price to leave "
+        "bids resting until kickoff, comma-separated",
+    )
+    parser.add_argument(
+        "--no-rungs", action="store_true", help="leave no bids under the picks"
+    )
+    parser.add_argument(
+        "--cancel-rungs",
+        action="store_true",
+        help="with --place --dry-run: still cancel the resting rungs the model "
+        "no longer backs (what the awake picks job runs with)",
+    )
+    parser.add_argument(
         "--no-news", action="store_true", help="skip the injury read of ESPN's stories"
     )
     parser.add_argument(
@@ -578,7 +608,13 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         default=4,
         help="injury sentences shown per pick",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.rungs = (
+        ()
+        if args.no_rungs or not args.rungs.strip()
+        else tuple(float(c) / 100 for c in args.rungs.split(","))
+    )
+    return args
 
 
 def main() -> None:
@@ -821,11 +857,16 @@ def run(args: argparse.Namespace) -> Outcome:
     frame["held"] = 0.0
     frame["held_as"] = ""
     args.cash = None
+    args.rung_events = set()
+    rung_orders: list[dict] = []
     if args.place:
         client = KalshiClient.from_env(demo=args.demo, dry_run=args.dry_run)
         cash, invested = client.account()
         positions = client.positions()
-        resting = client.resting_events()
+        orders = client.resting_orders()
+        resting = {event_of(o["ticker"]) for o in orders if not is_rung(o)}
+        rung_orders = [o for o in orders if is_rung(o)]
+        args.rung_events = {event_of(o["ticker"]) for o in rung_orders}
         args.cash = cash
         if args.kelly_fraction is not None and args.bankroll is None:
             args.bankroll = cash + invested
@@ -833,6 +874,7 @@ def run(args: argparse.Namespace) -> Outcome:
         print(
             f"\nKalshi{mode}: ${cash:,.2f} cash, ${invested:,.2f} in "
             f"{len(positions)} open positions, {len(resting)} events with resting orders"
+            + (f", {len(args.rung_events)} with rungs" if rung_orders else "")
         )
         if args.budget is not None and args.budget > cash and args.yes:
             print(f"--budget ${args.budget:g} cut to the ${cash:,.2f} on hand")
@@ -880,6 +922,18 @@ def run(args: argparse.Namespace) -> Outcome:
         placing.limit_price(p, m, args.slippage)
         for p, m in zip(frame["price"], frame["max_price"])
     ]
+    cancelled: tuple[str, ...] = ()
+    if client is not None and rung_orders:
+        stale = placing.stale_rungs(rung_orders, frame, matched, args.exclude)
+        if stale:
+            print(f"\n=== {len(stale)} resting rungs the model no longer backs")
+            canceller = client
+            if args.dry_run and args.cancel_rungs:
+                canceller = KalshiClient.from_env(demo=args.demo)
+            cancelled = tuple(placing.cancel(canceller, stale, frame))
+            # A game whose rungs went can have new ones, priced now.
+            if not canceller.dry_run:
+                args.rung_events -= {event_of(o["ticker"]) for o, _ in stale}
     priced_skips = frame["skip"].copy()
     dropped: set[str] = set()
     # Why each game was off the first list asked about. Dropping some frees
@@ -907,17 +961,19 @@ def run(args: argparse.Namespace) -> Outcome:
         placing.print_orders(picks, news, args)
         print(f"\nevery matched game: {out}")
         if client is None or picks.empty or args.notify:
-            return Outcome(sized, picks, None)
+            return Outcome(sized, picks, None, cancelled)
         answer = set() if args.yes else placing.ask(len(picks))
         if answer is None:
             print("nothing placed")
-            return Outcome(sized, picks, None)
+            return Outcome(sized, picks, None, cancelled)
         if not answer:
             break
         order = picks.sort_values(["kickoff", "edge"], ascending=[True, False])
         dropped |= {order["game_id"].iloc[i - 1] for i in answer}
 
-    return Outcome(sized, picks, placing.place(client, picks, matched, args, out))
+    return Outcome(
+        sized, picks, placing.place(client, picks, matched, args, out), cancelled
+    )
 
 
 if __name__ == "__main__":

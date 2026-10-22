@@ -144,6 +144,42 @@ def fill(response: Mapping, action: str) -> Fill:
     )
 
 
+#: How a rung's `client_order_id` starts: a resting bid under a pick's
+#: price (`cassandra.placing`), told apart from the pick's own order.
+RUNG_PREFIX = "rung-"
+
+
+def rung_id() -> str:
+    return RUNG_PREFIX + uuid.uuid4().hex[:24]
+
+
+def is_rung(order: Mapping) -> bool:
+    return str(order.get("client_order_id") or "").startswith(RUNG_PREFIX)
+
+
+def bought(order: Mapping) -> str:
+    """Which contract a listed order buys, "yes" or "no".
+
+    A YES bid and a NO ask buy YES; a YES ask and a NO bid buy NO. The
+    listing names a side both the new way (`outcome_side`, `book_side`)
+    and the deprecated one (`side`, `action`), so either reads.
+    """
+    outcome, book = order.get("outcome_side"), order.get("book_side")
+    if outcome in ("yes", "no") and book in ("bid", "ask"):
+        return "yes" if (outcome == "yes") == (book == "bid") else "no"
+    side, action = order.get("side"), order.get("action")
+    if side in ("yes", "no") and action in ("buy", "sell"):
+        return "yes" if (side == "yes") == (action == "buy") else "no"
+    raise ValueError(f"can't tell which side order {order.get('order_id')} buys")
+
+
+def order_price(order: Mapping) -> float:
+    """What a listed order pays for the contract it buys (`bought`)."""
+    yes = order.get("yes_price_dollars")
+    yes_price = float(yes) if yes is not None else float(order["yes_price"]) / 100
+    return yes_price if bought(order) == "yes" else round(1 - yes_price, 4)
+
+
 def event_of(ticker: str) -> str:
     """The event a market belongs to: `KXNCAAFGAME-26OCT17BRWNPRIN-PRIN` → its event."""
     return ticker.rsplit("-", 1)[0]
@@ -262,14 +298,32 @@ class KalshiClient:
         """One event: its title, e.g. "Houston at Utah"."""
         return self._request("GET", f"/events/{event_ticker}")["event"]
 
+    def resting_orders(self) -> list[dict]:
+        """Every resting order, as `GET /portfolio/orders` lists it."""
+        return self._pages("/portfolio/orders", "orders", {"status": "resting"})
+
     def resting_events(self) -> set[str]:
-        """Every event with a resting order in it."""
+        """Every event with a resting order in it, other than a rung.
+
+        A rung (`is_rung`) rests until kickoff by design, so it isn't the
+        unfinished order that keeps a later run off a game.
+        """
         return {
             event_of(order["ticker"])
-            for order in self._pages(
-                "/portfolio/orders", "orders", {"status": "resting"}
-            )
+            for order in self.resting_orders()
+            if not is_rung(order)
         }
+
+    def cancel(self, order_id: str, ticker: str) -> float:
+        """Cancel a resting order; how many contracts that took off the book."""
+        if self.dry_run:
+            print(f"    dry run, not sent: DELETE /portfolio/events/orders/{order_id}")
+            return 0.0
+        query = urllib.parse.urlencode({"market_ticker": ticker})
+        response = self._request(
+            "DELETE", f"/portfolio/events/orders/{order_id}?{query}"
+        )
+        return float(response.get("reduced_by") or 0)
 
     def held_events(self) -> dict[str, str]:
         """Every event the account is already in, and how: a position or a resting order."""
@@ -285,8 +339,9 @@ class KalshiClient:
         count: int,
         limit: float,
         expires_at: int | None = None,
+        client_order_id: str | None = None,
     ) -> Fill:
-        body = order_body(ticker, action, count, limit, expires_at)
+        body = order_body(ticker, action, count, limit, expires_at, client_order_id)
         if self.dry_run:
             print(
                 f"    dry run, not sent: POST /portfolio/events/orders {json.dumps(body)}"

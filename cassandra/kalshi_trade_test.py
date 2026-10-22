@@ -9,9 +9,13 @@ from .kalshi_trade import (
     Fill,
     KalshiClient,
     KalshiError,
+    bought,
     event_of,
     fill,
+    is_rung,
     order_body,
+    order_price,
+    rung_id,
     sign,
 )
 
@@ -109,3 +113,28 @@ def test_a_dry_run_sends_nothing_but_reads(monkeypatch):
 
 def test_event_of():
     assert event_of("KXNCAAFGAME-26OCT17BRWNPRIN-PRIN") == "KXNCAAFGAME-26OCT17BRWNPRIN"
+
+
+@pytest.mark.parametrize(
+    "order, side",
+    [
+        ({"outcome_side": "yes", "book_side": "bid"}, "yes"),
+        ({"outcome_side": "yes", "book_side": "ask"}, "no"),
+        ({"outcome_side": "no", "book_side": "bid"}, "no"),
+        ({"side": "yes", "action": "buy"}, "yes"),
+        ({"side": "no", "action": "sell"}, "yes"),
+    ],
+)
+def test_bought_reads_either_way_of_naming_a_side(order, side):
+    assert bought(order) == side
+
+
+def test_a_rung_is_told_by_its_client_order_id_and_priced_from_its_side():
+    order = {
+        "client_order_id": rung_id(),
+        "outcome_side": "yes",
+        "book_side": "ask",
+        "yes_price_dollars": "0.6200",
+    }
+    assert is_rung(order) and not is_rung({"client_order_id": "abc"})
+    assert order_price(order) == pytest.approx(0.38)

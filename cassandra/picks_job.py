@@ -4,7 +4,9 @@ The job runs `picks.py` on a schedule and after every ncaafb finals sweep.
 Awake, it emails the picks it hasn't emailed before, each with the line
 that places it. At bedtime -- a file in the bucket saying until when and
 for how much -- it places them itself, as orders resting until the wake-up
-time, and emails what it did.
+time, and emails what it did. Each pick's rungs (`picks.py`'s "Rungs") rest
+until kickoff instead, through `make awake`; every run with the key, awake
+or not, cancels the ones the model no longer backs and emails that it did.
 
 Three objects in s3, each small JSON or TOML:
 
@@ -25,6 +27,7 @@ copies a laptop's up.
 """
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -253,12 +256,18 @@ def only_args(game_ids: list[str]) -> str:
 
 
 def subject(
-    picks: pd.DataFrame, fresh: pd.DataFrame, placed: bool, at: datetime
+    picks: pd.DataFrame,
+    fresh: pd.DataFrame,
+    placed: bool,
+    at: datetime,
+    cancelled: int = 0,
 ) -> str:
     """One line a phone shows whole."""
     when = f"{at:%a %H:%M} CT"
     if placed:
         return f"Placed {len(picks)} Kalshi picks overnight ({when})"
+    if fresh.empty:
+        return f"Cancelled {cancelled} resting Kalshi rung{'s' if cancelled != 1 else ''} ({when})"
     names = ", ".join(ordered(fresh)["bet"])
     head = f"{len(fresh)} new Kalshi pick{'s' if len(fresh) != 1 else ''} ({when}): "
     return (head + names)[:99]
@@ -271,12 +280,19 @@ def body(
     placed: pd.DataFrame | None,
     night: Bedtime | None,
     slippage: float,
+    cancelled: Sequence[str] = (),
 ) -> str:
     """The email: the picks numbered as `picks.py` numbers them, how to place
     each, then the run's whole printout."""
+    from cassandra.placing import rung_line
+
     offered = f"offered_within_{round(slippage * 100)}c"
     new = set(fresh["game_id"])
     lines = []
+    if cancelled:
+        lines.append("Took resting rungs off the book:")
+        lines += [line.strip() for line in cancelled]
+        lines.append("")
     if placed is not None:
         lines.append(
             "Bedtime: placed these as resting orders"
@@ -297,6 +313,8 @@ def body(
             f"   {row['buy']}: {row['contracts']:.0f} @ <= {row['limit']:.2f}, "
             f"at most ${row['outlay']:.2f}"
         )
+        if placed is not None and row.get("rungs"):
+            lines.append(f"   {rung_line(row['rungs'])}")
         since = row.get("hours_since_entry")
         lines.append(
             f"   model {row['model']:.3f} vs market {row['market']:.3f} "
