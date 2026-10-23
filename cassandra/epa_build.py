@@ -99,7 +99,13 @@ SINCE = FIRST_LEGIBLE_SEASON
 # competitiveness `WEIGHT_POWER` sets, as the two EPA readings are. ncaafb's
 # units want the second -- a third of a mismatch is backups against backups
 # -- and the NFL's the first; see `cassandra.predictor.unit_glicko`.
-SUCCESS = "epa>0, dropbacks and runs, no kneels or spikes; unweighted and weighted"
+#
+# And the flat rate split by the kind of down, dropbacks and runs apart, for
+# a reader (`is_dropback` says which is which).
+SUCCESS = (
+    "epa>0, dropbacks and runs, no kneels or spikes; unweighted and weighted;"
+    " dropbacks (passes, sacks, scrambles by their text) and runs apart"
+)
 
 # Kneels and spikes, off the play text: both are filed as an ordinary run or
 # incompletion. Never a bare "spike" -- Takeo and Brandon Spikes made a lot
@@ -114,6 +120,13 @@ _DOWN_TYPES = ("pass", "rush", "sack", "interception", "fumble", "safety")
 # Special teams, which a punt or kick return touchdown and a blocked kick are
 # filed as too.
 _KICKS = ("punt", "field goal")
+
+# A dropback by its type -- "Pass Reception", "Passing Touchdown", "Sack",
+# "Interception Return Touchdown" -- or by its text: a scramble is filed as a
+# run, and a fumble or a safety names the play it came off.
+_DROPBACK_TYPES = re.compile(r"pass|sack|interception")
+_SCRAMBLE = re.compile(r"\bscrambles?\b|\bscrambled\b")
+_DROPBACK_TEXT = re.compile(r"\bpass\b|\bsacked\b|\bscrambles?\b|\bscrambled\b")
 
 
 def current_fit(league: str) -> EpaFit:
@@ -152,6 +165,21 @@ def is_down(play_type: str | None, text: str | None) -> bool:
     return any(kind in lowered for kind in _DOWN_TYPES)
 
 
+def is_dropback(play_type: str | None, text: str | None) -> bool:
+    """Whether a down `is_down` keeps was a dropback rather than a run.
+
+    By the play as it was filed, which is how it ended rather than what was
+    called: a pass, a sack or an interception by its type, and a "Rush" the
+    quarterback scrambled on by its text. The NFL's feed says "scrambles";
+    the college feed never does, so there every scramble is a run.
+    """
+    lowered = (play_type or "").lower()
+    words = (text or "").lower()
+    if _DROPBACK_TYPES.search(lowered) or _SCRAMBLE.search(words):
+        return True
+    return ("fumble" in lowered or "safety" in lowered) and bool(_DROPBACK_TEXT.search(words))
+
+
 class _Success(NamedTuple):
     home: float | None
     away: float | None
@@ -159,24 +187,42 @@ class _Success(NamedTuple):
     away_downs: int
     home_weighted: float | None
     away_weighted: float | None
+    home_dropbacks: tuple[float | None, int]
+    away_dropbacks: tuple[float | None, int]
+    home_runs: tuple[float | None, int]
+    away_runs: tuple[float | None, int]
 
 
 def _success(game: GamePlays, plays: Sequence[PlayEPA]) -> _Success:
-    """Each offense's success rate, unweighted and weighted, and its dropbacks and runs."""
+    """Each offense's success rate, unweighted and weighted, and its dropbacks and runs.
+
+    And the flat rate over each kind of down apart, with how many of each.
+    """
     by_id = {play.play_id: play for play in game.plays}
     won = {True: 0, False: 0}
     downs = {True: 0, False: 0}
     won_weight = {True: 0.0, False: 0.0}
     weight = {True: 0.0, False: 0.0}
+    # By side, then dropback or not.
+    kind_won = {(side, dropback): 0 for side in (True, False) for dropback in (True, False)}
+    kind_downs = dict(kind_won)
     for snap in plays:
         play = by_id.get(snap.play_id)
         if play is None or not is_down(play.play_type, play.text):
             continue
         side = snap.offense_is_home
+        kind = (side, is_dropback(play.play_type, play.text))
         downs[side] += 1
         won[side] += snap.epa > 0
+        kind_downs[kind] += 1
+        kind_won[kind] += snap.epa > 0
         weight[side] += snap.weight
         won_weight[side] += snap.weight * (snap.epa > 0)
+
+    def rate(side: bool, dropback: bool) -> tuple[float | None, int]:
+        n = kind_downs[side, dropback]
+        return (kind_won[side, dropback] / n if n else None), n
+
     return _Success(
         home=won[True] / downs[True] if downs[True] else None,
         away=won[False] / downs[False] if downs[False] else None,
@@ -184,6 +230,10 @@ def _success(game: GamePlays, plays: Sequence[PlayEPA]) -> _Success:
         away_downs=downs[False],
         home_weighted=won_weight[True] / weight[True] if weight[True] else None,
         away_weighted=won_weight[False] / weight[False] if weight[False] else None,
+        home_dropbacks=rate(True, True),
+        away_dropbacks=rate(False, True),
+        home_runs=rate(True, False),
+        away_runs=rate(False, False),
     )
 
 
@@ -205,7 +255,8 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
 
     The success rates come off the same snaps' raw EPA, over the dropbacks
     and runs `is_down` picks out, once unweighted and once by the same
-    weights as the weighted EPA; see `SUCCESS`.
+    weights as the weighted EPA, and unweighted over each kind apart
+    (`is_dropback`); see `SUCCESS`.
     """
     scored = MODELS[league].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
     if scored.home_unweighted is None or scored.away_unweighted is None:
@@ -226,6 +277,14 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
         away_success_plays=success.away_downs,
         home_success_weighted=success.home_weighted,
         away_success_weighted=success.away_weighted,
+        home_dropback_success=success.home_dropbacks[0],
+        away_dropback_success=success.away_dropbacks[0],
+        home_dropback_plays=success.home_dropbacks[1],
+        away_dropback_plays=success.away_dropbacks[1],
+        home_run_success=success.home_runs[0],
+        away_run_success=success.away_runs[0],
+        home_run_plays=success.home_runs[1],
+        away_run_plays=success.away_runs[1],
     )
 
 

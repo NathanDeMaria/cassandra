@@ -20,7 +20,9 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from cassandra.predictor import (
+    KindRates,
     Predictor,
+    Rate,
     Rating,
     SuccessRates,
     Unit,
@@ -49,6 +51,13 @@ class RateRating(BaseModel):
     sd: float
 
 
+class KindSuccessRating(BaseModel):
+    """One kind of down's success rates: the offense's, and what its defense allows."""
+
+    offense: RateRating
+    defense: RateRating
+
+
 class SuccessRating(BaseModel):
     """A team's offense's success rate and the rate its defense allows.
 
@@ -56,10 +65,16 @@ class SuccessRating(BaseModel):
     For a reader only -- the units models keep it beside their sides and
     never predict from it, and `rating_predictor` drops it. See
     `UnitMarginGlickoPredictor`'s "What a release carries".
+
+    `dropbacks` and `runs` are the same two rates over each kind of down
+    alone, each rated on its own. None in a release written before them,
+    and where the play-by-play read carried no split.
     """
 
     offense: RateRating
     defense: RateRating
+    dropbacks: KindSuccessRating | None = None
+    runs: KindSuccessRating | None = None
 
 
 class TeamRating(BaseModel):
@@ -146,9 +161,21 @@ def _success(rates: SuccessRates | None) -> SuccessRating | None:
     if rates is None:
         return None
     return SuccessRating(
-        offense=RateRating(rate=rates.offense.rate, sd=rates.offense.sd),
-        defense=RateRating(rate=rates.defense.rate, sd=rates.defense.sd),
+        offense=_rate(rates.offense),
+        defense=_rate(rates.defense),
+        dropbacks=_kind(rates.dropbacks),
+        runs=_kind(rates.runs),
     )
+
+
+def _kind(rates: KindRates | None) -> KindSuccessRating | None:
+    if rates is None:
+        return None
+    return KindSuccessRating(offense=_rate(rates.offense), defense=_rate(rates.defense))
+
+
+def _rate(rate: Rate) -> RateRating:
+    return RateRating(rate=rate.rate, sd=rate.sd)
 
 
 def _state(rating: TeamRating) -> Rating:

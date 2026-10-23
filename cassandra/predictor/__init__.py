@@ -39,6 +39,7 @@ from .types import (
     GameControl,
     GameEpa,
     GameResult,
+    KindRates,
     Matchup,
     Prediction,
     Rate,

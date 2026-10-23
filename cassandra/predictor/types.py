@@ -55,15 +55,26 @@ class Rate(NamedTuple):
     sd: float
 
 
+class KindRates(NamedTuple):
+    """One kind of down's success rates: the offense's, and what its defense allows."""
+
+    offense: Rate
+    defense: Rate
+
+
 class SuccessRates(NamedTuple):
     """A team's success rate on offense, and the rate its defense allows.
 
     Each against an average opponent on a neutral field, for a reader: see
-    `UnitMarginGlickoPredictor`'s "What a release carries".
+    `UnitMarginGlickoPredictor`'s "What a release carries". `dropbacks` and
+    `runs` are the same two rates over each kind of down alone, None where
+    the games read carried no split.
     """
 
     offense: Rate
     defense: Rate
+    dropbacks: KindRates | None = None
+    runs: KindRates | None = None
 
 
 class Rating(NamedTuple):
@@ -186,6 +197,13 @@ class GameEpa(NamedTuple):
     blowout's fourth quarter of backups counts for what it is worth. Over
     the same dropbacks and runs; None where the weights sum to nothing,
     like the weighted EPA.
+
+    The `_dropback_` and `_run_` fields split the flat success rate by the
+    kind of down: each side's rate over its dropbacks (passes, sacks,
+    scrambles) and over its runs, and how many of each. They add back up to
+    the flat rate. For a reader -- no model rates on them; see `cassandra.
+    predictor.unit_glicko`'s "What a release carries". None for a side with
+    none of that kind, and for a row built without them.
     """
 
     home: float
@@ -202,6 +220,14 @@ class GameEpa(NamedTuple):
     away_success_plays: int = 0
     home_success_weighted: float | None = None
     away_success_weighted: float | None = None
+    home_dropback_success: float | None = None
+    away_dropback_success: float | None = None
+    home_dropback_plays: int = 0
+    away_dropback_plays: int = 0
+    home_run_success: float | None = None
+    away_run_success: float | None = None
+    home_run_plays: int = 0
+    away_run_plays: int = 0
 
 
 class Prediction(NamedTuple):

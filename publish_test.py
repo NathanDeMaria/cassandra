@@ -963,6 +963,15 @@ def _success_epa(seasons: list[Season]) -> dict[str, GameEpa]:
             0.42 - (game.home_score - game.away_score) / 400,
             55,
             55,
+        )._replace(
+            home_dropback_success=0.47 + (game.home_score - game.away_score) / 400,
+            away_dropback_success=0.47 - (game.home_score - game.away_score) / 400,
+            home_dropback_plays=30,
+            away_dropback_plays=30,
+            home_run_success=0.36 + (game.home_score - game.away_score) / 400,
+            away_run_success=0.36 - (game.home_score - game.away_score) / 400,
+            home_run_plays=25,
+            away_run_plays=25,
         )
         for season in seasons[1:]
         for week in season.weeks
@@ -1000,14 +1009,13 @@ def test_a_league_without_tiers_publishes_its_success_rates(
         _LEAGUE,
         {unit_glicko.UNWEIGHTED: (1.5, -0.6), unit_glicko.WEIGHTED: (1.5, -0.6)},
     )
-    monkeypatch.setitem(
-        unit_glicko.SUCCESS_RATE_CLOCKS,
-        _LEAGUE,
-        (
-            unit_glicko.RateClock(0.05, 0.8, 0.001),
-            unit_glicko.RateClock(0.04, 0.8, 0.001),
-        ),
+    clocks = (
+        unit_glicko.RateClock(0.05, 0.8, 0.001),
+        unit_glicko.RateClock(0.04, 0.8, 0.001),
     )
+    monkeypatch.setitem(unit_glicko.SUCCESS_RATE_CLOCKS, _LEAGUE, clocks)
+    for kind in unit_glicko.KIND_RATE_CLOCKS.values():
+        monkeypatch.setitem(kind, _LEAGUE, clocks)
     config = _config("UnitMarginGlickoPredictor", unit_weight=1.0)
     history = RatingHistory()
     predictor, df = publish._predictions(
@@ -1028,7 +1036,16 @@ def test_a_league_without_tiers_publishes_its_success_rates(
     )
     assert set(release.ratings) == set(_UNFILED_TEAMS)
     for rating in release.ratings.values():
-        assert rating.success is not None
-        for side in (rating.success.offense, rating.success.defense):
+        success = rating.success
+        assert success is not None
+        assert success.dropbacks is not None and success.runs is not None
+        for side in (
+            success.offense,
+            success.defense,
+            success.dropbacks.offense,
+            success.dropbacks.defense,
+            success.runs.offense,
+            success.runs.defense,
+        ):
             assert 0 < side.rate < 1
             assert side.sd > 0

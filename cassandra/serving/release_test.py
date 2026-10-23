@@ -484,6 +484,15 @@ def _with_success_rates() -> UnitMarginGlickoPredictor:
     epa = {
         game.game_id: GameEpa(
             0.1, -0.1, 70, 70, None, None, 0.0, 0.0, 0.5, 0.4, 60, 60
+        )._replace(
+            home_dropback_success=0.55,
+            away_dropback_success=0.45,
+            home_dropback_plays=30,
+            away_dropback_plays=30,
+            home_run_success=0.45,
+            away_run_success=0.35,
+            home_run_plays=30,
+            away_run_plays=30,
         )
         for game in _SEASON
     }
@@ -501,11 +510,10 @@ def rate_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
         "test_league",
         {unit_glicko.UNWEIGHTED: (1.5, -0.6), unit_glicko.WEIGHTED: (1.5, -0.6)},
     )
-    monkeypatch.setitem(
-        unit_glicko.SUCCESS_RATE_CLOCKS,
-        "test_league",
-        (unit_glicko.RateClock(0.05, 0.8, 0.001), unit_glicko.RateClock(0.04, 0.8, 0.001)),
-    )
+    clocks = (unit_glicko.RateClock(0.05, 0.8, 0.001), unit_glicko.RateClock(0.04, 0.8, 0.001))
+    monkeypatch.setitem(unit_glicko.SUCCESS_RATE_CLOCKS, "test_league", clocks)
+    for kind in unit_glicko.KIND_RATE_CLOCKS.values():
+        monkeypatch.setitem(kind, "test_league", clocks)
 
 
 @pytest.mark.usefixtures("rate_clocks")
@@ -518,6 +526,10 @@ def test_a_release_carries_each_sides_success_rate_and_a_rebuild_drops_it() -> N
     assert success is not None
     assert 0 < success.offense.rate < 1 and 0 < success.defense.rate < 1
     assert success.offense.sd > 0 and success.defense.sd > 0
+    assert success.dropbacks is not None and success.runs is not None
+    for kind in (success.dropbacks, success.runs):
+        assert 0 < kind.offense.rate < 1 and 0 < kind.defense.rate < 1
+        assert kind.offense.sd > 0 and kind.defense.sd > 0
     rebuilt = release.rating_predictor()
     assert predict_matchup(rebuilt, "Team A", "Team B").team1_win_prob == (
         pytest.approx(predict_matchup(original, "Team A", "Team B").team1_win_prob)
@@ -527,6 +539,15 @@ def test_a_release_carries_each_sides_success_rate_and_a_rebuild_drops_it() -> N
 def test_a_release_written_before_success_rates_still_reads() -> None:
     rating = TeamRating.model_validate({"rating": 1500, "rd": 100})
     assert rating.success is None
+
+
+def test_a_release_written_before_the_split_still_reads() -> None:
+    side = {"rate": 0.45, "sd": 0.02}
+    rating = TeamRating.model_validate(
+        {"rating": 1500, "rd": 100, "success": {"offense": side, "defense": side}}
+    )
+    assert rating.success is not None
+    assert rating.success.dropbacks is None and rating.success.runs is None
 
 
 def test_a_side_without_its_pair_is_not_a_side() -> None:
