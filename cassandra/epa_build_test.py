@@ -30,6 +30,7 @@ from cassandra.epa_build import (
     build,
     current_fit,
     is_down,
+    is_dropback,
     sweep,
     write,
 )
@@ -172,6 +173,85 @@ def test_which_snaps_a_success_rate_is_over(
     play_type: str | None, text: str | None, counts: bool
 ) -> None:
     assert is_down(play_type, text) is counts
+
+
+@pytest.mark.parametrize(
+    ("play_type", "text", "dropback"),
+    [
+        ("Pass Reception", None, True),
+        ("Pass Incompletion", None, True),
+        ("Passing Touchdown", None, True),
+        ("Sack", None, True),
+        ("Pass Interception Return", None, True),
+        ("Interception Return Touchdown", None, True),
+        ("Rush", "Smith up the middle for 4 yards", False),
+        ("Rushing Touchdown", None, False),
+        # Filed as a run; the quarterback dropped back.
+        ("Rush", "(Shotgun) D.Prescott scrambles right end to DAL 45 for 8 yards", True),
+        ("Fumble Recovery (Own)", "J.Allen pass short right to S.Diggs, FUMBLES", True),
+        ("Fumble Recovery (Opponent)", "J.Allen sacked at BUF 30 for -7 yards, FUMBLES", True),
+        ("Fumble Recovery (Own)", "J.Taylor up the middle for 2 yards, FUMBLES", False),
+        ("Safety", "Smith sacked in End Zone for -8 yards, SAFETY", True),
+        ("Safety", "Smith up the middle to END ZONE for -1 yards, SAFETY", False),
+        # A runner named Passmore didn't throw.
+        ("Fumble Recovery (Own)", "A.Passmore left end for 2 yards, FUMBLES", False),
+    ],
+)
+def test_which_downs_are_dropbacks(play_type: str, text: str | None, dropback: bool) -> None:
+    assert is_down(play_type, text)
+    assert is_dropback(play_type, text) is dropback
+
+
+def test_the_success_rate_splits_into_dropbacks_and_runs() -> None:
+    """Each kind's share of its own downs, and the two adding back to the flat rate.
+
+    A third of the fixture's runs made passes, and one a scramble, so both
+    kinds are there on both sides.
+    """
+    plays = _plays("g1")
+    for i in range(0, len(plays), 3):
+        plays[i] = plays[i]._replace(play_type="Pass Reception")
+    plays[4] = plays[4]._replace(text="Smith scrambles left end for 6 yards")
+    game = next(iter(group_by_game(plays)))
+    scored = MODELS[_LEAGUE].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
+    by_id = {play.play_id: play for play in plays}
+
+    epa, _ = asyncio.run(
+        sweep(_LEAGUE, [_season(2025, "g1")], _Source({(2025, 1): plays}))
+    )
+
+    for home in (True, False):
+        side = "home" if home else "away"
+        downs = [p for p in scored.plays if p.offense_is_home is home]
+        for kind, wanted in (("dropback", True), ("run", False)):
+            mine = [
+                p
+                for p in downs
+                if is_dropback(by_id[p.play_id].play_type, by_id[p.play_id].text) is wanted
+            ]
+            assert 0 < len(mine) < len(downs)
+            assert getattr(epa["g1"], f"{side}_{kind}_plays") == len(mine)
+            assert getattr(epa["g1"], f"{side}_{kind}_success") == pytest.approx(
+                sum(p.epa > 0 for p in mine) / len(mine)
+            )
+        e = epa["g1"]
+        dropbacks, runs = getattr(e, f"{side}_dropback_plays"), getattr(e, f"{side}_run_plays")
+        assert dropbacks + runs == getattr(e, f"{side}_success_plays")
+        assert (
+            dropbacks * getattr(e, f"{side}_dropback_success")
+            + runs * getattr(e, f"{side}_run_success")
+        ) / (dropbacks + runs) == pytest.approx(getattr(e, f"{side}_success"))
+    assert by_id[plays[4].play_id].play_type == "Rush"
+
+
+def test_a_side_without_a_kind_of_down_has_no_rate_for_it() -> None:
+    """The fixture is all runs: no dropback rate, rather than a rate of 0."""
+    epa, _ = asyncio.run(
+        sweep(_LEAGUE, [_season(2025, "g1")], _Source({(2025, 1): _plays("g1")}))
+    )
+    assert epa["g1"].home_dropback_success is None
+    assert epa["g1"].home_dropback_plays == 0
+    assert epa["g1"].home_run_plays == epa["g1"].home_success_plays
 
 
 def test_the_play_counts_are_the_denominators_that_were_used() -> None:
