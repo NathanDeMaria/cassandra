@@ -36,7 +36,7 @@ from pin import pin  # noqa: E402
 
 pin()
 
-from cassandra.epa_build import CLIP, is_down, is_dropback  # noqa: E402
+from cassandra.epa_build import CLIP, is_down, is_pass  # noqa: E402
 from cassandra.offseason import OffseasonFacts  # noqa: E402
 from cassandra.predictor.qb_out import load_qb_out  # noqa: E402
 
@@ -82,7 +82,7 @@ def load_nfl() -> pd.DataFrame:
         "play_type", "text", "epa"])
     plays = plays[(plays.season <= LAST)]
     plays = plays[[is_down(t, x) for t, x in zip(plays.play_type, plays.text)]].copy()
-    plays["dropback"] = [is_dropback(t, x) for t, x in zip(plays.play_type, plays.text)]
+    plays["dropback"] = [is_pass(t, x) for t, x in zip(plays.play_type, plays.text)]
     plays["win"] = plays.epa > 0
     first = plays.drop_duplicates("game_id").set_index("game_id")
     games = pd.DataFrame({

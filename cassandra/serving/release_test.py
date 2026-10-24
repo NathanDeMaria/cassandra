@@ -485,16 +485,16 @@ def _with_success_rates() -> UnitMarginGlickoPredictor:
         game.game_id: GameEpa(
             0.1, -0.1, 70, 70, None, None, 0.0, 0.0, 0.5, 0.4, 60, 60
         )._replace(
-            home_dropback_success=0.55,
-            away_dropback_success=0.45,
-            home_dropback_plays=30,
-            away_dropback_plays=30,
+            home_pass_success=0.55,
+            away_pass_success=0.45,
+            home_pass_plays=30,
+            away_pass_plays=30,
             home_run_success=0.45,
             away_run_success=0.35,
             home_run_plays=30,
             away_run_plays=30,
-            home_dropback_epa=0.2,
-            away_dropback_epa=0.0,
+            home_pass_epa=0.2,
+            away_pass_epa=0.0,
             home_run_epa=0.0,
             away_run_epa=-0.15,
         )
@@ -524,7 +524,7 @@ def rate_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         unit_glicko.EPA_PLAY_SD,
         "test_league",
-        {unit_glicko.ALL_DOWNS: 1.3, unit_glicko.DROPBACKS: 1.5, unit_glicko.RUNS: 1.0},
+        {unit_glicko.ALL_DOWNS: 1.3, unit_glicko.PASSES: 1.5, unit_glicko.RUNS: 1.0},
     )
 
 
@@ -538,16 +538,16 @@ def test_a_release_carries_each_sides_success_rate_and_a_rebuild_drops_it() -> N
     assert success is not None
     assert 0 < success.offense.rate < 1 and 0 < success.defense.rate < 1
     assert success.offense.sd > 0 and success.defense.sd > 0
-    assert success.dropbacks is not None and success.runs is not None
-    for kind in (success.dropbacks, success.runs):
+    assert success.passes is not None and success.runs is not None
+    for kind in (success.passes, success.runs):
         assert 0 < kind.offense.rate < 1 and 0 < kind.defense.rate < 1
         assert kind.offense.sd > 0 and kind.defense.sd > 0
     epa = release.ratings["Team A"].epa
-    assert epa is not None and epa.dropbacks is not None and epa.runs is not None
-    # The home sides' dropbacks read +0.2 a down, their runs 0, the away
+    assert epa is not None and epa.passes is not None and epa.runs is not None
+    # The home sides' passes read +0.2 a down, their runs 0, the away
     # sides' 0 and -0.15: every team has played both ways round.
-    assert epa.dropbacks.offense.epa > epa.runs.offense.epa
-    for side in (epa.offense, epa.defense, epa.dropbacks.offense, epa.runs.defense):
+    assert epa.passes.offense.epa > epa.runs.offense.epa
+    for side in (epa.offense, epa.defense, epa.passes.offense, epa.runs.defense):
         assert -1 < side.epa < 1 and side.sd > 0
     rebuilt = release.rating_predictor()
     assert predict_matchup(rebuilt, "Team A", "Team B").team1_win_prob == (
@@ -566,7 +566,7 @@ def test_a_release_written_before_the_split_still_reads() -> None:
         {"rating": 1500, "rd": 100, "success": {"offense": side, "defense": side}}
     )
     assert rating.success is not None
-    assert rating.success.dropbacks is None and rating.success.runs is None
+    assert rating.success.passes is None and rating.success.runs is None
 
 
 def test_a_side_without_its_pair_is_not_a_side() -> None:

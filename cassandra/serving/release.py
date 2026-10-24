@@ -69,19 +69,19 @@ class SuccessRating(BaseModel):
     never predict from it, and `rating_predictor` drops it. See
     `UnitMarginGlickoPredictor`'s "What a release carries".
 
-    `dropbacks` and `runs` are the same two rates over each kind of down
+    `passes` and `runs` are the same two rates over each kind of down
     alone, each rated on its own. None in a release written before them,
     and where the play-by-play read carried no split.
     """
 
     offense: RateRating
     defense: RateRating
-    dropbacks: KindSuccessRating | None = None
+    passes: KindSuccessRating | None = None
     runs: KindSuccessRating | None = None
 
 
 class PerDownRating(BaseModel):
-    """One side's EPA per down -- per dropback or run, kicks and kneels left out -- and its deviation."""
+    """One side's EPA per down -- per pass or run, kicks and kneels left out -- and its deviation."""
 
     epa: float
     sd: float
@@ -98,13 +98,13 @@ class EpaRating(BaseModel):
     """A team's offense's EPA per down and what its defense allows.
 
     `SuccessRating`'s twin, opponent-adjusted the same way and for a reader
-    only, over every down and over dropbacks and runs apart. None in a
+    only, over every down and over passes and runs apart. None in a
     release written before it.
     """
 
     offense: PerDownRating
     defense: PerDownRating
-    dropbacks: KindEpaRating | None = None
+    passes: KindEpaRating | None = None
     runs: KindEpaRating | None = None
 
 
@@ -196,7 +196,7 @@ def _success(rates: SuccessRates | None) -> SuccessRating | None:
     return SuccessRating(
         offense=_rate(rates.offense),
         defense=_rate(rates.defense),
-        dropbacks=_kind(rates.dropbacks),
+        passes=_kind(rates.passes),
         runs=_kind(rates.runs),
     )
 
@@ -217,7 +217,7 @@ def _epa(rates: EpaRates | None) -> EpaRating | None:
     return EpaRating(
         offense=_per_down(rates.offense),
         defense=_per_down(rates.defense),
-        dropbacks=_kind_epa(rates.dropbacks),
+        passes=_kind_epa(rates.passes),
         runs=_kind_epa(rates.runs),
     )
 

@@ -28,7 +28,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent / "combine"))
 from persistence import IDENTIFY, MIN_HALF, MIN_SEASON, SPLITS, fit  # noqa: E402
 
-from cassandra.epa_build import CLIP, is_down, is_dropback  # noqa: E402
+from cassandra.epa_build import CLIP, is_down, is_pass  # noqa: E402
 
 HOME = Path.home() / ".cassandra/success_rate"
 KINDS = ("all", "dropback", "run")
@@ -58,7 +58,7 @@ def sides_nfl() -> pd.DataFrame:
         "game_id", "season", "offense", "defense", "offense_is_home", "neutral_site", "play_type", "text", "epa"])
     plays = plays[plays.season >= 2014]
     plays = plays[[is_down(t, x) for t, x in zip(plays.play_type, plays.text)]].copy()
-    plays["dropback"] = [is_dropback(t, x) for t, x in zip(plays.play_type, plays.text)]
+    plays["dropback"] = [is_pass(t, x) for t, x in zip(plays.play_type, plays.text)]
     plays["win"] = plays.epa > 0
     first = plays.drop_duplicates("game_id").set_index("game_id")
     games = pd.DataFrame({

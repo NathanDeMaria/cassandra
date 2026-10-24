@@ -84,12 +84,19 @@ def run(league: str, index_path: Path, name: str) -> None:
 
 
 def _block(entry: dict | None, which: str) -> dict | None:
-    """One team's success or EPA block; files from before the EPA hold the success block alone."""
+    """One team's success or EPA block; files from before the EPA hold the success block alone.
+
+    Files from before the rename call passes `dropbacks`.
+    """
     if entry is None:
         return None
     if "success" not in entry and "epa" not in entry:
-        return entry if which == "success" else None
-    return entry.get(which)
+        block = entry if which == "success" else None
+    else:
+        block = entry.get(which)
+    if block is not None and "dropbacks" in block:
+        block = {("passes" if k == "dropbacks" else k): v for k, v in block.items()}
+    return block
 
 
 def _table(shown: dict, which: str) -> pd.DataFrame:
@@ -98,9 +105,9 @@ def _table(shown: dict, which: str) -> pd.DataFrame:
     rows = []
     for team, entry in shown.items():
         s = _block(entry, which)
-        if not s or not s.get("dropbacks") or not s.get("runs"):
+        if not s or not s.get("passes") or not s.get("runs"):
             continue
-        (db_off, db_def), (run_off, run_def) = s["dropbacks"], s["runs"]
+        (db_off, db_def), (run_off, run_def) = s["passes"], s["runs"]
         rows.append({
             "team": team,
             "off": s["offense"][0], "def": s["defense"][0],
@@ -119,7 +126,7 @@ def compare(league: str, a: str, b: str) -> None:
         pairs = [(_block(ra[t], which), _block(rb[t], which)) for t in ra]
         both = [(x, y) for x, y in pairs if x is not None and y is not None]
         same = all(x["offense"] == y["offense"] and x["defense"] == y["defense"] for x, y in both)
-        kinds = all(x.get("dropbacks") == y.get("dropbacks") and x.get("runs") == y.get("runs")
+        kinds = all(x.get("passes") == y.get("passes") and x.get("runs") == y.get("runs")
                     for x, y in both)
         print(f"{which}: {len(both)} teams in both; every-down identical: {same}; split identical: {kinds}")
     year = int(db.year.max())
@@ -135,11 +142,11 @@ def compare(league: str, a: str, b: str) -> None:
         print("  means:", (t[["off", "def", "off_db", "off_run", "def_db", "def_run"]].mean() * scale).round(3).to_dict())
         print("  sd across teams:", (t[["off_db", "off_run", "def_db", "def_run"]].std() * scale).round(3).to_dict())
         print("  typical sd of a side:", (t[["off_db_sd", "off_run_sd"]].median() * scale).round(3).to_dict())
-        print("  corr dropback vs run, offense:", round(t.off_db.corr(t.off_run), 2),
+        print("  corr pass vs run, offense:", round(t.off_db.corr(t.off_run), 2),
               "defense:", round(t.def_db.corr(t.def_run), 2))
         cols = ["off", "off_db", "off_run", "def", "def_db", "def_run"]
-        for col, asc, label in (("off_db", False, "best dropback offenses"), ("off_run", False, "best run offenses"),
-                                ("def_db", True, "best dropback defenses"), ("def_run", True, "best run defenses")):
+        for col, asc, label in (("off_db", False, "best pass offenses"), ("off_run", False, "best run offenses"),
+                                ("def_db", True, "best pass defenses"), ("def_run", True, "best run defenses")):
             print(f"  {label}:\n{(t.sort_values(col, ascending=asc).head(5)[cols] * scale).round(3).to_string()}")
 
 
