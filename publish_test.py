@@ -972,6 +972,10 @@ def _success_epa(seasons: list[Season]) -> dict[str, GameEpa]:
             away_run_success=0.36 - (game.home_score - game.away_score) / 400,
             home_run_plays=25,
             away_run_plays=25,
+            home_dropback_epa=0.05 + (game.home_score - game.away_score) / 200,
+            away_dropback_epa=0.05 - (game.home_score - game.away_score) / 200,
+            home_run_epa=-0.05 + (game.home_score - game.away_score) / 200,
+            away_run_epa=-0.05 - (game.home_score - game.away_score) / 200,
         )
         for season in seasons[1:]
         for week in season.weeks
@@ -1016,6 +1020,17 @@ def test_a_league_without_tiers_publishes_its_success_rates(
     monkeypatch.setitem(unit_glicko.SUCCESS_RATE_CLOCKS, _LEAGUE, clocks)
     for kind in unit_glicko.KIND_RATE_CLOCKS.values():
         monkeypatch.setitem(kind, _LEAGUE, clocks)
+    epa_clocks = (
+        unit_glicko.RateClock(0.1, 0.8, 0.0025),
+        unit_glicko.RateClock(0.08, 0.8, 0.0025),
+    )
+    for kind in unit_glicko.EPA_RATE_CLOCKS.values():
+        monkeypatch.setitem(kind, _LEAGUE, epa_clocks)
+    monkeypatch.setitem(
+        unit_glicko.EPA_PLAY_SD,
+        _LEAGUE,
+        {unit_glicko.ALL_DOWNS: 1.3, unit_glicko.DROPBACKS: 1.5, unit_glicko.RUNS: 1.0},
+    )
     config = _config("UnitMarginGlickoPredictor", unit_weight=1.0)
     history = RatingHistory()
     predictor, df = publish._predictions(
@@ -1048,4 +1063,17 @@ def test_a_league_without_tiers_publishes_its_success_rates(
             success.runs.defense,
         ):
             assert 0 < side.rate < 1
+            assert side.sd > 0
+        per_down = rating.epa
+        assert per_down is not None
+        assert per_down.dropbacks is not None and per_down.runs is not None
+        for side in (
+            per_down.offense,
+            per_down.defense,
+            per_down.dropbacks.offense,
+            per_down.dropbacks.defense,
+            per_down.runs.offense,
+            per_down.runs.defense,
+        ):
+            assert np.isfinite(side.epa) and abs(side.epa) < 1
             assert side.sd > 0

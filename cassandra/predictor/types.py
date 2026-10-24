@@ -77,6 +77,33 @@ class SuccessRates(NamedTuple):
     runs: KindRates | None = None
 
 
+class PerDown(NamedTuple):
+    """One side's EPA per down -- per dropback or run -- and its deviation."""
+
+    epa: float
+    sd: float
+
+
+class KindEpa(NamedTuple):
+    """One kind of down's EPA per down: the offense's, and what its defense allows."""
+
+    offense: PerDown
+    defense: PerDown
+
+
+class EpaRates(NamedTuple):
+    """A team's EPA per down on offense, and what its defense allows.
+
+    The success rates' twin (`SuccessRates`): each against an average
+    opponent on a neutral field, over every down, and over each kind apart.
+    """
+
+    offense: PerDown
+    defense: PerDown
+    dropbacks: KindEpa | None = None
+    runs: KindEpa | None = None
+
+
 class Rating(NamedTuple):
     """One team's standing, in the shape every predictor can express.
 
@@ -101,8 +128,9 @@ class Rating(NamedTuple):
     `from_ratings` ignores it and a `Rating` built without it is the same
     model.
 
-    `success` is for a reader too, and ignored the same way: the success
-    rates a units model keeps beside its sides and never predicts from.
+    `success` and `epa` are for a reader too, and ignored the same way: the
+    success rates and EPA per down a units model keeps beside its sides and
+    never predicts from.
     """
 
     rating: float
@@ -110,6 +138,7 @@ class Rating(NamedTuple):
     units: Units | None = None
     blended: float | None = None
     success: SuccessRates | None = None
+    epa: EpaRates | None = None
 
     @property
     def overall(self) -> float:
@@ -201,9 +230,12 @@ class GameEpa(NamedTuple):
     The `_dropback_` and `_run_` fields split the flat success rate by the
     kind of down: each side's rate over its dropbacks (passes, sacks,
     scrambles) and over its runs, and how many of each. They add back up to
-    the flat rate. For a reader -- no model rates on them; see `cassandra.
-    predictor.unit_glicko`'s "What a release carries". None for a side with
-    none of that kind, and for a row built without them.
+    the flat rate. The `_epa` ones are the same downs' EPA, each play
+    bounded as the flat EPA's are -- per down, so over dropbacks and runs
+    only, where `home` and `away` are over every snap. For a reader -- no
+    model rates on them; see `cassandra.predictor.unit_glicko`'s "What a
+    release carries". None for a side with none of that kind, and for a row
+    built without them.
     """
 
     home: float
@@ -228,6 +260,10 @@ class GameEpa(NamedTuple):
     away_run_success: float | None = None
     home_run_plays: int = 0
     away_run_plays: int = 0
+    home_dropback_epa: float | None = None
+    away_dropback_epa: float | None = None
+    home_run_epa: float | None = None
+    away_run_epa: float | None = None
 
 
 class Prediction(NamedTuple):
