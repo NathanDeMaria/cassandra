@@ -73,26 +73,31 @@ def run(league: str, index_path: Path, name: str) -> None:
             print(f"  {kind}: center {rates.center:.3f}, gap slope {rates.gap_slope:.3f}", flush=True)
     OUT.mkdir(parents=True, exist_ok=True)
     df.to_parquet(OUT / f"{name}.parquet")
-    rates = {team: r.success._asdict() if r.success else None for team, r in predictor.ratings.items()}
-    (OUT / f"{name}.json").write_text(json.dumps(rates, default=lambda t: t._asdict()))
-    print(name, f"{len(df)} games, {sum(v is not None for v in rates.values())} teams with rates", flush=True)
+    shown = {
+        team: {"success": r.success._asdict() if r.success else None,
+               "epa": r.epa._asdict() if r.epa else None}
+        for team, r in predictor.ratings.items()
+    }
+    (OUT / f"{name}.json").write_text(json.dumps(shown, default=lambda t: t._asdict()))
+    print(name, f"{len(df)} games, {sum(v['success'] is not None for v in shown.values())} teams with "
+          f"rates, {sum(v['epa'] is not None for v in shown.values())} with EPA", flush=True)
 
 
-def compare(league: str, a: str, b: str) -> None:
-    da, db = pd.read_parquet(OUT / f"{a}.parquet"), pd.read_parquet(OUT / f"{b}.parquet")
-    diff = np.abs(da.team1_win_prob.to_numpy() - db.team1_win_prob.to_numpy())
-    print(f"{league}: {len(da)} games; predictions identical: {bool((diff == 0).all())} (max diff {diff.max():.2e})")
-    ra, rb = json.loads((OUT / f"{a}.json").read_text()), json.loads((OUT / f"{b}.json").read_text())
-    same = all(
-        (ra[t] is None and rb[t] is None)
-        or (ra[t]["offense"] == rb[t]["offense"] and ra[t]["defense"] == rb[t]["defense"])
-        for t in ra
-    )
-    print(f"every-down rates identical for all {len(ra)} teams: {same}")
-    rows = []
+def _block(entry: dict | None, which: str) -> dict | None:
+    """One team's success or EPA block; files from before the EPA hold the success block alone."""
+    if entry is None:
+        return None
+    if "success" not in entry and "epa" not in entry:
+        return entry if which == "success" else None
+    return entry.get(which)
+
+
+def _table(shown: dict, which: str) -> pd.DataFrame:
     # JSON keeps the outer tuple's names and writes the inner ones as lists:
-    # a side is [rate, sd], a kind is [offense, defense].
-    for team, s in rb.items():
+    # a side is [value, sd], a kind is [offense, defense].
+    rows = []
+    for team, entry in shown.items():
+        s = _block(entry, which)
         if not s or not s.get("dropbacks") or not s.get("runs"):
             continue
         (db_off, db_def), (run_off, run_def) = s["dropbacks"], s["runs"]
@@ -102,22 +107,40 @@ def compare(league: str, a: str, b: str) -> None:
             "off_db": db_off[0], "off_run": run_off[0], "def_db": db_def[0], "def_run": run_def[0],
             "off_db_sd": db_off[1], "off_run_sd": run_off[1],
         })
-    t = pd.DataFrame(rows).set_index("team")
-    if league == "ncaafb":
-        from cassandra.objective import _in_fbs
+    return pd.DataFrame(rows).set_index("team")
 
-        year = int(db.year.max())
-        t = t[[_in_fbs(team, year) for team in t.index]]
-        print(f"FBS teams ({year}):", len(t))
-    print("means:", t[["off", "def", "off_db", "off_run", "def_db", "def_run"]].mean().round(3).to_dict())
-    print("sd across teams:", t[["off_db", "off_run", "def_db", "def_run"]].std().round(3).to_dict())
-    print("typical sd of a side:", t[["off_db_sd", "off_run_sd"]].median().round(3).to_dict())
-    print("corr dropback vs run, offense:", round(t.off_db.corr(t.off_run), 2),
-          "defense:", round(t.def_db.corr(t.def_run), 2))
-    pct = lambda frame: (frame * 100).round(1)  # noqa: E731
-    for col, asc, label in (("off_db", False, "best dropback offenses"), ("off_run", False, "best run offenses"),
-                            ("def_db", True, "best dropback defenses"), ("def_run", True, "best run defenses")):
-        print(f"{label}:\n{pct(t.sort_values(col, ascending=asc).head(5)[['off', 'off_db', 'off_run', 'def', 'def_db', 'def_run']]).to_string()}")
+
+def compare(league: str, a: str, b: str) -> None:
+    da, db = pd.read_parquet(OUT / f"{a}.parquet"), pd.read_parquet(OUT / f"{b}.parquet")
+    diff = np.abs(da.team1_win_prob.to_numpy() - db.team1_win_prob.to_numpy())
+    print(f"{league}: {len(da)} games; predictions identical: {bool((diff == 0).all())} (max diff {diff.max():.2e})")
+    ra, rb = json.loads((OUT / f"{a}.json").read_text()), json.loads((OUT / f"{b}.json").read_text())
+    for which in ("success", "epa"):
+        pairs = [(_block(ra[t], which), _block(rb[t], which)) for t in ra]
+        both = [(x, y) for x, y in pairs if x is not None and y is not None]
+        same = all(x["offense"] == y["offense"] and x["defense"] == y["defense"] for x, y in both)
+        kinds = all(x.get("dropbacks") == y.get("dropbacks") and x.get("runs") == y.get("runs")
+                    for x, y in both)
+        print(f"{which}: {len(both)} teams in both; every-down identical: {same}; split identical: {kinds}")
+    year = int(db.year.max())
+    for which, scale, unit in (("success", 100, "%"), ("epa", 1, " EPA/down")):
+        t = _table(rb, which)
+        if t.empty:
+            continue
+        if league == "ncaafb":
+            from cassandra.objective import _in_fbs
+
+            t = t[[_in_fbs(team, year) for team in t.index]]
+        print(f"\n{which}{' (FBS ' + str(year) + ')' if league == 'ncaafb' else ''}, {len(t)} teams, in{unit}:")
+        print("  means:", (t[["off", "def", "off_db", "off_run", "def_db", "def_run"]].mean() * scale).round(3).to_dict())
+        print("  sd across teams:", (t[["off_db", "off_run", "def_db", "def_run"]].std() * scale).round(3).to_dict())
+        print("  typical sd of a side:", (t[["off_db_sd", "off_run_sd"]].median() * scale).round(3).to_dict())
+        print("  corr dropback vs run, offense:", round(t.off_db.corr(t.off_run), 2),
+              "defense:", round(t.def_db.corr(t.def_run), 2))
+        cols = ["off", "off_db", "off_run", "def", "def_db", "def_run"]
+        for col, asc, label in (("off_db", False, "best dropback offenses"), ("off_run", False, "best run offenses"),
+                                ("def_db", True, "best dropback defenses"), ("def_run", True, "best run defenses")):
+            print(f"  {label}:\n{(t.sort_values(col, ascending=asc).head(5)[cols] * scale).round(3).to_string()}")
 
 
 if __name__ == "__main__":

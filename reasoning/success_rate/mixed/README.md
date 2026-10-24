@@ -155,11 +155,129 @@ same every-down rates. What they show:
 | NFL (all seasons' end) | 48.7% | 40.8% | 1.5 / 1.5 | 0.53 offense, 0.56 defense |
 | ncaafb, FBS 2026 | 42.7% | 42.2% | 4.1 / 3.4 | 0.76 offense, 0.85 defense |
 
+**EPA per down** rides alongside (2026-10-24): `GameEpa.{home,away}_
+{dropback,run}_epa`, each kind's EPA bounded at 3 per play, over the same
+downs; displayed as `Rating.epa` / the release's `epa` block, every down
+(the kinds together, so kicks and kneels stay out) and each kind, on
+`EPA_RATE_CLOCKS` and `EPA_PLAY_SD` (`kind_clocks.py`, whose noise per down
+for the success rate comes out at 0.5, the binomial's, as it should):
+
+| | true sd / carry / noise per down, offense | the same, defense |
+|---|---|---|
+| NFL every down | 0.067 / 0.62 / 1.29 | 0.047 / 0.62 / 1.25 |
+| NFL dropbacks | 0.082 / 0.68 / 1.50 | 0.059 / 0.63 / 1.46 |
+| NFL runs | 0.049 / 0.59 / 0.93 | 0.036 / 0.83 / 0.93 |
+| ncaafb every down | 0.128 / 0.84 / 1.43 | 0.109 / 0.85 / 1.42 |
+| ncaafb dropbacks | 0.141 / 0.80 / 1.49 | 0.111 / 0.87 / 1.48 |
+| ncaafb runs | 0.095 / 0.85 / 1.05 | 0.085 / 0.79 / 1.04 |
+
+Checked without s3 (`add_kind_epa.py`): each kind's EPA off the local play
+tables, onto `sweep_split.py`'s index, every kind count matching it; the
+sweep's own arithmetic is `epa_build_test`'s (the kinds together are the
+flat EPA where every snap is a down). Replayed: predictions identical to
+main to the bit, every success rate -- every down's and the split's --
+identical to the run without EPA. The NFL's dropbacks +0.14 a down, runs
+-0.055 (spread 0.037 / 0.021); FBS 2026 about 0 either way (0.12 / 0.08),
+a team's two correlating 0.79.
+
 Rated apart, each kind is pulled harder toward its anchor's level than the
 every-down rate is, having half the downs: on ncaafb a top-fifth offense's
 every-down rate is 0.9 points above the league mix of its kinds (Georgia:
 51.1% every down, 50.8% dropbacks, 49.0% runs), a bottom-fifth one 0.1
 under. On the NFL the gap is a flat 0.2-0.4, the mix's weights.
+
+## How each split persists, and what moves it
+
+`split_persistence.py` (tables to `~/.cassandra/success_rate/mixed/persistence_*`)
+and `summer_change.py`: success rate and EPA per down (clipped at 3), over
+every down, dropbacks and runs, offense and defense, each opponent-adjusted
+within the window. NFL 2006-2025, ncaafb 2014-2025.
+
+**Season to season**, the kinds carry alike; they differ in noise. Carry
+(next season's correlation over the season's reliability):
+
+| | NFL SR dropback / run | NFL EPA dropback / run | ncaafb SR dropback / run | ncaafb EPA dropback / run |
+|---|---|---|---|---|
+| offense carry | 0.68 / 0.67 | 0.70 / 0.53 | 0.80 / 0.85 | 0.80 / 0.85 |
+| defense carry | 0.66 / 0.74 | 0.61 / 0.72 | 0.85 / 0.80 | 0.87 / 0.80 |
+| offense season reliability | 0.72 / 0.55 | 0.71 / 0.54 | 0.75 / 0.72 | 0.75 / 0.74 |
+
+**Within a season** (first half of the weeks against the second, over the
+halves' reliabilities): offenses' dropbacks 0.92 in both leagues, every
+down 0.95; the NFL's run rates are too noisy over half a season to say
+(their ratio runs past 1).
+
+**A starting quarterback out**, as a term in each season's fit, in true
+spreads of the offense: NFL dropback SR -0.50, run -0.38, EPA -0.48 / -0.34;
+ncaafb -0.21 / -0.13 and -0.25 / -0.14. Dropbacks take more, runs a lot too.
+
+**Over the summer** (`summer_change.py`): within each group, net of noise,
+`keep` is the slope on last season's true level and `new` the variance
+that arrives, over the true variance. ncaafb, offense, every down (SR):
+
+| | keep | new | shift, true sd |
+|---|---|---|---|
+| new week-one QB (1181) | 0.78 | 0.48 | -0.12 |
+| same QB (916) | 0.86 | 0.31 | |
+| head coach left (242) | 0.54 | 0.53 | 0.00 |
+| no coach change (1855) | 0.84 | 0.39 | |
+
+- A new QB: keep -0.09 (se 0.03), new +0.18 (0.04) on the offense; the
+  defense, a placebo, moves by 0.01-0.05. Dropbacks less runs: keep -0.08
+  (se 0.05) on SR, -0.08 (0.06) on EPA; new +0.08 (0.08) and -0.04 (0.06).
+  A new quarterback unsettles the whole offense, dropbacks a little more.
+- A coach leaving: keep -0.29 (0.09) on offense and -0.22 (0.09) on
+  defense, new only +0.07-0.14, both kinds alike. Mostly regression, not
+  widening -- though fired coaches are picked on a bad season, some of it
+  bad luck, which flatters the drop in keep.
+- The NFL has 122 new-QB and 134 coach-change summers: every kind
+  contrast's se is 0.2-0.45. Offense new variance after a new QB +0.21
+  (0.11) every down; offense keep after a coach left -0.21 (0.15) SR,
+  -0.39 (0.13) EPA.
+
+### Turned into knobs, it doesn't predict (2026-10-24)
+
+`change_knobs.py`: a subclass of the published ncaafb success model with
+each change read as the measurement suggests -- a new quarterback widening
+the offense (`new_qb_offense_sd`) or the record (`new_qb_rd`), or taking
+back what the summer carried (`new_qb_offense_regression`), all once the
+starter is known after the team's first game with plays; a coach leaving
+pulling each side and the record toward the anchor at the rollover. All 0
+is the published model to the bit. Plus the production model's own
+coach-change widenings, which the success model leaves at 0. Held out by
+alternating seasons -- a value chosen on even seasons, scored on odd, and
+the other way round -- since the early seasons and a season's early weeks
+share their problems. One replay scores both folds, so a scan of one knob
+at a time is the cross-fit. FBS v FBS brier, 1e-4, against the published
+model (even 0.177814, odd 0.170224):
+
+| knob | even | odd | games 1-4 even / odd | its own games even / odd |
+|---|---|---|---|---|
+| `new_qb_offense_sd` 0.05 | +0.6 | -0.3 | +1.7 / -1.1 | new QB +0.9 / -0.3 |
+| `new_qb_offense_sd` 0.10 | +1.4 | -0.3 | +4.1 / -1.2 | +2.1 / -0.4 |
+| `new_qb_rd` 20 | -0.2 | +0.6 | -0.3 / +0.6 | -0.3 / +0.7 |
+| `new_qb_rd` 40 | -0.2 | +2.6 | -0.0 / +3.3 | -0.1 / +3.4 |
+| `new_qb_offense_regression` 1.0 | -0.1 | +0.1 | | |
+| `coach_change_offense_regression` 1.0 | -0.2 | +0.1 | | |
+| `coach_change_defense_regression` 0.25 | +0.2 | +0.5 | | |
+| `coach_change_rating_regression` 0.10 | +3.1 | +2.6 | +5.6 / +6.6 | coach left +12.3 / +8.7 |
+| `coach_change_rd` 20 / 40 | -0.1 / 0.0 | +0.1 / +0.4 | | |
+| `coach_change_offense_sd` 0.05 | +0.1 | -0.0 | | |
+| `coach_change_defense_sd` 0.05 / 0.10 | +1.5 / +4.1 | +0.5 / +1.6 | +5.3 / +12.2, +1.7 / +4.4 | |
+
+Cross-fit, every knob is 0 or worse: the value a fold picks gains nothing,
+or loses, on the other. Why the measurement doesn't carry over:
+
+- The published offense already keeps 0.21 of itself over the summer and
+  starts every season at its cap, so there is nothing to take back, and a
+  wider offense only adds noise to games 1-4.
+- The record keeps all of last season and widens 85 every summer; the
+  early games move it fast already, and the new quarterback's direction is
+  in `new_qb_shift` and `qb_quality_shift`.
+- A coach leaving looked like regression, but pulling those teams' records
+  toward their anchors costs most on exactly their games: fired coaches
+  follow bad seasons, and the drop in `keep` was selection on that, not a
+  team becoming average.
 
 ## Verdict
 
