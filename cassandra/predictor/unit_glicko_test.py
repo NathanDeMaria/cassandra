@@ -23,6 +23,7 @@ from .epa import EpaIndex
 from .margin_glicko import MarginGlickoPredictor
 from .types import GameEpa, Rating
 from .unit_glicko import (
+    ALL_DOWNS,
     CENTER_PRIOR_SIDES,
     DEFAULT_DEFENSE_INITIAL_SD,
     DEFAULT_OFFENSE_INITIAL_SD,
@@ -983,7 +984,7 @@ def test_an_unfiled_team_with_sides_is_anchored_where_the_fold_left_it(
 def test_the_gap_slope_learns_how_far_a_rate_moves(game: GameFactory) -> None:
     """Games whose rates differ by half what their gaps convert to pull the
     slope from 1 toward a half; nothing else in the units moves it."""
-    rates = unit_glicko._SuccessRates("test_league", None)
+    rates = unit_glicko._DisplayedRates("test_league", None)
     shift = 0.05
     played = game("A", "B", 21, 7)
     for _ in range(400):
@@ -999,7 +1000,7 @@ def test_one_anchor_for_every_side_is_its_own_average_opponent() -> None:
     the NFL's publish (run 20261014-232537) on a `ZeroDivisionError`.
     """
     anchor = next(v for v in (1500 + i / 7 for i in range(1, 1000)) if v * 3 / 3 > v)
-    rates = unit_glicko._SuccessRates(
+    rates = unit_glicko._DisplayedRates(
         "test_league",
         {
             "sides": {"A": [0.01, 0.03, -0.01, 0.03]},
@@ -1009,8 +1010,8 @@ def test_one_anchor_for_every_side_is_its_own_average_opponent() -> None:
     )
     success = rates.rates("A", lambda team: anchor, 0.001)
     assert success is not None
-    assert success.offense.rate == pytest.approx(0.43)
-    assert success.defense.rate == pytest.approx(0.43)
+    assert success.offense == pytest.approx(0.43)
+    assert success.defense == pytest.approx(0.43)
 
 
 # --- the same, by kind of down -------------------------------------------------
@@ -1027,8 +1028,14 @@ def split(rated: None, monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
+def _per_down(rate: float) -> float:
+    """The EPA per down a test game pairs with a success rate: 0 at 0.42, moving with it."""
+    return 2 * (rate - 0.42)
+
+
 def _kinds(home: tuple[float, float], away: tuple[float, float], downs: int = 30) -> GameEpa:
-    """A game whose offenses won `(dropbacks, runs)` of each kind of down, `downs` of each."""
+    """A game whose offenses won `(dropbacks, runs)` of each kind of down, `downs` of each,
+    each kind's EPA per down moving with its rate (`_per_down`)."""
     return _rates((home[0] + home[1]) / 2, (away[0] + away[1]) / 2, 2 * downs)._replace(
         home_dropback_success=home[0],
         away_dropback_success=away[0],
@@ -1038,6 +1045,10 @@ def _kinds(home: tuple[float, float], away: tuple[float, float], downs: int = 30
         away_run_success=away[1],
         home_run_plays=downs,
         away_run_plays=downs,
+        home_dropback_epa=_per_down(home[0]),
+        away_dropback_epa=_per_down(away[0]),
+        home_run_epa=_per_down(home[1]),
+        away_run_epa=_per_down(away[1]),
     )
 
 
@@ -1052,6 +1063,24 @@ def _unsplit(epa: GameEpa) -> GameEpa:
         away_run_success=None,
         home_run_plays=0,
         away_run_plays=0,
+        home_dropback_epa=None,
+        away_dropback_epa=None,
+        home_run_epa=None,
+        away_run_epa=None,
+    )
+
+
+@pytest.fixture
+def per_down(split: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test league with clocks and a play noise for the displayed EPA per down."""
+    for kind in (ALL_DOWNS, DROPBACKS, RUNS):
+        monkeypatch.setitem(
+            unit_glicko.EPA_RATE_CLOCKS[kind],
+            "test_league",
+            (RateClock(0.1, _CARRY, 0.0025), RateClock(0.08, _CARRY, 0.0025)),
+        )
+    monkeypatch.setitem(
+        unit_glicko.EPA_PLAY_SD, "test_league", {ALL_DOWNS: 1.3, DROPBACKS: 1.5, RUNS: 1.0}
     )
 
 
@@ -1095,12 +1124,13 @@ def test_a_league_without_kind_clocks_carries_no_split(game: GameFactory) -> Non
     assert success.dropbacks is None and success.runs is None
 
 
-@pytest.mark.usefixtures("split")
+@pytest.mark.usefixtures("per_down")
 def test_the_split_moves_neither_a_prediction_nor_the_every_down_rate(
     game: GameFactory,
 ) -> None:
     """The same games with and without their split: the predictions, the
-    ratings and the every-down rates all alike, the split the only difference."""
+    ratings and the every-down rates all alike, the split and the EPA per
+    down read off it the only differences."""
     split_epa = {**_WARM_KINDS, "g": _kinds((0.6, 0.3), (0.42, 0.42))}
     plain = _predictor({g: _unsplit(e) for g, e in split_epa.items()})
     shown = _predictor(split_epa)
@@ -1111,27 +1141,74 @@ def test_the_split_moves_neither_a_prediction_nor_the_every_down_rate(
     assert shown.predict_game(game("A", "B")) == plain.predict_game(game("A", "B"))
     for team, rating in shown.ratings.items():
         success = rating.success
-        assert success is not None
-        assert rating._replace(success=success._replace(dropbacks=None, runs=None)) == (
-            plain.ratings[team]
-        )
+        assert success is not None and rating.epa is not None
+        assert plain.ratings[team].epa is None
+        assert rating._replace(
+            success=success._replace(dropbacks=None, runs=None), epa=None
+        ) == plain.ratings[team]
 
 
-@pytest.mark.usefixtures("split")
+@pytest.mark.usefixtures("per_down")
 def test_the_split_rolls_over_and_round_trips_through_the_state_dict(
     game: GameFactory,
 ) -> None:
     predictor = _predictor({**_WARM_KINDS, "g": _kinds((0.6, 0.3), (0.42, 0.42))})
     _warmed(predictor, game)
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
-    before = predictor.ratings["A"].success
+    before = predictor.ratings["A"]
     predictor.pass_season()
-    after = predictor.ratings["A"].success
-    assert before is not None and before.dropbacks is not None
-    assert after is not None and after.dropbacks is not None
-    assert after.dropbacks.offense.sd > before.dropbacks.offense.sd
+    after = predictor.ratings["A"]
+    assert before.success is not None and before.success.dropbacks is not None
+    assert after.success is not None and after.success.dropbacks is not None
+    assert after.success.dropbacks.offense.sd > before.success.dropbacks.offense.sd
+    assert before.epa is not None and before.epa.runs is not None
+    assert after.epa is not None and after.epa.runs is not None
+    assert after.epa.runs.offense.sd > before.epa.runs.offense.sd
 
     state = json.loads(json.dumps(predictor.state_dict()))
     loaded = UnitMarginGlickoPredictor.from_state_dict({**state, "game_epa": EpaIndex()})
-    assert loaded.ratings["A"].success == after
+    assert loaded.ratings["A"].success == after.success
+    assert loaded.ratings["A"].epa == after.epa
     assert loaded.state_dict() == predictor.state_dict()
+
+
+@pytest.mark.usefixtures("per_down")
+def test_epa_per_down_is_rated_on_every_down_and_on_each_kind(game: GameFactory) -> None:
+    """A gains on its dropbacks and loses on its runs against B, and every
+    down sits between the two. In EPA per down, unbounded, not in a share."""
+    predictor = _predictor({**_WARM_KINDS, "g": _kinds((0.6, 0.3), (0.42, 0.42))})
+    _warmed(predictor, game)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+
+    a, b = predictor.ratings["A"].epa, predictor.ratings["B"].epa
+    assert a is not None and b is not None
+    assert a.dropbacks is not None and a.runs is not None
+    assert b.dropbacks is not None and b.runs is not None
+    # The warm-up's dropbacks read +0.08 and its runs -0.08; every down 0.
+    assert a.dropbacks.offense.epa > _per_down(0.46) and a.runs.offense.epa < _per_down(0.38)
+    assert b.dropbacks.defense.epa > _per_down(0.46) and b.runs.defense.epa < _per_down(0.38)
+    assert a.dropbacks.offense.epa > a.offense.epa > a.runs.offense.epa
+    assert 0 < a.dropbacks.offense.sd < 0.1 and 0 < a.runs.defense.sd < 0.08
+
+
+@pytest.mark.usefixtures("per_down")
+def test_games_swept_without_the_split_carry_no_epa_per_down(game: GameFactory) -> None:
+    predictor = _predictor({**_WARM, "g": _rates(0.6, 0.3)})
+    _warmed(predictor, game)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert predictor.ratings["A"].success is not None
+    assert predictor.ratings["A"].epa is None
+
+
+@pytest.mark.usefixtures("split")
+def test_a_league_without_epa_clocks_carries_no_epa_per_down(game: GameFactory) -> None:
+    predictor = _predictor({**_WARM_KINDS, "g": _kinds((0.6, 0.3), (0.42, 0.42))})
+    _warmed(predictor, game)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert predictor.ratings["A"].epa is None
+
+
+def test_every_downs_epa_is_its_kinds_together() -> None:
+    assert unit_glicko._together((0.3, 30), (-0.1, 10)) == (pytest.approx(0.2), 40)
+    assert unit_glicko._together((0.3, 30), (None, 0)) == (pytest.approx(0.3), 30)
+    assert unit_glicko._together((None, 0), (None, 0)) == (None, 0)

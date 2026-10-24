@@ -36,11 +36,14 @@ from .matchup import predict_matchup
 from .qb_out import QB_LEAGUES, QbOutIndex, qb_out_path
 from .rest import RestLedger, RestSource, StatedRest
 from .types import (
+    EpaRates,
     GameControl,
     GameEpa,
     GameResult,
+    KindEpa,
     KindRates,
     Matchup,
+    PerDown,
     Prediction,
     Rate,
     Rating,

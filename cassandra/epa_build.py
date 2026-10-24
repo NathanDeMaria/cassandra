@@ -100,11 +100,13 @@ SINCE = FIRST_LEGIBLE_SEASON
 # units want the second -- a third of a mismatch is backups against backups
 # -- and the NFL's the first; see `cassandra.predictor.unit_glicko`.
 #
-# And the flat rate split by the kind of down, dropbacks and runs apart, for
-# a reader (`is_dropback` says which is which).
+# And the flat rate split by the kind of down, dropbacks and runs apart, with
+# each kind's EPA per down beside it, for a reader (`is_dropback` says which
+# is which).
 SUCCESS = (
     "epa>0, dropbacks and runs, no kneels or spikes; unweighted and weighted;"
-    " dropbacks (passes, sacks, scrambles by their text) and runs apart"
+    " dropbacks (passes, sacks, scrambles by their text) and runs apart,"
+    " success and bounded EPA per down"
 )
 
 # Kneels and spikes, off the play text: both are filed as an ordinary run or
@@ -180,6 +182,14 @@ def is_dropback(play_type: str | None, text: str | None) -> bool:
     return ("fumble" in lowered or "safety" in lowered) and bool(_DROPBACK_TEXT.search(words))
 
 
+class _Kind(NamedTuple):
+    """One side's downs of one kind: their success rate, their count, their EPA per down."""
+
+    success: float | None
+    plays: int
+    epa: float | None
+
+
 class _Success(NamedTuple):
     home: float | None
     away: float | None
@@ -187,16 +197,17 @@ class _Success(NamedTuple):
     away_downs: int
     home_weighted: float | None
     away_weighted: float | None
-    home_dropbacks: tuple[float | None, int]
-    away_dropbacks: tuple[float | None, int]
-    home_runs: tuple[float | None, int]
-    away_runs: tuple[float | None, int]
+    home_dropbacks: _Kind
+    away_dropbacks: _Kind
+    home_runs: _Kind
+    away_runs: _Kind
 
 
 def _success(game: GamePlays, plays: Sequence[PlayEPA]) -> _Success:
     """Each offense's success rate, unweighted and weighted, and its dropbacks and runs.
 
-    And the flat rate over each kind of down apart, with how many of each.
+    And over each kind of down apart: the flat rate, how many, and the EPA
+    per down, each play bounded as the flat EPA's are.
     """
     by_id = {play.play_id: play for play in game.plays}
     won = {True: 0, False: 0}
@@ -206,6 +217,7 @@ def _success(game: GamePlays, plays: Sequence[PlayEPA]) -> _Success:
     # By side, then dropback or not.
     kind_won = {(side, dropback): 0 for side in (True, False) for dropback in (True, False)}
     kind_downs = dict(kind_won)
+    kind_epa = {kind: 0.0 for kind in kind_won}
     for snap in plays:
         play = by_id.get(snap.play_id)
         if play is None or not is_down(play.play_type, play.text):
@@ -216,12 +228,15 @@ def _success(game: GamePlays, plays: Sequence[PlayEPA]) -> _Success:
         won[side] += snap.epa > 0
         kind_downs[kind] += 1
         kind_won[kind] += snap.epa > 0
+        kind_epa[kind] += snap.bounded
         weight[side] += snap.weight
         won_weight[side] += snap.weight * (snap.epa > 0)
 
-    def rate(side: bool, dropback: bool) -> tuple[float | None, int]:
+    def rate(side: bool, dropback: bool) -> _Kind:
         n = kind_downs[side, dropback]
-        return (kind_won[side, dropback] / n if n else None), n
+        if not n:
+            return _Kind(None, 0, None)
+        return _Kind(kind_won[side, dropback] / n, n, kind_epa[side, dropback] / n)
 
     return _Success(
         home=won[True] / downs[True] if downs[True] else None,
@@ -256,7 +271,7 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
     The success rates come off the same snaps' raw EPA, over the dropbacks
     and runs `is_down` picks out, once unweighted and once by the same
     weights as the weighted EPA, and unweighted over each kind apart
-    (`is_dropback`); see `SUCCESS`.
+    (`is_dropback`), with each kind's bounded EPA per down; see `SUCCESS`.
     """
     scored = MODELS[league].epa_per_play(game, clip=CLIP, weight_power=WEIGHT_POWER)
     if scored.home_unweighted is None or scored.away_unweighted is None:
@@ -277,14 +292,18 @@ def _score(league: str, game: GamePlays) -> GameEpa | None:
         away_success_plays=success.away_downs,
         home_success_weighted=success.home_weighted,
         away_success_weighted=success.away_weighted,
-        home_dropback_success=success.home_dropbacks[0],
-        away_dropback_success=success.away_dropbacks[0],
-        home_dropback_plays=success.home_dropbacks[1],
-        away_dropback_plays=success.away_dropbacks[1],
-        home_run_success=success.home_runs[0],
-        away_run_success=success.away_runs[0],
-        home_run_plays=success.home_runs[1],
-        away_run_plays=success.away_runs[1],
+        home_dropback_success=success.home_dropbacks.success,
+        away_dropback_success=success.away_dropbacks.success,
+        home_dropback_plays=success.home_dropbacks.plays,
+        away_dropback_plays=success.away_dropbacks.plays,
+        home_run_success=success.home_runs.success,
+        away_run_success=success.away_runs.success,
+        home_run_plays=success.home_runs.plays,
+        away_run_plays=success.away_runs.plays,
+        home_dropback_epa=success.home_dropbacks.epa,
+        away_dropback_epa=success.away_dropbacks.epa,
+        home_run_epa=success.home_runs.epa,
+        away_run_epa=success.away_runs.epa,
     )
 
 

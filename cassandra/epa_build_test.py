@@ -234,6 +234,9 @@ def test_the_success_rate_splits_into_dropbacks_and_runs() -> None:
             assert getattr(epa["g1"], f"{side}_{kind}_success") == pytest.approx(
                 sum(p.epa > 0 for p in mine) / len(mine)
             )
+            assert getattr(epa["g1"], f"{side}_{kind}_epa") == pytest.approx(
+                sum(p.bounded for p in mine) / len(mine)
+            )
         e = epa["g1"]
         dropbacks, runs = getattr(e, f"{side}_dropback_plays"), getattr(e, f"{side}_run_plays")
         assert dropbacks + runs == getattr(e, f"{side}_success_plays")
@@ -241,6 +244,12 @@ def test_the_success_rate_splits_into_dropbacks_and_runs() -> None:
             dropbacks * getattr(e, f"{side}_dropback_success")
             + runs * getattr(e, f"{side}_run_success")
         ) / (dropbacks + runs) == pytest.approx(getattr(e, f"{side}_success"))
+        # Every snap of the fixture is a down, so the two kinds' EPA together
+        # is the flat EPA per snap: bounded the same way.
+        assert dropbacks + runs == getattr(e, f"{side}_plays")
+        assert (
+            dropbacks * getattr(e, f"{side}_dropback_epa") + runs * getattr(e, f"{side}_run_epa")
+        ) / (dropbacks + runs) == pytest.approx(getattr(e, side))
     assert by_id[plays[4].play_id].play_type == "Rush"
 
 
@@ -250,6 +259,7 @@ def test_a_side_without_a_kind_of_down_has_no_rate_for_it() -> None:
         sweep(_LEAGUE, [_season(2025, "g1")], _Source({(2025, 1): _plays("g1")}))
     )
     assert epa["g1"].home_dropback_success is None
+    assert epa["g1"].home_dropback_epa is None
     assert epa["g1"].home_dropback_plays == 0
     assert epa["g1"].home_run_plays == epa["g1"].home_success_plays
 

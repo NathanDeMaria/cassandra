@@ -378,7 +378,7 @@ it comes each offense's rate against an average defense on a neutral field,
 and the rate each defense allows an average offense -- `center +` the
 team's anchor against an average opponent's `+` its offset -- with the
 offset's deviation as the uncertainty. An average opponent is the upper
-tier's: on ncaafb the FBS (`_SuccessRates`).
+tier's: on ncaafb the FBS (`_DisplayedRates`).
 
 Nothing predicts from it, so no model's numbers move, and it doesn't go
 through the smoother, coach widening or quarterback shifts, which are about
@@ -408,6 +408,19 @@ every-down rate, ties it on the NFL and gains about 0.5e-4 of brier on
 ncaafb (`reasoning/success_rate/mixed/`). Which kind a down is follows the
 feed's filing, scrambles by their text (`cassandra.epa_build.is_dropback`);
 the college feed never says "scramble", so there a scramble is a run.
+
+And EPA per down (`Rating.epa`), the success rate's twin: the same three
+pairs of sides again -- every down, dropbacks, runs -- on each kind's
+bounded EPA per down (`EPA_RATE_CLOCKS`), the gap taken at EPA's scale and
+each game read at `EPA_PLAY_SD` per down. Per down, not per snap: kicks
+and kneels stay out, as they do of the success rate, where the units'
+reading counts every snap. Replayed the same way, predictions and every
+success rate unchanged: the NFL's dropbacks add 0.14 a down and its runs
+lose 0.055, spread 0.037 and 0.021 across teams (the 49ers best through
+the air at 0.21, the Bills on the ground at -0.013); 2026's FBS offenses
+add about 0 either way, spread 0.12 and 0.08, a team's two correlating
+0.79 (Ohio State 0.29 a dropback, Tennessee 0.18 a run, Oklahoma's
+defense -0.22 every down).
 
 Rated apart, the two aren't the every-down rate cut in half. Each has
 about half the downs, so each is pulled further toward its anchor's level:
@@ -476,9 +489,12 @@ from .margin_glicko import (
 from .opponent_prior import OpponentPriorManager
 from .rest import DEFAULT_REST_ADVANTAGE
 from .types import (
+    EpaRates,
     GameEpa,
+    KindEpa,
     KindRates,
     Matchup,
+    PerDown,
     Prediction,
     Rate,
     Rating,
@@ -605,6 +621,41 @@ KIND_RATE_CLOCKS: Mapping[str, Mapping[str, tuple[RateClock, RateClock]]] = {
     },
 }
 
+#: What a displayed reading is: a share of downs won, or EPA per down.
+SUCCESS = "success"
+EPA = "epa"
+
+#: Every down, as a kind beside the two.
+ALL_DOWNS = "all"
+
+#: The displayed EPA per down's clocks, offense then defense, by kind and
+#: league, measured as `KIND_RATE_CLOCKS` were (`kind_clocks.py`). The
+#: weekly widening is the success rate's 0.001 in EPA's spread, 0.0025.
+EPA_RATE_CLOCKS: Mapping[str, Mapping[str, tuple[RateClock, RateClock]]] = {
+    ALL_DOWNS: {
+        "ncaafb": (RateClock(0.128, 0.84, 0.0025), RateClock(0.109, 0.85, 0.0025)),
+        "nfl": (RateClock(0.067, 0.62, 0.0025), RateClock(0.047, 0.62, 0.0025)),
+    },
+    DROPBACKS: {
+        "ncaafb": (RateClock(0.141, 0.80, 0.0025), RateClock(0.111, 0.87, 0.0025)),
+        "nfl": (RateClock(0.082, 0.68, 0.0025), RateClock(0.059, 0.63, 0.0025)),
+    },
+    RUNS: {
+        "ncaafb": (RateClock(0.095, 0.85, 0.0025), RateClock(0.085, 0.79, 0.0025)),
+        "nfl": (RateClock(0.049, 0.59, 0.0025), RateClock(0.036, 0.83, 0.0025)),
+    },
+}
+
+#: One down's bounded EPA about what its contest expected, by kind and
+#: league, so a side's per-down average over `n` reads with variance
+#: `sd^2 / n` -- the success rate's binomial noise, for a reading with no
+#: bound of its own. `kind_clocks.py`'s noise per down, offense and defense
+#: alike to the second place.
+EPA_PLAY_SD: Mapping[str, Mapping[str, float]] = {
+    "ncaafb": {ALL_DOWNS: 1.42, DROPBACKS: 1.49, RUNS: 1.04},
+    "nfl": {ALL_DOWNS: 1.27, DROPBACKS: 1.48, RUNS: 0.93},
+}
+
 #: A rate the binomial reading is priced at, kept off the ends.
 _RATE_FLOOR = 0.05
 
@@ -711,9 +762,11 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # Carried so a loaded model keeps centering where the replay left it.
         epa_center_state: Sequence[float | None] = (None, 0.0, 0),
         # The displayed success rates' sides and center, carried like the
-        # units'; see "What a release carries". The split's, by kind of down.
+        # units'; see "What a release carries". The split's, by kind of down,
+        # and the displayed EPA per down's, by kind with `ALL_DOWNS`.
         success_rates_state: Mapping[str, Any] | None = None,
         kind_rates_state: Mapping[str, Mapping[str, Any]] | None = None,
+        epa_rates_state: Mapping[str, Mapping[str, Any]] | None = None,
         anchors: Mapping[str, Anchor] | None = None,
         unanchored_seen: Sequence[float] = (0.0, 0.0, 0),
         game_epa: EpaIndex | None = None,
@@ -773,10 +826,19 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._center_sum = float(total or 0.0)
         self._center_count = int(count or 0)
         self._game_epa = game_epa or EpaIndex.for_league(league)
-        self._success_rates = _SuccessRates(league, success_rates_state)
+        self._success_rates = _DisplayedRates(league, success_rates_state)
         self._kind_rates = {
-            kind: _SuccessRates(league, (kind_rates_state or {}).get(kind), kind)
+            kind: _DisplayedRates(league, (kind_rates_state or {}).get(kind), kind)
             for kind in KIND_RATE_CLOCKS
+        }
+        self._epa_rates = {
+            kind: _DisplayedRates(
+                league,
+                (epa_rates_state or {}).get(kind),
+                None if kind == ALL_DOWNS else kind,
+                EPA,
+            )
+            for kind in EPA_RATE_CLOCKS
         }
         # The smoother's ledger for the units, as the parent keeps one for
         # the ratings: where the season's sides started, and its contests.
@@ -1102,17 +1164,22 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             self._sides[defense] = self._offsets(defense)._replace(defense=new_defense)
         displayed = self._displayed
         if displayed:
-            shift = gap * per_play / SUCCESS_SCALE[self._league][UNWEIGHTED][0]
+            # The gap in EPA per play; each displayed reading takes it to its own.
+            shift = gap * per_play
             anchors = (self.anchor(game.home), self.anchor(game.away))
             for rates in displayed:
-                rates.add_game(game, epa, shift, anchors)
+                rates.add_game(game, epa, rates.from_epa(shift), anchors)
 
     @property
-    def _displayed(self) -> list["_SuccessRates"]:
-        """The displayed rates this league keeps: every down's, and each kind's."""
+    def _displayed(self) -> list["_DisplayedRates"]:
+        """The displayed readings this league keeps: success rates and EPA, every down's and each kind's."""
         return [
             rates
-            for rates in (self._success_rates, *self._kind_rates.values())
+            for rates in (
+                self._success_rates,
+                *self._kind_rates.values(),
+                *self._epa_rates.values(),
+            )
             if rates.enabled
         ]
 
@@ -1324,6 +1391,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "kind_rates_state": {
                 kind: rates.state() for kind, rates in self._kind_rates.items()
             },
+            "epa_rates_state": {
+                kind: rates.state() for kind, rates in self._epa_rates.items()
+            },
             "sides": {
                 team: [
                     pair.offense.rating,
@@ -1354,40 +1424,58 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
 
         Every team carries its `blended` rating, the one
         `predict_distribution` reads -- the parent itself for a team with no
-        sides -- and, where its success rates have been read, those; see
-        "What a release carries".
+        sides -- and, where its success rates and EPA per down have been
+        read, those; see "What a release carries".
         """
+        # EPA per play per rating point of anchor gap; each displayed
+        # reading takes it to its own units.
         per_rating = (
-            self._anchor_epa_scale
-            * self.points_per_rating
-            / (2 * self._points_per_epa)
-            / SUCCESS_SCALE[self._league][UNWEIGHTED][0]
-            if self._success_rates.enabled
-            else 0.0
+            self._anchor_epa_scale * self.points_per_rating / (2 * self._points_per_epa)
         )
         return {
             team: rating._replace(
                 units=self._absolute_units(team) if team in self._sides else None,
                 blended=self._blended(team).rating,
                 success=self._success(team, per_rating),
+                epa=self._epa(team, per_rating),
             )
             for team, rating in super().ratings.items()
         }
 
     def _success(self, team: str, per_rating: float) -> SuccessRates | None:
         """`team`'s displayed success rates, with the split by kind of down beside them."""
-        if not self._success_rates.enabled:
-            return None
-        every = self._success_rates.rates(team, self.anchor, per_rating)
+        every = self._shown(self._success_rates, team, per_rating)
         if every is None:
             return None
-        kinds = {
-            kind: rates.rates(team, self.anchor, per_rating) if rates.enabled else None
-            for kind, rates in self._kind_rates.items()
-        }
+        dropbacks = self._shown(self._kind_rates[DROPBACKS], team, per_rating)
+        runs = self._shown(self._kind_rates[RUNS], team, per_rating)
         return SuccessRates(
-            every.offense, every.defense, dropbacks=kinds[DROPBACKS], runs=kinds[RUNS]
+            Rate(every.offense, every.offense_sd),
+            Rate(every.defense, every.defense_sd),
+            dropbacks=None if dropbacks is None else dropbacks.as_rates(),
+            runs=None if runs is None else runs.as_rates(),
         )
+
+    def _epa(self, team: str, per_rating: float) -> EpaRates | None:
+        """`team`'s displayed EPA per down, every down's and each kind's."""
+        every = self._shown(self._epa_rates[ALL_DOWNS], team, per_rating)
+        if every is None:
+            return None
+        dropbacks = self._shown(self._epa_rates[DROPBACKS], team, per_rating)
+        runs = self._shown(self._epa_rates[RUNS], team, per_rating)
+        return EpaRates(
+            PerDown(every.offense, every.offense_sd),
+            PerDown(every.defense, every.defense_sd),
+            dropbacks=None if dropbacks is None else dropbacks.as_epa(),
+            runs=None if runs is None else runs.as_epa(),
+        )
+
+    def _shown(
+        self, rates: "_DisplayedRates", team: str, per_rating: float
+    ) -> "_Shown | None":
+        if not rates.enabled:
+            return None
+        return rates.rates(team, self.anchor, rates.from_epa(per_rating))
 
     def _absolute_units(self, team: str) -> Units:
         anchor = self.anchor(team)
@@ -1483,7 +1571,24 @@ def _carried(unit: _Rating, clock: RateClock) -> _Rating:
     )
 
 
-class _SuccessRates:
+class _Shown(NamedTuple):
+    """A team's displayed offense and defense, each with its deviation."""
+
+    offense: float
+    offense_sd: float
+    defense: float
+    defense_sd: float
+
+    def as_rates(self) -> KindRates:
+        return KindRates(Rate(self.offense, self.offense_sd), Rate(self.defense, self.defense_sd))
+
+    def as_epa(self) -> KindEpa:
+        return KindEpa(
+            PerDown(self.offense, self.offense_sd), PerDown(self.defense, self.defense_sd)
+        )
+
+
+class _DisplayedRates:
     """The displayed success rate: a pair of sides per team on the flat rate.
 
     See "What a release carries". Stepped by `add_game` from the units'
@@ -1510,16 +1615,32 @@ class _SuccessRates:
     anchors and FCS ones near 10%.
 
     `kind` reads one kind of down alone (`DROPBACKS`, `RUNS`) on its own
-    clocks, center and slope; None is every down.
+    clocks, center and slope; None is every down. `measure` `EPA` reads the
+    same downs' EPA per down instead (`EPA_RATE_CLOCKS`): the gap taken at
+    EPA's scale rather than through `SUCCESS_SCALE`, the reading priced at
+    `EPA_PLAY_SD` per down rather than binomially, and nothing kept between
+    0 and 1. Every down's EPA per down is the two kinds' together, so the
+    snaps that are no down -- kicks, kneels -- stay out of it as they stay
+    out of the success rate.
     """
 
     def __init__(
-        self, league: str, state: Mapping[str, Any] | None, kind: str | None = None
+        self,
+        league: str,
+        state: Mapping[str, Any] | None,
+        kind: str | None = None,
+        measure: str = SUCCESS,
     ) -> None:
+        self._league = league
         self._kind = kind
-        self._clocks = (
-            SUCCESS_RATE_CLOCKS if kind is None else KIND_RATE_CLOCKS[kind]
-        ).get(league)
+        self._measure = measure
+        if measure == SUCCESS:
+            clocks = SUCCESS_RATE_CLOCKS if kind is None else KIND_RATE_CLOCKS[kind]
+            self._play_sd = None
+        else:
+            clocks = EPA_RATE_CLOCKS[ALL_DOWNS if kind is None else kind]
+            self._play_sd = EPA_PLAY_SD.get(league, {}).get(ALL_DOWNS if kind is None else kind)
+        self._clocks = clocks.get(league)
         state = state or {}
         self._sides: dict[str, _Sides] = {
             team: _Sides(_Rating(s[0], s[1]), _Rating(s[2], s[3]))
@@ -1541,8 +1662,8 @@ class _SuccessRates:
 
     @property
     def enabled(self) -> bool:
-        """Whether this league has clocks to keep the rates on."""
-        return self._clocks is not None
+        """Whether this league has clocks to keep the readings on, and an EPA reading its noise."""
+        return self._clocks is not None and (self._measure == SUCCESS or self._play_sd is not None)
 
     @property
     def center(self) -> float | None:
@@ -1581,7 +1702,12 @@ class _SuccessRates:
         center = self.center
         expected = self.gap_slope * shift
         if center is not None:
-            p = min(max(center, _RATE_FLOOR), 1 - _RATE_FLOOR)
+            if self._measure == SUCCESS:
+                p = min(max(center, _RATE_FLOOR), 1 - _RATE_FLOOR)
+                per_down = p * (1 - p)
+            else:
+                assert self._play_sd is not None
+                per_down = self._play_sd**2
             for offense, defense, rate, downs, sign in (
                 (game.home, game.away, home, home_downs, 1.0),
                 (game.away, game.home, away, away_downs, -1.0),
@@ -1590,7 +1716,7 @@ class _SuccessRates:
                     offense=offense,
                     defense=defense,
                     epa=rate,
-                    noise=p * (1 - p) / downs,
+                    noise=per_down / downs,
                     base=center + sign * expected,
                 )
                 attack = self._offsets(offense)
@@ -1608,8 +1734,16 @@ class _SuccessRates:
         for anchor in anchors:
             self._anchors[anchor] = self._anchors.get(anchor, 0) + 1
 
+    def from_epa(self, value: float) -> float:
+        """A gap in EPA per play, in this reading's units."""
+        if self._measure == EPA:
+            return value
+        return value / SUCCESS_SCALE[self._league][UNWEIGHTED][0]
+
     def _read(self, epa: GameEpa) -> tuple[float | None, float | None, int, int]:
-        """The game's rates and downs, home then away, of this kind of down."""
+        """The game's readings and downs, home then away, of this kind of down."""
+        if self._measure == EPA:
+            return self._read_epa(epa)
         if self._kind == DROPBACKS:
             return (
                 epa.home_dropback_success,
@@ -1630,6 +1764,20 @@ class _SuccessRates:
             epa.home_success_plays,
             epa.away_success_plays,
         )
+
+    def _read_epa(self, epa: GameEpa) -> tuple[float | None, float | None, int, int]:
+        """Each side's EPA per down of this kind; every down's is both kinds' together."""
+        home_dropbacks = (epa.home_dropback_epa, epa.home_dropback_plays)
+        away_dropbacks = (epa.away_dropback_epa, epa.away_dropback_plays)
+        home_runs = (epa.home_run_epa, epa.home_run_plays)
+        away_runs = (epa.away_run_epa, epa.away_run_plays)
+        if self._kind == DROPBACKS:
+            return home_dropbacks[0], away_dropbacks[0], home_dropbacks[1], away_dropbacks[1]
+        if self._kind == RUNS:
+            return home_runs[0], away_runs[0], home_runs[1], away_runs[1]
+        home, home_downs = _together(home_dropbacks, home_runs)
+        away, away_downs = _together(away_dropbacks, away_runs)
+        return home, away, home_downs, away_downs
 
     def pass_week(self) -> None:
         assert self._clocks is not None
@@ -1655,10 +1803,11 @@ class _SuccessRates:
 
     def rates(
         self, team: str, anchor_of: Callable[[str], float], per_rating: float
-    ) -> KindRates | None:
+    ) -> _Shown | None:
         """`team`'s offense against an average defense, and its defense
         against an average offense, on a neutral field; None for a team
-        never read. `per_rating` is rate per rating point of anchor gap.
+        never read. `per_rating` is the reading per rating point of anchor
+        gap, in the reading's units (`from_epa`).
 
         The anchor is asked for only for a team that has been read, as the
         units ask only for teams with sides.
@@ -1669,9 +1818,12 @@ class _SuccessRates:
         anchor = anchor_of(team)
         level = self.gap_slope * (anchor - self._reference(anchor)) * per_rating
         pair = self._sides[team]
-        return KindRates(
-            Rate(_as_rate(center + level + pair.offense.rating), pair.offense.rating_deviation),
-            Rate(_as_rate(center - level - pair.defense.rating), pair.defense.rating_deviation),
+        bound = _as_rate if self._measure == SUCCESS else float
+        return _Shown(
+            bound(center + level + pair.offense.rating),
+            pair.offense.rating_deviation,
+            bound(center - level - pair.defense.rating),
+            pair.defense.rating_deviation,
         )
 
     def _reference(self, fallback: float) -> float:
@@ -1705,6 +1857,14 @@ class _SuccessRates:
 
 def _as_rate(value: float) -> float:
     return min(max(value, 0.0), 1.0)
+
+
+def _together(*kinds: tuple[float | None, int]) -> tuple[float | None, int]:
+    """Per-down averages over their downs, pooled: their mean, and how many downs."""
+    downs = sum(n for _, n in kinds)
+    if not downs:
+        return None, 0
+    return sum(value * n for value, n in kinds if value is not None and n) / downs, downs
 
 
 def _non_negative(name: str, value: float) -> float:

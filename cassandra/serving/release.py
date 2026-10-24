@@ -20,7 +20,10 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from cassandra.predictor import (
+    EpaRates,
+    KindEpa,
     KindRates,
+    PerDown,
     Predictor,
     Rate,
     Rating,
@@ -77,6 +80,34 @@ class SuccessRating(BaseModel):
     runs: KindSuccessRating | None = None
 
 
+class PerDownRating(BaseModel):
+    """One side's EPA per down -- per dropback or run, kicks and kneels left out -- and its deviation."""
+
+    epa: float
+    sd: float
+
+
+class KindEpaRating(BaseModel):
+    """One kind of down's EPA per down: the offense's, and what its defense allows."""
+
+    offense: PerDownRating
+    defense: PerDownRating
+
+
+class EpaRating(BaseModel):
+    """A team's offense's EPA per down and what its defense allows.
+
+    `SuccessRating`'s twin, opponent-adjusted the same way and for a reader
+    only, over every down and over dropbacks and runs apart. None in a
+    release written before it.
+    """
+
+    offense: PerDownRating
+    defense: PerDownRating
+    dropbacks: KindEpaRating | None = None
+    runs: KindEpaRating | None = None
+
+
 class TeamRating(BaseModel):
     """A team's standing in one release.
 
@@ -105,7 +136,7 @@ class TeamRating(BaseModel):
 
     `success` is each side's success rate, from a units model, and None
     where the model keeps none or the team has no plays; see
-    `SuccessRating`.
+    `SuccessRating`. `epa` is the same for EPA per down (`EpaRating`).
     """
 
     rating: float
@@ -116,6 +147,7 @@ class TeamRating(BaseModel):
     offense: UnitRating | None = None
     defense: UnitRating | None = None
     success: SuccessRating | None = None
+    epa: EpaRating | None = None
 
 
 def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
@@ -134,6 +166,7 @@ def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
             offense=_unit_rating(rating.units.offense) if rating.units else None,
             defense=_unit_rating(rating.units.defense) if rating.units else None,
             success=_success(rating.success),
+            epa=_epa(rating.epa),
         )
         for team, rating in predictor.ratings.items()
     }
@@ -176,6 +209,27 @@ def _kind(rates: KindRates | None) -> KindSuccessRating | None:
 
 def _rate(rate: Rate) -> RateRating:
     return RateRating(rate=rate.rate, sd=rate.sd)
+
+
+def _epa(rates: EpaRates | None) -> EpaRating | None:
+    if rates is None:
+        return None
+    return EpaRating(
+        offense=_per_down(rates.offense),
+        defense=_per_down(rates.defense),
+        dropbacks=_kind_epa(rates.dropbacks),
+        runs=_kind_epa(rates.runs),
+    )
+
+
+def _kind_epa(rates: KindEpa | None) -> KindEpaRating | None:
+    if rates is None:
+        return None
+    return KindEpaRating(offense=_per_down(rates.offense), defense=_per_down(rates.defense))
+
+
+def _per_down(value: PerDown) -> PerDownRating:
+    return PerDownRating(epa=value.epa, sd=value.sd)
 
 
 def _state(rating: TeamRating) -> Rating:
