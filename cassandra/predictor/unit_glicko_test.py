@@ -27,7 +27,7 @@ from .unit_glicko import (
     CENTER_PRIOR_SIDES,
     DEFAULT_DEFENSE_INITIAL_SD,
     DEFAULT_OFFENSE_INITIAL_SD,
-    DROPBACKS,
+    PASSES,
     RUNS,
     UNWEIGHTED,
     WEIGHTED,
@@ -1019,8 +1019,8 @@ def test_one_anchor_for_every_side_is_its_own_average_opponent() -> None:
 
 @pytest.fixture
 def split(rated: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The test league with clocks for dropbacks and runs too."""
-    for kind in (DROPBACKS, RUNS):
+    """The test league with clocks for passes and runs too."""
+    for kind in (PASSES, RUNS):
         monkeypatch.setitem(
             unit_glicko.KIND_RATE_CLOCKS[kind],
             "test_league",
@@ -1034,19 +1034,19 @@ def _per_down(rate: float) -> float:
 
 
 def _kinds(home: tuple[float, float], away: tuple[float, float], downs: int = 30) -> GameEpa:
-    """A game whose offenses won `(dropbacks, runs)` of each kind of down, `downs` of each,
+    """A game whose offenses won `(passes, runs)` of each kind of down, `downs` of each,
     each kind's EPA per down moving with its rate (`_per_down`)."""
     return _rates((home[0] + home[1]) / 2, (away[0] + away[1]) / 2, 2 * downs)._replace(
-        home_dropback_success=home[0],
-        away_dropback_success=away[0],
-        home_dropback_plays=downs,
-        away_dropback_plays=downs,
+        home_pass_success=home[0],
+        away_pass_success=away[0],
+        home_pass_plays=downs,
+        away_pass_plays=downs,
         home_run_success=home[1],
         away_run_success=away[1],
         home_run_plays=downs,
         away_run_plays=downs,
-        home_dropback_epa=_per_down(home[0]),
-        away_dropback_epa=_per_down(away[0]),
+        home_pass_epa=_per_down(home[0]),
+        away_pass_epa=_per_down(away[0]),
         home_run_epa=_per_down(home[1]),
         away_run_epa=_per_down(away[1]),
     )
@@ -1055,16 +1055,16 @@ def _kinds(home: tuple[float, float], away: tuple[float, float], downs: int = 30
 def _unsplit(epa: GameEpa) -> GameEpa:
     """The same game as a sweep from before the split would have it."""
     return epa._replace(
-        home_dropback_success=None,
-        away_dropback_success=None,
-        home_dropback_plays=0,
-        away_dropback_plays=0,
+        home_pass_success=None,
+        away_pass_success=None,
+        home_pass_plays=0,
+        away_pass_plays=0,
         home_run_success=None,
         away_run_success=None,
         home_run_plays=0,
         away_run_plays=0,
-        home_dropback_epa=None,
-        away_dropback_epa=None,
+        home_pass_epa=None,
+        away_pass_epa=None,
         home_run_epa=None,
         away_run_epa=None,
     )
@@ -1073,14 +1073,14 @@ def _unsplit(epa: GameEpa) -> GameEpa:
 @pytest.fixture
 def per_down(split: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """The test league with clocks and a play noise for the displayed EPA per down."""
-    for kind in (ALL_DOWNS, DROPBACKS, RUNS):
+    for kind in (ALL_DOWNS, PASSES, RUNS):
         monkeypatch.setitem(
             unit_glicko.EPA_RATE_CLOCKS[kind],
             "test_league",
             (RateClock(0.1, _CARRY, 0.0025), RateClock(0.08, _CARRY, 0.0025)),
         )
     monkeypatch.setitem(
-        unit_glicko.EPA_PLAY_SD, "test_league", {ALL_DOWNS: 1.3, DROPBACKS: 1.5, RUNS: 1.0}
+        unit_glicko.EPA_PLAY_SD, "test_league", {ALL_DOWNS: 1.3, PASSES: 1.5, RUNS: 1.0}
     )
 
 
@@ -1089,7 +1089,7 @@ _WARM_KINDS = {"w1": _kinds((0.46, 0.38), (0.46, 0.38)), "w2": _kinds((0.46, 0.3
 
 @pytest.mark.usefixtures("split")
 def test_each_kind_of_down_is_rated_on_its_own(game: GameFactory) -> None:
-    """A throws well and runs badly against B: its dropbacks rate up, its runs
+    """A throws well and runs badly against B: its passes rate up, its runs
     down, and B's defense the other way round on each."""
     predictor = _predictor({**_WARM_KINDS, "g": _kinds((0.6, 0.3), (0.42, 0.42))})
     _warmed(predictor, game)
@@ -1097,11 +1097,11 @@ def test_each_kind_of_down_is_rated_on_its_own(game: GameFactory) -> None:
 
     a, b = predictor.ratings["A"].success, predictor.ratings["B"].success
     assert a is not None and b is not None
-    assert a.dropbacks is not None and a.runs is not None
-    assert b.dropbacks is not None and b.runs is not None
-    assert a.dropbacks.offense.rate > 0.46 and a.runs.offense.rate < 0.38
-    assert b.dropbacks.defense.rate > 0.46 and b.runs.defense.rate < 0.38
-    assert 0 < a.dropbacks.offense.sd < 0.05 and 0 < a.runs.defense.sd < 0.04
+    assert a.passes is not None and a.runs is not None
+    assert b.passes is not None and b.runs is not None
+    assert a.passes.offense.rate > 0.46 and a.runs.offense.rate < 0.38
+    assert b.passes.defense.rate > 0.46 and b.runs.defense.rate < 0.38
+    assert 0 < a.passes.offense.sd < 0.05 and 0 < a.runs.defense.sd < 0.04
 
 
 @pytest.mark.usefixtures("split")
@@ -1111,7 +1111,7 @@ def test_games_swept_before_the_split_leave_it_unread(game: GameFactory) -> None
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     success = predictor.ratings["A"].success
     assert success is not None
-    assert success.dropbacks is None and success.runs is None
+    assert success.passes is None and success.runs is None
 
 
 @pytest.mark.usefixtures("rated")
@@ -1121,7 +1121,7 @@ def test_a_league_without_kind_clocks_carries_no_split(game: GameFactory) -> Non
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     success = predictor.ratings["A"].success
     assert success is not None
-    assert success.dropbacks is None and success.runs is None
+    assert success.passes is None and success.runs is None
 
 
 @pytest.mark.usefixtures("per_down")
@@ -1144,7 +1144,7 @@ def test_the_split_moves_neither_a_prediction_nor_the_every_down_rate(
         assert success is not None and rating.epa is not None
         assert plain.ratings[team].epa is None
         assert rating._replace(
-            success=success._replace(dropbacks=None, runs=None), epa=None
+            success=success._replace(passes=None, runs=None), epa=None
         ) == plain.ratings[team]
 
 
@@ -1158,9 +1158,9 @@ def test_the_split_rolls_over_and_round_trips_through_the_state_dict(
     before = predictor.ratings["A"]
     predictor.pass_season()
     after = predictor.ratings["A"]
-    assert before.success is not None and before.success.dropbacks is not None
-    assert after.success is not None and after.success.dropbacks is not None
-    assert after.success.dropbacks.offense.sd > before.success.dropbacks.offense.sd
+    assert before.success is not None and before.success.passes is not None
+    assert after.success is not None and after.success.passes is not None
+    assert after.success.passes.offense.sd > before.success.passes.offense.sd
     assert before.epa is not None and before.epa.runs is not None
     assert after.epa is not None and after.epa.runs is not None
     assert after.epa.runs.offense.sd > before.epa.runs.offense.sd
@@ -1174,7 +1174,7 @@ def test_the_split_rolls_over_and_round_trips_through_the_state_dict(
 
 @pytest.mark.usefixtures("per_down")
 def test_epa_per_down_is_rated_on_every_down_and_on_each_kind(game: GameFactory) -> None:
-    """A gains on its dropbacks and loses on its runs against B, and every
+    """A gains on its passes and loses on its runs against B, and every
     down sits between the two. In EPA per down, unbounded, not in a share."""
     predictor = _predictor({**_WARM_KINDS, "g": _kinds((0.6, 0.3), (0.42, 0.42))})
     _warmed(predictor, game)
@@ -1182,13 +1182,13 @@ def test_epa_per_down_is_rated_on_every_down_and_on_each_kind(game: GameFactory)
 
     a, b = predictor.ratings["A"].epa, predictor.ratings["B"].epa
     assert a is not None and b is not None
-    assert a.dropbacks is not None and a.runs is not None
-    assert b.dropbacks is not None and b.runs is not None
-    # The warm-up's dropbacks read +0.08 and its runs -0.08; every down 0.
-    assert a.dropbacks.offense.epa > _per_down(0.46) and a.runs.offense.epa < _per_down(0.38)
-    assert b.dropbacks.defense.epa > _per_down(0.46) and b.runs.defense.epa < _per_down(0.38)
-    assert a.dropbacks.offense.epa > a.offense.epa > a.runs.offense.epa
-    assert 0 < a.dropbacks.offense.sd < 0.1 and 0 < a.runs.defense.sd < 0.08
+    assert a.passes is not None and a.runs is not None
+    assert b.passes is not None and b.runs is not None
+    # The warm-up's passes read +0.08 and its runs -0.08; every down 0.
+    assert a.passes.offense.epa > _per_down(0.46) and a.runs.offense.epa < _per_down(0.38)
+    assert b.passes.defense.epa > _per_down(0.46) and b.runs.defense.epa < _per_down(0.38)
+    assert a.passes.offense.epa > a.offense.epa > a.runs.offense.epa
+    assert 0 < a.passes.offense.sd < 0.1 and 0 < a.runs.defense.sd < 0.08
 
 
 @pytest.mark.usefixtures("per_down")

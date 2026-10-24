@@ -66,19 +66,19 @@ class SuccessRates(NamedTuple):
     """A team's success rate on offense, and the rate its defense allows.
 
     Each against an average opponent on a neutral field, for a reader: see
-    `UnitMarginGlickoPredictor`'s "What a release carries". `dropbacks` and
+    `UnitMarginGlickoPredictor`'s "What a release carries". `passes` and
     `runs` are the same two rates over each kind of down alone, None where
     the games read carried no split.
     """
 
     offense: Rate
     defense: Rate
-    dropbacks: KindRates | None = None
+    passes: KindRates | None = None
     runs: KindRates | None = None
 
 
 class PerDown(NamedTuple):
-    """One side's EPA per down -- per dropback or run -- and its deviation."""
+    """One side's EPA per down -- per pass or run -- and its deviation."""
 
     epa: float
     sd: float
@@ -100,7 +100,7 @@ class EpaRates(NamedTuple):
 
     offense: PerDown
     defense: PerDown
-    dropbacks: KindEpa | None = None
+    passes: KindEpa | None = None
     runs: KindEpa | None = None
 
 
@@ -210,28 +210,28 @@ class GameEpa(NamedTuple):
     `EpaFit` header rather than being repeated on sixteen thousand rows.
 
     `home_success` and `away_success` are a third reading off the same
-    snaps: the share of an offense's dropbacks and runs that added expected
+    snaps: the share of an offense's passes and runs that added expected
     points -- success rate, with `home_success_plays` and
-    `away_success_plays` the dropbacks and runs it is over (punts, field
+    `away_success_plays` the passes and runs it is over (punts, field
     goals, penalties that wiped the play out, kneels and spikes left out;
     `cassandra.epa_build` says what counts). A sign rather than a size, so
     the one long touchdown that owns a game's EPA is one success among
     sixty, and it predicts the next game better than EPA does for exactly
     that reason; see `cassandra.predictor.unit_glicko`. None, like the
-    weighted pair, for a side with no dropbacks or runs, and for a row
+    weighted pair, for a side with no passes or runs, and for a row
     built without it.
 
     `home_success_weighted` and `away_success_weighted` are the same share
     with each snap weighted as the weighted EPA pair weights it, so a
     blowout's fourth quarter of backups counts for what it is worth. Over
-    the same dropbacks and runs; None where the weights sum to nothing,
+    the same passes and runs; None where the weights sum to nothing,
     like the weighted EPA.
 
-    The `_dropback_` and `_run_` fields split the flat success rate by the
-    kind of down: each side's rate over its dropbacks (passes, sacks,
-    scrambles) and over its runs, and how many of each. They add back up to
+    The `_pass_` and `_run_` fields split the flat success rate by the
+    kind of down: each side's rate over its passes (sacks and scrambles
+    among them) and over its runs, and how many of each. They add back up to
     the flat rate. The `_epa` ones are the same downs' EPA, each play
-    bounded as the flat EPA's are -- per down, so over dropbacks and runs
+    bounded as the flat EPA's are -- per down, so over passes and runs
     only, where `home` and `away` are over every snap. For a reader -- no
     model rates on them; see `cassandra.predictor.unit_glicko`'s "What a
     release carries". None for a side with none of that kind, and for a row
@@ -252,16 +252,16 @@ class GameEpa(NamedTuple):
     away_success_plays: int = 0
     home_success_weighted: float | None = None
     away_success_weighted: float | None = None
-    home_dropback_success: float | None = None
-    away_dropback_success: float | None = None
-    home_dropback_plays: int = 0
-    away_dropback_plays: int = 0
+    home_pass_success: float | None = None
+    away_pass_success: float | None = None
+    home_pass_plays: int = 0
+    away_pass_plays: int = 0
     home_run_success: float | None = None
     away_run_success: float | None = None
     home_run_plays: int = 0
     away_run_plays: int = 0
-    home_dropback_epa: float | None = None
-    away_dropback_epa: float | None = None
+    home_pass_epa: float | None = None
+    away_pass_epa: float | None = None
     home_run_epa: float | None = None
     away_run_epa: float | None = None
 

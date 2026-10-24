@@ -30,7 +30,7 @@ from cassandra.epa_build import (
     build,
     current_fit,
     is_down,
-    is_dropback,
+    is_pass,
     sweep,
     write,
 )
@@ -112,7 +112,7 @@ def test_the_weighted_reading_rides_alongside() -> None:
     assert 0 < epa["g1"].home_weight <= epa["g1"].home_plays
 
 
-def test_success_rate_is_the_share_of_dropbacks_and_runs_that_added_points() -> None:
+def test_success_rate_is_the_share_of_passes_and_runs_that_added_points() -> None:
     """Off the same snaps' raw EPA, with a punt and a kneel left out of it.
 
     Counted against `lucky_ones`' own per-play numbers on the same game, so
@@ -176,7 +176,7 @@ def test_which_snaps_a_success_rate_is_over(
 
 
 @pytest.mark.parametrize(
-    ("play_type", "text", "dropback"),
+    ("play_type", "text", "passing"),
     [
         ("Pass Reception", None, True),
         ("Pass Incompletion", None, True),
@@ -197,12 +197,12 @@ def test_which_snaps_a_success_rate_is_over(
         ("Fumble Recovery (Own)", "A.Passmore left end for 2 yards, FUMBLES", False),
     ],
 )
-def test_which_downs_are_dropbacks(play_type: str, text: str | None, dropback: bool) -> None:
+def test_which_downs_are_passes(play_type: str, text: str | None, passing: bool) -> None:
     assert is_down(play_type, text)
-    assert is_dropback(play_type, text) is dropback
+    assert is_pass(play_type, text) is passing
 
 
-def test_the_success_rate_splits_into_dropbacks_and_runs() -> None:
+def test_the_success_rate_splits_into_passes_and_runs() -> None:
     """Each kind's share of its own downs, and the two adding back to the flat rate.
 
     A third of the fixture's runs made passes, and one a scramble, so both
@@ -223,11 +223,11 @@ def test_the_success_rate_splits_into_dropbacks_and_runs() -> None:
     for home in (True, False):
         side = "home" if home else "away"
         downs = [p for p in scored.plays if p.offense_is_home is home]
-        for kind, wanted in (("dropback", True), ("run", False)):
+        for kind, wanted in (("pass", True), ("run", False)):
             mine = [
                 p
                 for p in downs
-                if is_dropback(by_id[p.play_id].play_type, by_id[p.play_id].text) is wanted
+                if is_pass(by_id[p.play_id].play_type, by_id[p.play_id].text) is wanted
             ]
             assert 0 < len(mine) < len(downs)
             assert getattr(epa["g1"], f"{side}_{kind}_plays") == len(mine)
@@ -238,29 +238,29 @@ def test_the_success_rate_splits_into_dropbacks_and_runs() -> None:
                 sum(p.bounded for p in mine) / len(mine)
             )
         e = epa["g1"]
-        dropbacks, runs = getattr(e, f"{side}_dropback_plays"), getattr(e, f"{side}_run_plays")
-        assert dropbacks + runs == getattr(e, f"{side}_success_plays")
+        passes, runs = getattr(e, f"{side}_pass_plays"), getattr(e, f"{side}_run_plays")
+        assert passes + runs == getattr(e, f"{side}_success_plays")
         assert (
-            dropbacks * getattr(e, f"{side}_dropback_success")
+            passes * getattr(e, f"{side}_pass_success")
             + runs * getattr(e, f"{side}_run_success")
-        ) / (dropbacks + runs) == pytest.approx(getattr(e, f"{side}_success"))
+        ) / (passes + runs) == pytest.approx(getattr(e, f"{side}_success"))
         # Every snap of the fixture is a down, so the two kinds' EPA together
         # is the flat EPA per snap: bounded the same way.
-        assert dropbacks + runs == getattr(e, f"{side}_plays")
+        assert passes + runs == getattr(e, f"{side}_plays")
         assert (
-            dropbacks * getattr(e, f"{side}_dropback_epa") + runs * getattr(e, f"{side}_run_epa")
-        ) / (dropbacks + runs) == pytest.approx(getattr(e, side))
+            passes * getattr(e, f"{side}_pass_epa") + runs * getattr(e, f"{side}_run_epa")
+        ) / (passes + runs) == pytest.approx(getattr(e, side))
     assert by_id[plays[4].play_id].play_type == "Rush"
 
 
 def test_a_side_without_a_kind_of_down_has_no_rate_for_it() -> None:
-    """The fixture is all runs: no dropback rate, rather than a rate of 0."""
+    """The fixture is all runs: no pass rate, rather than a rate of 0."""
     epa, _ = asyncio.run(
         sweep(_LEAGUE, [_season(2025, "g1")], _Source({(2025, 1): _plays("g1")}))
     )
-    assert epa["g1"].home_dropback_success is None
-    assert epa["g1"].home_dropback_epa is None
-    assert epa["g1"].home_dropback_plays == 0
+    assert epa["g1"].home_pass_success is None
+    assert epa["g1"].home_pass_epa is None
+    assert epa["g1"].home_pass_plays == 0
     assert epa["g1"].home_run_plays == epa["g1"].home_success_plays
 
 

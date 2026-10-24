@@ -15,7 +15,7 @@ What counts as a dropback is read off the play type, as the feed files it:
 a pass of any kind, a sack, an interception -- and a "Rush" whose text says
 the quarterback scrambled, which is a dropback the defense flushed. A fumble
 or a safety goes with the kind its text names. The sweep's own rule is
-`cassandra.epa_build.is_dropback`, written from this one; `kind_of` is
+`cassandra.epa_build.is_pass`, written from this one; `kind_of` is
 what the experiments here ran on (the two differ only on a fumble whose
 text says "scrambled").
 """

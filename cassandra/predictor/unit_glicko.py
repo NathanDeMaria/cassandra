@@ -204,7 +204,7 @@ Success rate
 ------------
 
 The units can read a second number off the same snaps: the share of an
-offense's dropbacks and runs that added expected points. `success_weight`
+offense's passes and runs that added expected points. `success_weight`
 blends it in -- 0 is EPA per play, the model above; 1 is success rate
 alone -- after `SUCCESS_SCALE` has put it on EPA's scale, so the blend is
 between two numbers in the same units and every other knob means what it
@@ -249,7 +249,7 @@ eight and the coach knobs below on the offseason model's other pins, and
 `qb_out_penalty` with them: an offense that forgets in a few weeks
 already carries some of what the penalty was fit to say.
 
-`success_reading` picks which success rate: `"unweighted"`, every dropback
+`success_reading` picks which success rate: `"unweighted"`, every pass
 and run once, or `"weighted"`, each by the competitiveness weight the
 weighted EPA uses, so the fourth quarter of a rout counts for what it is
 worth. Each has its own constants in `SUCCESS_SCALE`. On the NFL the
@@ -398,28 +398,29 @@ absorbs `points_per_epa`, 0.38 at the roster model's 75 and 0.44 at the
 success model's 87. The NFL's differ in the third place, its slope fit on
 the home edge alone.
 
-The same again for each kind of down (`SuccessRates.dropbacks` and
+The same again for each kind of down (`SuccessRates.passes` and
 `.runs`): two more pairs of sides per team, one reading the rate over its
-dropbacks alone, the other over its runs, each with its own center, slope
-and clocks (`KIND_RATE_CLOCKS`). Measured as dropbacks against runs, how a
+passes alone, the other over its runs, each with its own center, slope
+and clocks (`KIND_RATE_CLOCKS`). Measured as passes against runs, how a
 team wins downs is a question a reader asks and the units can't answer --
 and one the units don't need: a fixed mix of the two, read in place of the
 every-down rate, ties it on the NFL and gains about 0.5e-4 of brier on
 ncaafb (`reasoning/success_rate/mixed/`). Which kind a down is follows the
-feed's filing, scrambles by their text (`cassandra.epa_build.is_dropback`);
-the college feed never says "scramble", so there a scramble is a run.
+feed's filing, sacks and scrambles counted as passes, scrambles by their
+text (`cassandra.epa_build.is_pass`); the college feed never says
+"scramble", so there a scramble is a run.
 
 And EPA per down (`Rating.epa`), the success rate's twin: the same three
-pairs of sides again -- every down, dropbacks, runs -- on each kind's
+pairs of sides again -- every down, passes, runs -- on each kind's
 bounded EPA per down (`EPA_RATE_CLOCKS`), the gap taken at EPA's scale and
 each game read at `EPA_PLAY_SD` per down. Per down, not per snap: kicks
 and kneels stay out, as they do of the success rate, where the units'
 reading counts every snap. Replayed the same way, predictions and every
-success rate unchanged: the NFL's dropbacks add 0.14 a down and its runs
+success rate unchanged: the NFL's passes add 0.14 a down and its runs
 lose 0.055, spread 0.037 and 0.021 across teams (the 49ers best through
 the air at 0.21, the Bills on the ground at -0.013); 2026's FBS offenses
 add about 0 either way, spread 0.12 and 0.08, a team's two correlating
-0.79 (Ohio State 0.29 a dropback, Tennessee 0.18 a run, Oklahoma's
+0.79 (Ohio State 0.29 a pass, Tennessee 0.18 a run, Oklahoma's
 defense -0.22 every down).
 
 Rated apart, the two aren't the every-down rate cut in half. Each has
@@ -428,10 +429,10 @@ on ncaafb a top-fifth offense's every-down rate sits 0.9 points above the
 league's mix of its two kinds, a bottom-fifth one 0.1 under. On the NFL the
 gap is a flat 0.2-0.4. Replayed through the published success models, with
 predictions and the every-down rates unchanged to the bit: the NFL's
-dropbacks succeed 48.7% of the time and its runs 40.8%, each spread 1.5
+passes succeed 48.7% of the time and its runs 40.8%, each spread 1.5
 points across teams (the 49ers best through the air at 52.1%, the Rams on
 the ground at 44.5%); 2026's FBS offenses 42.7% and 42.2%, spread 4.1 and
-3.4, a team's two correlating 0.76 (Ohio State 53.2% on dropbacks, Georgia
+3.4, a team's two correlating 0.76 (Ohio State 53.2% on passes, Georgia
 49.0% on runs).
 
 What it was measured to be worth
@@ -553,7 +554,7 @@ LEFT_FOR_JOB = "left_for_job"
 #: starts with. A few weeks of games outweigh it.
 CENTER_PRIOR_SIDES = 200
 
-#: The two success rates a game carries: every dropback and run once, or
+#: The two success rates a game carries: every pass and run once, or
 #: each weighted by how competitive the game still was. See "Success rate".
 UNWEIGHTED = "unweighted"
 WEIGHTED = "weighted"
@@ -603,7 +604,7 @@ SUCCESS_RATE_CLOCKS: Mapping[str, tuple[RateClock, RateClock]] = {
 }
 
 #: The kinds of down the displayed success rate is also split by.
-DROPBACKS = "dropbacks"
+PASSES = "passes"
 RUNS = "runs"
 
 #: Each kind's clocks, offense then defense, per league, measured as
@@ -611,7 +612,7 @@ RUNS = "runs"
 #: (`reasoning/success_rate/mixed/kind_clocks.py`, whose every-down rows
 #: land on `SUCCESS_RATE_CLOCKS`). The weekly widening is the same guess.
 KIND_RATE_CLOCKS: Mapping[str, Mapping[str, tuple[RateClock, RateClock]]] = {
-    DROPBACKS: {
+    PASSES: {
         "ncaafb": (RateClock(0.047, 0.80, 0.001), RateClock(0.037, 0.85, 0.001)),
         "nfl": (RateClock(0.029, 0.67, 0.001), RateClock(0.020, 0.62, 0.001)),
     },
@@ -636,7 +637,7 @@ EPA_RATE_CLOCKS: Mapping[str, Mapping[str, tuple[RateClock, RateClock]]] = {
         "ncaafb": (RateClock(0.128, 0.84, 0.0025), RateClock(0.109, 0.85, 0.0025)),
         "nfl": (RateClock(0.067, 0.62, 0.0025), RateClock(0.047, 0.62, 0.0025)),
     },
-    DROPBACKS: {
+    PASSES: {
         "ncaafb": (RateClock(0.141, 0.80, 0.0025), RateClock(0.111, 0.87, 0.0025)),
         "nfl": (RateClock(0.082, 0.68, 0.0025), RateClock(0.059, 0.63, 0.0025)),
     },
@@ -652,8 +653,8 @@ EPA_RATE_CLOCKS: Mapping[str, Mapping[str, tuple[RateClock, RateClock]]] = {
 #: bound of its own. `kind_clocks.py`'s noise per down, offense and defense
 #: alike to the second place.
 EPA_PLAY_SD: Mapping[str, Mapping[str, float]] = {
-    "ncaafb": {ALL_DOWNS: 1.42, DROPBACKS: 1.49, RUNS: 1.04},
-    "nfl": {ALL_DOWNS: 1.27, DROPBACKS: 1.48, RUNS: 0.93},
+    "ncaafb": {ALL_DOWNS: 1.42, PASSES: 1.49, RUNS: 1.04},
+    "nfl": {ALL_DOWNS: 1.27, PASSES: 1.48, RUNS: 0.93},
 }
 
 #: A rate the binomial reading is priced at, kept off the ends.
@@ -1447,12 +1448,12 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         every = self._shown(self._success_rates, team, per_rating)
         if every is None:
             return None
-        dropbacks = self._shown(self._kind_rates[DROPBACKS], team, per_rating)
+        passes = self._shown(self._kind_rates[PASSES], team, per_rating)
         runs = self._shown(self._kind_rates[RUNS], team, per_rating)
         return SuccessRates(
             Rate(every.offense, every.offense_sd),
             Rate(every.defense, every.defense_sd),
-            dropbacks=None if dropbacks is None else dropbacks.as_rates(),
+            passes=None if passes is None else passes.as_rates(),
             runs=None if runs is None else runs.as_rates(),
         )
 
@@ -1461,12 +1462,12 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         every = self._shown(self._epa_rates[ALL_DOWNS], team, per_rating)
         if every is None:
             return None
-        dropbacks = self._shown(self._epa_rates[DROPBACKS], team, per_rating)
+        passes = self._shown(self._epa_rates[PASSES], team, per_rating)
         runs = self._shown(self._epa_rates[RUNS], team, per_rating)
         return EpaRates(
             PerDown(every.offense, every.offense_sd),
             PerDown(every.defense, every.defense_sd),
-            dropbacks=None if dropbacks is None else dropbacks.as_epa(),
+            passes=None if passes is None else passes.as_epa(),
             runs=None if runs is None else runs.as_epa(),
         )
 
@@ -1614,7 +1615,7 @@ class _DisplayedRates:
     at face value the conversion put FBS offenses three points under their
     anchors and FCS ones near 10%.
 
-    `kind` reads one kind of down alone (`DROPBACKS`, `RUNS`) on its own
+    `kind` reads one kind of down alone (`PASSES`, `RUNS`) on its own
     clocks, center and slope; None is every down. `measure` `EPA` reads the
     same downs' EPA per down instead (`EPA_RATE_CLOCKS`): the gap taken at
     EPA's scale rather than through `SUCCESS_SCALE`, the reading priced at
@@ -1744,12 +1745,12 @@ class _DisplayedRates:
         """The game's readings and downs, home then away, of this kind of down."""
         if self._measure == EPA:
             return self._read_epa(epa)
-        if self._kind == DROPBACKS:
+        if self._kind == PASSES:
             return (
-                epa.home_dropback_success,
-                epa.away_dropback_success,
-                epa.home_dropback_plays,
-                epa.away_dropback_plays,
+                epa.home_pass_success,
+                epa.away_pass_success,
+                epa.home_pass_plays,
+                epa.away_pass_plays,
             )
         if self._kind == RUNS:
             return (
@@ -1767,16 +1768,16 @@ class _DisplayedRates:
 
     def _read_epa(self, epa: GameEpa) -> tuple[float | None, float | None, int, int]:
         """Each side's EPA per down of this kind; every down's is both kinds' together."""
-        home_dropbacks = (epa.home_dropback_epa, epa.home_dropback_plays)
-        away_dropbacks = (epa.away_dropback_epa, epa.away_dropback_plays)
+        home_passes = (epa.home_pass_epa, epa.home_pass_plays)
+        away_passes = (epa.away_pass_epa, epa.away_pass_plays)
         home_runs = (epa.home_run_epa, epa.home_run_plays)
         away_runs = (epa.away_run_epa, epa.away_run_plays)
-        if self._kind == DROPBACKS:
-            return home_dropbacks[0], away_dropbacks[0], home_dropbacks[1], away_dropbacks[1]
+        if self._kind == PASSES:
+            return home_passes[0], away_passes[0], home_passes[1], away_passes[1]
         if self._kind == RUNS:
             return home_runs[0], away_runs[0], home_runs[1], away_runs[1]
-        home, home_downs = _together(home_dropbacks, home_runs)
-        away, away_downs = _together(away_dropbacks, away_runs)
+        home, home_downs = _together(home_passes, home_runs)
+        away, away_downs = _together(away_passes, away_runs)
         return home, away, home_downs, away_downs
 
     def pass_week(self) -> None:

@@ -1,20 +1,22 @@
 # Success rate by kind of play and by situation
 
 2026-10-23. Does the success rate the units read get better split into
-dropbacks and runs, by offense and defense -- or into the obvious situations
+passes and runs, by offense and defense -- or into the obvious situations
 (third and long, short yardage, running out the clock) -- or with
 interactions between the two sides' extremes? Everything is scored in brier
 1e-4 or squared points of margin, fit through 2021 (ncaafb) or 2017 (the
 NFL's raw checks) and held out after.
 
-## What a dropback is
+## What a pass is
 
-`kinds.py`: a pass of any kind, a sack, an interception, and a "Rush" whose
-text says the quarterback scrambled; a fumble or safety goes with the kind
-its text names. On the NFL 5% of "Rush" plays are scrambles. **The college
-feed never says so** (0.00% of ncaafb runs): there, every scramble is a run.
+A dropback, strictly (`kinds.py`): a throw of any kind, a sack, an
+interception, and a "Rush" whose text says the quarterback scrambled; a
+fumble or safety goes with the kind its text names. On the NFL 5% of "Rush"
+plays are scrambles. **The college feed never says so** (0.00% of ncaafb
+runs): there, every scramble is a run. The scripts' play tables call the
+column `dropback`.
 
-| | dropbacks | dropback success | run success |
+| | passes | pass success | run success |
 |---|---|---|---|
 | NFL 2006-2025 | 60% | 48% | 39% |
 | ncaafb 2014-2026 | 48% | 44.7% (neutral downs) | 40.7% (neutral downs) |
@@ -22,7 +24,7 @@ feed never says so** (0.00% of ncaafb runs): there, every scramble is a run.
 Situations (`nfl_situations.py`, `ncaafb_cells.py`) read down, distance and
 the offense's win probability, never the call:
 
-| situation | NFL share | NFL dropbacks | NFL pass / run SR | ncaafb share | ncaafb dropbacks | ncaafb pass / run SR |
+| situation | NFL share | NFL passes | NFL pass / run SR | ncaafb share | ncaafb passes | ncaafb pass / run SR |
 |---|---|---|---|---|---|---|
 | long: 3rd/4th and 7+, 2nd and 12+ | 10% | 89% | 38 / 25 | 11% | 75% | 33 / 32 |
 | short: 3rd/4th and 2 or less, 2nd and 1 | 5% | 36% | 55 / 52 | 6% | 24% | 51 / 60 |
@@ -39,16 +41,16 @@ the pooled rate:
 
 | reading | change, pts^2 | t |
 |---|---|---|
-| fixed mix, 0.65 dropbacks | -1.86 | -3.2 |
+| fixed mix, 0.65 passes | -1.86 | -3.2 |
 | free pass/run split | -1.80 | -2.9 |
 | neutral downs only | +3.10 | +2.2 |
 | split + third-and-long passing + short-yardage running | -0.73 | -0.7 |
-| split + each team's own dropback share | -2.60 | -2.1 |
+| split + each team's own pass share | -2.60 | -2.1 |
 
 Pass rates are the more reliable (offense 0.82 vs 0.64 within a season,
 0.64 vs 0.49 year to year). Interaction products -- pass offense by pass
 defense, run by run, a pass-heavy offense against a pass-funnel defense --
-add nothing. The pooled rate's flaw is that it credits calling dropbacks,
+add nothing. The pooled rate's flaw is that it credits calling passes,
 which trailing teams do. Beside the success model's own win probability,
 every raw rate costs (+4 to +18), the situational cells +0.0.
 
@@ -66,7 +68,7 @@ held out 2022-2026, change against the pooled rate in pts^2:
 | split + third-and-long passing + short-yardage running | +1.5 | +1.4 | +3.2 |
 | split + clock runs + hurry passes | +2.8 | +3.2 | +5.0 |
 
-Nothing, and for a reason: college dropbacks succeed only 4 points more
+Nothing, and for a reason: college passes succeed only 4 points more
 often than runs on neutral downs (the NFL's gap is 12), so the mix moves a
 pooled rate little. Beside the success model: -1.4 to +9.8, no |t| above 1.9.
 
@@ -127,10 +129,10 @@ through 2021, not held out. Leave it on EPA.
 
 ## The split, for a reader
 
-Shipped at zero weight: the sweep counts each side's dropbacks and runs
-(`cassandra.epa_build.is_dropback`), and every units model keeps a pair of
+Shipped at zero weight: the sweep counts each side's passes and runs
+(`cassandra.epa_build.is_pass`), and every units model keeps a pair of
 sides per team for each kind beside the every-down pair, published as
-`success.dropbacks` and `success.runs`. Predictions never read them.
+`success.passes` and `success.runs`. Predictions never read them.
 
 Clocks (`kind_clocks.py`): each kind's opponent-adjusted true spread and
 carry, measured as `combine/persistence.py` measured the every-down rate --
@@ -138,7 +140,7 @@ whose rows this reproduces (NFL 0.027 / 0.58 offense, 0.019 / 0.60 defense;
 ncaafb 0.048 / 0.85, 0.043 / 0.85). The carry is the season-to-season
 correlation over the season's reliability.
 
-| | dropbacks, offense | dropbacks, defense | runs, offense | runs, defense |
+| | passes, offense | passes, defense | runs, offense | runs, defense |
 |---|---|---|---|---|
 | NFL | 0.029 / 0.67 | 0.020 / 0.62 | 0.027 / 0.65 | 0.022 / 0.75 |
 | ncaafb | 0.047 / 0.80 | 0.037 / 0.85 | 0.043 / 0.85 | 0.041 / 0.79 |
@@ -150,13 +152,13 @@ split adding back to its flat rate; the published success models replayed
 on it predict every game to the bit as without it, and show every team the
 same every-down rates. What they show:
 
-| | dropback offense | run offense | spread across teams | dropback vs run, r |
+| | pass offense | run offense | spread across teams | pass vs run, r |
 |---|---|---|---|---|
 | NFL (all seasons' end) | 48.7% | 40.8% | 1.5 / 1.5 | 0.53 offense, 0.56 defense |
 | ncaafb, FBS 2026 | 42.7% | 42.2% | 4.1 / 3.4 | 0.76 offense, 0.85 defense |
 
 **EPA per down** rides alongside (2026-10-24): `GameEpa.{home,away}_
-{dropback,run}_epa`, each kind's EPA bounded at 3 per play, over the same
+{pass,run}_epa`, each kind's EPA bounded at 3 per play, over the same
 downs; displayed as `Rating.epa` / the release's `epa` block, every down
 (the kinds together, so kicks and kneels stay out) and each kind, on
 `EPA_RATE_CLOCKS` and `EPA_PLAY_SD` (`kind_clocks.py`, whose noise per down
@@ -165,10 +167,10 @@ for the success rate comes out at 0.5, the binomial's, as it should):
 | | true sd / carry / noise per down, offense | the same, defense |
 |---|---|---|
 | NFL every down | 0.067 / 0.62 / 1.29 | 0.047 / 0.62 / 1.25 |
-| NFL dropbacks | 0.082 / 0.68 / 1.50 | 0.059 / 0.63 / 1.46 |
+| NFL passes | 0.082 / 0.68 / 1.50 | 0.059 / 0.63 / 1.46 |
 | NFL runs | 0.049 / 0.59 / 0.93 | 0.036 / 0.83 / 0.93 |
 | ncaafb every down | 0.128 / 0.84 / 1.43 | 0.109 / 0.85 / 1.42 |
-| ncaafb dropbacks | 0.141 / 0.80 / 1.49 | 0.111 / 0.87 / 1.48 |
+| ncaafb passes | 0.141 / 0.80 / 1.49 | 0.111 / 0.87 / 1.48 |
 | ncaafb runs | 0.095 / 0.85 / 1.05 | 0.085 / 0.79 / 1.04 |
 
 Checked without s3 (`add_kind_epa.py`): each kind's EPA off the local play
@@ -176,40 +178,40 @@ tables, onto `sweep_split.py`'s index, every kind count matching it; the
 sweep's own arithmetic is `epa_build_test`'s (the kinds together are the
 flat EPA where every snap is a down). Replayed: predictions identical to
 main to the bit, every success rate -- every down's and the split's --
-identical to the run without EPA. The NFL's dropbacks +0.14 a down, runs
+identical to the run without EPA. The NFL's passes +0.14 a down, runs
 -0.055 (spread 0.037 / 0.021); FBS 2026 about 0 either way (0.12 / 0.08),
 a team's two correlating 0.79.
 
 Rated apart, each kind is pulled harder toward its anchor's level than the
 every-down rate is, having half the downs: on ncaafb a top-fifth offense's
 every-down rate is 0.9 points above the league mix of its kinds (Georgia:
-51.1% every down, 50.8% dropbacks, 49.0% runs), a bottom-fifth one 0.1
+51.1% every down, 50.8% passes, 49.0% runs), a bottom-fifth one 0.1
 under. On the NFL the gap is a flat 0.2-0.4, the mix's weights.
 
 ## How each split persists, and what moves it
 
 `split_persistence.py` (tables to `~/.cassandra/success_rate/mixed/persistence_*`)
 and `summer_change.py`: success rate and EPA per down (clipped at 3), over
-every down, dropbacks and runs, offense and defense, each opponent-adjusted
+every down, passes and runs, offense and defense, each opponent-adjusted
 within the window. NFL 2006-2025, ncaafb 2014-2025.
 
 **Season to season**, the kinds carry alike; they differ in noise. Carry
 (next season's correlation over the season's reliability):
 
-| | NFL SR dropback / run | NFL EPA dropback / run | ncaafb SR dropback / run | ncaafb EPA dropback / run |
+| | NFL SR pass / run | NFL EPA pass / run | ncaafb SR pass / run | ncaafb EPA pass / run |
 |---|---|---|---|---|
 | offense carry | 0.68 / 0.67 | 0.70 / 0.53 | 0.80 / 0.85 | 0.80 / 0.85 |
 | defense carry | 0.66 / 0.74 | 0.61 / 0.72 | 0.85 / 0.80 | 0.87 / 0.80 |
 | offense season reliability | 0.72 / 0.55 | 0.71 / 0.54 | 0.75 / 0.72 | 0.75 / 0.74 |
 
 **Within a season** (first half of the weeks against the second, over the
-halves' reliabilities): offenses' dropbacks 0.92 in both leagues, every
+halves' reliabilities): offenses' passes 0.92 in both leagues, every
 down 0.95; the NFL's run rates are too noisy over half a season to say
 (their ratio runs past 1).
 
 **A starting quarterback out**, as a term in each season's fit, in true
-spreads of the offense: NFL dropback SR -0.50, run -0.38, EPA -0.48 / -0.34;
-ncaafb -0.21 / -0.13 and -0.25 / -0.14. Dropbacks take more, runs a lot too.
+spreads of the offense: NFL pass SR -0.50, run -0.38, EPA -0.48 / -0.34;
+ncaafb -0.21 / -0.13 and -0.25 / -0.14. Passes take more, runs a lot too.
 
 **Over the summer** (`summer_change.py`): within each group, net of noise,
 `keep` is the slope on last season's true level and `new` the variance
@@ -223,9 +225,9 @@ that arrives, over the true variance. ncaafb, offense, every down (SR):
 | no coach change (1855) | 0.84 | 0.39 | |
 
 - A new QB: keep -0.09 (se 0.03), new +0.18 (0.04) on the offense; the
-  defense, a placebo, moves by 0.01-0.05. Dropbacks less runs: keep -0.08
+  defense, a placebo, moves by 0.01-0.05. Passes less runs: keep -0.08
   (se 0.05) on SR, -0.08 (0.06) on EPA; new +0.08 (0.08) and -0.04 (0.06).
-  A new quarterback unsettles the whole offense, dropbacks a little more.
+  A new quarterback unsettles the whole offense, passes a little more.
 - A coach leaving: keep -0.29 (0.09) on offense and -0.22 (0.09) on
   defense, new only +0.07-0.14, both kinds alike. Mostly regression, not
   widening -- though fired coaches are picked on a bad season, some of it
@@ -287,4 +289,4 @@ or loses, on the other. Why the measurement doesn't carry over:
   on FBS v FBS (t -1.4 to -2.5 by setting, held out -0.3 to -0.5), from
   the early-season games after a mismatch. Small; worth building only as
   a cheap reading (`success_reading` "mixed", ncaafb, the sweep counting
-  each side's dropbacks and runs), not as new state.
+  each side's passes and runs), not as new state.

@@ -1,4 +1,4 @@
-"""Sweep a league with the production sweep, dropbacks and runs split, into a private index.
+"""Sweep a league with the production sweep, passes and runs split, into a private index.
 
 `../units/sweep_index.py` with its own output, so the harness's index is
 left as it was, and a check that every reading the two share agrees.
@@ -33,17 +33,17 @@ async def main(league: str) -> None:
     before = pickle.loads((HOME / f"units/{league}_index.pkl").read_bytes())
     shared = [g for g in games if g in before]
     same = sum(games[g][: len(before[g])] == before[g] for g in shared)
-    split = [e for e in games.values() if e.home_dropback_plays + e.home_run_plays]
+    split = [e for e in games.values() if e.home_pass_plays + e.home_run_plays]
     adds_up = sum(
-        e.home_dropback_plays + e.home_run_plays == e.home_success_plays
-        and e.away_dropback_plays + e.away_run_plays == e.away_success_plays
+        e.home_pass_plays + e.home_run_plays == e.home_success_plays
+        and e.away_pass_plays + e.away_run_plays == e.away_success_plays
         for e in games.values()
     )
     downs = sum(e.home_success_plays + e.away_success_plays for e in games.values())
-    dropbacks = sum(e.home_dropback_plays + e.away_dropback_plays for e in games.values())
+    passes = sum(e.home_pass_plays + e.away_pass_plays for e in games.values())
     print(f"{league}: {len(games)} games, {len(shared)} in the harness index, {same} with every "
-          f"earlier reading unchanged; {len(split)} split, {adds_up} adding back up; dropbacks "
-          f"{dropbacks / downs:.3f} of {downs} downs", flush=True)
+          f"earlier reading unchanged; {len(split)} split, {adds_up} adding back up; passes "
+          f"{passes / downs:.3f} of {downs} downs", flush=True)
 
 
 asyncio.run(main(sys.argv[1]))
