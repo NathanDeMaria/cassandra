@@ -1,0 +1,32 @@
+{
+    "predictor_class": "GlickoPredictor",
+    "league": "mens",
+    "parameters": {
+        "glicko_share": [
+            0.4,
+            1.0
+        ],
+        "player_rating_weight": [
+            0,
+            25
+        ]
+    },
+    "fixed": {
+        "home_advantage": 99.21892424203115,
+        "initial_rd": 403.6633623057346,
+        "weekly_rd_increase": 0.0,
+        "season_rd_increase": 188.530302941698,
+        "scoring_method": "sigmoid",
+        "season_regression": 0.05248308304745298,
+        "sigmoid_scale": 6.017840674239509,
+        "passes": 2
+    },
+    "fixed_from": "glicko_full",
+    "n_iter": 60,
+    "seeds": [
+        {
+            "glicko_share": 0.82,
+            "player_rating_weight": 10.0
+        }
+    ]
+}

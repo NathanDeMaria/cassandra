@@ -24,6 +24,10 @@ from .base_predictor import (
 from .blend import validated_scale
 from .distribution import LogisticMargin, MarginDistribution, decimal_logistic
 from .opponent_prior import OpponentPriorManager
+from .player_ratings import (
+    DEFAULT_PLAYER_RATING_WEIGHT,
+    validated_player_rating_weight,
+)
 from .rest import DEFAULT_REST_ADVANTAGE
 from .smoothing import Floats, Ints, compiled_sweep
 from .types import Matchup, Prediction, Rating
@@ -147,6 +151,13 @@ class GlickoPredictor(Predictor):
         rest_advantage: float = DEFAULT_REST_ADVANTAGE,
         travel_advantage: float = DEFAULT_TRAVEL_ADVANTAGE,
         qb_out_penalty: float = DEFAULT_QB_OUT_PENALTY,
+        # The prediction as a blend of this model and a players' model
+        # (`player_ratings`, mens and womens): its own rating gap at
+        # `glicko_share`, plus the players' margin at `player_rating_weight`
+        # rating points per point. The prediction only -- the update learns
+        # from the results alone. 1 and 0 are this model unblended.
+        glicko_share: float = 1.0,
+        player_rating_weight: float = DEFAULT_PLAYER_RATING_WEIGHT,
         season_regression: float = 0.0,
         # How many times each week's games are rated. 1 is Glicko as a
         # filter: a result is priced once, against what the opponent's
@@ -195,6 +206,10 @@ class GlickoPredictor(Predictor):
         self._sigmoid_scale = validated_scale("sigmoid_scale", sigmoid_scale)
         self._score = get_scoring_function(scoring_method, self._sigmoid_scale)
         self._prediction_scale = validated_scale("prediction_scale", prediction_scale)
+        self._glicko_share = validated_scale("glicko_share", glicko_share)
+        self._player_rating_weight = validated_player_rating_weight(
+            player_rating_weight
+        )
         self._adjustments = MatchupAdjustments(
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
@@ -261,7 +276,23 @@ class GlickoPredictor(Predictor):
         # term zeroes itself there -- see `MatchupAdjustments.travel_points`.
         adjusted_home_rating += self.matchup_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
-        return self.gap_distribution(adjusted_home_rating, away_rating.rating)
+        players = (
+            self._adjustments.sources.player_ratings.margin(matchup)
+            if self._glicko_share != 1.0 or self._player_rating_weight
+            else None
+        )
+        if players is None:
+            return self.gap_distribution(adjusted_home_rating, away_rating.rating)
+        # Only the teams' strength is blended, the players' margin being a
+        # neutral site's: the edges stay whole. A game the players' file
+        # doesn't cover is this model's alone.
+        share = self._glicko_share
+        return self.gap_distribution(
+            share * home_rating.rating
+            + (adjusted_home_rating - home_rating.rating)
+            + self._player_rating_weight * players,
+            share * away_rating.rating,
+        )
 
     def gap_distribution(
         self, home_rating: float, away_rating: float
@@ -602,6 +633,16 @@ class GlickoPredictor(Predictor):
                 for team, r in self._ratings.items()
             },
             "anchors": self._anchors,
+            # Only when on: the subclasses don't take it, and every release
+            # published before it existed reads the same without it.
+            **(
+                {
+                    "glicko_share": self._glicko_share,
+                    "player_rating_weight": self._player_rating_weight,
+                }
+                if self._glicko_share != 1.0 or self._player_rating_weight
+                else {}
+            ),
         }
 
     @classmethod

@@ -28,6 +28,7 @@ from cassandra.predictor import (
     load_epa,
     load_game_control,
 )
+from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import load_qb_out, qb_out_path
 from cassandra.roster import load_roster
 
@@ -133,9 +134,10 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     Five things today: the division anchors, the per-game control a
     `ControlGlickoPredictor` blends into its update, the per-game EPA a
     `BlendedMarginEloPredictor` reads alongside it, the quarterback
-    availability index every matchup-adjusted predictor prices, and the
+    availability index every matchup-adjusted predictor prices, the
     roster measures -- talent and returning production -- a
-    `UnitMarginGlickoPredictor` reads.
+    `UnitMarginGlickoPredictor` reads, and the players' team ratings the
+    basketball models price.
 
     Dropping the caches is the whole reason this isn't just
     `download(bucket, PREDICTOR_DATA_PREFIX)`. `load_anchors`,
@@ -167,6 +169,7 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     # decimals -- so those fits were a coordinate the objective couldn't see.
     load_qb_out.cache_clear()
     load_roster.cache_clear()
+    load_player_ratings.cache_clear()
     return paths
 
 

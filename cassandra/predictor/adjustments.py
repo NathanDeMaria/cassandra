@@ -68,6 +68,7 @@ from endgame.types import Game
 
 from cassandra.travel import distance_km
 
+from .player_ratings import PlayerRatingIndex
 from .qb_out import QbOutIndex, validated_qb_out_penalty
 from .rest import (
     DEFAULT_REST_ADVANTAGE,
@@ -124,6 +125,8 @@ class MatchupSources(NamedTuple):
 
     qb_out: QbOutIndex
     rest: RestSource
+    # Read by the prediction alone, not priced here: see `player_ratings`.
+    player_ratings: PlayerRatingIndex = PlayerRatingIndex()
 
     @classmethod
     def for_league(cls, league: str) -> Self:
@@ -133,7 +136,11 @@ class MatchupSources(NamedTuple):
         games have been walked into it, which is exactly what a replay is
         about to do.
         """
-        return cls(qb_out=QbOutIndex.for_league(league), rest=RestLedger())
+        return cls(
+            qb_out=QbOutIndex.for_league(league),
+            rest=RestLedger(),
+            player_ratings=PlayerRatingIndex.for_league(league),
+        )
 
     @classmethod
     def empty(cls) -> Self:
