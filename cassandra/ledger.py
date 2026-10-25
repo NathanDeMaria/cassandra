@@ -908,6 +908,45 @@ def _games(rows: pd.DataFrame) -> list[str]:
     return lines
 
 
+def wins_losses(ledger: pd.DataFrame, as_of: datetime) -> str:
+    """Every settled bet in two tables, wins then losses, newest week first
+    and the biggest swings at the top, each with its theme."""
+    settled = ledger[ledger["settled"]].copy()
+    settled["won"] = settled["won"].astype(bool)
+    card = scorecard(settled)
+    out = [
+        "# Kalshi bets: wins and losses",
+        "",
+        f"Read {as_of.astimezone(CENTRAL):%Y-%m-%d %H:%M} CT: {len(settled)} settled, "
+        + (
+            f"{card['wins']}–{card['losses']}, {_money(card['pnl'])} on ${card['staked']:,.2f}."
+            if len(settled)
+            else "none yet."
+        ),
+        "",
+        "Price → close is what was paid for the side held against the no-vig mid "
+        "before kickoff; the % is the model at bet time.",
+    ]
+    for label, won in (("Wins", True), ("Losses", False)):
+        rows = settled[settled["won"] == won].sort_values(
+            ["week", "pnl"], ascending=[False, not won]
+        )
+        out += [
+            "",
+            f"## {label} ({len(rows)})",
+            "",
+            "| Week | Game | Bet @ price → close (model) | Final | P&L | Type | Theme |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for _, r in rows.iterrows():
+            kind = r["type"] if r["type_from"] == "theme" else f"{r['type']}?"
+            out.append(
+                f"| {pd.Timestamp(r['week']):%b %d} | {r['title']} | {_game_cell(r)} | "
+                f"{r['score']} | {_money(r['pnl'])} | {kind} | {_theme_cell(r)} |"
+            )
+    return "\n".join(out) + "\n"
+
+
 def report(ledger: pd.DataFrame, as_of: datetime) -> str:
     """The whole ledger as markdown: overall, by result type, by week, open."""
     settled = ledger[ledger["settled"]].copy()

@@ -1,6 +1,6 @@
 ---
 name: kalshi-ledger
-description: Update the Kalshi betting ledger week over week. Rebuilds the report of every bet from the account, writes a theme (why it won or lost) for each newly settled game, and reports the week and the running totals by result type. Use when asked to update, refresh or review the ledger, how the bets did this week, why bets won or lost, or bet-tracking metrics.
+description: Update the Kalshi betting ledger week over week. Rebuilds the report of every bet from the account, writes a theme (why it won or lost) for each newly settled game, and reports the week, the running totals by result type, and a table of every win and loss with its theme. Use when asked to update, refresh or review the ledger, how the bets did this week, why bets won or lost, a wins-and-losses table, or bet-tracking metrics.
 ---
 
 # Updating the Kalshi ledger
@@ -110,6 +110,11 @@ Then tell Nathan, in chat:
    box-score-read and tag tables. Lead with what's notable, e.g. "late_swing is 7–3",
    or "every 'deserved' loss was an away favorite".
 3. **What's open.** The count, the stake, the model EV, and how the marks moved.
+4. **Wins and losses.** `make ledger` also writes `~/.cassandra/betting/ledger/wins-losses.md`:
+   every settled bet, wins then losses, newest week first, each with its price, close,
+   model, final, P&L, type and theme. Show both tables in chat. Keep the `theme`
+   headline in bold, and cut each `why` to the one fact that decided it so a row fits
+   a line. Then say where the file is, since it holds the full-length reasons.
 
 Read the totals the way `betting-tools` does: CLV and the close's EV are the steadier
 signal; W–L over a few dozen bets is mostly noise. Quote the sd line before reading
