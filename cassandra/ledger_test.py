@@ -64,6 +64,26 @@ def test_a_game_bet_through_both_markets_is_one_bet_on_one_team():
     assert bet["order_ids"] == ["o1", "o2"]
 
 
+def test_a_position_sold_before_the_end_is_paid_what_it_sold_for():
+    # 11 YES on Houston at 0.88, sold at 0.97: Kalshi books the sale as 11
+    # NO at 0.03, and the settlement's revenue is 0.
+    settlements = [
+        {
+            "ticker": f"{EVENT}-HOU",
+            "yes_count_fp": "11.00",
+            "yes_total_cost_dollars": "9.68",
+            "no_count_fp": "11.00",
+            "no_total_cost_dollars": "0.33",
+            "revenue": 0,
+            "fee_cost": "0.10",
+        }
+    ]
+    bet = ledger.bets([], settlements, [], EVENTS).iloc[0]
+    assert bet["bet_code"] == "HOU"
+    assert bet["settled"] and bet["won"]
+    assert bet["pnl"] == pytest.approx(11 - 9.68 - 0.33 - 0.10)
+
+
 def test_an_open_no_position_is_a_bet_on_the_other_team():
     positions = [
         {

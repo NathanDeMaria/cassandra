@@ -178,7 +178,11 @@ def bets(
             continue
         codes = list(teams(events[event]))
         held.setdefault(event, []).extend(settled_legs(s, codes))
-        paid[event] = paid.get(event, 0.0) + _num(s.get("revenue")) / 100
+        # A sale before the end is booked as a buy of the other side: each
+        # YES-NO pair paid its dollar when it was netted, not at settlement,
+        # so the settlement's revenue leaves it out.
+        pairs = min(_num(s.get("yes_count_fp")), _num(s.get("no_count_fp")))
+        paid[event] = paid.get(event, 0.0) + _num(s.get("revenue")) / 100 + pairs
     still_open = set()
     for p in positions:
         event = event_of(p["ticker"])
