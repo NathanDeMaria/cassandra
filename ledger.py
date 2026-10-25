@@ -25,9 +25,9 @@ there, keyed by the game's Kalshi event (the `=== KX...` line of
 `type` is one of `cassandra.ledger.TYPES`. Until a game has a theme it
 counts under the type its box score suggests, marked `?`.
 
-Bets the cloud job placed at bedtime were priced in its container. The
-job copies its picks and orders files to s3, and this pulls them down,
-so those bets have their model price too. A bet with neither file still
+The cloud job prices every run in its container. It copies each run's
+picks file to s3 (and its orders file, when it placed), and this pulls
+them down, so its bets have their model price too. A bet with neither file still
 counts: it just has no model EV.
 """
 

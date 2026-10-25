@@ -128,7 +128,11 @@ anything into a run of wins or losses.
 - **Bet-time prices** come from `~/.cassandra/betting/orders/*_orders.csv` (exact, by
   order id). Failing that, from the last `~/.cassandra/betting/picks/*.csv` run started
   before the first fill.
-- The cloud job copies its bedtime runs' files to `s3://<batch>/cassandra/betting/`
-  under `picks/` and `orders/`, and `make ledger` pulls them down.
+- The cloud job copies every run's picks file, and a bedtime run's orders file, to
+  `s3://<batch>/cassandra/betting/` under `picks/` and `orders/`, and `make ledger`
+  pulls them down. Runs before that change only exist in CloudWatch (`/aws/batch/job`,
+  streams `cassandra-picks/...`): each log's `=== N picks` table holds the picks' model
+  and market, and the job's Batch `startedAt`, not the log's timestamps, is when the
+  run started.
 - **Backups** go to `s3://<batch>/cassandra/betting/ledger/` after each run with a
   login. If `themes.toml` is missing locally, it's restored from there.
