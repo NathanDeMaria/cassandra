@@ -69,6 +69,14 @@ indexes the blended models read — `{league}_game_control.json` is the share of
 a game a team controlled, `{league}_epa.json` is what its offense added per
 snap. Football only, so a basketball run submits neither.
 
+`player-ratings` is basketball's: each morning it runs ten-minute-version over
+the season's games so far and adds today's rows to `{league}_player_ratings.csv`,
+the players' team ratings `glicko_players` blends into its predictions
+(`cassandra.player_ratings_build`). Publish waits on it as it waits on the
+football sweeps. The launcher submits it only once terraform has put
+`CASSANDRA_PLAYER_RATINGS_JOB_DEFINITION` in its environment, and a season with
+no ten-minute-version kit in the bucket is left as it was.
+
 `game-control` has been a node here before. It fed the `glicko_control`
 models, both leagues' searches put its blend weight at zero, the models were
 deleted and the node went with them — the sweep was writing an index nothing

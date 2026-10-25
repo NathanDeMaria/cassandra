@@ -47,6 +47,7 @@ from cassandra.predictor import (
     EPA_LEAGUES,
     anchor_path,
 )
+from cassandra.predictor.player_ratings import PLAYER_RATING_LEAGUES
 from cassandra.predictor.qb_out import QB_LEAGUES
 
 # When this process started, which is as close as it can see to when Batch
@@ -247,6 +248,30 @@ async def _qb_out(
             keys = await artifacts.upload(bucket, artifacts.qb_out_for(league))
             for key in keys:
                 print(f"  uploaded s3://{bucket}/{key}")
+
+
+async def _player_ratings(
+    leagues: list[str] | None, index: int | None, today: str | None
+) -> None:
+    # Late, like the sweeps above: ten-minute-version brings scipy and
+    # pyarrow, and `jobs.py submit` has no reason to import them.
+    from datetime import date
+
+    from cassandra.player_ratings_build import refresh
+
+    if leagues is None:
+        child = manifest.array_index(index)
+        leagues = (
+            [dag.player_ratings_league(child)]
+            if child is not None
+            else list(PLAYER_RATING_LEAGUES)
+        )
+    bucket = _bucket()
+    day = date.fromisoformat(today) if today else None
+    for league in leagues:
+        print(f"=== {league} / player ratings ===")
+        done = await refresh(bucket, league, day)
+        print("  refreshed" if done else "  no kit for the season; left as it was")
 
 
 async def _epa(
@@ -719,6 +744,22 @@ class Jobs:
         """
         asyncio.run(_qb_out(_as_list(league), index, upload, latest))
 
+    def player_ratings(
+        self,
+        league: list[str] | str | None = None,
+        index: int | None = None,
+        today: str | None = None,
+    ) -> None:
+        """Add today's rows to a basketball league's players' team ratings
+        (`cassandra.player_ratings_build`), which `glicko_players` blends in.
+
+        Every morning, before publish: a row stands for the games on or after
+        its day, so one that missed a morning leaves the model reading the day
+        before's. `--today` refits as of another day (ISO), replacing that
+        day's rows.
+        """
+        asyncio.run(_player_ratings(_as_list(league), index, today))
+
     def sweeps(self, league: str) -> None:
         """Both play-by-play sweeps a bet reads, EPA then quarterbacks, in one
         container: what a final submits.
@@ -818,6 +859,7 @@ class Jobs:
         game_control_job_definition: str | None = None,
         epa_job_definition: str | None = None,
         qb_out_job_definition: str | None = None,
+        player_ratings_job_definition: str | None = None,
         optimize_job_definition: str | None = None,
         evaluate_job_definition: str | None = None,
         publish_job_definition: str | None = None,
@@ -845,6 +887,11 @@ class Jobs:
                 ),
                 epa_job_definition=_job_definition("EPA", epa_job_definition),
                 qb_out_job_definition=_job_definition("QB_OUT", qb_out_job_definition),
+                # No conventional fallback, unlike the others: until terraform
+                # puts this in the launcher's environment there is no such
+                # definition, and the run goes ahead without the sweep.
+                player_ratings_job_definition=player_ratings_job_definition
+                or os.environ.get("CASSANDRA_PLAYER_RATINGS_JOB_DEFINITION"),
                 optimize_job_definition=_job_definition(
                     "OPTIMIZE", optimize_job_definition
                 ),

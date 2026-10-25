@@ -101,6 +101,7 @@ from aiobotocore.session import get_session
 from cassandra.batch import manifest
 from cassandra.batch.manifest import Work
 from cassandra.predictor import ANCHOR_LEAGUES, CONTROL_LEAGUES, EPA_LEAGUES
+from cassandra.predictor.player_ratings import PLAYER_RATING_LEAGUES
 from cassandra.predictor.qb_out import QB_LEAGUES
 
 # AWS Batch rejects an array job of size 1 -- `arrayProperties.size` has to be
@@ -134,6 +135,7 @@ async def submit(
     evaluate_job_definition: str,
     publish_job_definition: str,
     job_queue: str,
+    player_ratings_job_definition: str | None = None,
     leagues: list[str] | None = None,
     models: list[str] | None = None,
     skip_anchors: bool = False,
@@ -233,6 +235,15 @@ async def submit(
     control_leagues = [league for league in CONTROL_LEAGUES if league in scope_leagues]
     epa_leagues = [league for league in EPA_LEAGUES if league in scope_leagues]
     qb_out_leagues = [league for league in QB_LEAGUES if league in scope_leagues]
+    # The basketball one: no plays of its own to sweep, but the same place in
+    # the DAG -- today's players' ratings have to be in before publish prices
+    # today's games. None until the job definition is applied, so a launcher
+    # older than its terraform still submits the rest.
+    player_rating_leagues = (
+        [league for league in PLAYER_RATING_LEAGUES if league in scope_leagues]
+        if player_ratings_job_definition
+        else []
+    )
     # Not implied by `skip_optimize` any more: all three indexes are read when
     # a played game is priced, not only when a search is fit, so a republish
     # that skipped them serves last week's answer about this week's games. The
@@ -292,6 +303,14 @@ async def submit(
                 "qb_out",
                 qb_out_leagues,
                 _QB_OUT_LEAGUES_ENV_VAR,
+                False,
+            ),
+            (
+                "player-ratings",
+                player_ratings_job_definition or "",
+                "player_ratings",
+                player_rating_leagues,
+                _PLAYER_RATINGS_LEAGUES_ENV_VAR,
                 False,
             ),
         ):
@@ -384,6 +403,7 @@ _ANCHOR_LEAGUES_ENV_VAR = "CASSANDRA_ANCHOR_LEAGUES"
 _CONTROL_LEAGUES_ENV_VAR = "CASSANDRA_CONTROL_LEAGUES"
 _EPA_LEAGUES_ENV_VAR = "CASSANDRA_EPA_LEAGUES"
 _QB_OUT_LEAGUES_ENV_VAR = "CASSANDRA_QB_OUT_LEAGUES"
+_PLAYER_RATINGS_LEAGUES_ENV_VAR = "CASSANDRA_PLAYER_RATINGS_LEAGUES"
 
 
 def _league_args(leagues: list[str] | None) -> list[str]:
@@ -500,6 +520,11 @@ def epa_league(index: int) -> str:
 def qb_out_league(index: int) -> str:
     """Which league this quarterback availability array child owns."""
     return _league_at(_QB_OUT_LEAGUES_ENV_VAR, index)
+
+
+def player_ratings_league(index: int) -> str:
+    """Which league this players' ratings array child owns."""
+    return _league_at(_PLAYER_RATINGS_LEAGUES_ENV_VAR, index)
 
 
 def _league_at(env_var: str, index: int) -> str:

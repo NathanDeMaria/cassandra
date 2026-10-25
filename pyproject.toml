@@ -218,6 +218,16 @@ endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "1b61
 # none -- it reads the one that ships inside the package. The scikit-learn
 # above is cassandra's own, for the prob-to-margin calibration.
 lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "99e79fb9ed68deef0800b53d580677d1036b1dca", extras = ["data"]}
+# Player ratings for college basketball, from who was on the floor for every
+# possession: what the `player-ratings` sweep runs each morning to file every
+# mens and womens team as of today (`cassandra.player_ratings_build`), which
+# `glicko_players` blends into its predictions (`cassandra.predictor.
+# player_ratings`). Fitting only -- a release carries none of it -- so here
+# with the rest of the fitting stack. Its scipy is scikit-learn's already.
+#
+# Pinned for the reason lucky-ones is: the release files that ship inside it
+# (the box-score, recruit and newcomer priors) are the model.
+ten-minute-version = {git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "48bb0d2669e285883f9499d8794d2388bb1b3de7"}
 
 
 [tool.poetry.group.dev.dependencies]

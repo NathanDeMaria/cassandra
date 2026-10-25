@@ -586,3 +586,52 @@ def test_skip_sweeps_drops_them_from_a_republish_too(
 
     assert set(by_command) == {"evaluate", "publish"}
     assert "dependsOn" not in by_command["publish"]
+
+
+def test_a_basketball_republish_waits_for_its_players_ratings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Today's players' ratings have to be in before publish prices today's
+    games, so the basketball sweep sits where the football ones do."""
+    requests = _submitted_requests(
+        monkeypatch,
+        leagues=["mens", "womens"],
+        skip_optimize=True,
+        player_ratings_job_definition="pr",
+    )
+    by_command = _by_command(requests)
+
+    assert set(by_command) == {"player_ratings", "evaluate", "publish"}
+    sweep = by_command["player_ratings"]
+    assert sweep["jobDefinition"] == "pr"
+    assert sweep["arrayProperties"] == {"size": 2}
+    env = {e["name"]: e["value"] for e in sweep["containerOverrides"]["environment"]}
+    assert env["CASSANDRA_PLAYER_RATINGS_LEAGUES"] == "mens,womens"
+    assert by_command["publish"]["dependsOn"] == [{"jobId": sweep_id(requests, "pr")}]
+
+
+def test_no_players_ratings_sweep_without_its_definition_or_for_football(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Until terraform puts the definition in the launcher's environment the
+    run goes ahead without it; football never gets it."""
+    unset = _by_command(
+        _submitted_requests(monkeypatch, leagues=["mens"], skip_optimize=True)
+    )
+    football = _by_command(
+        _submitted_requests(
+            monkeypatch,
+            leagues=["ncaafb"],
+            skip_optimize=True,
+            player_ratings_job_definition="pr",
+        )
+    )
+    assert "player_ratings" not in unset and "player_ratings" not in football
+
+
+def sweep_id(requests: list[dict], definition: str) -> str:
+    """The fake client's job id for the request sent to `definition`."""
+    for k, request in enumerate(requests):
+        if request["jobDefinition"] == definition:
+            return f"job-{k + 1}"
+    raise AssertionError(f"nothing sent to {definition}")
