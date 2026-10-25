@@ -3222,6 +3222,27 @@ pure-eval = "*"
 tests = ["cython", "littleutils", "pygments", "pytest", "typeguard"]
 
 [[package]]
+name = "ten-minute-version"
+version = "0.1.0"
+description = "Player ratings for college basketball, from lineup-vs-lineup possessions"
+optional = false
+python-versions = ">=3.14"
+groups = ["fit"]
+files = []
+develop = false
+
+[package.dependencies]
+numpy = ">=2.3.0"
+pyarrow = ">=21.0.0"
+scipy = ">=1.16"
+
+[package.source]
+type = "git"
+url = "https://github.com/NathanDeMaria/ten-minute-version.git"
+reference = "48bb0d2669e285883f9499d8794d2388bb1b3de7"
+resolved_reference = "48bb0d2669e285883f9499d8794d2388bb1b3de7"
+
+[[package]]
 name = "termcolor"
 version = "3.3.0"
 description = "ANSI color formatting for output in terminal"
@@ -3658,4 +3679,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "629303d6a9f08ce8ee668f81c920f0ebaa1d26a293fa32236eb6bfacc9463636"
+content-hash = "54eb5dcfeefd61c60f2e14d01b90276879da1bd95361b39aed5878b0c87cbfe1"

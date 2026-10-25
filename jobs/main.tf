@@ -65,8 +65,9 @@ locals {
     anchors      = module.anchors.name
     game_control = module.game_control.name
     epa          = module.epa.name
-    qb_out       = module.qb_out.name
-    optimize     = module.optimize.name
+    qb_out         = module.qb_out.name
+    player_ratings = module.player_ratings.name
+    optimize       = module.optimize.name
     evaluate     = module.evaluate.name
     publish      = module.publish.name
   }
@@ -273,6 +274,26 @@ module "qb_out" {
   environment_variables = local.job_environment
 }
 
+# The basketball sweep: no plays of its own to read, but the same place in the
+# DAG. Each morning it runs ten-minute-version over the season's games so far
+# and adds today's rows to `{league}_player_ratings.csv`, which
+# `models/{mens,womens}/glicko_players.json` blend into their predictions --
+# so publish waits on it the way it waits on the football sweeps. See
+# `cassandra.player_ratings_build`.
+module "player_ratings" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
+
+  job_name           = "cassandra-player-ratings"
+  image              = local.image
+  command            = ["player_ratings"]
+  execution_role_arn = local.shared.batch_execution_role_arn
+  job_role_arn       = aws_iam_role.job.arn
+  memory             = var.player_ratings_memory
+  retry_attempts     = 3
+
+  environment_variables = local.job_environment
+}
+
 module "optimize" {
   source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/batch_job?ref=main"
 
@@ -445,6 +466,7 @@ module "launcher" {
     { name = "CASSANDRA_GAME_CONTROL_JOB_DEFINITION", value = local.job_definitions.game_control },
     { name = "CASSANDRA_EPA_JOB_DEFINITION", value = local.job_definitions.epa },
     { name = "CASSANDRA_QB_OUT_JOB_DEFINITION", value = local.job_definitions.qb_out },
+    { name = "CASSANDRA_PLAYER_RATINGS_JOB_DEFINITION", value = local.job_definitions.player_ratings },
     { name = "CASSANDRA_OPTIMIZE_JOB_DEFINITION", value = local.job_definitions.optimize },
     { name = "CASSANDRA_EVALUATE_JOB_DEFINITION", value = local.job_definitions.evaluate },
     { name = "CASSANDRA_PUBLISH_JOB_DEFINITION", value = local.job_definitions.publish },

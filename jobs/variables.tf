@@ -58,6 +58,12 @@ variable "epa_memory" {
   default     = 6144
 }
 
+variable "player_ratings_memory" {
+  description = "MiB for a player-ratings child. A season's possession rows and their sparse design for one ten-minute-version fit, plus the season's plays and summaries on disk. A whole womens chain run, every season, peaked near 3 GB locally; one season's fit is less."
+  type        = number
+  default     = 6144
+}
+
 variable "qb_out_memory" {
   description = "MiB for a qb-out child. It reads the same weekly play-by-play the other two sweeps do, but keeps only a starter's name and a set of ball-carriers per team per game, so it needs far less than either -- the parquet for one week is the high-water mark, not anything it accumulates."
   type        = number
