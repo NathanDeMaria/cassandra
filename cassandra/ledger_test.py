@@ -516,3 +516,12 @@ def test_report_has_each_part():
     # A game no one has written up shows its guessed type and its tags.
     assert "late_swing? | unlucky | _pending_ (one_score)" in page
     assert "## Open: 1 games, $2.10 staked" in page
+
+
+def test_wins_losses_lists_each_settled_bet_under_its_result():
+    page = ledger.wins_losses(LEDGER, datetime(2026, 10, 21, 12, tzinfo=UTC))
+    wins, losses = page.split("## Losses")
+    assert "## Wins (1)" in wins and "**Walk-off.** A kick at the gun." in wins
+    assert "_pending_ (one_score)" in losses
+    # The open bet is in neither.
+    assert page.count("| Oct 17 |") == 2

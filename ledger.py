@@ -114,6 +114,7 @@ def push_up(s3, bucket: str) -> None:
         ledger.THEMES,
         ledger.LEDGER_DIR / "ledger.csv",
         ledger.LEDGER_DIR / "report.md",
+        ledger.LEDGER_DIR / "wins-losses.md",
     ):
         if path.exists():
             s3.put_object(
@@ -285,6 +286,7 @@ def main() -> None:
     )
     page = ledger.report(frame, as_of)
     (ledger.LEDGER_DIR / "report.md").write_text(page)
+    (ledger.LEDGER_DIR / "wins-losses.md").write_text(ledger.wins_losses(frame, as_of))
 
     settled = frame[frame["settled"]].copy()
     card = ledger.scorecard(settled.assign(won=settled["won"].astype(bool)))
@@ -306,6 +308,7 @@ def main() -> None:
         print(f"no ESPN game for: {', '.join(no_facts['title'])}")
     print(f"{len(pending)} settled games without a theme ({ledger.THEMES})")
     print(f"report: {ledger.LEDGER_DIR / 'report.md'}")
+    print(f"wins and losses: {ledger.LEDGER_DIR / 'wins-losses.md'}")
     if args.digest:
         print(f"\ntypes: {', '.join(ledger.TYPES)}\n")
         for _, row in pending.sort_values("kickoff").iterrows():
