@@ -1,0 +1,32 @@
+{
+    "predictor_class": "GlickoPredictor",
+    "league": "womens",
+    "parameters": {
+        "glicko_share": [
+            0.4,
+            1.0
+        ],
+        "player_rating_weight": [
+            0,
+            25
+        ]
+    },
+    "fixed": {
+        "home_advantage": 77.10475710658311,
+        "initial_rd": 547.3886283715119,
+        "weekly_rd_increase": 32.80520949682131,
+        "season_rd_increase": 364.02110478804286,
+        "scoring_method": "sigmoid",
+        "season_regression": 0.02093043024270807,
+        "sigmoid_scale": 6.886004210295965,
+        "passes": 3
+    },
+    "fixed_from": "glicko_full",
+    "n_iter": 60,
+    "seeds": [
+        {
+            "glicko_share": 0.76,
+            "player_rating_weight": 9.7
+        }
+    ]
+}

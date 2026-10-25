@@ -195,6 +195,7 @@ def test_searching_the_scale_moves_every_priced_argument() -> None:
         "travel_advantage",
         "rest_advantage",
         "qb_out_penalty",
+        "player_rating_weight",
         "prediction_scale",
         "weekly_rd_increase",
         "season_rd_increase",
@@ -315,3 +316,11 @@ def test_every_framed_config_derives_a_full_probe(config_path: Path) -> None:
             probe[name] = sum(span) / 2
     params = frame.to_params(config.frame, {**config.fixed, **probe}, 17)
     load_predictor_class(config.predictor_class)(config.league, **params)
+
+
+def test_the_players_margin_is_searched_in_points_per_point() -> None:
+    knobs = {"sigmoid_scale": 10.0, "players_pts": 0.5}
+    params = frame.to_params(frame.POINTS, knobs, weeks_per_season=_NFL_WEEKS)
+    assert params["player_rating_weight"] == pytest.approx(
+        0.5 * frame.rating_units_per_point(10.0)
+    )
