@@ -248,10 +248,17 @@ def committed(placed: pd.DataFrame | None) -> float:
 def unsent(picks: pd.DataFrame, sent: dict) -> pd.DataFrame:
     """The picks no email has carried: a new game, or the same game's other side."""
     games = sent.get("games", {})
-    fresh = [
-        game_id not in games or games[game_id].get("bet") != bet
-        for game_id, bet in zip(picks["game_id"], picks["bet"])
-    ]
+    fresh = pd.Series(
+        [
+            game_id not in games or games[game_id].get("bet") != bet
+            for game_id, bet in zip(picks["game_id"], picks["bet"])
+        ],
+        index=picks.index,
+        dtype=bool,
+    )
+    # A mask, not a list: with no picks the list is `[]`, and `picks[[]]`
+    # selects no columns rather than no rows, which lost `game_id` on a
+    # pickless run that only cancelled rungs (2026-10-25).
     return picks[fresh]
 
 
