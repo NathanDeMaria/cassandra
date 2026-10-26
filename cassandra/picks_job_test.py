@@ -204,3 +204,14 @@ def test_keep_leaves_a_dry_runs_orders_behind(tmp_path, monkeypatch):
     assert picks_job.keep(FakeS3(), "b", started, orders=False) == [
         "b/picks/ncaafb_m_20261021-0130.csv"
     ]
+
+
+def test_an_email_for_cancelled_rungs_with_no_picks_at_all():
+    picks = _picks(("1", "Toledo Rockets", 0.09)).iloc[:0]
+    fresh = picks_job.unsent(picks, {})
+    assert fresh.empty and "game_id" in fresh
+    text = picks_job.body(
+        picks, fresh, "REPORT", None, None, 0.01, ["  cancelled the 0.40 rung"]
+    )
+    assert text.startswith("Took resting rungs off the book:")
+    assert picks_job.record({}, fresh, NOW, "s")["emails"][-1]["picks"] == []
