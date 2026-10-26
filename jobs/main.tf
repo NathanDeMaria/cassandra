@@ -62,14 +62,14 @@ locals {
   # read what they write, so both are here: a name in this map is a name the
   # launcher can start.
   job_definitions = {
-    anchors      = module.anchors.name
-    game_control = module.game_control.name
-    epa          = module.epa.name
+    anchors        = module.anchors.name
+    game_control   = module.game_control.name
+    epa            = module.epa.name
     qb_out         = module.qb_out.name
     player_ratings = module.player_ratings.name
     optimize       = module.optimize.name
-    evaluate     = module.evaluate.name
-    publish      = module.publish.name
+    evaluate       = module.evaluate.name
+    publish        = module.publish.name
   }
 }
 
