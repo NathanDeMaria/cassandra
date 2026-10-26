@@ -11,7 +11,9 @@ from .distribution import collapse
 from .glicko import GlickoPredictor
 from .player_ratings import (
     PlayerRatingIndex,
+    PlayerRatingsFile,
     TeamAsOf,
+    TeamRow,
     load_player_ratings,
 )
 from .qb_out import QbOutIndex
@@ -63,6 +65,22 @@ def test_the_margin_is_the_average_pace_times_the_net_gap() -> None:
     # the home edge is the model's: a neutral site reads the same
     assert INDEX.margin(fixture._replace(neutral_site=True)) == INDEX.margin(fixture)
     assert INDEX.margin(fixture._replace(away="Nobody")) is None
+
+
+def test_a_published_file_prices_a_game_ahead_as_the_whole_file_does() -> None:
+    stored = PlayerRatingsFile(
+        league="mens",
+        teams={
+            "Home U": TeamRow(
+                as_of=date(2024, 11, 11), season=2024, net=4.0, pace=70.0
+            ),
+            "Away St": TeamRow(
+                as_of=date(2024, 11, 4), season=2024, net=-2.0, pace=66.0
+            ),
+        },
+    )
+    fixture = _Fixture("Home U", "Away St", datetime(2024, 11, 14))
+    assert PlayerRatingIndex.from_file(stored).margin(fixture) == INDEX.margin(fixture)
 
 
 def test_glicko_blends_it_into_the_prediction_and_not_the_update(
