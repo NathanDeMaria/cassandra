@@ -1,5 +1,6 @@
 import math
 from collections.abc import Mapping, Sequence
+from datetime import date, timedelta
 from typing import Any, NamedTuple, Self
 
 import numpy as np
@@ -26,6 +27,7 @@ from .distribution import LogisticMargin, MarginDistribution, decimal_logistic
 from .opponent_prior import OpponentPriorManager
 from .player_ratings import (
     DEFAULT_PLAYER_RATING_WEIGHT,
+    season_for,
     validated_player_rating_weight,
 )
 from .rest import DEFAULT_REST_ADVANTAGE
@@ -245,6 +247,13 @@ class GlickoPredictor(Predictor):
         self._entry: list[_Rating] = []
         self._entry_is_preseason: list[bool] = []
         self._week_rows: list[tuple[Ints, Ints, Floats, Floats]] = []
+        # When the ratings stand: the day of the last game rated, and
+        # whether a rollover has come since. What `ratings` reads the
+        # players' file as of -- see `_with_players`. In-season state like
+        # the smoother's: a predictor rebuilt from ratings has no clock, and
+        # ranks on its ratings alone.
+        self._last_day: date | None = None
+        self._entering = False
 
     def home_edge(self, matchup: Matchup) -> float:
         """Rating points the home side gets for being at home, before the matchup terms.
@@ -310,6 +319,8 @@ class GlickoPredictor(Predictor):
 
     def _update_game(self, game: Game) -> Prediction:
         prediction = self.predict_game(game)
+        self._last_day = game.date.date()
+        self._entering = False
         home_rating = self.get_rating(game.home)
         away_rating = self.get_rating(game.away)
         actual = self._actual(game)
@@ -604,6 +615,7 @@ class GlickoPredictor(Predictor):
         self._entry = []
         self._entry_is_preseason = []
         self._week_rows = []
+        self._entering = True
 
     def postrun_callback(self) -> None:
         self._prior_manager.save(
@@ -656,10 +668,59 @@ class GlickoPredictor(Predictor):
 
     @property
     def ratings(self) -> dict[str, Rating]:
+        """Each team's rating, and where the players blend into the
+        prediction, the blend as `blended` -- the number a ranking reads."""
+        blended = self._with_players()
         return {
-            team: Rating(r.rating, r.rating_deviation)
+            team: Rating(r.rating, r.rating_deviation, blended=blended.get(team))
             for team, r in self._ratings.items()
         }
+
+    def _with_players(self) -> dict[str, float]:
+        """Each team as the blended prediction rates it at a neutral site,
+        for the teams the players' file reaches.
+
+        `glicko_share` of the rating plus `player_rating_weight` times the
+        team's players' margin over an average team -- its net at the
+        average pace of the teams rated -- so that two teams' difference
+        is the blend's neutral-site gap, but for pacing the pair at the
+        average rather than at their own. Shifted so the teams it covers
+        keep their ratings' mean: a team the file doesn't reach is ranked
+        on its rating alone, as its games are predicted, and stays on the
+        same scale.
+
+        As of the day after the last game rated, the rows a game that day
+        would read. After a rollover, with no game since, it's the season
+        being entered, before its first game, so each team's newest row of
+        that season: in a publish before the season that's this morning's.
+        (In a replay of the past it's that season's last row, which no
+        reader of a replay's ratings asks for: the history is read after
+        each week's games, and the release after the last of them.)
+        """
+        if self._glicko_share == 1.0 and not self._player_rating_weight:
+            return {}
+        if self._last_day is None:
+            return {}
+        index = self._adjustments.sources.player_ratings
+        if self._entering:
+            season = season_for(self._last_day) + 1
+            found = {team: index.newest(team, season) for team in self._ratings}
+        else:
+            day = self._last_day + timedelta(days=1)
+            found = {team: index.team(team, day) for team in self._ratings}
+        rows = {team: row for team, row in found.items() if row is not None}
+        if not rows:
+            return {}
+        pace = sum(row.pace for row in rows.values()) / len(rows)
+        blended = {
+            team: self._glicko_share * self._ratings[team].rating
+            + self._player_rating_weight * pace * row.net / 100
+            for team, row in rows.items()
+        }
+        shift = sum(self._ratings[team].rating - blended[team] for team in rows) / len(
+            rows
+        )
+        return {team: rating + shift for team, rating in blended.items()}
 
     @classmethod
     def from_ratings(

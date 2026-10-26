@@ -43,6 +43,11 @@ Measured before this existed (each season's first ten weeks, a normal on
 the margin), the players' margin alone beat an older `glicko_full` on the
 same games -- 0.1573 -> 0.1526 mens, 0.1395 -> 0.1349 womens.
 
+**A ranking reads the blend too.** A team's published rating is the
+blend's view of it at a neutral site (`GlickoPredictor._with_players`), the
+rating it learned from results alone beside it as `results`; a team the
+file doesn't reach ranks on that alone.
+
 **A row is stale after `MAX_AGE`.** The file is weekly; a game more than
 two weeks after a team's last row -- the offseason, or a season the file
 doesn't reach -- has no players' margin, and the model predicts it
@@ -88,12 +93,21 @@ def validated_player_rating_weight(weight: float) -> float:
     return weight
 
 
+def season_for(day: date) -> int:
+    """The basketball season `day` falls in, named for the year it starts,
+    as ten-minute-version names them."""
+    return day.year if day.month >= 8 else day.year - 1
+
+
 class TeamAsOf(NamedTuple):
     """A team as of a date: net per 100 possessions, possessions per game."""
 
     as_of: date
     net: float
     pace: float
+    # ten-minute-version's, the year the season starts; None where a caller
+    # building rows by hand has no use for it
+    season: int | None = None
 
 
 @cache
@@ -117,6 +131,7 @@ def load_player_ratings(league: str) -> Mapping[str, Sequence[TeamAsOf]]:
                 date.fromisoformat(row["as_of"]),
                 float(row["net"]),
                 float(row["pace"]),
+                int(row["season"]),
             )
         )
     return {team: sorted(rows) for team, rows in found.items()}
@@ -157,6 +172,14 @@ class PlayerRatingIndex:
             return None
         row = self._teams[team][at - 1]
         return row if day - row.as_of <= MAX_AGE else None
+
+    def newest(self, team: str, season: int) -> TeamAsOf | None:
+        """The team's latest row of `season`, however old: what a season
+        nobody has played yet says of it, read before its first game."""
+        for row in reversed(self._teams.get(team, ())):
+            if row.season == season:
+                return row
+        return None
 
     def margin(self, matchup: Matchup) -> float | None:
         """The players' neutral-site margin for the home side; None if either

@@ -110,6 +110,62 @@ def test_the_share_reads_glickos_gap_and_leaves_the_edge_whole(
     )
 
 
+def test_a_ranking_reads_the_blend_the_way_a_neutral_game_does(
+    game: GameFactory,
+) -> None:
+    sources = MatchupSources(QbOutIndex(), RestLedger(), INDEX)
+    blended = GlickoPredictor(
+        "test_league", glicko_share=0.5, player_rating_weight=2.0, sources=sources
+    )
+    plain = GlickoPredictor("test_league", sources=sources)
+    for predictor in (blended, plain):
+        for away, day in (("Away St", 6), ("Nobody", 8)):
+            predictor.update_game(
+                game("Home U", away, 80, 60)._replace(date=datetime(2024, 11, day))
+            )
+    ratings = blended.ratings
+    home, away, nobody = ratings["Home U"], ratings["Away St"], ratings["Nobody"]
+    neutral = _Fixture("Home U", "Away St", datetime(2024, 11, 9), neutral_site=True)
+    players = INDEX.margin(neutral)
+    assert players is not None
+    gap = home.rating - away.rating
+    assert home.overall - away.overall == pytest.approx(0.5 * gap + 2.0 * players)
+    # the teams it covers keep their mean; one it doesn't is its rating
+    assert home.overall + away.overall == pytest.approx(home.rating + away.rating)
+    assert nobody.blended is None and nobody.overall == nobody.rating
+    assert all(r.blended is None for r in plain.ratings.values())
+
+
+def test_before_a_season_a_ranking_reads_its_newest_rows(game: GameFactory) -> None:
+    index = PlayerRatingIndex(
+        {
+            team: [
+                TeamAsOf(date(2025, 3, 3), 0.0, 70.0, 2024),
+                TeamAsOf(date(2025, 10, 20), net, 70.0, 2025),
+                TeamAsOf(date(2025, 10, 21), 2 * net, 70.0, 2025),
+            ]
+            for team, net in (("Home U", 5.0), ("Away St", -5.0))
+        }
+    )
+    sources = MatchupSources(QbOutIndex(), RestLedger(), index)
+    predictor = GlickoPredictor(
+        "test_league", player_rating_weight=1.0, sources=sources
+    )
+    predictor.update_game(
+        game("Home U", "Away St", 70, 70)._replace(date=datetime(2025, 3, 8))
+    )
+    ratings = predictor.ratings
+    # in season, the rows before the day after: level by the season's last
+    assert ratings["Home U"].overall - ratings["Away St"].overall == pytest.approx(
+        ratings["Home U"].rating - ratings["Away St"].rating
+    )
+    predictor.pass_season()
+    ratings = predictor.ratings
+    assert ratings["Home U"].overall - ratings["Away St"].overall == pytest.approx(
+        ratings["Home U"].rating - ratings["Away St"].rating + 70 * 20 / 100
+    )
+
+
 def test_the_blend_is_kept_only_when_on() -> None:
     assert "glicko_share" not in GlickoPredictor("test_league").state_dict()
     priced = GlickoPredictor("test_league", glicko_share=0.8, player_rating_weight=5.0)
@@ -135,8 +191,8 @@ def test_the_file_reads_by_canonical_name_in_date_order(
     try:
         assert load_player_ratings("nfl") == {
             "Home U": [
-                TeamAsOf(date(2024, 11, 4), 10.0, 70.0),
-                TeamAsOf(date(2024, 11, 11), 4.0, 70.0),
+                TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2025),
+                TeamAsOf(date(2024, 11, 11), 4.0, 70.0, 2025),
             ]
         }
     finally:

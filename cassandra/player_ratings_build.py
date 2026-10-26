@@ -40,16 +40,12 @@ from cassandra.batch import artifacts
 from cassandra.predictor.player_ratings import (
     load_player_ratings,
     player_ratings_path,
+    season_for,
 )
 
 logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENCY = 16
-
-
-def season_for(day: date) -> int:
-    """The basketball season `day` falls in, named for the year it starts."""
-    return day.year if day.month >= 8 else day.year - 1
 
 
 def inputs(league: str, season: int) -> dict[str, str]:
