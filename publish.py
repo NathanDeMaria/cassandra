@@ -35,7 +35,10 @@ predictions silently turns the first case back into hindsight. See
 A football league also gets `models/{league}/qb_out.json`: the quarterback
 index the models were replayed with, as a fact table beside them, so a
 consumer can say of a played game what the model priced. See
-`qb_out_artifact`.
+`qb_out_artifact`. Mens and womens get `models/{league}/player_ratings.json`
+the same way: each team's newest players' row, which a model rebuilt from
+its release needs to blend them into a game ahead. See
+`player_ratings_artifact`.
 
 The one judgment call it does make is *when* the offseason rollover lands in
 a release, since publishing is the only caller that reads a predictor's
@@ -70,12 +73,14 @@ from cassandra.model_eval import (
 )
 from cassandra.odds import OddsDatabase
 from cassandra.predictor import (
+    PLAYER_RATING_LEAGUES,
     QB_LEAGUES,
     Predictor,
     PredictorConfig,
     RatingsUnsupported,
     load_predictor_class,
 )
+from cassandra.predictor.player_ratings import latest_player_ratings
 from cassandra.predictor.qb_out import read_qb_out_file
 from cassandra.save_predictions import join_with_odds, read_rated_seasons
 from cassandra.serving import (
@@ -90,6 +95,7 @@ from cassandra.serving import (
     history_path,
     metrics_from_scored,
     model_dir,
+    player_ratings_artifact_path,
     predictions_bytes,
     predictions_frame,
     predictions_path,
@@ -558,37 +564,85 @@ def qb_out_artifact(league: str) -> bytes | None:
     return stored.model_dump_json(indent=4).encode()
 
 
-def write_qb_out_artifact(league: str, out: Path) -> Path | None:
-    """Write the league's index into the layout, rooted at `out`."""
-    payload = qb_out_artifact(league)
+def player_ratings_artifact(league: str) -> bytes | None:
+    """A league's newest players' rows as the bucket should carry them, or
+    None: not mens or womens, or no file. None means don't write, as for
+    `qb_out_artifact` -- a consumer with no file predicts unblended, which is
+    what it should do when there is nothing to blend."""
+    if league not in PLAYER_RATING_LEAGUES:
+        return None
+    stored = latest_player_ratings(league)
+    if stored is None:
+        return None
+    return stored.model_dump_json(indent=4).encode()
+
+
+def _write_league_artifact(payload: bytes | None, path: Path) -> Path | None:
     if payload is None:
         return None
-    path = qb_out_artifact_path(out, league)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     return path
 
 
-async def upload_qb_out_artifact(league: str, bucket: str) -> str | None:
-    """Put the same bytes in s3, under the same layout."""
-    payload = qb_out_artifact(league)
+async def _upload_league_artifact(
+    payload: bytes | None, bucket: str, league: str, name: str
+) -> str | None:
     if payload is None:
         return None
-    key = f"models/{league}/qb_out.json"
+    key = f"models/{league}/{name}"
     await save_data_to_s3(bucket, key, payload)
     return key
 
 
-async def _publish_qb_out(league: str, out: Path, upload: bool, bucket: str) -> None:
-    """The league's index beside its models, on disk and then in the bucket."""
-    path = write_qb_out_artifact(league, out)
-    if path is None:
-        return
-    print(f"=== {league}/qb_out ===\n  wrote {path}")
-    if not upload:
-        return
-    key = await upload_qb_out_artifact(league, bucket)
-    print(f"  uploaded s3://{bucket}/{key}")
+def write_qb_out_artifact(league: str, out: Path) -> Path | None:
+    """Write the league's index into the layout, rooted at `out`."""
+    return _write_league_artifact(
+        qb_out_artifact(league), qb_out_artifact_path(out, league)
+    )
+
+
+async def upload_qb_out_artifact(league: str, bucket: str) -> str | None:
+    """Put the same bytes in s3, under the same layout."""
+    return await _upload_league_artifact(
+        qb_out_artifact(league), bucket, league, "qb_out.json"
+    )
+
+
+def write_player_ratings_artifact(league: str, out: Path) -> Path | None:
+    """Write the league's players' rows into the layout, rooted at `out`."""
+    return _write_league_artifact(
+        player_ratings_artifact(league), player_ratings_artifact_path(out, league)
+    )
+
+
+async def upload_player_ratings_artifact(league: str, bucket: str) -> str | None:
+    """Put the same bytes in s3, under the same layout."""
+    return await _upload_league_artifact(
+        player_ratings_artifact(league), bucket, league, "player_ratings.json"
+    )
+
+
+async def _publish_league_facts(
+    league: str, out: Path, upload: bool, bucket: str
+) -> None:
+    """The league's game facts beside its models, on disk and then in the
+    bucket: the quarterback index, the players' rows."""
+    for name, write, put in (
+        ("qb_out", write_qb_out_artifact, upload_qb_out_artifact),
+        (
+            "player_ratings",
+            write_player_ratings_artifact,
+            upload_player_ratings_artifact,
+        ),
+    ):
+        path = write(league, out)
+        if path is None:
+            continue
+        print(f"=== {league}/{name} ===\n  wrote {path}")
+        if upload:
+            key = await put(league, bucket)
+            print(f"  uploaded s3://{bucket}/{key}")
 
 
 def _by_league(jobs: Sequence[_Job]) -> Iterator[tuple[str, list[_Job]]]:
@@ -633,7 +687,7 @@ async def _publish(
         # it goes up once per league and before the models: nothing serves
         # it as a pointer, and a page reading it beside an older release is
         # reading the same index that release was replayed with.
-        await _publish_qb_out(league, out, upload, upload_bucket)
+        await _publish_league_facts(league, out, upload, upload_bucket)
         # Both venues' prices on this league's games, once for all its models.
         # A league gold-rush doesn't pull reads as two empty books.
         markets = await market_databases(bucket, league)

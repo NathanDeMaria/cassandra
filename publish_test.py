@@ -900,6 +900,36 @@ class TestTheQuarterbackIndexIsPublishedBesideTheModels:
         assert not (out / "models" / "mens" / "qb_out.json").exists()
 
 
+def test_a_basketball_league_publishes_each_teams_newest_players_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The file only exists where the sweep ran; a model rebuilt from its
+    release anywhere else needs these to blend the players in."""
+    from cassandra.predictor import PlayerRatingsFile, player_ratings
+
+    path = tmp_path / "mens_player_ratings.csv"
+    path.write_text(
+        "league,season,as_of,team_id,team,offense,defense,net,pace,games,home_edge\n"
+        "mens,2026,2026-10-25,1,Home U,3,1,4,70,0,1.5\n"
+        "mens,2026,2026-10-26,1,Home U,6,4,10,71,0,1.5\n"
+        "mens,2026,2026-10-26,2,Away St,0,-2,-2,66,0,1.5\n"
+        "mens,2025,2026-04-06,3,Gone A&M,0,0,0,68,30,1.5\n"
+    )
+    monkeypatch.setattr(player_ratings, "player_ratings_path", lambda league: path)
+    player_ratings.load_player_ratings.cache_clear()
+    try:
+        written = publish.write_player_ratings_artifact("mens", tmp_path / "out")
+        assert publish.write_player_ratings_artifact("nfl", tmp_path / "out") is None
+    finally:
+        player_ratings.load_player_ratings.cache_clear()
+    assert written == tmp_path / "out" / "models" / "mens" / "player_ratings.json"
+    stored = PlayerRatingsFile.model_validate_json(written.read_text())
+    assert {team: (row.net, row.pace) for team, row in stored.teams.items()} == {
+        "Home U": (10.0, 71.0),
+        "Away St": (-2.0, 66.0),
+    }
+
+
 def test_a_release_carries_the_margin_kernel(tmp_path: Path) -> None:
     """Fit beside the point margin, and readable on the far side of the file."""
     release = _published(_config(), tmp_path)

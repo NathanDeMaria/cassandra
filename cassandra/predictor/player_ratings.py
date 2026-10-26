@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import NamedTuple, Self
 
 from call_it_what_you_want import TeamNamer
+from pydantic import BaseModel
 
 from cassandra.constants import CASSANDRA_HOME
 
@@ -137,6 +138,59 @@ def load_player_ratings(league: str) -> Mapping[str, Sequence[TeamAsOf]]:
     return {team: sorted(rows) for team, rows in found.items()}
 
 
+class TeamRow(BaseModel):
+    """`TeamAsOf`, as a published file carries it."""
+
+    as_of: date
+    season: int
+    net: float
+    pace: float
+
+
+class PlayerRatingsFile(BaseModel):
+    """What a consumer predicting the games ahead needs of the players' file:
+    each team's newest row, by canonical name.
+
+    Newest only, because a game reads the latest row from before its day and
+    the file is rewritten every morning: the games ahead all read today's.
+    Published beside the releases (`publish.player_ratings_artifact`), since
+    the file itself only exists where the sweep ran -- a model rebuilt from
+    its release elsewhere reads an empty index, and predicts unblended.
+    """
+
+    league: str
+    teams: dict[str, TeamRow]
+
+
+def latest_player_ratings(league: str) -> PlayerRatingsFile | None:
+    """The league's newest rows, or None if it has no file.
+
+    Only the teams with a row as recent as `MAX_AGE` before the file's
+    newest: one the file stopped rating -- a team gone from Division I, a
+    name ESPN retired -- has nothing to say about a game ahead.
+    """
+    teams = load_player_ratings(league)
+    if not teams:
+        return None
+    newest = max(rows[-1].as_of for rows in teams.values())
+    teams = {
+        team: rows for team, rows in teams.items() if newest - rows[-1].as_of <= MAX_AGE
+    }
+    return PlayerRatingsFile(
+        league=league,
+        teams={
+            team: TeamRow(
+                as_of=row.as_of,
+                season=row.season if row.season is not None else season_for(row.as_of),
+                net=row.net,
+                pace=row.pace,
+            )
+            for team, rows in teams.items()
+            for row in rows[-1:]
+        },
+    )
+
+
 class PlayerRatingIndex:
     """Teams as their players rate them, by date.
 
@@ -153,6 +207,16 @@ class PlayerRatingIndex:
     @classmethod
     def for_league(cls, league: str) -> Self:
         return cls(load_player_ratings(league))
+
+    @classmethod
+    def from_file(cls, stored: PlayerRatingsFile) -> Self:
+        """The index a published file says: a row per team."""
+        return cls(
+            {
+                team: [TeamAsOf(row.as_of, row.net, row.pace, row.season)]
+                for team, row in stored.teams.items()
+            }
+        )
 
     def __len__(self) -> int:
         return len(self._teams)
