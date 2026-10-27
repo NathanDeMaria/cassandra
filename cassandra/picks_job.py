@@ -126,11 +126,14 @@ def release(s3: Any, bucket: str) -> None:
     s3.delete_object(Bucket=bucket, Key=LOCK_KEY)
 
 
-def keep(s3: Any, bucket: str, since: datetime) -> list[str]:
+def keep(s3: Any, bucket: str, since: datetime, orders: bool = True) -> list[str]:
     """Copy the picks and orders files written since `since` -- this run's --
-    up to s3, for `make ledger`. The keys they went to."""
+    up to s3, for `make ledger`. The keys they went to. `orders=False` keeps
+    only the picks: a dry run's orders were never sent."""
     kept = []
     for prefix, directory in RUN_FILES.items():
+        if not orders and prefix.rstrip("/").endswith("orders"):
+            continue
         for path in sorted(directory.glob("*.csv")):
             if datetime.fromtimestamp(path.stat().st_mtime, UTC) < since:
                 continue
