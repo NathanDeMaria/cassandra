@@ -576,6 +576,12 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
             args = picks_script.parse(argv)
             outcome = picks_script.run(args)
 
+        # Every run's prices go up for `make ledger`, so a bet is read against
+        # the run that made it; the orders only when they were really sent.
+        if not rehearsal:
+            for key in picks_job.keep(s3, bucket, now, orders=asleep):
+                print(f"kept s3://{bucket}/{key}")
+
         sent, _ = picks_job.read_json(s3, bucket, picks_job.SENT_KEY)
         sent = sent or {}
         at = now.astimezone(CENTRAL)
@@ -586,8 +592,6 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
                 return
             if not rehearsal:
                 night = picks_job.charge(s3, bucket, picks_job.committed(placed))
-                for key in picks_job.keep(s3, bucket, now):
-                    print(f"kept s3://{bucket}/{key}")
             shown = outcome.picks[
                 outcome.picks["game_id"].isin(set(placed.get("game_id", [])))
             ]

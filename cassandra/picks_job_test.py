@@ -189,3 +189,18 @@ def test_keep_copies_up_only_this_runs_picks_and_orders(tmp_path, monkeypatch):
         "o/ncaafb_m_20261021-0130_orders.csv",
     ]
     assert s3.objects[("b", "o/ncaafb_m_20261021-0130_orders.csv")][0] == b"placed"
+
+
+def test_keep_leaves_a_dry_runs_orders_behind(tmp_path, monkeypatch):
+    picks_dir, orders_dir = tmp_path / "picks", tmp_path / "orders"
+    picks_dir.mkdir()
+    orders_dir.mkdir()
+    monkeypatch.setattr(
+        picks_job, "RUN_FILES", {"b/picks/": picks_dir, "b/orders/": orders_dir}
+    )
+    started = datetime.now(UTC)
+    (picks_dir / "ncaafb_m_20261021-0130.csv").write_text("priced")
+    (orders_dir / "ncaafb_m_20261021-0130_orders.csv").write_text("not sent")
+    assert picks_job.keep(FakeS3(), "b", started, orders=False) == [
+        "b/picks/ncaafb_m_20261021-0130.csv"
+    ]
