@@ -1,7 +1,7 @@
 import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import numpy as np
@@ -19,13 +19,18 @@ from cassandra.predictor import (
     FlatPredictor,
     GameEpa,
     GlickoPredictor,
+    MatchupSources,
+    PlayerRatingIndex,
     Predictor,
+    QbOutIndex,
     RatingsUnsupported,
+    RestLedger,
     UnitMarginGlickoPredictor,
     UnknownPredictorClass,
     predict_matchup,
     unit_glicko,
 )
+from cassandra.predictor.player_ratings import TeamAsOf
 from cassandra.prob_to_margin import (
     IsotonicProbToMarginFitter,
     LogisticProbToMarginFitter,
@@ -514,11 +519,17 @@ def rate_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
         "test_league",
         {unit_glicko.UNWEIGHTED: (1.5, -0.6), unit_glicko.WEIGHTED: (1.5, -0.6)},
     )
-    clocks = (unit_glicko.RateClock(0.05, 0.8, 0.001), unit_glicko.RateClock(0.04, 0.8, 0.001))
+    clocks = (
+        unit_glicko.RateClock(0.05, 0.8, 0.001),
+        unit_glicko.RateClock(0.04, 0.8, 0.001),
+    )
     monkeypatch.setitem(unit_glicko.SUCCESS_RATE_CLOCKS, "test_league", clocks)
     for kind in unit_glicko.KIND_RATE_CLOCKS.values():
         monkeypatch.setitem(kind, "test_league", clocks)
-    epa_clocks = (unit_glicko.RateClock(0.1, 0.8, 0.0025), unit_glicko.RateClock(0.08, 0.8, 0.0025))
+    epa_clocks = (
+        unit_glicko.RateClock(0.1, 0.8, 0.0025),
+        unit_glicko.RateClock(0.08, 0.8, 0.0025),
+    )
     for kind in unit_glicko.EPA_RATE_CLOCKS.values():
         monkeypatch.setitem(kind, "test_league", epa_clocks)
     monkeypatch.setitem(
@@ -780,3 +791,40 @@ print(any(m == "scipy" or m.startswith(("scipy.", "sklearn")) for m in sys.modul
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+def test_a_release_carries_each_teams_players_row_and_a_rebuild_drops_it() -> None:
+    """For a reader: the row survives the JSON, and predicting never needed it."""
+    index = PlayerRatingIndex(
+        {"Team A": [TeamAsOf(date(2024, 11, 4), 6.0, 70.0, 2024, 5.5)]}
+    )
+    original = GlickoPredictor(
+        "test_league",
+        player_rating_weight=1.0,
+        sources=MatchupSources(QbOutIndex(), RestLedger(), index),
+    )
+    original.update_game(
+        Game(
+            home="Team A",
+            away="Team B",
+            home_score=70,
+            away_score=60,
+            neutral_site=False,
+            completed=True,
+            date=datetime(2024, 11, 5),
+            game_id="g",
+        )
+    )
+    release = _snapshot(original, "GlickoPredictor", {"player_rating_weight": 1.0})
+
+    players = release.ratings["Team A"].players
+    assert players is not None
+    assert (players.net, players.pace, players.available) == (6.0, 70.0, 5.5)
+    assert players.as_of == date(2024, 11, 4)
+    assert release.ratings["Team B"].players is None
+    rebuilt = release.rating_predictor()
+    assert all(r.players is None for r in rebuilt.ratings.values())
+
+
+def test_a_release_written_before_the_players_row_still_reads() -> None:
+    assert TeamRating.model_validate({"rating": 1500, "rd": 100}).players is None

@@ -49,6 +49,7 @@ from .types import (
     KindRates,
     Matchup,
     PerDown,
+    PlayerRates,
     Prediction,
     Rate,
     Rating,

@@ -14,7 +14,7 @@ install cassandra without the `fit` group and still read a release.
 """
 
 import math
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -24,6 +24,7 @@ from cassandra.predictor import (
     KindEpa,
     KindRates,
     PerDown,
+    PlayerRates,
     Predictor,
     Rate,
     Rating,
@@ -108,6 +109,22 @@ class EpaRating(BaseModel):
     runs: KindEpaRating | None = None
 
 
+class PlayersRating(BaseModel):
+    """A team as its players rate it, from ten-minute-version.
+
+    `net` and `available` are points per 100 possessions against an average
+    team; `available` is the net over who might miss the next game and is
+    None where the source row doesn't say. `pace` is possessions a game.
+    `as_of` is the day of the row. For a reader only: the model reads the
+    players' file (`player_ratings.json`), and `rating_predictor` drops this.
+    """
+
+    net: float
+    pace: float
+    available: float | None = None
+    as_of: date
+
+
 class TeamRating(BaseModel):
     """A team's standing in one release.
 
@@ -134,6 +151,10 @@ class TeamRating(BaseModel):
     A reader from before the field does exactly that, which is why the field
     was read for a release before it was written.
 
+    `players` is the team's players' row, from the models that blend one in
+    (`glicko_players`), and None for every other model and for a team the
+    players' file doesn't reach; see `PlayersRating`.
+
     `success` is each side's success rate, from a units model, and None
     where the model keeps none or the team has no plays; see
     `SuccessRating`. `epa` is the same for EPA per down (`EpaRating`).
@@ -148,6 +169,7 @@ class TeamRating(BaseModel):
     defense: UnitRating | None = None
     success: SuccessRating | None = None
     epa: EpaRating | None = None
+    players: PlayersRating | None = None
 
 
 def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
@@ -167,6 +189,7 @@ def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
             defense=_unit_rating(rating.units.defense) if rating.units else None,
             success=_success(rating.success),
             epa=_epa(rating.epa),
+            players=_players(rating.players),
         )
         for team, rating in predictor.ratings.items()
     }
@@ -211,6 +234,14 @@ def _rate(rate: Rate) -> RateRating:
     return RateRating(rate=rate.rate, sd=rate.sd)
 
 
+def _players(row: PlayerRates | None) -> PlayersRating | None:
+    if row is None:
+        return None
+    return PlayersRating(
+        net=row.net, pace=row.pace, available=row.available, as_of=row.as_of
+    )
+
+
 def _epa(rates: EpaRates | None) -> EpaRating | None:
     if rates is None:
         return None
@@ -225,7 +256,9 @@ def _epa(rates: EpaRates | None) -> EpaRating | None:
 def _kind_epa(rates: KindEpa | None) -> KindEpaRating | None:
     if rates is None:
         return None
-    return KindEpaRating(offense=_per_down(rates.offense), defense=_per_down(rates.defense))
+    return KindEpaRating(
+        offense=_per_down(rates.offense), defense=_per_down(rates.defense)
+    )
 
 
 def _per_down(value: PerDown) -> PerDownRating:

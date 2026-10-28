@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import NamedTuple, Protocol
 
 from endgame.types import Game
@@ -104,6 +104,22 @@ class EpaRates(NamedTuple):
     runs: KindEpa | None = None
 
 
+class PlayerRates(NamedTuple):
+    """A team as its players rate it: net per 100 possessions, and the pace.
+
+    `net` is what the roster has earned; `available` is that net averaged
+    over who might miss the next game, each player at his chance of playing,
+    None where the source row doesn't say. `as_of` is the day of the row.
+    For a reader: the model reads the same row (`PlayerRatingIndex`) but a
+    rebuilt predictor takes it from the players' file, not from here.
+    """
+
+    net: float
+    pace: float
+    available: float | None
+    as_of: date
+
+
 class Rating(NamedTuple):
     """One team's standing, in the shape every predictor can express.
 
@@ -131,6 +147,9 @@ class Rating(NamedTuple):
     `success` and `epa` are for a reader too, and ignored the same way: the
     success rates and EPA per down a units model keeps beside its sides and
     never predicts from.
+
+    `players` is the team's players' row where the model blends one in
+    (`glicko_players`), also for a reader; the blend itself is `blended`.
     """
 
     rating: float
@@ -139,6 +158,7 @@ class Rating(NamedTuple):
     blended: float | None = None
     success: SuccessRates | None = None
     epa: EpaRates | None = None
+    players: PlayerRates | None = None
 
     @property
     def overall(self) -> float:
