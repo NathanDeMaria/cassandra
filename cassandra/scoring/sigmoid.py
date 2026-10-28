@@ -51,7 +51,12 @@ def make_sigmoid_score(scale: float = DEFAULT_SIGMOID_SCALE) -> Callable[[Game],
     """
 
     def _score(game: Game) -> float:
-        point_diff = game.home_score - game.away_score
-        return 1 / (1 + math.exp(-point_diff / scale))
+        return sigmoid_of_margin(game.home_score - game.away_score, scale)
 
     return _score
+
+
+def sigmoid_of_margin(margin: float, scale: float) -> float:
+    """What the sigmoid scorer makes of a home margin, for a caller with a
+    margin that isn't a score line -- one with some of its luck taken out."""
+    return 1 / (1 + math.exp(-margin / scale))

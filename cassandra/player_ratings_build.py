@@ -20,7 +20,8 @@ needs is copied down first, each where ten-minute-version reads it:
     ten-minute-version/live/L-S.pkl                     live/L-S.pkl
 
 and the file itself, which `morning` adds today's rows to, from and back to
-the predictor data prefix. About 250MB a league; the fit is seconds, the
+the predictor data prefix -- with `{league}_luck.csv` (`cassandra.predictor.
+luck`), which it adds the games before today to. About 250MB a league; the fit is seconds, the
 rosters a few minutes until every team has played.
 
 A season with no kit -- the summer, before one is built for the next -- is
@@ -37,6 +38,7 @@ from pathlib import Path
 from aiobotocore.session import get_session
 
 from cassandra.batch import artifacts
+from cassandra.predictor.luck import load_luck, luck_path
 from cassandra.predictor.player_ratings import (
     load_player_ratings,
     player_ratings_path,
@@ -102,6 +104,7 @@ async def refresh(bucket: str, league: str, today: date | None = None) -> bool:
             logger.warning("%s: no kit for %d, nothing to refresh", league, season)
             return False
         await artifacts.download(bucket, f"predictor/data/{league}_player_ratings.csv")
+        await artifacts.download(bucket, f"predictor/data/{league}_luck.csv")
         path = player_ratings_path(league)
         path.parent.mkdir(parents=True, exist_ok=True)
         morning(
@@ -117,6 +120,8 @@ async def refresh(bucket: str, league: str, today: date | None = None) -> bool:
             out=str(path.parent),
         )
     load_player_ratings.cache_clear()
-    keys = await artifacts.upload(bucket, [path])
+    load_luck.cache_clear()
+    luck = luck_path(league)
+    keys = await artifacts.upload(bucket, [path, *([luck] if luck.exists() else [])])
     logger.info("%s: wrote %s", league, keys)
     return True

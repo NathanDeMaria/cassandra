@@ -68,6 +68,7 @@ from endgame.types import Game
 
 from cassandra.travel import distance_km
 
+from .luck import LuckIndex
 from .player_ratings import PlayerRatingIndex
 from .qb_out import QbOutIndex, validated_qb_out_penalty
 from .rest import (
@@ -127,6 +128,8 @@ class MatchupSources(NamedTuple):
     rest: RestSource
     # Read by the prediction alone, not priced here: see `player_ratings`.
     player_ratings: PlayerRatingIndex = PlayerRatingIndex()
+    # Read by the update alone, to discount a result: see `luck`.
+    luck: LuckIndex = LuckIndex()
 
     @classmethod
     def for_league(cls, league: str) -> Self:
@@ -140,6 +143,7 @@ class MatchupSources(NamedTuple):
             qb_out=QbOutIndex.for_league(league),
             rest=RestLedger(),
             player_ratings=PlayerRatingIndex.for_league(league),
+            luck=LuckIndex.for_league(league),
         )
 
     @classmethod

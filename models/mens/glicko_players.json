@@ -13,6 +13,10 @@
         "absence_weight": [
             0,
             50
+        ],
+        "luck_share": [
+            0,
+            1
         ]
     },
     "fixed": {
@@ -29,9 +33,10 @@
     "n_iter": 60,
     "seeds": [
         {
-            "glicko_share": 0.8,
-            "player_rating_weight": 10.0,
-            "absence_weight": 20.0
+            "glicko_share": 0.72,
+            "player_rating_weight": 11.5,
+            "absence_weight": 11.4,
+            "luck_share": 0.4
         }
     ]
 }
