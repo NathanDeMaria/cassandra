@@ -18,6 +18,7 @@ from .player_ratings import (
 )
 from .qb_out import QbOutIndex
 from .rest import RestLedger
+from .types import PlayerRates
 
 
 class _Fixture(NamedTuple):
@@ -152,6 +153,11 @@ def test_a_ranking_reads_the_blend_the_way_a_neutral_game_does(
     assert home.overall + away.overall == pytest.approx(home.rating + away.rating)
     assert nobody.blended is None and nobody.overall == nobody.rating
     assert all(r.blended is None for r in plain.ratings.values())
+    # each covered team carries the row its next game reads, for a reader
+    assert home.players == PlayerRates(10.0, 70.0, None, date(2024, 11, 4))
+    assert away.players == PlayerRates(-2.0, 66.0, None, date(2024, 11, 4))
+    assert nobody.players is None
+    assert all(r.players is None for r in plain.ratings.values())
 
 
 def test_before_a_season_a_ranking_reads_its_newest_rows(game: GameFactory) -> None:

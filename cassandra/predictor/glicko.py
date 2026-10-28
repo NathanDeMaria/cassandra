@@ -28,12 +28,13 @@ from .luck import validated_luck_share
 from .opponent_prior import OpponentPriorManager
 from .player_ratings import (
     DEFAULT_PLAYER_RATING_WEIGHT,
+    TeamAsOf,
     season_for,
     validated_player_rating_weight,
 )
 from .rest import DEFAULT_REST_ADVANTAGE
 from .smoothing import Floats, Ints, compiled_sweep
-from .types import Matchup, Prediction, Rating
+from .types import Matchup, PlayerRates, Prediction, Rating
 
 
 class _Rating(NamedTuple):
@@ -710,24 +711,23 @@ class GlickoPredictor(Predictor):
     def ratings(self) -> dict[str, Rating]:
         """Each team's rating, and where the players blend into the
         prediction, the blend as `blended` -- the number a ranking reads."""
-        blended = self._with_players()
+        rows = self._player_rows()
+        blended = self._with_players(rows)
         return {
-            team: Rating(r.rating, r.rating_deviation, blended=blended.get(team))
+            team: Rating(
+                r.rating,
+                r.rating_deviation,
+                blended=blended.get(team),
+                players=PlayerRates(row.net, row.pace, row.available, row.as_of)
+                if (row := rows.get(team))
+                else None,
+            )
             for team, r in self._ratings.items()
         }
 
-    def _with_players(self) -> dict[str, float]:
-        """Each team as the blended prediction rates it at a neutral site,
-        for the teams the players' file reaches.
-
-        `glicko_share` of the rating plus `player_rating_weight` times the
-        team's players' margin over an average team -- its expected net at the
-        average pace of the teams rated -- so that two teams' difference
-        is the blend's neutral-site gap, but for pacing the pair at the
-        average rather than at their own. Shifted so the teams it covers
-        keep their ratings' mean: a team the file doesn't reach is ranked
-        on its rating alone, as its games are predicted, and stays on the
-        same scale.
+    def _player_rows(self) -> dict[str, TeamAsOf]:
+        """The players' row each team's next game reads, for the teams the
+        file reaches; empty where the model doesn't blend players in.
 
         As of the day after the last game rated, the rows a game that day
         would read. After a rollover, with no game since, it's the season
@@ -748,7 +748,21 @@ class GlickoPredictor(Predictor):
         else:
             day = self._last_day + timedelta(days=1)
             found = {team: index.team(team, day) for team in self._ratings}
-        rows = {team: row for team, row in found.items() if row is not None}
+        return {team: row for team, row in found.items() if row is not None}
+
+    def _with_players(self, rows: Mapping[str, TeamAsOf]) -> dict[str, float]:
+        """Each team as the blended prediction rates it at a neutral site,
+        for the teams the players' file reaches (`rows`).
+
+        `glicko_share` of the rating plus `player_rating_weight` times the
+        team's players' margin over an average team -- its expected net at the
+        average pace of the teams rated -- so that two teams' difference
+        is the blend's neutral-site gap, but for pacing the pair at the
+        average rather than at their own. Shifted so the teams it covers
+        keep their ratings' mean: a team the file doesn't reach is ranked
+        on its rating alone, as its games are predicted, and stays on the
+        same scale.
+        """
         if not rows:
             return {}
         pace = sum(row.pace for row in rows.values()) / len(rows)
