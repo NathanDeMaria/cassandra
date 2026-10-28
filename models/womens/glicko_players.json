@@ -13,6 +13,10 @@
         "absence_weight": [
             0,
             50
+        ],
+        "luck_share": [
+            0,
+            1
         ]
     },
     "fixed": {
@@ -31,7 +35,8 @@
         {
             "glicko_share": 0.76,
             "player_rating_weight": 9.7,
-            "absence_weight": 20.0
+            "absence_weight": 20.0,
+            "luck_share": 0.4
         }
     ]
 }

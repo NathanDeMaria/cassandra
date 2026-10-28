@@ -6,7 +6,7 @@ from typing import Any, NamedTuple, Self
 import numpy as np
 from endgame.types import Game
 
-from ..scoring import DEFAULT_SIGMOID_SCALE, get_scoring_function
+from ..scoring import DEFAULT_SIGMOID_SCALE, get_scoring_function, sigmoid_of_margin
 from .adjustments import (
     DEFAULT_QB_OUT_PENALTY,
     DEFAULT_TRAVEL_ADVANTAGE,
@@ -24,6 +24,7 @@ from .base_predictor import (
 )
 from .blend import validated_scale
 from .distribution import LogisticMargin, MarginDistribution, decimal_logistic
+from .luck import validated_luck_share
 from .opponent_prior import OpponentPriorManager
 from .player_ratings import (
     DEFAULT_PLAYER_RATING_WEIGHT,
@@ -166,6 +167,12 @@ class GlickoPredictor(Predictor):
         # blend's discount for what they already know doesn't apply to it.
         # In the prediction alone, like the margin. 0 is off.
         absence_weight: float = 0.0,
+        # The share of each game's shooting luck (`luck`, mens and womens)
+        # taken off its margin before the update scores it: a team whose
+        # threes fell is not as good as its margin says. The update alone --
+        # the prediction is of the game as it'll be played. 0 is off; on,
+        # it needs `scoring_method` "sigmoid", the one that reads a margin.
+        luck_share: float = 0.0,
         season_regression: float = 0.0,
         # How many times each week's games are rated. 1 is Glicko as a
         # filter: a result is priced once, against what the opponent's
@@ -219,6 +226,11 @@ class GlickoPredictor(Predictor):
             player_rating_weight
         )
         self._absence_weight = validated_player_rating_weight(absence_weight)
+        self._luck_share = validated_luck_share(luck_share)
+        if self._luck_share and scoring_method != "sigmoid":
+            raise ValueError(
+                f"luck_share needs scoring_method 'sigmoid', got {scoring_method!r}"
+            )
         self._adjustments = MatchupAdjustments(
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
@@ -369,7 +381,16 @@ class GlickoPredictor(Predictor):
         blends in how much of the game each team spent winning it -- replaces
         this and inherits the rest.
         """
-        return self._score(game)
+        luck = (
+            self._adjustments.sources.luck.home_luck(game) if self._luck_share else None
+        )
+        if luck is None:
+            return self._score(game)
+        # `luck_share` of the game's shooting luck off its home margin
+        return sigmoid_of_margin(
+            game.home_score - game.away_score - self._luck_share * luck,
+            self._sigmoid_scale,
+        )
 
     def _update_rating(
         self,
@@ -673,6 +694,7 @@ class GlickoPredictor(Predictor):
                 if self._blends_players
                 else {}
             ),
+            **({"luck_share": self._luck_share} if self._luck_share else {}),
         }
 
     @classmethod

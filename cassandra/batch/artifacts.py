@@ -28,6 +28,7 @@ from cassandra.predictor import (
     load_epa,
     load_game_control,
 )
+from cassandra.predictor.luck import load_luck
 from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import load_qb_out, qb_out_path
 from cassandra.roster import load_roster
@@ -170,6 +171,7 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     load_qb_out.cache_clear()
     load_roster.cache_clear()
     load_player_ratings.cache_clear()
+    load_luck.cache_clear()
     return paths
 
 

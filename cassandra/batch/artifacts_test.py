@@ -15,6 +15,7 @@ import pytest
 from cassandra.predictor.base_predictor import load_anchors
 from cassandra.predictor.epa import load_epa
 from cassandra.predictor.game_control import load_game_control
+from cassandra.predictor.luck import load_luck
 from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import load_qb_out
 from cassandra.roster import TALENT, load_roster
@@ -33,6 +34,7 @@ _LOADERS = (
     load_qb_out,
     load_roster,
     load_player_ratings,
+    load_luck,
 )
 
 
