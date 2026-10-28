@@ -199,10 +199,10 @@ def test_the_file_reads_by_canonical_name_in_date_order(
 ) -> None:
     path = tmp_path / "nfl_player_ratings.csv"
     path.write_text(
-        "league,season,as_of,team_id,team,offense,defense,net,pace,games,home_edge\n"
-        "nfl,2025,2024-11-11,1,Home U,3,1,4,70,1,1.5\n"
-        "nfl,2025,2024-11-04,1,Home U,6,4,10,70,0,1.5\n"
-        "nfl,2025,2024-11-04,9,,0,0,0,68,0,1.5\n"
+        "league,season,as_of,team_id,team,offense,defense,net,pace,games,home_edge,available\n"
+        "nfl,2025,2024-11-11,1,Home U,3,1,4,70,1,1.5,2.5\n"
+        "nfl,2025,2024-11-04,1,Home U,6,4,10,70,0,1.5,\n"
+        "nfl,2025,2024-11-04,9,,0,0,0,68,0,1.5,\n"
     )
     monkeypatch.setattr(player_ratings, "player_ratings_path", lambda league: path)
     load_player_ratings.cache_clear()
@@ -210,8 +210,59 @@ def test_the_file_reads_by_canonical_name_in_date_order(
         assert load_player_ratings("nfl") == {
             "Home U": [
                 TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2025),
-                TeamAsOf(date(2024, 11, 11), 4.0, 70.0, 2025),
+                TeamAsOf(date(2024, 11, 11), 4.0, 70.0, 2025, 2.5),
             ]
         }
     finally:
         load_player_ratings.cache_clear()
+
+
+def test_the_margin_reads_the_expected_net_where_the_row_has_one() -> None:
+    index = PlayerRatingIndex(
+        {
+            # home's starter might sit: expected 4 against a healthy 10
+            "Home U": [TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2024, 4.0)],
+            # a row from before the column: its net
+            "Away St": [TeamAsOf(date(2024, 11, 4), -2.0, 66.0, 2024, None)],
+        }
+    )
+    fixture = _Fixture("Home U", "Away St", datetime(2024, 11, 6))
+    assert index.margin(fixture) == pytest.approx(68 * (4 - -2) / 100)
+
+
+def test_the_absences_are_the_shift_from_the_net_at_the_pace() -> None:
+    index = PlayerRatingIndex(
+        {
+            "Home U": [TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2024, 4.0)],
+            "Away St": [TeamAsOf(date(2024, 11, 4), -2.0, 66.0, 2024, None)],
+        }
+    )
+    fixture = _Fixture("Home U", "Away St", datetime(2024, 11, 6))
+    assert index.absences(fixture) == pytest.approx(68 * -6 / 100)
+    assert index.absences(fixture._replace(away="Nobody")) is None
+    # rows from before the column move nothing
+    assert INDEX.absences(fixture) == 0.0
+
+
+def test_glicko_prices_the_absences_on_top_of_the_margin(game: GameFactory) -> None:
+    index = PlayerRatingIndex(
+        {
+            "Home U": [TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2024, 4.0)],
+            "Away St": [TeamAsOf(date(2024, 11, 4), -2.0, 66.0, 2024, -2.0)],
+        }
+    )
+    sources = MatchupSources(QbOutIndex(), RestLedger(), index)
+    fixture = _Fixture("Home U", "Away St", datetime(2024, 11, 6))
+    margin_only = GlickoPredictor(
+        "test_league", player_rating_weight=5.0, sources=sources
+    )
+    with_absences = GlickoPredictor(
+        "test_league", player_rating_weight=5.0, absence_weight=20.0, sources=sources
+    )
+    assert (
+        with_absences.predict_game(fixture).team1_win_prob
+        < margin_only.predict_game(fixture).team1_win_prob
+    )
+    restored = GlickoPredictor.from_state_dict(with_absences.state_dict())
+    assert restored.state_dict()["absence_weight"] == 20.0
+    assert "absence_weight" not in margin_only.state_dict()

@@ -43,6 +43,25 @@ Measured before this existed (each season's first ten weeks, a normal on
 the margin), the players' margin alone beat an older `glicko_full` on the
 same games -- 0.1573 -> 0.1526 mens, 0.1395 -> 0.1349 womens.
 
+**Who is likely to play** is in the margin: a row's `available` is the
+team's net averaged over who might miss its next game -- each player
+available at his chance of playing, from his miss streak and his last
+game's minutes, each lineup its available players at their recent shares
+rescaled (ten-minute-version's `availability`) -- and the margin reads it
+in place of `net` (`TeamAsOf.strength`). A row without it is its net.
+
+An absence is worth more than the margin's weight gives it, which is set by
+the healthy margin -- mostly what the results already know, so discounted.
+Fitting the residual of the replays on 2014+ games, who actually played,
+an absence point is worth about twice a full point of margin on wins
+(0.27 logit per point mens, 0.25 womens, beyond the margin's 0.06; a point
+is ~0.15): none of it is the team column, and a looser player prior takes
+a quarter of it at a cost in margin error. So the absences' shift
+(`absences`) has its own searched weight, `absence_weight`, on top: in
+the replays, -0.00027 mens and -0.00037 womens on 2014+ Brier against the
+weekly rows, where the margin reading `available` alone is -0.00017 and
+-0.00021.
+
 **A ranking reads the blend too.** A team's published rating is the
 blend's view of it at a neutral site (`GlickoPredictor._with_players`), the
 rating it learned from results alone beside it as `results`; a team the
@@ -109,6 +128,22 @@ class TeamAsOf(NamedTuple):
     # ten-minute-version's, the year the season starts; None where a caller
     # building rows by hand has no use for it
     season: int | None = None
+    # the net averaged over who might miss the team's next game, each player
+    # at his chance of playing (ten-minute-version's `availability`); None
+    # for a row from before the file carried it
+    available: float | None = None
+
+    @property
+    def strength(self) -> float:
+        """What the team's next game reads: its expected net over who might
+        be out, or its net where the row doesn't say."""
+        return self.net if self.available is None else self.available
+
+    @property
+    def shift(self) -> float:
+        """How far who might be out moves the net: 0 where the row doesn't
+        say."""
+        return self.strength - self.net
 
 
 @cache
@@ -133,6 +168,7 @@ def load_player_ratings(league: str) -> Mapping[str, Sequence[TeamAsOf]]:
                 float(row["net"]),
                 float(row["pace"]),
                 int(row["season"]),
+                float(row["available"]) if row.get("available") else None,
             )
         )
     return {team: sorted(rows) for team, rows in found.items()}
@@ -145,6 +181,7 @@ class TeamRow(BaseModel):
     season: int
     net: float
     pace: float
+    available: float | None = None
 
 
 class PlayerRatingsFile(BaseModel):
@@ -184,6 +221,7 @@ def latest_player_ratings(league: str) -> PlayerRatingsFile | None:
                 season=row.season if row.season is not None else season_for(row.as_of),
                 net=row.net,
                 pace=row.pace,
+                available=row.available,
             )
             for team, rows in teams.items()
             for row in rows[-1:]
@@ -213,7 +251,9 @@ class PlayerRatingIndex:
         """The index a published file says: a row per team."""
         return cls(
             {
-                team: [TeamAsOf(row.as_of, row.net, row.pace, row.season)]
+                team: [
+                    TeamAsOf(row.as_of, row.net, row.pace, row.season, row.available)
+                ]
                 for team, row in stored.teams.items()
             }
         )
@@ -252,4 +292,18 @@ class PlayerRatingIndex:
         home, away = self.team(matchup.home, day), self.team(matchup.away, day)
         if home is None or away is None:
             return None
-        return (home.pace + away.pace) / 2 * (home.net - away.net) / 100
+        return (home.pace + away.pace) / 2 * (home.strength - away.strength) / 100
+
+    def absences(self, matchup: Matchup) -> float | None:
+        """Points the two sides' likely absences move the margin, toward the
+        home side; None if either team has no recent row.
+
+        Each side's `available` less its `net` -- what the margin reads, less
+        what it would at the shares so far -- at the pair's average pace. A
+        row without `available` moves nothing.
+        """
+        day = matchup.date.date()
+        home, away = self.team(matchup.home, day), self.team(matchup.away, day)
+        if home is None or away is None:
+            return None
+        return (home.pace + away.pace) / 2 * (home.shift - away.shift) / 100

@@ -55,6 +55,9 @@ _POINT_TERMS = {
     # Points of margin per point of the players' margin (`player_ratings`):
     # 1 takes the players at their word, 0 ignores them.
     "players_pts": "player_rating_weight",
+    # Points of margin per point the players' likely absences move theirs,
+    # beyond the margin's own.
+    "absence_pts": "absence_weight",
 }
 #: Every constructor argument the points frame derives, and the knobs that
 #: move it. `searched_params` reads this: an argument is searched whenever
