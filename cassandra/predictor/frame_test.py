@@ -196,6 +196,7 @@ def test_searching_the_scale_moves_every_priced_argument() -> None:
         "rest_advantage",
         "qb_out_penalty",
         "player_rating_weight",
+        "absence_weight",
         "prediction_scale",
         "weekly_rd_increase",
         "season_rd_increase",

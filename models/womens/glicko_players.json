@@ -3,12 +3,16 @@
     "league": "womens",
     "parameters": {
         "glicko_share": [
-            0.4,
+            0.55,
             1.0
         ],
         "player_rating_weight": [
             0,
             25
+        ],
+        "absence_weight": [
+            0,
+            50
         ]
     },
     "fixed": {
@@ -26,7 +30,8 @@
     "seeds": [
         {
             "glicko_share": 0.76,
-            "player_rating_weight": 9.7
+            "player_rating_weight": 9.7,
+            "absence_weight": 20.0
         }
     ]
 }

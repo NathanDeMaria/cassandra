@@ -160,6 +160,12 @@ class GlickoPredictor(Predictor):
         # from the results alone. 1 and 0 are this model unblended.
         glicko_share: float = 1.0,
         player_rating_weight: float = DEFAULT_PLAYER_RATING_WEIGHT,
+        # Rating points per point the players' likely absences move their
+        # margin (`PlayerRatingIndex.absences`), on top of the margin's own
+        # weight: an absence is news the results haven't priced, so the
+        # blend's discount for what they already know doesn't apply to it.
+        # In the prediction alone, like the margin. 0 is off.
+        absence_weight: float = 0.0,
         season_regression: float = 0.0,
         # How many times each week's games are rated. 1 is Glicko as a
         # filter: a result is priced once, against what the opponent's
@@ -212,6 +218,7 @@ class GlickoPredictor(Predictor):
         self._player_rating_weight = validated_player_rating_weight(
             player_rating_weight
         )
+        self._absence_weight = validated_player_rating_weight(absence_weight)
         self._adjustments = MatchupAdjustments(
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
@@ -285,11 +292,8 @@ class GlickoPredictor(Predictor):
         # term zeroes itself there -- see `MatchupAdjustments.travel_points`.
         adjusted_home_rating += self.matchup_adjustment(matchup)
         away_rating = self.get_rating(matchup.away)
-        players = (
-            self._adjustments.sources.player_ratings.margin(matchup)
-            if self._glicko_share != 1.0 or self._player_rating_weight
-            else None
-        )
+        index = self._adjustments.sources.player_ratings
+        players = index.margin(matchup) if self._blends_players else None
         if players is None:
             return self.gap_distribution(adjusted_home_rating, away_rating.rating)
         # Only the teams' strength is blended, the players' margin being a
@@ -299,8 +303,17 @@ class GlickoPredictor(Predictor):
         return self.gap_distribution(
             share * home_rating.rating
             + (adjusted_home_rating - home_rating.rating)
-            + self._player_rating_weight * players,
+            + self._player_rating_weight * players
+            + self._absence_weight * (index.absences(matchup) or 0.0),
             share * away_rating.rating,
+        )
+
+    @property
+    def _blends_players(self) -> bool:
+        return (
+            self._glicko_share != 1.0
+            or bool(self._player_rating_weight)
+            or bool(self._absence_weight)
         )
 
     def gap_distribution(
@@ -651,8 +664,13 @@ class GlickoPredictor(Predictor):
                 {
                     "glicko_share": self._glicko_share,
                     "player_rating_weight": self._player_rating_weight,
+                    **(
+                        {"absence_weight": self._absence_weight}
+                        if self._absence_weight
+                        else {}
+                    ),
                 }
-                if self._glicko_share != 1.0 or self._player_rating_weight
+                if self._blends_players
                 else {}
             ),
         }
@@ -681,7 +699,7 @@ class GlickoPredictor(Predictor):
         for the teams the players' file reaches.
 
         `glicko_share` of the rating plus `player_rating_weight` times the
-        team's players' margin over an average team -- its net at the
+        team's players' margin over an average team -- its expected net at the
         average pace of the teams rated -- so that two teams' difference
         is the blend's neutral-site gap, but for pacing the pair at the
         average rather than at their own. Shifted so the teams it covers
@@ -697,7 +715,7 @@ class GlickoPredictor(Predictor):
         reader of a replay's ratings asks for: the history is read after
         each week's games, and the release after the last of them.)
         """
-        if self._glicko_share == 1.0 and not self._player_rating_weight:
+        if not self._blends_players:
             return {}
         if self._last_day is None:
             return {}
@@ -714,7 +732,7 @@ class GlickoPredictor(Predictor):
         pace = sum(row.pace for row in rows.values()) / len(rows)
         blended = {
             team: self._glicko_share * self._ratings[team].rating
-            + self._player_rating_weight * pace * row.net / 100
+            + self._player_rating_weight * pace * row.strength / 100
             for team, row in rows.items()
         }
         shift = sum(self._ratings[team].rating - blended[team] for team in rows) / len(

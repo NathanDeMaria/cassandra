@@ -3,12 +3,16 @@
     "league": "mens",
     "parameters": {
         "glicko_share": [
-            0.4,
+            0.55,
             1.0
         ],
         "player_rating_weight": [
             0,
             25
+        ],
+        "absence_weight": [
+            0,
+            50
         ]
     },
     "fixed": {
@@ -25,8 +29,9 @@
     "n_iter": 60,
     "seeds": [
         {
-            "glicko_share": 0.82,
-            "player_rating_weight": 10.0
+            "glicko_share": 0.8,
+            "player_rating_weight": 10.0,
+            "absence_weight": 20.0
         }
     ]
 }
