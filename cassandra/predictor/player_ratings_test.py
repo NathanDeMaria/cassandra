@@ -311,8 +311,8 @@ def test_a_blend_weighed_by_uncertainty_leans_on_the_surer_side() -> None:
     unsure = _weighed(_sure(5.0), 600.0, **params)
     # Glicko sure: nearly none of it, the teams being level
     sure = _weighed(_sure(5.0), 20.0, **params)
-    gap_unsure = unsure.predict_distribution(fixture).loc
-    gap_sure = sure.predict_distribution(fixture).loc
+    gap_unsure = unsure.predict_distribution(fixture).mean
+    gap_sure = sure.predict_distribution(fixture).mean
     assert 0 < gap_sure < gap_unsure < 20.0 * margin
     assert gap_unsure == pytest.approx(20.0 * margin, rel=0.1)
     # the exact weight: the players' variance over both's
