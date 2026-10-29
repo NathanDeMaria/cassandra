@@ -8,7 +8,7 @@ from . import player_ratings
 from .adjustments import MatchupSources
 from .conftest import GameFactory
 from .distribution import collapse
-from .glicko import GlickoPredictor
+from .glicko import GlickoPredictor, _Rating
 from .player_ratings import (
     PlayerRatingIndex,
     PlayerRatingsFile,
@@ -205,10 +205,11 @@ def test_the_file_reads_by_canonical_name_in_date_order(
 ) -> None:
     path = tmp_path / "nfl_player_ratings.csv"
     path.write_text(
-        "league,season,as_of,team_id,team,offense,defense,net,pace,games,home_edge,available\n"
-        "nfl,2025,2024-11-11,1,Home U,3,1,4,70,1,1.5,2.5\n"
-        "nfl,2025,2024-11-04,1,Home U,6,4,10,70,0,1.5,\n"
-        "nfl,2025,2024-11-04,9,,0,0,0,68,0,1.5,\n"
+        "league,season,as_of,team_id,team,offense,defense,net,pace,games,home_edge,"
+        "available,net_sd\n"
+        "nfl,2025,2024-11-11,1,Home U,3,1,4,70,1,1.5,2.5,4.5\n"
+        "nfl,2025,2024-11-04,1,Home U,6,4,10,70,0,1.5,,\n"
+        "nfl,2025,2024-11-04,9,,0,0,0,68,0,1.5,,\n"
     )
     monkeypatch.setattr(player_ratings, "player_ratings_path", lambda league: path)
     load_player_ratings.cache_clear()
@@ -216,7 +217,7 @@ def test_the_file_reads_by_canonical_name_in_date_order(
         assert load_player_ratings("nfl") == {
             "Home U": [
                 TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2025),
-                TeamAsOf(date(2024, 11, 11), 4.0, 70.0, 2025, 2.5),
+                TeamAsOf(date(2024, 11, 11), 4.0, 70.0, 2025, 2.5, 4.5),
             ]
         }
     finally:
@@ -272,3 +273,60 @@ def test_glicko_prices_the_absences_on_top_of_the_margin(game: GameFactory) -> N
     restored = GlickoPredictor.from_state_dict(with_absences.state_dict())
     assert restored.state_dict()["absence_weight"] == 20.0
     assert "absence_weight" not in margin_only.state_dict()
+
+
+def _sure(net_sd: float | None) -> PlayerRatingIndex:
+    return PlayerRatingIndex(
+        {
+            "Home U": [TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2024, None, net_sd)],
+            "Away St": [TeamAsOf(date(2024, 11, 4), -2.0, 66.0, 2024, None, net_sd)],
+        }
+    )
+
+
+def test_the_margins_variance_is_both_sides_sd_at_the_pace() -> None:
+    fixture = _Fixture("Home U", "Away St", datetime(2024, 11, 6))
+    assert _sure(5.0).margin_variance(fixture) == pytest.approx(0.68**2 * (25 + 25))
+    # a row from before the column: as sure as can be
+    assert _sure(None).margin_variance(fixture) == 0.0
+    assert _sure(5.0).margin_variance(fixture._replace(away="Nobody")) is None
+
+
+def _weighed(index: PlayerRatingIndex, rd: float, **params) -> GlickoPredictor:
+    return GlickoPredictor(
+        "test_league",
+        ratings={"Home U": _Rating(1500.0, rd), "Away St": _Rating(1500.0, rd)},
+        player_rating_weight=20.0,
+        home_advantage=0.0,
+        sources=MatchupSources(QbOutIndex(), RestLedger(), index),
+        **params,
+    )
+
+
+def test_a_blend_weighed_by_uncertainty_leans_on_the_surer_side() -> None:
+    fixture = _Fixture("Home U", "Away St", datetime(2024, 11, 6))
+    margin = 68 * 12 / 100
+    params = {"player_variance_scale": 1.0, "player_floor": 2.0}
+    # Glicko unsure: nearly all the players' margin
+    unsure = _weighed(_sure(5.0), 600.0, **params)
+    # Glicko sure: nearly none of it, the teams being level
+    sure = _weighed(_sure(5.0), 20.0, **params)
+    gap_unsure = unsure.predict_distribution(fixture).loc
+    gap_sure = sure.predict_distribution(fixture).loc
+    assert 0 < gap_sure < gap_unsure < 20.0 * margin
+    assert gap_unsure == pytest.approx(20.0 * margin, rel=0.1)
+    # the exact weight: the players' variance over both's
+    mine = 20.0**2 * (0.68**2 * 50 + 4.0)
+    glicko = mine / (mine + 2 * 600.0**2)
+    assert gap_unsure == pytest.approx((1 - glicko) * 20.0 * margin)
+
+
+def test_a_blend_weighed_by_uncertainty_round_trips_and_needs_a_weight() -> None:
+    weighed = _weighed(_sure(5.0), 100.0, player_variance_scale=2.0, player_floor=3.0)
+    state = weighed.state_dict()
+    assert state["player_variance_scale"] == 2.0 and state["player_floor"] == 3.0
+    restored = GlickoPredictor.from_state_dict(state)
+    assert restored.state_dict()["player_floor"] == 3.0
+    assert "player_floor" not in _weighed(_sure(5.0), 100.0).state_dict()
+    with pytest.raises(ValueError, match="player_rating_weight"):
+        GlickoPredictor("test_league", player_variance_scale=1.0)

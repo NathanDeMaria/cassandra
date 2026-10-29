@@ -62,6 +62,18 @@ the replays, -0.00027 mens and -0.00037 womens on 2014+ Brier against the
 weekly rows, where the margin reading `available` alone is -0.00017 and
 -0.00021.
 
+**How sure each side is** decides the blend, where a model asks for it
+(`player_variance_scale`, `player_floor`): Glicko's share of the teams' gap
+is the players' margin's variance over both's -- Glicko's its two rating
+deviations squared, the players' `net_sd` (ten-minute-version's posterior
+of each net, at the row's shares) scaled, plus a floor for what the
+posterior doesn't know: minutes, rotations, the model itself. The best
+fixed mix moves through a season the way that says -- the players' margin
+strongest in the first weeks, Glicko taking over late -- and fitted held
+out by season it beats the fixed blend by 0.00017 mens, 0.00052 womens; a
+floor of about 130 rating points, both leagues. Replayed at those fits,
+2014+ Brier: 0.16732 -> 0.16717 mens, 0.14998 -> 0.14951 womens.
+
 **A ranking reads the blend too.** A team's published rating is the
 blend's view of it at a neutral site (`GlickoPredictor._with_players`), the
 rating it learned from results alone beside it as `results`; a team the
@@ -132,6 +144,9 @@ class TeamAsOf(NamedTuple):
     # at his chance of playing (ten-minute-version's `availability`); None
     # for a row from before the file carried it
     available: float | None = None
+    # per 100, how sure ten-minute-version's fit is of `net` (its posterior
+    # sd at the row's shares); None for a row from before the file carried it
+    net_sd: float | None = None
 
     @property
     def strength(self) -> float:
@@ -169,6 +184,7 @@ def load_player_ratings(league: str) -> Mapping[str, Sequence[TeamAsOf]]:
                 float(row["pace"]),
                 int(row["season"]),
                 float(row["available"]) if row.get("available") else None,
+                float(row["net_sd"]) if row.get("net_sd") else None,
             )
         )
     return {team: sorted(rows) for team, rows in found.items()}
@@ -182,6 +198,7 @@ class TeamRow(BaseModel):
     net: float
     pace: float
     available: float | None = None
+    net_sd: float | None = None
 
 
 class PlayerRatingsFile(BaseModel):
@@ -222,6 +239,7 @@ def latest_player_ratings(league: str) -> PlayerRatingsFile | None:
                 net=row.net,
                 pace=row.pace,
                 available=row.available,
+                net_sd=row.net_sd,
             )
             for team, rows in teams.items()
             for row in rows[-1:]
@@ -252,7 +270,14 @@ class PlayerRatingIndex:
         return cls(
             {
                 team: [
-                    TeamAsOf(row.as_of, row.net, row.pace, row.season, row.available)
+                    TeamAsOf(
+                        row.as_of,
+                        row.net,
+                        row.pace,
+                        row.season,
+                        row.available,
+                        row.net_sd,
+                    )
                 ]
                 for team, row in stored.teams.items()
             }
@@ -293,6 +318,19 @@ class PlayerRatingIndex:
         if home is None or away is None:
             return None
         return (home.pace + away.pace) / 2 * (home.strength - away.strength) / 100
+
+    def margin_variance(self, matchup: Matchup) -> float | None:
+        """How unsure the fit says `margin` is, in points squared: both
+        sides' `net_sd` at the pair's average pace. None if either team has
+        no recent row; a row without `net_sd` counts as sure."""
+        day = matchup.date.date()
+        home, away = self.team(matchup.home, day), self.team(matchup.away, day)
+        if home is None or away is None:
+            return None
+        pace = (home.pace + away.pace) / 2
+        return (pace / 100) ** 2 * (
+            (home.net_sd or 0.0) ** 2 + (away.net_sd or 0.0) ** 2
+        )
 
     def absences(self, matchup: Matchup) -> float | None:
         """Points the two sides' likely absences move the margin, toward the

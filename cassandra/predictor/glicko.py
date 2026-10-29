@@ -168,6 +168,16 @@ class GlickoPredictor(Predictor):
         # blend's discount for what they already know doesn't apply to it.
         # In the prediction alone, like the margin. 0 is off.
         absence_weight: float = 0.0,
+        # The blend weighed by how sure each side is, in place of a fixed
+        # `glicko_share`: Glicko's share of the teams' gap is the players'
+        # margin's variance over both's -- its own (rd squared, both teams)
+        # against the players' in points, `player_variance_scale` times
+        # ten-minute-version's posterior (`margin_variance`) plus
+        # `player_floor` squared, at `player_rating_weight` rating points
+        # per point. `glicko_share` is then the whole blend's scale. Both 0
+        # is the fixed blend.
+        player_variance_scale: float = 0.0,
+        player_floor: float = 0.0,
         # The share of each game's shooting luck (`luck`, mens and womens)
         # taken off its margin before the update scores it: a team whose
         # threes fell is not as good as its margin says. The update alone --
@@ -227,6 +237,14 @@ class GlickoPredictor(Predictor):
             player_rating_weight
         )
         self._absence_weight = validated_player_rating_weight(absence_weight)
+        self._player_variance_scale = validated_player_rating_weight(
+            player_variance_scale
+        )
+        self._player_floor = validated_player_rating_weight(player_floor)
+        if self._weighs_uncertainty and not self._player_rating_weight:
+            raise ValueError(
+                "a blend weighed by uncertainty needs player_rating_weight > 0"
+            )
         self._luck_share = validated_luck_share(luck_share)
         if self._luck_share and scoring_method != "sigmoid":
             raise ValueError(
@@ -312,14 +330,41 @@ class GlickoPredictor(Predictor):
         # Only the teams' strength is blended, the players' margin being a
         # neutral site's: the edges stay whole. A game the players' file
         # doesn't cover is this model's alone.
-        share = self._glicko_share
+        share, weight = self._glicko_share, self._player_rating_weight
+        absences = self._absence_weight * (index.absences(matchup) or 0.0)
+        edges = adjusted_home_rating - home_rating.rating
+        if self._weighs_uncertainty:
+            # Each side by how sure it is: Glicko's share of the gap is the
+            # players' variance over both's, and the whole at `share`.
+            glicko = self._glicko_weight(
+                home_rating.rating_deviation**2 + away_rating.rating_deviation**2,
+                index.margin_variance(matchup) or 0.0,
+                self._player_floor**2,
+            )
+            return self.gap_distribution(
+                share * glicko * home_rating.rating
+                + share * (1 - glicko) * weight * players
+                + edges
+                + absences,
+                share * glicko * away_rating.rating,
+            )
         return self.gap_distribution(
-            share * home_rating.rating
-            + (adjusted_home_rating - home_rating.rating)
-            + self._player_rating_weight * players
-            + self._absence_weight * (index.absences(matchup) or 0.0),
+            share * home_rating.rating + edges + weight * players + absences,
             share * away_rating.rating,
         )
+
+    def _glicko_weight(self, glicko: float, players: float, floor: float) -> float:
+        """Glicko's share of a blend weighed by how sure each side is:
+        `glicko` its variance in rating points squared, `players` and `floor`
+        the players' in points squared (`margin_variance`, and the floor)."""
+        mine = self._player_rating_weight**2 * (
+            self._player_variance_scale * players + floor
+        )
+        return mine / (mine + glicko) if mine + glicko > 0 else 1.0
+
+    @property
+    def _weighs_uncertainty(self) -> bool:
+        return bool(self._player_variance_scale) or bool(self._player_floor)
 
     @property
     def _blends_players(self) -> bool:
@@ -691,6 +736,14 @@ class GlickoPredictor(Predictor):
                         if self._absence_weight
                         else {}
                     ),
+                    **(
+                        {
+                            "player_variance_scale": self._player_variance_scale,
+                            "player_floor": self._player_floor,
+                        }
+                        if self._weighs_uncertainty
+                        else {}
+                    ),
                 }
                 if self._blends_players
                 else {}
@@ -755,7 +808,8 @@ class GlickoPredictor(Predictor):
         for the teams the players' file reaches (`rows`).
 
         `glicko_share` of the rating plus `player_rating_weight` times the
-        team's players' margin over an average team -- its expected net at the
+        team's players' margin over an average team (or, a blend weighed by
+        uncertainty, the two at the team's own weights, half the floor) -- its expected net at the
         average pace of the teams rated -- so that two teams' difference
         is the blend's neutral-site gap, but for pacing the pair at the
         average rather than at their own. Shifted so the teams it covers
@@ -766,11 +820,23 @@ class GlickoPredictor(Predictor):
         if not rows:
             return {}
         pace = sum(row.pace for row in rows.values()) / len(rows)
-        blended = {
-            team: self._glicko_share * self._ratings[team].rating
-            + self._player_rating_weight * pace * row.strength / 100
-            for team, row in rows.items()
-        }
+
+        def blend(team: str, row: TeamAsOf) -> float:
+            rating = self._ratings[team]
+            players = self._player_rating_weight * pace * row.strength / 100
+            if not self._weighs_uncertainty:
+                return self._glicko_share * rating.rating + players
+            # one team's half of a game's variances, the floor's included
+            glicko = self._glicko_weight(
+                rating.rating_deviation**2,
+                (pace / 100) ** 2 * (row.net_sd or 0.0) ** 2,
+                self._player_floor**2 / 2,
+            )
+            return self._glicko_share * (
+                glicko * rating.rating + (1 - glicko) * players
+            )
+
+        blended = {team: blend(team, row) for team, row in rows.items()}
         shift = sum(self._ratings[team].rating - blended[team] for team in rows) / len(
             rows
         )

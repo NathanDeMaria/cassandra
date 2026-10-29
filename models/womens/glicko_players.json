@@ -4,11 +4,11 @@
     "parameters": {
         "glicko_share": [
             0.55,
-            1.0
+            2.0
         ],
         "player_rating_weight": [
-            0,
-            25
+            1,
+            40
         ],
         "absence_weight": [
             0,
@@ -17,6 +17,14 @@
         "luck_share": [
             0,
             1
+        ],
+        "player_variance_scale": [
+            0.0,
+            20.0
+        ],
+        "player_floor": [
+            0.0,
+            20.0
         ]
     },
     "fixed": {
@@ -30,13 +38,15 @@
         "passes": 3
     },
     "fixed_from": "glicko_full",
-    "n_iter": 60,
+    "n_iter": 100,
     "seeds": [
         {
-            "glicko_share": 0.76,
-            "player_rating_weight": 9.7,
-            "absence_weight": 20.0,
-            "luck_share": 0.4
+            "glicko_share": 1.45,
+            "player_rating_weight": 15.1,
+            "absence_weight": 21.0,
+            "luck_share": 0.4,
+            "player_variance_scale": 5.1,
+            "player_floor": 8.7
         }
     ]
 }
