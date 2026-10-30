@@ -133,7 +133,7 @@ import numpy as np
 import pandas as pd
 from call_it_what_you_want import TeamNamer, default_classifications, registry_league
 
-from .classification import LUMPED_DIVISION, resolve_spanning_label
+from .classification import LUMPED_DIVISION, recorded_year, resolve_spanning_label
 from .columns import GameDfColumns
 from .prob_to_margin import (
     BaseProbToMarginFitter,
@@ -1212,7 +1212,9 @@ def team_tiers(df: pd.DataFrame, league: str) -> Callable[[str, int], Tier] | No
         espn_id = namer.espn_id(team)
         if espn_id is None:
             return None
-        return classifications.classification_in(espn_id, year, registry)
+        return classifications.classification_in(
+            espn_id, recorded_year(league, year), registry
+        )
 
     # The spanning label filled in exactly as `division_anchors` fills it,
     # because a game the fit rates as D-III has to be D-III here too. Read

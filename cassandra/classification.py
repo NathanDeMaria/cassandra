@@ -20,6 +20,42 @@ LUMPED_DIVISION = "Division II/III"
 #: The two the label above spans, and so the only two it can be filled in as.
 SPANNED_DIVISIONS = frozenset({"NCAA Division II", "NCAA Division III"})
 
+#: Leagues whose season crosses New Year. Cassandra names one of their seasons
+#: by the year it starts in -- 2021 is 2021-22 -- and call-it-what-you-want by
+#: the year it ends in, so every lookup is a year on. Asked about 2021, the
+#: table answers for 2020-21: St. Thomas's first Division I season was read as
+#: its last in Division III, and every program that moved up was anchored at
+#: the division it had just left for its first season above it.
+_SEASON_ENDS_NEXT_YEAR = frozenset({"mens", "womens"})
+
+#: The tier of a team call-it-what-you-want doesn't place, in a league where it
+#: places every division there is. See `files_every_division`.
+OTHER_DIVISION = "Other"
+_FILES_EVERY_DIVISION = frozenset({"mens", "womens"})
+
+
+def recorded_year(league: str, season: int) -> int:
+    """The year call-it-what-you-want files cassandra's `season` of `league` under."""
+    return season + 1 if league in _SEASON_ENDS_NEXT_YEAR else season
+
+
+def files_every_division(league: str) -> bool:
+    """Whether a team call-it-what-you-want doesn't place is a tier of its own.
+
+    In basketball it records Division I, II, III and the NAIA, so a team it
+    has no label for is none of those: an NCCAA or USCAA school, a branch
+    campus. Those are the weakest sides a Division I team plays -- mens
+    2010-2025 they won 1.5% of their games against one and lost by 38, where
+    Division III won 1.4% and lost by 36. Left unanchored they entered where
+    the last unfiled teams had ended up (`unanchored_prior`), which a team
+    that plays twice a season never gets far from: the model gave them 6.4%
+    and they won 1.5% (t -17.6). As a tier, the fit places them from those
+    games. Football's table is the other kind: a team it doesn't place is
+    usually a program it hasn't merged yet, of any level, so it stays
+    unanchored there.
+    """
+    return league in _FILES_EVERY_DIVISION
+
 
 def resolve_spanning_label(
     teams: Mapping[str, Sequence[int]],
