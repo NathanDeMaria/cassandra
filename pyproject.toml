@@ -56,7 +56,7 @@ endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "19c1055c
 # `league` filter there, and left out they behave as before. Checked rather
 # than assumed: every one of ncaafb's 1,118 stored names resolves to the same
 # canonical team across the bump, and a `glicko_full` replay is identical.
-call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "b3bb578ddb7b68d3cd08d5c567d17b6f3a2b9d4e"}
+call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "00d654fd4d9be82c6bd90e391a94d3f04d4ebc85"}
 # What changed about a team between seasons -- head-coach changes and why,
 # coordinators, quarterback seasons -- and the play-text quarterback parser
 # `cassandra.qb_out_build` reads starters with, which lived here as
@@ -227,7 +227,7 @@ lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev =
 #
 # Pinned for the reason lucky-ones is: the release files that ship inside it
 # (the box-score, recruit and newcomer priors) are the model.
-ten-minute-version = {git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "9607d0694ace5efe3c084dd779bf4d3bda5db31e"}
+ten-minute-version = {git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "0d78020845c3c070a2e8fed49b68d46aa1a6b765"}
 
 
 [tool.poetry.group.dev.dependencies]

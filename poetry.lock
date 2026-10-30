@@ -404,7 +404,7 @@ version = "0.1.0"
 description = "Translate between names and ID schemes for sports teams/athletes/etc."
 optional = false
 python-versions = ">=3.12"
-groups = ["main"]
+groups = ["main", "fit"]
 files = []
 develop = false
 
@@ -415,8 +415,8 @@ sync = ["aiohttp (>=3.8)", "endgame-aws"]
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/call-it-what-you-want.git"
-reference = "b3bb578ddb7b68d3cd08d5c567d17b6f3a2b9d4e"
-resolved_reference = "b3bb578ddb7b68d3cd08d5c567d17b6f3a2b9d4e"
+reference = "00d654fd4d9be82c6bd90e391a94d3f04d4ebc85"
+resolved_reference = "00d654fd4d9be82c6bd90e391a94d3f04d4ebc85"
 
 [[package]]
 name = "cffi"
@@ -3232,6 +3232,7 @@ files = []
 develop = false
 
 [package.dependencies]
+call-it-what-you-want = "*"
 numpy = ">=2.3.0"
 pyarrow = ">=21.0.0"
 scipy = ">=1.16"
@@ -3239,8 +3240,8 @@ scipy = ">=1.16"
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/ten-minute-version.git"
-reference = "9607d0694ace5efe3c084dd779bf4d3bda5db31e"
-resolved_reference = "9607d0694ace5efe3c084dd779bf4d3bda5db31e"
+reference = "0d78020845c3c070a2e8fed49b68d46aa1a6b765"
+resolved_reference = "0d78020845c3c070a2e8fed49b68d46aa1a6b765"
 
 [[package]]
 name = "termcolor"
@@ -3679,4 +3680,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "9c49b0a7b9b6a3265dea39e6f1e1b332c7a27b6edb13bd834dc01802793d23a5"
+content-hash = "2d9220c63db61570378d557477c5e343ac43ff4e0a8e19121292d8ccad11a81b"
