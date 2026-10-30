@@ -59,7 +59,13 @@ from call_it_what_you_want import (
 from endgame.types import Game, Season, iter_weeks
 from endgame_aws import Config
 
-from cassandra.classification import LUMPED_DIVISION, resolve_spanning_label
+from cassandra.classification import (
+    LUMPED_DIVISION,
+    OTHER_DIVISION,
+    files_every_division,
+    recorded_year,
+    resolve_spanning_label,
+)
 from cassandra.predictor.base_predictor import MEAN_RATING, Anchor, anchor_path
 from cassandra.save_predictions import read_all_seasons
 
@@ -429,6 +435,8 @@ class _Classifier:
         self._namer = namer
         self._classifications = default_classifications()
         self._registry = registry_league(league)
+        self._league = league
+        self._files_every_division = files_every_division(league)
         self._resolved: dict[str, str] = {}
 
     def resolve_lumped(self, teams: Mapping[str, list[int]]) -> None:
@@ -447,10 +455,14 @@ class _Classifier:
         no tier at all: it keeps the default anchor, which is the same
         behaviour it has today. Guessing a division from the company it
         keeps would be a rating decision dressed up as a data one.
+
+        Except in a league whose table files every division there is
+        (`files_every_division`): there a team without a label is known not
+        to be in any of them, and sits in a tier of its own, `OTHER_DIVISION`.
         """
         found = self._classification(team, year)
         if found is None:
-            return None
+            return Tier(OTHER_DIVISION) if self._files_every_division else None
         division = found.division
         if division == _LUMPED_DIVISION:
             division = self._resolved.get(team, _LUMPED_DIVISION)
@@ -460,7 +472,9 @@ class _Classifier:
         espn_id = self._namer.espn_id(team)
         if espn_id is None or self._registry is None:
             return None
-        return self._classifications.classification_in(espn_id, year, self._registry)
+        return self._classifications.classification_in(
+            espn_id, recorded_year(self._league, year), self._registry
+        )
 
 
 def _tier_games(

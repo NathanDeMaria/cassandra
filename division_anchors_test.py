@@ -4,6 +4,7 @@ import pytest
 from call_it_what_you_want import TeamClassification, TeamNamer
 from endgame.types import Game, Season, Week
 
+from cassandra.classification import OTHER_DIVISION, files_every_division
 from division_anchors import (
     DEFAULT_LADDER_STRETCH,
     Fit,
@@ -279,16 +280,23 @@ class _FakeClassifier(_Classifier):
     lumped label, building a Tier -- is the shipped code.
     """
 
-    def __init__(self, labels: dict[tuple[str, int], TeamClassification]) -> None:
+    def __init__(
+        self,
+        labels: dict[tuple[str, int], TeamClassification],
+        league: str = "ncaafb",
+    ) -> None:
         self._labels = labels
         self._resolved = {}
+        self._files_every_division = files_every_division(league)
 
     def _classification(self, team: str, year: int) -> TeamClassification | None:
         return self._labels.get((team, year))
 
 
-def _classifier(labels: dict[tuple[str, int], TeamClassification]) -> _Classifier:
-    return _FakeClassifier(labels)
+def _classifier(
+    labels: dict[tuple[str, int], TeamClassification], league: str = "ncaafb"
+) -> _Classifier:
+    return _FakeClassifier(labels, league)
 
 
 def test_the_lumped_label_is_filled_in_from_a_later_season() -> None:
@@ -353,6 +361,27 @@ def test_an_unclassified_team_gets_no_tier() -> None:
     classifier = _classifier({})
 
     assert classifier.tier("Nobody", 2010) is None
+
+
+def test_an_unclassified_basketball_team_is_a_tier_of_its_own() -> None:
+    """Basketball's table files every division, so a team it doesn't place
+    is in none of them -- an NCCAA school, a branch campus -- and the fit
+    places those from their games like any other tier."""
+    classifier = _classifier({}, league="mens")
+
+    assert classifier.tier("Nobody", 2010) == Tier(OTHER_DIVISION)
+
+
+def test_a_basketball_season_is_read_at_the_year_it_ends() -> None:
+    """Cassandra's 2021 is 2021-22, St. Thomas's first season in Division I;
+    call-it-what-you-want files that season under 2022."""
+    classifier = _Classifier(TeamNamer.for_league("mens"), "mens")
+
+    before = classifier.tier("St. Thomas Tommies", 2020)
+    first = classifier.tier("St. Thomas Tommies", 2021)
+
+    assert before is not None and before.division == "NCAA Division III"
+    assert first is not None and first.division == "NCAA Division I"
 
 
 def test_if_missing_leaves_an_existing_file_alone(
