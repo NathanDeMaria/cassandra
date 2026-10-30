@@ -25,13 +25,19 @@
         "player_floor": [
             0.0,
             20.0
+        ],
+        "weekly_rd_increase": [
+            0,
+            60
+        ],
+        "season_rd_increase": [
+            100,
+            600
         ]
     },
     "fixed": {
         "home_advantage": 77.10475710658311,
         "initial_rd": 547.3886283715119,
-        "weekly_rd_increase": 32.80520949682131,
-        "season_rd_increase": 364.02110478804286,
         "scoring_method": "sigmoid",
         "season_regression": 0.02093043024270807,
         "sigmoid_scale": 6.886004210295965,
@@ -46,7 +52,19 @@
             "absence_weight": 21.0,
             "luck_share": 0.4,
             "player_variance_scale": 5.1,
-            "player_floor": 8.7
+            "player_floor": 8.7,
+            "weekly_rd_increase": 32.8,
+            "season_rd_increase": 364.0
+        },
+        {
+            "glicko_share": 1.45,
+            "player_rating_weight": 15.1,
+            "absence_weight": 21.0,
+            "luck_share": 0.4,
+            "player_variance_scale": 5.1,
+            "player_floor": 8.7,
+            "weekly_rd_increase": 32.8,
+            "season_rd_increase": 300.0
         }
     ]
 }
