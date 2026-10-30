@@ -454,7 +454,10 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
-        "--days", type=float, default=8, help="price games kicking off this far ahead"
+        "--days",
+        type=float,
+        default=21,
+        help="price games kicking off this far ahead (Kalshi lists about two weeks out)",
     )
     parser.add_argument(
         "--min-edge", type=float, default=MIN_EDGE, help="edge over the no-vig price"
@@ -787,7 +790,8 @@ def run(args: argparse.Namespace) -> Outcome:
         side, other = (game.home, game.away) if priced.home else (game.away, game.home)
         last = {team: previous(team, game.date) for team in (game.home, game.away)}
         waiting = [t for t, p in last.items() if p is not None and not p.completed]
-        entered = entry(last.values())
+        listed = [b.opened for b in (found.home, found.away) if b.opened is not None]
+        entered = entry(last.values(), max(listed) if listed else None)
         since_entry = None if entered is None else now - entered
         no_plays = [
             t

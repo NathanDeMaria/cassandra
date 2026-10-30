@@ -20,8 +20,8 @@ can't be told apart -- over 2025-26 at the entry, brier 0.1535 against
 the roster model's 0.1537 (the book's 0.1601), weight on the model 0.80
 against 0.79, and at five points of edge +11% ROI (568 bets) against +14%
 (559), at ten +27% (241) against +20% (249). This
-module is that bet, made live. It takes every open Kalshi game in the next
-few days, finds its ESPN fixture, and prices it against the model the way
+module is that bet, made live. It takes every open Kalshi game, finds its
+ESPN fixture, and prices it against the model the way
 the backtest did.
 
 **The edge** is the backtest's: each team's own YES ask plus Kalshi's taker
@@ -44,7 +44,10 @@ graded.
 - a game where either team's previous game isn't final. The model hasn't
   seen that result yet, and the backtest's entry waited for it.
 - a game whose entry was more than `MAX_SINCE_ENTRY` ago. By then the
-  market has caught up, and the backtest's close showed no edge.
+  market has caught up, and the backtest's close showed no edge. The entry
+  is the backtest's: the first price after both teams' previous games, so
+  the later of those games ending and the market opening (`entry`). A game
+  after a bye can have its previous games end before Kalshi lists it.
 
 Everything here is a pure function of Kalshi's JSON, the fixtures and the
 model's probabilities; `picks.py` at the repo root does the fetching.
@@ -114,6 +117,8 @@ class Book(NamedTuple):
     ask_size: float
     volume: float
     volume_24h: float
+    #: When Kalshi opened the market; None when the listing doesn't say.
+    opened: datetime | None = None
 
     @property
     def spread(self) -> float | None:
@@ -164,6 +169,13 @@ def _quote(value: Any) -> float | None:
     return price if price is not None and 0 < price < 1 else None
 
 
+def _time(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def book(market: Mapping) -> Book:
     """A market as `GET /markets` lists it, read into a `Book`."""
     return Book(
@@ -176,6 +188,7 @@ def book(market: Mapping) -> Book:
         ask_size=_number(market.get("yes_ask_size_fp")) or 0.0,
         volume=_number(market.get("volume_fp")) or 0.0,
         volume_24h=_number(market.get("volume_24h_fp")) or 0.0,
+        opened=_time(market.get("open_time")) if market.get("open_time") else None,
     )
 
 
@@ -497,15 +510,21 @@ def previous_games(
     return previous
 
 
-def entry(previous: Iterable[PreviousGame | None]) -> datetime | None:
-    """When a fixture's entry price was up: once both teams' last games were over.
+def entry(
+    previous: Iterable[PreviousGame | None], opened: datetime | None = None
+) -> datetime | None:
+    """When a fixture's entry price was up: the first price after both teams'
+    last games were over, as in `betting.line_windows`.
 
-    `betting.line_windows`' rule, `GAME_LENGTH` after the later kickoff.
-    None for a fixture neither team has played before, whose entry is
-    whenever the market opened.
+    That's the later of `GAME_LENGTH` after the later kickoff and `opened`,
+    when the market opened: after a bye, or two, the previous games can end
+    before Kalshi lists the game. None when neither is known.
     """
     kickoffs = [game.date for game in previous if game is not None]
-    return max(kickoffs) + GAME_LENGTH if kickoffs else None
+    known = [max(kickoffs) + GAME_LENGTH] if kickoffs else []
+    if opened is not None:
+        known.append(opened)
+    return max(known) if known else None
 
 
 class Priced(NamedTuple):
