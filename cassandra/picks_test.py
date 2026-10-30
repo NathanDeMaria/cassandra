@@ -239,6 +239,25 @@ def test_the_entry_waits_for_the_later_of_the_two_previous_games() -> None:
     assert entry([None, None]) is None
 
 
+def test_the_entry_waits_for_the_market_to_open_after_a_bye() -> None:
+    # Both teams last played two weeks out; Kalshi listed the game later.
+    bye = PreviousGame("1", SATURDAY - timedelta(days=14), True)
+    listed = SATURDAY - timedelta(days=12)
+    assert entry([bye, bye], listed) == listed
+    # A market up before the previous game ended doesn't move the entry.
+    played = PreviousGame("2", SATURDAY - timedelta(days=7), True)
+    assert entry([played, bye], listed) == played.date + timedelta(hours=4)
+    # A first game of the season enters when its market opens.
+    assert entry([None, None], listed) == listed
+
+
+def test_a_book_keeps_when_its_market_opened() -> None:
+    market = _market("E-26OCT17AB", "A", "Alpha")
+    assert book(market).opened is None
+    opened = book({**market, "open_time": "2026-10-23T01:06:00Z"}).opened
+    assert opened == datetime(2026, 10, 23, 1, 6, tzinfo=UTC)
+
+
 def _matched(home_ask: float, away_ask: float, spread=0.02) -> Matched:
     home = _book("H", home_ask - spread, home_ask)
     away = _book("A", away_ask - spread, away_ask)
