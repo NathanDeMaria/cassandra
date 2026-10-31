@@ -56,7 +56,7 @@ endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "19c1055c
 # `league` filter there, and left out they behave as before. Checked rather
 # than assumed: every one of ncaafb's 1,118 stored names resolves to the same
 # canonical team across the bump, and a `glicko_full` replay is identical.
-call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "472c117a90769bb3dbea02316f86a7aaf5c2c83c"}
+call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "cc9c9e19e3e56eb48f7745853613aff51ca372b8"}
 # What changed about a team between seasons -- head-coach changes and why,
 # coordinators, quarterback seasons -- and the play-text quarterback parser
 # `cassandra.qb_out_build` reads starters with, which lived here as
