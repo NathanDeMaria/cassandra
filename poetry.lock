@@ -403,7 +403,7 @@ name = "call-it-what-you-want"
 version = "0.1.0"
 description = "Translate between names and ID schemes for sports teams/athletes/etc."
 optional = false
-python-versions = ">=3.12"
+python-versions = ">=3.14"
 groups = ["main", "fit"]
 files = []
 develop = false
@@ -415,8 +415,8 @@ sync = ["aiohttp (>=3.8)", "endgame-aws"]
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/call-it-what-you-want.git"
-reference = "472c117a90769bb3dbea02316f86a7aaf5c2c83c"
-resolved_reference = "472c117a90769bb3dbea02316f86a7aaf5c2c83c"
+reference = "cc9c9e19e3e56eb48f7745853613aff51ca372b8"
+resolved_reference = "cc9c9e19e3e56eb48f7745853613aff51ca372b8"
 
 [[package]]
 name = "cffi"
@@ -3680,4 +3680,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "bba6d6591f0f65ba977b256498595720cdcba11b0b4077b6bc1656e6cc5e105f"
+content-hash = "923aa2196c1fee31f9d19ebeedcf17ff68d2e83090450ee238e3e2b2b0e48f45"
