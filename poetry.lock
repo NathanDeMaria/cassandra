@@ -415,8 +415,8 @@ sync = ["aiohttp (>=3.8)", "endgame-aws"]
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/call-it-what-you-want.git"
-reference = "00d654fd4d9be82c6bd90e391a94d3f04d4ebc85"
-resolved_reference = "00d654fd4d9be82c6bd90e391a94d3f04d4ebc85"
+reference = "472c117a90769bb3dbea02316f86a7aaf5c2c83c"
+resolved_reference = "472c117a90769bb3dbea02316f86a7aaf5c2c83c"
 
 [[package]]
 name = "cffi"
@@ -3240,8 +3240,8 @@ scipy = ">=1.16"
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/ten-minute-version.git"
-reference = "2a2cdcae5fb1de573e1126f9583a428c004f6330"
-resolved_reference = "2a2cdcae5fb1de573e1126f9583a428c004f6330"
+reference = "85bd07a68a3bfa20629dc7077833cac4207ac457"
+resolved_reference = "85bd07a68a3bfa20629dc7077833cac4207ac457"
 
 [[package]]
 name = "termcolor"
@@ -3680,4 +3680,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "d0b2e967aef02373577a62e3a0fad819189c399f4d7dd9967c8d995e081f2d64"
+content-hash = "bba6d6591f0f65ba977b256498595720cdcba11b0b4077b6bc1656e6cc5e105f"
