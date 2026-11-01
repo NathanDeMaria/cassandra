@@ -50,12 +50,22 @@ News that lasts -- a starter out for the season -- goes in
 (`cassandra.overrides`), and every run applies it until then.
 Under the orders, each pick lists the injury sentences in its two teams'
 last two AP stories, and the next game's preview once there is one
-(`cassandra.injuries`); `QB!` marks one naming a quarterback. With
-`--hold-qb` those picks aren't placed: the rest are re-sized without them,
+(`cassandra.injuries`); `QB!` marks one naming a quarterback. In the week
+of Oct 31 the 12 QB-flagged bets went 6-6, the closing prices valued them
+at -3% (the other 27 at +5%), and Kansas State fell from 60c to 40c when
+its backup started.
+
+The stories miss most of it: South Florida's starter left Oct 31 with a
+hit to the head, Utah State's missed the game hurt, and neither recap said
+so. The plays do. `QB doubt` marks a pick whose side's starter -- most
+starts this season -- missed its last game, left it early (not in a rout),
+or came off the bench in it; he then failed to start 79%, 60% and 68% of
+the time, against 8% after a game he played through, and those picks were
+worth +2.5% at the close against +9.0% (`cassandra.qb_starts`). Only the
+side bet on: a pick against such a team did fine. With `--hold-qb` both kinds aren't
+placed: the rest are re-sized without them, their resting rungs come off,
 and they come back on `Outcome.held` for a person to look at. The cloud
-job runs with it. In the week of Oct 31 the 12 QB-flagged bets went 6-6, the
-closing prices valued them at -3% (the other 27 at +5%), and Kansas State
-fell from 60c to 40c when its backup started.
+job runs with it.
 
 **Placing.** `--place` buys the picks, with a Kalshi API key (see
 `cassandra.kalshi_trade` for where it's read from; `--demo` for the demo
@@ -184,7 +194,8 @@ from cassandra.predictor.config import load_predictor_class
 from cassandra.predictor.epa import EpaIndex
 from cassandra.predictor.opponent_prior import OpponentPriorManager
 from cassandra.predictor.qb_out import QbOutIndex, load_qb_out
-from cassandra.qb_out_build import build as build_qb_out
+from cassandra.qb_out_build import build_all as build_qb_out
+from cassandra.qb_starts import GameQb, doubts, read_qb_starts
 from cassandra.replay_cache import AUTHORED_DIR, GENERATED_DIR
 from cassandra.residuals import team_tiers
 from cassandra.save_predictions import join_with_odds, read_all_seasons
@@ -283,9 +294,10 @@ def qb_reads(
 
 async def _qb_out_tonight(
     league: str, season: Season, games: list[Game], upcoming: list[Game]
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, dict[str, GameQb]]]:
     """Who was missing their starter in the games the stored index hasn't read,
-    and the recent games that couldn't be read: no plays from ESPN yet.
+    the recent games that couldn't be read (no plays from ESPN yet), and those
+    games' quarterbacks for `cassandra.qb_starts`.
 
     That index is the sweep's, over the plays endgame has stored, and
     tonight's games aren't in it until the morning. They're read here the
@@ -302,7 +314,7 @@ async def _qb_out_tonight(
     stored = {g.game_id for g in games if g.completed and epa.get(g.game_id)}
     unread, needy, wanted = qb_reads(games, stored, upcoming, datetime.now(UTC))
     if not wanted:
-        return {}, {}
+        return {}, {}, {}
     drives = [d async for d in apply_in_parallel(_game_plays, [(g,) for g in wanted])]
     # A game that ended in the last few hours with no plays from ESPN may
     # just not have them yet; who played quarterback in it is unknown, not
@@ -319,13 +331,18 @@ async def _qb_out_tonight(
         transform_game_to_table(d, g, league, season.year, 1)
         for g, d in zip(wanted, drives)
     )
-    found = await build_qb_out(league, [season], _OneWeek(table))
-    flags = {g: out & needy for g, out in found.items() if g in unread and out & needy}
+    built = await build_qb_out(league, [season], _OneWeek(table))
+    flags = {
+        g: out & needy
+        for g, out in built.missing.items()
+        if g in unread and out & needy
+    }
+    starts = built.starts.games if built.starts is not None else {}
     print(
         f"QB check:       {len(unread) - len(blind)} of {len(unread)} unread games "
         "read off ESPN's plays"
     )
-    return flags, blind
+    return flags, blind, {g: qbs for g, qbs in starts.items() if g in unread}
 
 
 def _overrides(args: argparse.Namespace) -> list[overrides.Override]:
@@ -584,7 +601,8 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "--hold-qb",
         action="store_true",
         help="with --place: don't place a pick whose injury news names a "
-        "quarterback; re-size the rest and hand it back to look at",
+        "quarterback, or whose side's starter missed or left his last game; "
+        "re-size the rest and hand it back to look at",
     )
     parser.add_argument(
         "--notify",
@@ -653,6 +671,7 @@ def run(args: argparse.Namespace) -> Outcome:
     print(f"seasons (s3):   {_age(_seasons_cache(league))}")
     print(f"EPA index:      {_age(data / f'{league}_epa.json')}")
     print(f"QB index:       {_age(data / f'{league}_qb_out.json')}")
+    print(f"QB starts:      {_age(data / f'{league}_qb_starts.json')}")
     if not args.no_espn:
         seasons = asyncio.run(_with_espn(seasons))
         print(
@@ -672,8 +691,22 @@ def run(args: argparse.Namespace) -> Outcome:
         for g in games
         if not g.completed and g.status not in NOT_HAPPENING and now < g.date < horizon
     ]
-    tonight, blind = asyncio.run(_qb_out_tonight(league, latest, games, upcoming))
+    tonight, blind, tonight_qbs = asyncio.run(
+        _qb_out_tonight(league, latest, games, upcoming)
+    )
     unread_teams = {t for teams in blind.values() for t in teams}
+    # Whose starter's last game says he may not start the next: the sweep's
+    # copy of the season, and tonight's games on top (`cassandra.qb_starts`).
+    stored_qbs = read_qb_starts(league)
+    season_qbs = (
+        dict(stored_qbs.games)
+        if stored_qbs is not None and stored_qbs.season == latest.year
+        else {}
+    )
+    if not season_qbs:
+        print(f"!! no {latest.year} quarterbacks stored: no team reads as in doubt")
+    season_qbs.update(tonight_qbs)
+    doubted = doubts(games, season_qbs)
     lasting = _overrides(args)
     named = _qb_out_named(args.qb_out, upcoming)
     # A lasting QB out for a team with no game in the window (a bye) has
@@ -757,6 +790,8 @@ def run(args: argparse.Namespace) -> Outcome:
         if f.game.game_id in priced_ids & matched.keys()
         for team in (f.game.home, f.game.away)
     }
+    for team in sorted(doubted.keys() & on_kalshi):
+        print(f"QB in doubt:    {doubted[team].sentence}")
     # Most games ESPN has no plays for are D-II/III games it never covers
     # play by play; only the ones a Kalshi game is waiting on are worth a line.
     for game in sorted(blind, key=lambda g: by_id[g].date):
@@ -851,6 +886,9 @@ def run(args: argparse.Namespace) -> Outcome:
                 "spread": book.spread,
                 "volume_24h": book.volume_24h,
                 "no_plays": ", ".join(no_plays),
+                # Only the side bet on: a pick against a team whose starter
+                # may be out is no worse for it (`cassandra.qb_starts`).
+                "qb_doubt": doubted[side].sentence if side in doubted else None,
                 "hours_since_entry": None
                 if since_entry is None
                 else since_entry.total_seconds() / 3600,
@@ -940,7 +978,9 @@ def run(args: argparse.Namespace) -> Outcome:
     ]
     cancelled: tuple[str, ...] = ()
     if client is not None and rung_orders:
-        stale = placing.stale_rungs(rung_orders, frame, matched, args.exclude)
+        stale = placing.stale_rungs(
+            rung_orders, frame, matched, args.exclude, hold_qb=args.hold_qb
+        )
         if stale:
             print(f"\n=== {len(stale)} resting rungs the model no longer backs")
             canceller = client
@@ -964,7 +1004,7 @@ def run(args: argparse.Namespace) -> Outcome:
     while True:
         frame["skip"] = priced_skips
         frame.loc[frame["game_id"].isin(dropped), "skip"] = "dropped at the prompt"
-        frame.loc[frame["game_id"].isin(held), "skip"] = "held: QB news"
+        frame.loc[frame["game_id"].isin(held), "skip"] = "held: QB check"
         if unlisted is not None:
             off = frame["game_id"].isin(unlisted.index)
             frame.loc[off, "skip"] = frame.loc[off, "game_id"].map(unlisted)
@@ -990,7 +1030,7 @@ def run(args: argparse.Namespace) -> Outcome:
                 )
             )
             names = ", ".join(picks[picks["game_id"].isin(flagged)]["bet"])
-            print(f"\nheld for a look, QB news: {names}; re-sizing the rest")
+            print(f"\nheld for a look, QB news or doubt: {names}; re-sizing the rest")
             continue
         answer = set() if args.yes else placing.ask(len(picks))
         if answer is None:

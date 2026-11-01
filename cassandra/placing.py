@@ -261,6 +261,7 @@ def stale_rungs(
     frame: pd.DataFrame,
     matched: dict,
     exclude: Sequence[str] = (),
+    hold_qb: bool = False,
 ) -> list[tuple[dict, str]]:
     """The resting rungs to cancel, each with why.
 
@@ -268,8 +269,10 @@ def stale_rungs(
     held to what the model says now, not to whether the game is still a
     pick: it goes when the model backs the other side, when the game names
     a team in `exclude` (`--exclude` and the overrides file), or when its price is over `max_price`, the most the
-    side can cost and clear the edge -- which a starter ruled out does. A
-    game this run didn't price is left alone.
+    side can cost and clear the edge -- which a starter ruled out does. With
+    `hold_qb` it also goes when the side it backs has its starter in doubt
+    (`qb_doubt`): a pick in doubt waits for a person, and so does buying
+    more of one. A game this run didn't price is left alone.
     """
     by_event = {row["event"]: row for _, row in frame.iterrows()}
     found = []
@@ -290,6 +293,8 @@ def stale_rungs(
             why = f"the model backs {row['bet']} now"
         elif any(team.lower() in row["game"].lower() for team in exclude):
             why = "excluded by hand"
+        elif hold_qb and isinstance(row.get("qb_doubt"), str):
+            why = f"QB in doubt: {row['qb_doubt']}"
         elif row.get("price") is None or pd.isna(row.get("price")):
             continue
         elif ceiling is None or pd.isna(ceiling):
@@ -422,12 +427,18 @@ class News(NamedTuple):
 
 
 def qb_news(picks: pd.DataFrame, news: Mapping[str, News]) -> dict[str, str]:
-    """The picks whose injury news names a quarterback, each with the first
-    sentence that does. The model reads a starter out only when told
-    (`--qb-out`), so these are the picks it may have priced on a QB who
-    won't play."""
+    """The picks the model may have priced on a quarterback who won't play,
+    each with why: the side bet on has its starter in doubt after his last
+    game (`qb_doubt`, `cassandra.qb_starts`), or the injury news names a
+    quarterback, its first sentence that does. The model reads a starter
+    out only when told (`--qb-out`)."""
     found = {}
-    for game_id in picks["game_id"]:
+    for _, row in picks.iterrows():
+        game_id = row["game_id"]
+        doubt = row.get("qb_doubt")
+        if isinstance(doubt, str):
+            found[game_id] = doubt
+            continue
         notes = news.get(game_id, News([], [])).notes
         qb = [note for note in notes if note.qb]
         if qb:
@@ -454,8 +465,10 @@ def print_orders(
     for number, (_, row) in enumerate(order.iterrows(), start=1):
         notes, passers = news.get(row["game_id"], News([], []))
         qb = [n for n in notes if n.qb]
-        mark = "QB!" if qb else ("inj" if notes else "   ")
-        if qb:
+        doubt = row.get("qb_doubt")
+        doubt = doubt if isinstance(doubt, str) else None
+        mark = "QB!" if qb or doubt else ("inj" if notes else "   ")
+        if qb or doubt:
             flagged.append(number)
         print(
             f"{number:>3}. {mark} {row['kickoff']:%a %H:%M}  {row['bet']:<28} "
@@ -465,6 +478,8 @@ def print_orders(
         )
         if row.get("rungs"):
             print(f"         {rung_line(row['rungs'])}")
+        if doubt:
+            print(f"         QB doubt {doubt}")
         for line in passers:
             print(f"         passing  {line}")
         for note in sorted(notes, key=lambda n: not n.qb)[: args.news_lines]:
@@ -481,8 +496,8 @@ def print_orders(
     )
     if flagged:
         print(
-            f"QB news on {', '.join(map(str, flagged))}: if a starter is out of the "
-            "next game, quit and rerun with --qb-out TEAM so the model prices it."
+            f"QB news or doubt on {', '.join(map(str, flagged))}: if a starter is out "
+            "of the next game, quit and rerun with --qb-out TEAM so the model prices it."
         )
 
 

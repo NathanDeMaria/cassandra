@@ -214,7 +214,8 @@ async def _qb_out(
     from endgame_aws.pbp_parquet import get_processed_plays_store
 
     from cassandra.predictor.qb_out import load_qb_out, read_qb_out_file
-    from cassandra.qb_out_build import build, with_season, write
+    from cassandra.qb_out_build import build_all, with_season, write
+    from cassandra.qb_starts import write_qb_starts
     from cassandra.save_predictions import read_all_seasons
 
     if leagues is None:
@@ -237,13 +238,22 @@ async def _qb_out(
         # other seasons would be lost, so that rebuilds whole.
         if latest and read_qb_out_file(league) is not None:
             season = max(seasons, key=lambda s: s.year)
-            fresh = await build(league, [season], _Weeks())
-            missing = with_season(load_qb_out(league), season, fresh)
+            built = await build_all(league, [season], _Weeks())
+            missing = with_season(load_qb_out(league), season, built.missing)
         else:
-            missing = await build(league, seasons, _Weeks())
+            built = await build_all(league, seasons, _Weeks())
+            missing = built.missing
         write(league, missing)
         flagged = sum(len(teams) for teams in missing.values())
         print(f"  {len(missing):,} games with somebody out, {flagged:,} team-games")
+        # The season being played, game by game, for `picks.py` to read
+        # whose starter is in doubt for the next one (`cassandra.qb_starts`).
+        if built.starts is not None:
+            write_qb_starts(built.starts)
+            print(
+                f"  {built.starts.season} quarterbacks: "
+                f"{len(built.starts.games):,} games"
+            )
 
         if upload:
             keys = await artifacts.upload(bucket, artifacts.qb_out_for(league))
@@ -526,8 +536,9 @@ def _picks(espn: bool) -> None:
                 [] if rehearsal else ["--cancel-rungs"]
             )
         else:
-            # The cash on hand is the budget, and a pick on QB news waits
-            # for a person: the model doesn't read a starter out unless told.
+            # The cash on hand is the budget, and a pick on QB news or with its
+            # starter in doubt (`cassandra.qb_starts`) waits for a person: the
+            # model doesn't read a starter out unless told.
             argv += ["--yes", "--hold-qb", "--rest", f"{picks_job.REST_HOURS:g}"]
             if rehearsal:
                 argv.append("--dry-run")

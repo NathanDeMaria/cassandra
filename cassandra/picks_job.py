@@ -213,7 +213,7 @@ def autobet(s3: Any, bucket: str) -> Autobet:
 def unsent(picks: pd.DataFrame, sent: dict, held: bool = False) -> pd.DataFrame:
     """The picks no email has carried: a new game, or the same game's other side.
 
-    With `held`, the picks a run held on QB news (`picks.py --hold-qb`), for
+    With `held`, the picks a run held on a QB check (`picks.py --hold-qb`), for
     which an email counts only if it carried the pick *as held*: a game first
     emailed as an ordinary pick, or placed, and held later is news. Iowa
     State, Oregon and Mississippi State were held silently on 2026-11-01
@@ -274,10 +274,12 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
     names = ", ".join(ordered(held)["bet"])
     count = f"{len(held)} Kalshi pick{'s' if len(held) != 1 else ''}"
     need = "needs" if len(held) == 1 else "need"
-    subject = f"{count} {need} your OK, QB news ({at:%a %H:%M} CT): {names}"[:99]
+    subject = f"{count} {need} your OK, QB check ({at:%a %H:%M} CT): {names}"[:99]
     lines = [
-        f"Held: {count} whose injury news names a quarterback, which the model "
-        "doesn't read. Check the starter; to place one, run its line or say "
+        f"Held: {count} that may be priced on a quarterback who won't play: the "
+        "side bet on had its starter miss, leave or come off the bench in its "
+        "last game, or the injury news names a quarterback. The model reads "
+        "neither. Check the starter; to place one, run its line or say "
         'which in a Claude session ("place 1 from the hold email") -- it '
         "re-prices first. Unplaced, it's left alone; the morning summary lists "
         "it until then.",
@@ -287,7 +289,7 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
         lines.append(
             f"{number}. {row['bet']} -- {row['game']}, {row['kickoff']:%a %H:%M} CT"
         )
-        lines.append(f"   QB news: {row['qb_news'][:240]}")
+        lines.append(f"   QB: {row['qb_news'][:240]}")
         lines.append(
             f"   {row['buy']}: {row['contracts']:.0f} @ <= {row['limit']:.2f}, "
             f"at most ${row['outlay']:.2f}"
@@ -481,7 +483,7 @@ def summary_email(
             )
         lines.append("")
     if holds:
-        lines.append(f"Waiting on you: {len(holds)} held on QB news, not placed")
+        lines.append(f"Waiting on you: {len(holds)} held on a QB check, not placed")
         lines += [
             f'  {h["bet"]} -- {h["game"]}: make bet ARGS="--only {h["game_id"]}"'
             for h in holds

@@ -1,11 +1,21 @@
 """Tests for deriving availability from parsed quarterback data."""
 
+import asyncio
 from datetime import UTC, datetime
 
+import pyarrow as pa
+from call_it_what_you_want import TeamNamer
 from endgame.types import Game, Season, Week
 from say_youll_remember_me.qb import TeamGameQb
 
-from cassandra.qb_out_build import home_away_ids, out_teams, with_season
+from cassandra.qb_out_build import (
+    build_all,
+    game_qbs,
+    home_away_ids,
+    out_teams,
+    registry_ids,
+    with_season,
+)
 
 
 def _qb(starter: str, snaps: tuple[str, ...]) -> TeamGameQb:
@@ -291,3 +301,117 @@ def test_a_fresh_season_replaces_only_its_own_games() -> None:
     # The fresh build re-read new1 as nobody out, and flags new2 for Ohio.
     merged = with_season(stored, season, {"new2": {"Ohio"}})
     assert merged == {"old": {"Kent"}, "new2": {"Ohio"}}
+
+
+def test_game_qbs_counts_passes_and_the_last_snap_per_man() -> None:
+    """South Florida on Oct 31: the starter's last snap came early in a game
+    his team trailed, and the man after him threw the rest."""
+    plays = [
+        # (offense, text, period, home score, away score)
+        ("1", "Alan Ace pass complete to Rex Wide for 16 yds", 1, 0, 0),
+        ("2", "Kay Kicker 30 yd FG GOOD", 1, 0, 3),
+        ("1", "Alan Ace run for 5 yds", 1, 0, 3),
+        ("2", "Dee Other pass complete to Tee End for 20 yds for a TD", 1, 0, 10),
+        ("1", "Ben Backup pass incomplete to Rex Wide", 2, 0, 10),
+        ("1", "Ben Backup pass complete to Rex Wide for 75 yds for a TD", 3, 7, 10),
+    ]
+    offense, texts, periods, home, away = map(list, zip(*plays))
+    parsed = {
+        "1": TeamGameQb(
+            "Alan Ace", "ace a", 3, 1 / 3, frozenset({"ace a", "backup b"})
+        ),
+        "2": TeamGameQb("Dee Other", "other d", 1, 1.0, frozenset({"other d"})),
+    }
+
+    qbs = game_qbs(offense, texts, periods, home, away, "1", parsed)
+
+    assert qbs["1"].starter == "ace a"
+    assert qbs["1"].attempts == {"ace a": 1, "backup b": 2}
+    assert qbs["1"].names == {"ace a": "Alan Ace", "backup b": "Ben Backup"}
+    assert qbs["1"].snaps == ["ace a", "backup b"]
+    # Home: down 3 at his run, from the score before it.
+    assert qbs["1"].last_snap == {"ace a": (1, -3), "backup b": (3, -3)}
+    assert qbs["2"].last_snap == {"other d": (1, 10)}
+
+
+class _Plays:
+    def __init__(self, weeks: dict[tuple[int, int], pa.Table]) -> None:
+        self.weeks = weeks
+
+    async def load_week(self, league: str, season: int, week: int) -> pa.Table:
+        return self.weeks.get((season, week), pa.table({}))
+
+
+def _table(game_id: str, plays: list[tuple[str, str, int, int]]) -> pa.Table:
+    """(offense id, text, home score, away score); home is team 1."""
+    return pa.table(
+        {
+            "game_id": [game_id] * len(plays),
+            "sequence_number": list(range(len(plays))),
+            "offense_team_id": [p[0] for p in plays],
+            "text": [p[1] for p in plays],
+            "period": [1] * len(plays),
+            "home_score": [p[2] for p in plays],
+            "away_score": [p[3] for p in plays],
+        }
+    )
+
+
+def test_build_all_keeps_the_latest_seasons_quarterbacks() -> None:
+    def season(year: int, game_id: str) -> Season:
+        game = Game(
+            home="Ohio",
+            home_score=7,
+            away="Kent",
+            away_score=0,
+            neutral_site=False,
+            completed=True,
+            date=datetime(year, 10, 17, tzinfo=UTC),
+            game_id=game_id,
+        )
+        return Season([Week([game], 1)], year)
+
+    # The touchdown is the vote that team 1 is home.
+    plays = [
+        ("1", "Alan Ace run for 3 yds", 0, 0),
+        ("1", "Alan Ace pass complete to Rex Wide for 7 yds for a TD", 7, 0),
+        ("2", "Dee Other pass incomplete to Tee End", 7, 0),
+    ]
+    weeks = {(2025, 1): _table("old", plays), (2026, 1): _table("new", plays)}
+    namer = TeamNamer(None)
+
+    built = asyncio.run(
+        build_all(
+            "ncaafb", [season(2025, "old"), season(2026, "new")], _Plays(weeks), namer
+        )
+    )
+
+    assert built.missing == {}
+    assert built.starts is not None
+    assert built.starts.season == 2026
+    assert built.starts.games.keys() == {"new"}
+    assert built.starts.games["new"]["Ohio"].starter == "ace a"
+    assert built.starts.games["new"]["Kent"].attempts == {"other d": 1}
+
+
+def test_the_registry_places_the_teams_when_it_knows_both() -> None:
+    namer = TeamNamer.for_league("ncaafb")
+    offense = ["97", "24", "97"]
+    assert registry_ids(
+        namer, "Louisville Cardinals", "Stanford Cardinal", offense
+    ) == (
+        "97",
+        "24",
+    )
+    # A school it can't place, or one that ran no play here, leaves the vote.
+    assert registry_ids(namer, "Nowhere Tech", "Stanford Cardinal", offense) is None
+    assert (
+        registry_ids(namer, "Louisville Cardinals", "Ohio State Buckeyes", offense)
+        is None
+    )
+    assert (
+        registry_ids(
+            TeamNamer(None), "Louisville Cardinals", "Stanford Cardinal", offense
+        )
+        is None
+    )
