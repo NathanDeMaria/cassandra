@@ -9,6 +9,7 @@ this build's own, and the part that differs: two fits behind one index.
 import asyncio
 
 import pytest
+from endgame.types import Season, Week
 from lucky_ones import MODELS, group_by_game
 
 from cassandra.conftest import (
@@ -16,6 +17,9 @@ from cassandra.conftest import (
 )
 from cassandra.conftest import (
     FakeSource as _Source,
+)
+from cassandra.conftest import (
+    game_for as _game,
 )
 from cassandra.conftest import (
     plays_for as _plays,
@@ -66,6 +70,63 @@ def test_a_full_game_gets_epa_for_both_offenses() -> None:
     assert stats.scored == 1
     assert stats.played == 1
     assert stats.disagreed == 0
+
+
+def _walk_off(end_score: tuple[int, int]) -> list:
+    """`_plays`' 28-0 game won 31-0 on a last-snap field goal, then closed by
+    an End of Regulation row carrying `end_score`."""
+    plays = _plays("g1")
+    last = plays[-1]
+    kick = last._replace(
+        play_id="g1-kick",
+        play_number=last.play_number + 1,
+        home_score=31,
+        play_type="Field Goal Good",
+        scoring_play=True,
+    )
+    end = kick._replace(
+        play_id="g1-end",
+        play_number=kick.play_number + 1,
+        home_score=end_score[0],
+        away_score=end_score[1],
+        play_type="End of Regulation",
+        scoring_play=False,
+    )
+    return [*plays, kick, end]
+
+
+def _won_31_0() -> list[Season]:
+    return [Season(year=2025, weeks=[Week(games=[_game("g1", 31, 0)], number=1)])]
+
+
+def test_a_walk_off_scores_past_a_closing_row_still_at_the_old_score() -> None:
+    source = _Source({(2025, 1): _walk_off((28, 0))})
+
+    epa, stats = asyncio.run(sweep(_LEAGUE, _won_31_0(), source))
+
+    assert set(epa) == {"g1"}
+    assert stats.incomplete == 0
+
+
+def test_a_closing_row_at_the_final_is_still_read_first() -> None:
+    # The last play short of the final, the closing row at it: the usual case.
+    plays = _walk_off((31, 0))
+    plays[-2] = plays[-2]._replace(home_score=28)
+
+    epa, stats = asyncio.run(sweep(_LEAGUE, _won_31_0(), _Source({(2025, 1): plays})))
+
+    assert set(epa) == {"g1"}
+
+
+def test_plays_short_of_the_final_either_way_are_still_incomplete() -> None:
+    # Neither the closing row nor the last play reaches 35-0.
+    source = _Source({(2025, 1): _walk_off((28, 0))})
+    season = Season(year=2025, weeks=[Week(games=[_game("g1", 35, 0)], number=1)])
+
+    epa, stats = asyncio.run(sweep(_LEAGUE, [season], source))
+
+    assert epa == {}
+    assert stats.incomplete == 1
 
 
 def test_the_number_is_the_unweighted_reading() -> None:
@@ -133,15 +194,21 @@ def test_success_rate_is_the_share_of_passes_and_runs_that_added_points() -> Non
 
     for home in (True, False):
         downs = [
-            p for p in scored.plays if p.offense_is_home is home and p.play_id not in left_out
+            p
+            for p in scored.plays
+            if p.offense_is_home is home and p.play_id not in left_out
         ]
         expected = sum(p.epa > 0 for p in downs) / len(downs)
-        weighted = sum(p.weight * (p.epa > 0) for p in downs) / sum(p.weight for p in downs)
+        weighted = sum(p.weight * (p.epa > 0) for p in downs) / sum(
+            p.weight for p in downs
+        )
         side = "home" if home else "away"
         assert getattr(epa["g1"], f"{side}_success_plays") == len(downs)
         assert getattr(epa["g1"], f"{side}_success") == pytest.approx(expected)
         assert getattr(epa["g1"], f"{side}_success_weighted") == pytest.approx(weighted)
-    assert 0 < epa["g1"].home_success_plays < epa["g1"].home_plays + epa["g1"].away_plays
+    assert (
+        0 < epa["g1"].home_success_plays < epa["g1"].home_plays + epa["g1"].away_plays
+    )
     # The fixture is a runaway, so the weights differ and a swap would show.
     assert epa["g1"].home_success_weighted != pytest.approx(epa["g1"].home_success)
 
@@ -187,9 +254,17 @@ def test_which_snaps_a_success_rate_is_over(
         ("Rush", "Smith up the middle for 4 yards", False),
         ("Rushing Touchdown", None, False),
         # Filed as a run; the quarterback dropped back.
-        ("Rush", "(Shotgun) D.Prescott scrambles right end to DAL 45 for 8 yards", True),
+        (
+            "Rush",
+            "(Shotgun) D.Prescott scrambles right end to DAL 45 for 8 yards",
+            True,
+        ),
         ("Fumble Recovery (Own)", "J.Allen pass short right to S.Diggs, FUMBLES", True),
-        ("Fumble Recovery (Opponent)", "J.Allen sacked at BUF 30 for -7 yards, FUMBLES", True),
+        (
+            "Fumble Recovery (Opponent)",
+            "J.Allen sacked at BUF 30 for -7 yards, FUMBLES",
+            True,
+        ),
         ("Fumble Recovery (Own)", "J.Taylor up the middle for 2 yards, FUMBLES", False),
         ("Safety", "Smith sacked in End Zone for -8 yards, SAFETY", True),
         ("Safety", "Smith up the middle to END ZONE for -1 yards, SAFETY", False),
@@ -197,7 +272,9 @@ def test_which_snaps_a_success_rate_is_over(
         ("Fumble Recovery (Own)", "A.Passmore left end for 2 yards, FUMBLES", False),
     ],
 )
-def test_which_downs_are_passes(play_type: str, text: str | None, passing: bool) -> None:
+def test_which_downs_are_passes(
+    play_type: str, text: str | None, passing: bool
+) -> None:
     assert is_down(play_type, text)
     assert is_pass(play_type, text) is passing
 
@@ -248,7 +325,8 @@ def test_the_success_rate_splits_into_passes_and_runs() -> None:
         # is the flat EPA per snap: bounded the same way.
         assert passes + runs == getattr(e, f"{side}_plays")
         assert (
-            passes * getattr(e, f"{side}_pass_epa") + runs * getattr(e, f"{side}_run_epa")
+            passes * getattr(e, f"{side}_pass_epa")
+            + runs * getattr(e, f"{side}_run_epa")
         ) / (passes + runs) == pytest.approx(getattr(e, side))
     assert by_id[plays[4].play_id].play_type == "Rush"
 
