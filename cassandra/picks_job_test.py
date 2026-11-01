@@ -177,7 +177,9 @@ def test_keep_copies_up_only_this_runs_picks_and_orders(tmp_path, monkeypatch):
     picks_dir.mkdir()
     orders_dir.mkdir()
     monkeypatch.setattr(picks_job, "RUN_FILES", {"p/": picks_dir, "o/": orders_dir})
-    started = datetime.now(UTC)
+    # A second back: a file written right after can carry an mtime a hair
+    # before a timestamp taken just before it.
+    started = datetime.now(UTC) - timedelta(seconds=1)
     earlier = picks_dir / "ncaafb_m_20261017-2252.csv"
     earlier.write_text("an earlier run's")
     hour_ago = started.timestamp() - 3600
@@ -199,7 +201,9 @@ def test_keep_leaves_a_dry_runs_orders_behind(tmp_path, monkeypatch):
     monkeypatch.setattr(
         picks_job, "RUN_FILES", {"b/picks/": picks_dir, "b/orders/": orders_dir}
     )
-    started = datetime.now(UTC)
+    # A second back: a file written right after can carry an mtime a hair
+    # before a timestamp taken just before it.
+    started = datetime.now(UTC) - timedelta(seconds=1)
     (picks_dir / "ncaafb_m_20261021-0130.csv").write_text("priced")
     (orders_dir / "ncaafb_m_20261021-0130_orders.csv").write_text("not sent")
     assert picks_job.keep(FakeS3(), "b", started, orders=False) == [
