@@ -500,6 +500,8 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
     import logging
     import uuid
 
+    import pandas as pd
+
     import picks as picks_script
     from cassandra import picks_job
     from cassandra.constants import temp_bucket
@@ -542,6 +544,9 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
                 f"{night.remaining:.2f}",
                 "--rest",
                 f"{night.rest_hours(now):.2f}",
+                # A pick on QB news waits for a person: the model doesn't
+                # read a starter out unless told.
+                "--hold-qb",
             ]
             if rehearsal:
                 argv.append("--dry-run")
@@ -585,18 +590,27 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
         sent, _ = picks_job.read_json(s3, bucket, picks_job.SENT_KEY)
         sent = sent or {}
         at = now.astimezone(CENTRAL)
+        held = None
         if asleep:
             placed = outcome.placed
-            if placed is None or placed.empty:
+            # A pick held on QB news is emailed once, not every hour it's held.
+            if outcome.held is not None:
+                held = picks_job.unsent(outcome.held, sent)
+                held = None if held.empty else held
+            if (placed is None or placed.empty) and held is None:
                 print("bedtime: nothing placed")
                 return
-            if not rehearsal:
+            if placed is None:
+                placed = pd.DataFrame(columns=["game_id"])
+            if not rehearsal and not placed.empty:
                 night = picks_job.charge(s3, bucket, picks_job.committed(placed))
             shown = outcome.picks[
                 outcome.picks["game_id"].isin(set(placed.get("game_id", [])))
             ]
             fresh = shown
-            subject = picks_job.subject(shown, fresh, placed=True, at=at)
+            subject = picks_job.subject(
+                shown, fresh, placed=True, at=at, held=0 if held is None else len(held)
+            )
         else:
             shown = outcome.picks
             fresh = picks_job.unsent(shown, sent)
@@ -615,6 +629,7 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
             night if asleep else None,
             args.slippage,
             outcome.cancelled,
+            held,
         )
         topic = os.environ.get("CASSANDRA_PICKS_TOPIC_ARN")
         if topic:
@@ -631,7 +646,12 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
                 s3,
                 bucket,
                 picks_job.SENT_KEY,
-                picks_job.record(sent, fresh, now, subject),
+                picks_job.record(
+                    sent,
+                    fresh if held is None else pd.concat([fresh, held]),
+                    now,
+                    subject,
+                ),
             )
     finally:
         picks_job.release(s3, scratch)

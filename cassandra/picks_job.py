@@ -296,11 +296,17 @@ def subject(
     placed: bool,
     at: datetime,
     cancelled: int = 0,
+    held: int = 0,
 ) -> str:
     """One line a phone shows whole."""
     when = f"{at:%a %H:%M} CT"
+    kept = f"{held} held for you (QB news)"
+    if placed and picks.empty:
+        return f"Kalshi picks overnight: {kept} ({when})"
     if placed:
-        return f"Placed {len(picks)} Kalshi picks overnight ({when})"
+        return f"Placed {len(picks)} Kalshi picks overnight" + (
+            f", {kept} ({when})" if held else f" ({when})"
+        )
     if fresh.empty:
         return f"Cancelled {cancelled} resting Kalshi rung{'s' if cancelled != 1 else ''} ({when})"
     names = ", ".join(ordered(fresh)["bet"])
@@ -316,19 +322,31 @@ def body(
     night: Bedtime | None,
     slippage: float,
     cancelled: Sequence[str] = (),
+    held: pd.DataFrame | None = None,
 ) -> str:
     """The email: the picks numbered as `picks.py` numbers them, how to place
-    each, then the run's whole printout."""
+    each, then the run's whole printout. `held` are picks bedtime kept back
+    on QB news (`picks.py --hold-qb`), listed with the placed ones and a
+    line to place each by hand."""
     from cassandra.placing import rung_line
 
     offered = f"offered_within_{round(slippage * 100)}c"
     new = set(fresh["game_id"])
+    kept = set() if held is None else set(held["game_id"])
+    listed = picks if held is None else pd.concat([picks, held], ignore_index=True)
     lines = []
+    if kept:
+        lines.append(
+            f"Held for you: {len(kept)} pick{'s' if len(kept) != 1 else ''} whose "
+            "injury news names a quarterback, which the model doesn't read. "
+            "Check the starter, then place with the line under each."
+        )
+        lines.append("")
     if cancelled:
         lines.append("Took resting rungs off the book:")
         lines += [line.strip() for line in cancelled]
         lines.append("")
-    if placed is not None:
+    if placed is not None and not placed.empty:
         lines.append(
             "Bedtime: placed these as resting orders"
             + (
@@ -339,8 +357,14 @@ def body(
             )
         )
         lines.append("Run `make awake` to stop, or `make positions` to see fills.\n")
-    for number, (_, row) in enumerate(ordered(picks).iterrows(), start=1):
-        mark = "NEW " if row["game_id"] in new else "    "
+    for number, (_, row) in enumerate(ordered(listed).iterrows(), start=1):
+        mark = (
+            "HELD "
+            if row["game_id"] in kept
+            else "NEW "
+            if row["game_id"] in new
+            else "    "
+        )
         lines.append(
             f"{number}. {mark}{row['bet']} -- {row['game']}, {row['kickoff']:%a %H:%M} CT"
         )
@@ -348,7 +372,7 @@ def body(
             f"   {row['buy']}: {row['contracts']:.0f} @ <= {row['limit']:.2f}, "
             f"at most ${row['outlay']:.2f}"
         )
-        if placed is not None and row.get("rungs"):
+        if placed is not None and row.get("rungs") and row["game_id"] not in kept:
             lines.append(f"   {rung_line(row['rungs'])}")
         since = row.get("hours_since_entry")
         lines.append(
@@ -359,7 +383,9 @@ def body(
         )
         if row.get("no_plays"):
             lines.append(f"   no EPA yet for {row['no_plays']}'s last game")
-        if placed is None:
+        if row["game_id"] in kept:
+            lines.append(f"   QB news: {row['qb_news'][:200]}")
+        if placed is None or row["game_id"] in kept:
             lines.append(f'   place: make bet ARGS="--only {row["game_id"]}"')
         lines.append("")
     if placed is None and len(picks) > 1:
