@@ -174,12 +174,12 @@ def test_a_hold_email_says_why_and_how_to_place_each():
     )
     at = NOW.astimezone(ZoneInfo("America/Chicago"))
     subject, text = picks_job.hold_email(held, at, 0.01)
-    assert subject.startswith("2 Kalshi picks need your OK, QB news (Tue 22:30 CT)")
+    assert subject.startswith("2 Kalshi picks need your OK, QB check (Tue 22:30 CT)")
     assert subject.endswith("Ohio Bobcats, Toledo Rockets")
-    assert text.startswith("Held: 2 Kalshi picks whose injury news names a quarterback")
+    assert text.startswith("Held: 2 Kalshi picks that may be priced on a quarterback")
     # Numbered as picks.py numbers them: same kickoff, the bigger edge first.
     assert "1. Ohio Bobcats" in text and "2. Toledo Rockets" in text
-    assert "QB news: The starter left with an ankle injury" in text
+    assert "QB: The starter left with an ankle injury" in text
     assert 'make bet ARGS="--only 2"' in text
     assert 'All of them: make bet ARGS="--only 2 --only 1"' in text
     one, _ = picks_job.hold_email(held.iloc[:1], at, 0.01)

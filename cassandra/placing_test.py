@@ -197,3 +197,27 @@ def test_qb_news_names_the_picks_whose_news_names_a_quarterback():
     assert placing.qb_news(picks, news) == {
         "g0": "The starting quarterback is doubtful."
     }
+
+
+def test_a_pick_whose_side_has_its_starter_in_doubt_is_held_too():
+    """The stories said nothing about South Florida's starter; the plays did.
+    The doubt is read before the news, and only for the side bet on, which
+    `qb_doubt` already is."""
+    from .injuries import Note
+
+    doubt = "South Florida Bulls: M.Van Buren (8 starts) threw 3 of 13 passes Oct 31"
+    picks = pd.DataFrame(
+        {"game_id": ["g0", "g1", "g2"], "qb_doubt": [doubt, None, doubt]}
+    )
+    news = {"g2": placing.News([Note("B", True, "The QB is out.", "story")], [])}
+    assert placing.qb_news(picks, news) == {"g0": doubt, "g2": doubt}
+
+
+def test_a_rung_goes_when_its_side_has_its_starter_in_doubt():
+    frame, matched = _priced()
+    frame["qb_doubt"] = "Home Team: A.Ace (5 starts) didn't play Oct 31"
+    orders = [_rung("EV-HOME", "bid", 0.40)]
+    # Only when the run holds on it: an unattended run, or --hold-qb by hand.
+    assert placing.stale_rungs(orders, frame, matched) == []
+    [(_, why)] = placing.stale_rungs(orders, frame, matched, hold_qb=True)
+    assert why == "QB in doubt: Home Team: A.Ace (5 starts) didn't play Oct 31"

@@ -31,6 +31,7 @@ from cassandra.predictor import (
 from cassandra.predictor.luck import load_luck
 from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import load_qb_out, qb_out_path
+from cassandra.qb_starts import qb_starts_path
 from cassandra.roster import load_roster
 
 # Shared bucket, so cassandra's generated files get a prefix of their own
@@ -191,8 +192,9 @@ def epa_for(league: str) -> list[Path]:
 
 
 def qb_out_for(league: str) -> list[Path]:
-    """The file one quarterback availability sweep produces."""
-    return [qb_out_path(league)]
+    """The files one quarterback availability sweep produces: the index, and
+    the latest season's quarterbacks game by game (`cassandra.qb_starts`)."""
+    return [qb_out_path(league), qb_starts_path(league)]
 
 
 def results_for(league: str, model: str) -> list[Path]:

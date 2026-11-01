@@ -73,18 +73,29 @@ and on ncaafb, where it is common, the handover is one game.
 Read `cassandra.predictor.qb_out` on the lookahead before reading any number
 this produces. Whether a quarterback played is taken from the plays of the
 game itself, which nobody has at kickoff.
+
+The same walk keeps the latest season's quarterbacks game by game
+(`build_all`, `cassandra.qb_starts`), for `picks.py` to ask whether a
+team's starter is in doubt for its next game.
 """
 
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from call_it_what_you_want import TeamNamer
 from endgame.types import Season, iter_weeks
-from say_youll_remember_me.qb import TeamGameQb, team_games
+from say_youll_remember_me.qb import (
+    TeamGameQb,
+    ball_carrier,
+    name_key,
+    passer,
+    team_games,
+)
 
 from cassandra.predictor.qb_out import QbOutFile, qb_out_path
+from cassandra.qb_starts import GameQb, QbStartsFile
 
 #: Past any real season. NCAAFB runs to about 17 source weeks plus bowls,
 #: the NFL to 22; this is the loop bound for "ask for everything".
@@ -153,6 +164,30 @@ def home_away_ids(
     return (ranked[0][0], ranked[-1][0])
 
 
+def registry_ids(
+    namer: TeamNamer, home: str, away: str, offense_team_ids: Sequence[str | None]
+) -> tuple[str, str] | None:
+    """The home and away teams' ESPN ids from the registry, when both ran
+    plays in this game; None otherwise.
+
+    Exact where `home_away_ids` is a vote, and the vote can lose to the
+    feed: ESPN's rows sometimes carry their scores out of order --
+    Louisville and Stanford on 2026-10-31 read 17-17, then 52-24, then 17-17
+    again down the plays -- and the swings outvoted the real scoring, which
+    put each team's quarterback on the other and flagged both starters out.
+    Five ncaafb games in 2026 read that way, and 32 and 53 in 2021 and 2022.
+    The vote stays for what the registry can't answer: the NFL, which it
+    doesn't cover, and a school it can't place.
+    """
+    ids = (namer.espn_id(home), namer.espn_id(away))
+    present = {str(team_id) for team_id in offense_team_ids if team_id is not None}
+    if ids[0] is None or ids[1] is None or ids[0] == ids[1]:
+        return None
+    if not {ids[0], ids[1]} <= present:
+        return None
+    return ids[0], ids[1]
+
+
 def out_teams(
     ordered_games: Sequence[tuple[str, str]],
     parsed: Mapping[tuple[str, str], TeamGameQb],
@@ -210,12 +245,82 @@ def out_teams(
     return missing
 
 
+def game_qbs(
+    offense_team_ids: Sequence[str | None],
+    texts: Sequence[str | None],
+    periods: Sequence[int | None],
+    home_scores: Sequence[int | None],
+    away_scores: Sequence[int | None],
+    home_id: str,
+    parsed: Mapping[str, TeamGameQb],
+) -> dict[str, GameQb]:
+    """Per team id, one game's quarterbacks for `cassandra.qb_starts`.
+
+    The plays in game order; `parsed` is `team_games` on them, by team id,
+    and names the starter and who took a snap. This adds the passes each
+    man threw and when he last took a snap -- the period, and his team's
+    lead then -- which is what tells a starter hurt in a close game from
+    one rested in a rout.
+    """
+    attempts: dict[str, Counter[str]] = {}
+    names: dict[str, dict[str, str]] = {}
+    last: dict[str, dict[str, tuple[int | None, int | None]]] = {}
+    home = away = 0
+    for team_id, text, period, home_score, away_score in zip(
+        offense_team_ids, texts, periods, home_scores, away_scores
+    ):
+        if home_score is not None and away_score is not None:
+            home, away = home_score, away_score
+        if team_id is None:
+            continue
+        team_id = str(team_id)
+        carrier = ball_carrier(text)
+        if carrier is not None:
+            lead = home - away if team_id == home_id else away - home
+            last.setdefault(team_id, {})[name_key(carrier)] = (period, lead)
+        thrower = passer(text)
+        if thrower is not None:
+            key = name_key(thrower)
+            attempts.setdefault(team_id, Counter())[key] += 1
+            names.setdefault(team_id, {}).setdefault(key, thrower)
+    return {
+        team_id: GameQb(
+            starter=qb.starter_key,
+            attempts=dict(attempts.get(team_id, {})),
+            names=names.get(team_id, {}),
+            snaps=sorted(qb.snap_keys),
+            last_snap=last.get(team_id, {}),
+        )
+        for team_id, qb in parsed.items()
+    }
+
+
+class Built(NamedTuple):
+    """What one walk of the plays finds."""
+
+    #: game id -> the teams missing their starter (`cassandra.predictor.qb_out`).
+    missing: dict[str, set[str]]
+    #: The latest season's quarterbacks, game by game (`cassandra.qb_starts`);
+    #: None with no seasons.
+    starts: QbStartsFile | None
+
+
 async def build(
     league: str,
     seasons: Sequence[Season],
     source: PlayWeeks,
     namer: TeamNamer | None = None,
 ) -> dict[str, set[str]]:
+    """Who was missing, by game id: `build_all`'s index alone."""
+    return (await build_all(league, seasons, source, namer)).missing
+
+
+async def build_all(
+    league: str,
+    seasons: Sequence[Season],
+    source: PlayWeeks,
+    namer: TeamNamer | None = None,
+) -> Built:
     """Walk every season's plays and work out who was missing.
 
     Rebuilt whole rather than topped up. Unlike the control index there is no
@@ -224,14 +329,16 @@ async def build(
     only question worth answering, and merging two parsers' opinions into one
     file is the thing to avoid.
 
-    A play's `offense_team_id` is turned into a team name per game, by
-    `home_away_ids`, rather than through the team registry: the registry is
-    an NCAA one and knows nothing about the NFL. `namer` is still applied to
-    the games first, so the names this writes are the ones a `Matchup`
-    carries.
+    A play's `offense_team_id` is turned into a team name per game through
+    the team registry where it can place both teams (`registry_ids`), and by
+    `home_away_ids`' vote where it can't: the registry is an NCAA one and
+    knows nothing about the NFL. `namer` is applied to the games first, so
+    the names this writes are the ones a `Matchup` carries.
     """
     namer = namer if namer is not None else TeamNamer.for_league(league)
     missing: dict[str, set[str]] = {}
+    latest = max((s.year for s in seasons), default=None)
+    starts: dict[str, dict[str, GameQb]] = {}
     for season in sorted(seasons, key=lambda s: s.year):
         # `namer.apply` first, exactly as `generate_predictions` does before
         # the predictor sees a game. The index is looked up by the name in a
@@ -274,7 +381,9 @@ async def build(
                 if names is None:
                     continue
                 offense = [columns["offense_team_id"][i] for i in rows]
-                home_id, away_id = home_away_ids(
+                home_id, away_id = registry_ids(
+                    namer, names[0], names[1], offense
+                ) or home_away_ids(
                     offense,
                     [columns["home_score"][i] for i in rows],
                     [columns["away_score"][i] for i in rows],
@@ -282,12 +391,32 @@ async def build(
                 if home_id is None or away_id is None:
                     continue
                 by_id = {home_id: names[0], away_id: names[1]}
-                for (_, team_id), value in team_games(
-                    [game_id] * len(rows), offense, [columns["text"][i] for i in rows]
-                ).items():
+                texts = [columns["text"][i] for i in rows]
+                found = {
+                    team_id: value
+                    for (_, team_id), value in team_games(
+                        [game_id] * len(rows), offense, texts
+                    ).items()
+                }
+                for team_id, value in found.items():
                     team = by_id.get(team_id)
                     if team is not None:
                         parsed[(game_id, team)] = value
+                if season.year == latest:
+                    qbs = game_qbs(
+                        offense,
+                        texts,
+                        [columns["period"][i] for i in rows],
+                        [columns["home_score"][i] for i in rows],
+                        [columns["away_score"][i] for i in rows],
+                        home_id,
+                        found,
+                    )
+                    starts[game_id] = {
+                        by_id[team_id]: qb
+                        for team_id, qb in qbs.items()
+                        if team_id in by_id
+                    }
 
         ordered: dict[str, list[tuple[str, str]]] = {}
         for week in weeks:
@@ -301,7 +430,12 @@ async def build(
                 team_games_in_order, parsed, HANDOVER[league]
             ).items():
                 missing.setdefault(game_id, set()).update(teams)
-    return missing
+    return Built(
+        missing,
+        None
+        if latest is None
+        else QbStartsFile(league=league, season=latest, games=starts),
+    )
 
 
 def with_season(
