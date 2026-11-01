@@ -180,6 +180,12 @@ variable "shared_role_names" {
   default     = ["batch-execution-role", "batch-scheduler-role"]
 }
 
+variable "picks_summary_schedule" {
+  description = "When the picks job's morning summary goes out: an EventBridge Scheduler cron expression in schedule_timezone."
+  type        = string
+  default     = "cron(0 8 * * ? *)"
+}
+
 variable "picks_schedules" {
   description = "When the picks job looks at the Kalshi books, besides after every ncaafb finals sweep. EventBridge Scheduler cron expressions in schedule_timezone, keyed by a name for each schedule."
   type        = map(string)

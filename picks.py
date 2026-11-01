@@ -52,8 +52,8 @@ Under the orders, each pick lists the injury sentences in its two teams'
 last two AP stories, and the next game's preview once there is one
 (`cassandra.injuries`); `QB!` marks one naming a quarterback. With
 `--hold-qb` those picks aren't placed: the rest are re-sized without them,
-and they come back on `Outcome.held` for a person to look at. Bedtime runs
-with it. In the week of Oct 31 the 12 QB-flagged bets went 6-6, the
+and they come back on `Outcome.held` for a person to look at. The cloud
+job runs with it. In the week of Oct 31 the 12 QB-flagged bets went 6-6, the
 closing prices valued them at -3% (the other 27 at +5%), and Kansas State
 fell from 60c to 40c when its backup started.
 
@@ -68,11 +68,10 @@ wasn't on the first list, even when it frees a place in the `--top`.
 by ESPN game id or team: the line each pick in the picks email carries.
 
 **Unattended.** `jobs.py picks` runs this in the cloud, on a schedule and
-after every finals sweep (`cassandra.picks_job`). Awake, it runs with
-`--notify` -- size and print, then stop -- and emails the picks no earlier
-email had. At bedtime it runs with `--place --yes --rest`: no prompt, a
-`--budget` over the cash cut to the cash, and orders that rest until the
-wake-up time.
+after every finals sweep (`cassandra.picks_job`), with `--place --yes
+--hold-qb --rest`: no prompt, the cash on hand the budget, a pick on QB
+news held back, and orders that rest twelve hours. Paused (`make pause`),
+it runs with `--notify` instead -- size and print, then stop.
 
 **Sizing.** Each pick has a target number of contracts:
 
@@ -579,7 +578,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "--yes",
         action="store_true",
         help="with --place: place the orders without asking, and cut --budget "
-        "to the cash on hand rather than stop (what bedtime runs with)",
+        "to the cash on hand rather than stop (what the cloud job runs with)",
     )
     parser.add_argument(
         "--hold-qb",

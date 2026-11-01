@@ -34,6 +34,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import fire
@@ -452,28 +453,10 @@ async def _publish(
         sys.exit(1)
 
 
-class _Tee:
-    """stdout that's also kept, so a run's printout can be emailed."""
-
-    def __init__(self, stream) -> None:
-        self.stream = stream
-        self.kept: list[str] = []
-
-    def write(self, text: str) -> int:
-        self.kept.append(text)
-        return self.stream.write(text)
-
-    def flush(self) -> None:
-        self.stream.flush()
-
-    def text(self) -> str:
-        return "".join(self.kept)
-
-
 def _kalshi_key(secret_id: str | None) -> bool:
     """Put the Kalshi key where `KalshiClient.from_env` reads it, from Secrets
     Manager. False when there's no secret or it has no value yet: the run
-    then sizes on `--budget` and can't place."""
+    then can't read the account, place, or say what it did."""
     if not secret_id:
         return False
     from botocore.exceptions import ClientError
@@ -483,7 +466,7 @@ def _kalshi_key(secret_id: str | None) -> bool:
     try:
         value = client("secretsmanager").get_secret_value(SecretId=secret_id)
     except ClientError as error:
-        print(f"no Kalshi key ({error.response['Error']['Code']}): emailing only")
+        print(f"no Kalshi key ({error.response['Error']['Code']})")
         return False
     key = json.loads(value["SecretString"])
     pem = CASSANDRA_HOME / "kalshi" / "private_key.pem"
@@ -495,12 +478,9 @@ def _kalshi_key(secret_id: str | None) -> bool:
     return True
 
 
-def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> None:
-    import contextlib
+def _picks(espn: bool) -> None:
     import logging
     import uuid
-
-    import pandas as pd
 
     import picks as picks_script
     from cassandra import picks_job
@@ -524,137 +504,148 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
         except s3.exceptions.NoSuchKey:
             print(f"no s3://{bucket}/{picks_job.OVERRIDES_KEY}: no lasting overrides")
 
-        # A rehearsal of bedtime: the real key reads the account, the orders
-        # are printed rather than sent, and the night's budget isn't charged.
+        # A rehearsal: the real key reads the account, the orders are
+        # printed rather than sent, and nothing is emailed or recorded.
         rehearsal = bool(os.environ.get("CASSANDRA_PICKS_DRY_RUN"))
-        keyed = rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))
-        night = picks_job.bedtime(s3, bucket)
-        asleep = (
-            keyed and night is not None and night.asleep(now) and night.remaining >= 1
-        )
-        if asleep:
-            argv = [
-                "--place",
-                "--yes",
-                "--kelly-fraction",
-                str(night.kelly_fraction),
-                "--max-bet",
-                str(night.max_bet),
-                "--budget",
-                f"{night.remaining:.2f}",
-                "--rest",
-                f"{night.rest_hours(now):.2f}",
-                # A pick on QB news waits for a person: the model doesn't
-                # read a starter out unless told.
-                "--hold-qb",
-            ]
+        if not (rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))):
+            print("no Kalshi key: nothing to place with, and nothing to email")
+            return
+        rules = picks_job.autobet(s3, bucket)
+        print(rules.describe())
+        argv = [
+            "--place",
+            "--kelly-fraction",
+            str(rules.kelly_fraction),
+            "--max-bet",
+            str(rules.max_bet),
+        ]
+        if rules.paused:
+            # Priced on the real account, nothing placed; the rungs already
+            # resting still come off when the model stops backing them.
+            argv += ["--notify", "--dry-run"] + (
+                [] if rehearsal else ["--cancel-rungs"]
+            )
+        else:
+            # The cash on hand is the budget, and a pick on QB news waits
+            # for a person: the model doesn't read a starter out unless told.
+            argv += ["--yes", "--hold-qb", "--rest", f"{picks_job.REST_HOURS:g}"]
             if rehearsal:
                 argv.append("--dry-run")
-            print(
-                f"bedtime until {night.until.astimezone(CENTRAL):%a %H:%M} CT, "
-                f"${night.remaining:,.2f} of ${night.budget:,.2f} left: placing"
-            )
-        elif keyed:
-            # Sized on the real account, and what's held or resting is known,
-            # so a game already bet isn't emailed as a pick.
-            argv = [
-                "--notify",
-                "--place",
-                "--dry-run",
-                "--kelly-fraction",
-                str(kelly_fraction),
-                "--max-bet",
-                str(max_bet),
-            ]
-            # Nothing is placed awake, but the night's rungs rest until
-            # kickoff, and one the model has stopped backing comes off.
-            if not rehearsal:
-                argv.append("--cancel-rungs")
-        else:
-            argv = ["--notify", "--budget", str(budget), "--max-bet", str(max_bet)]
-
         if not espn:
             argv.append("--no-espn")
 
-        tee = _Tee(sys.stdout)
-        with contextlib.redirect_stdout(tee):
-            args = picks_script.parse(argv)
-            outcome = picks_script.run(args)
+        args = picks_script.parse(argv)
+        outcome = picks_script.run(args)
 
-        # Every run's prices go up for `make ledger`, so a bet is read against
-        # the run that made it; the orders only when they were really sent.
+        # Every run's prices go up for `make ledger` and the morning summary,
+        # so a bet is read against the run that made it; the orders only
+        # when they were really sent.
         if not rehearsal:
-            for key in picks_job.keep(s3, bucket, now, orders=asleep):
+            for key in picks_job.keep(s3, bucket, now, orders=not rules.paused):
                 print(f"kept s3://{bucket}/{key}")
 
+        # The one email a run sends: a hold no email has carried. Placements
+        # and cancelled rungs go in the morning summary.
         sent, _ = picks_job.read_json(s3, bucket, picks_job.SENT_KEY)
         sent = sent or {}
-        at = now.astimezone(CENTRAL)
-        held = None
-        if asleep:
-            placed = outcome.placed
-            # A pick held on QB news is emailed once, not every hour it's held.
-            if outcome.held is not None:
-                held = picks_job.unsent(outcome.held, sent, held=True)
-                held = None if held.empty else held
-            if (placed is None or placed.empty) and held is None:
-                print("bedtime: nothing placed")
-                return
-            if placed is None:
-                placed = pd.DataFrame(columns=["game_id"])
-            if not rehearsal and not placed.empty:
-                night = picks_job.charge(s3, bucket, picks_job.committed(placed))
-            shown = outcome.picks[
-                outcome.picks["game_id"].isin(set(placed.get("game_id", [])))
-            ]
-            fresh = shown
-            subject = picks_job.subject(
-                shown, fresh, placed=True, at=at, held=0 if held is None else len(held)
-            )
-        else:
-            shown = outcome.picks
-            fresh = picks_job.unsent(shown, sent)
-            if fresh.empty and not outcome.cancelled:
-                print(f"{len(shown)} picks, none new: no email")
-                return
-            subject = picks_job.subject(
-                shown, fresh, placed=False, at=at, cancelled=len(outcome.cancelled)
-            )
-            placed = None
-        text = picks_job.body(
-            shown,
-            fresh,
-            tee.text(),
-            placed,
-            night if asleep else None,
-            args.slippage,
-            outcome.cancelled,
-            held,
+        if outcome.held is None:
+            return
+        held = picks_job.unsent(outcome.held, sent, held=True)
+        if held.empty:
+            print(f"{len(outcome.held)} held, all emailed already: no email")
+            return
+        subject, text = picks_job.hold_email(
+            held, now.astimezone(CENTRAL), args.slippage
         )
-        topic = os.environ.get("CASSANDRA_PICKS_TOPIC_ARN")
-        if topic:
-            picks_job.client("sns").publish(
-                TopicArn=topic, Subject=subject, Message=text[:250_000]
-            )
-            print(f"emailed: {subject}")
-        else:
-            print(
-                f"no CASSANDRA_PICKS_TOPIC_ARN; would have emailed: {subject}\n{text}"
-            )
+        _email(subject, text, rehearsal)
         if not rehearsal:
             picks_job.write_json(
                 s3,
                 bucket,
                 picks_job.SENT_KEY,
-                picks_job.record(
-                    sent,
-                    fresh if held is None else pd.concat([fresh, held]),
-                    now,
-                    subject,
-                ),
+                picks_job.record(sent, held, now, subject),
             )
     finally:
         picks_job.release(s3, scratch)
+
+
+def _email(subject: str, text: str, rehearsal: bool) -> None:
+    """Send to the picks topic; a rehearsal, or a run with no topic, prints."""
+    from cassandra import picks_job
+
+    topic = os.environ.get("CASSANDRA_PICKS_TOPIC_ARN")
+    if topic and not rehearsal:
+        picks_job.client("sns").publish(
+            TopicArn=topic, Subject=subject, Message=text[:250_000]
+        )
+        print(f"emailed: {subject}")
+    else:
+        print(f"would have emailed: {subject}\n{text}")
+
+
+def _picks_summary() -> None:
+    import io
+
+    import pandas as pd
+
+    from cassandra import picks_job
+    from cassandra.kalshi_trade import KalshiClient
+    from cassandra.placing import CENTRAL
+
+    rehearsal = bool(os.environ.get("CASSANDRA_PICKS_DRY_RUN"))
+    if not (rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))):
+        print("no Kalshi key: no account to summarize")
+        return
+    s3, bucket = picks_job.client("s3"), _bucket()
+    now = picks_job.now_utc()
+    last, _ = picks_job.read_json(s3, bucket, picks_job.SUMMARY_KEY)
+    since = datetime.fromisoformat(last["at"]) if last else now - picks_job.SUMMARY_DAY
+    kalshi = KalshiClient.from_env(dry_run=True)
+    fills = [
+        f
+        for f in kalshi.fills()
+        if datetime.fromisoformat(f["created_time"].replace("Z", "+00:00")) >= since
+    ]
+    settlements = [
+        s
+        for s in kalshi.settlements()
+        if datetime.fromisoformat(s["settled_time"].replace("Z", "+00:00")) >= since
+    ]
+    # The orders logs that can hold these fills: a rung rests until kickoff,
+    # so its order can be a week older than its fill.
+    logs = []
+    pages = s3.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket, Prefix=picks_job.ORDERS_PREFIX
+    )
+    for page in pages:
+        for found in page.get("Contents", []):
+            if found["LastModified"] >= since - timedelta(days=8):
+                body = s3.get_object(Bucket=bucket, Key=found["Key"])["Body"].read()
+                logs.append(pd.read_csv(io.BytesIO(body), dtype={"order_id": str}))
+    orders = pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
+    bets = picks_job.placed_bets(fills, orders)
+    settled = picks_job.settled_games(settlements)
+    titles = {}
+    for event in settled["event"]:
+        try:
+            titles[event] = kalshi.event(event).get("title") or event
+        except Exception as error:  # a title is a nicety; the P&L isn't
+            print(f"no title for {event}: {error}")
+    sent, _ = picks_job.read_json(s3, bucket, picks_job.SENT_KEY)
+    subject, text = picks_job.summary_email(
+        bets,
+        kalshi.resting_orders(),
+        settled,
+        picks_job.holds_since(sent or {}, since),
+        kalshi.account(),
+        titles,
+        picks_job.autobet(s3, bucket),
+        since.astimezone(CENTRAL),
+        now.astimezone(CENTRAL),
+    )
+    _email(subject, text, rehearsal)
+    if not rehearsal:
+        picks_job.write_json(s3, bucket, picks_job.SUMMARY_KEY, {"at": now.isoformat()})
 
 
 class Jobs:
@@ -802,19 +793,10 @@ class Jobs:
         asyncio.run(_epa([league], None, rebuild=False, upload=True))
         asyncio.run(_qb_out([league], None, upload=True, latest=True))
 
-    def picks(
-        self,
-        kelly_fraction: float = 0.25,
-        max_bet: float = 10.0,
-        budget: float = 20.0,
-        espn: bool = True,
-    ) -> None:
-        """Price the Kalshi ncaafb books and email the new picks, or place them
-        at bedtime. See `cassandra.picks_job`.
-
-        The sizing flags are the awake run's, and match `make bet`'s defaults:
-        with the Kalshi key it sizes `--kelly-fraction` on the real account,
-        without it it splits `--budget`. Bedtime brings its own.
+    def picks(self, espn: bool = True) -> None:
+        """Price the Kalshi ncaafb books and place the picks, by the autobet
+        rules in s3 (`make pause` / `make resume` / `make autobet`); email
+        only a pick held for a person's OK. See `cassandra.picks_job`.
 
         `--espn=False` skips the season's top-up from ESPN (`picks.py
         --no-espn`). The run after a final passes it: the chain that wrote
@@ -822,7 +804,13 @@ class Jobs:
         scoreboard reads that would only say it again. The hourly runs keep
         it, since they're the ones that catch a final no chain has written.
         """
-        _picks(kelly_fraction, max_bet, budget, espn)
+        _picks(espn)
+
+    def picks_summary(self) -> None:
+        """Email the morning summary: the Kalshi bets placed since the last
+        one, what still rests, what settled, and the holds waiting on a
+        person. The 8am schedule runs it. See `cassandra.picks_job`."""
+        _picks_summary()
 
     def optimize(
         self,

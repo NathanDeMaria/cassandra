@@ -74,17 +74,22 @@ picks:
 bet:
 	poetry run python picks.py --place --kelly-fraction 0.25 --max-bet 10 $(ARGS)
 
-# The cloud picks job (`jobs.py picks`, cassandra/picks_job.py) emails new
-# picks on its own. At bedtime it places them instead, resting until the
-# wake-up time, e.g. `make bedtime ARGS="--until 08:00 --budget 40"`; `make
-# awake` turns that off. The job reads its overrides from s3: `make
-# push-overrides` after editing ~/.cassandra/betting/overrides.toml.
-# `make picks-status` lists the last emails' picks with their --only ids.
-bedtime:
-	poetry run python -m cassandra.picks_job bedtime $(ARGS)
+# The cloud picks job (`jobs.py picks`, cassandra/picks_job.py) places the
+# picks itself, all day: a quarter Kelly, at most $10 a bet, the cash on hand
+# the budget. It emails only a pick held on QB news, and a summary at 8am.
+# `make pause` stops it placing and `make resume` starts it again; `make
+# autobet ARGS="--max-bet 15 --kelly-fraction 0.2"` changes the sizing. The
+# job reads its overrides from s3: `make push-overrides` after editing
+# ~/.cassandra/betting/overrides.toml. `make picks-status` says whether it's
+# placing, and lists the last emails' picks with their --only ids.
+pause:
+	poetry run python -m cassandra.picks_job pause
 
-awake:
-	poetry run python -m cassandra.picks_job awake
+resume:
+	poetry run python -m cassandra.picks_job resume
+
+autobet:
+	poetry run python -m cassandra.picks_job autobet $(ARGS)
 
 push-overrides:
 	poetry run python -m cassandra.picks_job push-overrides
@@ -103,7 +108,7 @@ positions:
 # across weeks; each week's games, each with a theme; and the open bets.
 # Themes are written by hand into themes.toml there. `ARGS=--digest` prints
 # the box score and recap of each settled game still without one. Without an
-# AWS login, `ARGS=--offline`: bedtime bets then have no model price.
+# AWS login, `ARGS=--offline`: the cloud job's bets then have no model price.
 ledger:
 	poetry run python ledger.py $(ARGS)
 
@@ -214,4 +219,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose team-seasons evidence betting picks bet bedtime awake push-overrides picks-status positions ledger publish build push manifest _ecr_login submit
+.PHONY: lint check test report diagnose team-seasons evidence betting picks bet pause resume autobet push-overrides picks-status positions ledger publish build push manifest _ecr_login submit

@@ -1,21 +1,35 @@
-"""What `jobs.py picks` keeps between runs: what it has emailed, bedtime, a lock.
+"""What `jobs.py picks` keeps between runs: the autobet rules, what it has
+emailed, a lock -- and the emails themselves.
 
-The job runs `picks.py` on a schedule and after every ncaafb finals sweep.
-Awake, it emails the picks it hasn't emailed before, each with the line
-that places it. At bedtime -- a file in the bucket saying until when and
-for how much -- it places them itself, as orders resting until the wake-up
-time, and emails what it did. Each pick's rungs (`picks.py`'s "Rungs") rest
-until kickoff instead, through `make awake`; every run with the key, awake
-or not, cancels the ones the model no longer backs and emails that it did.
+The job runs `picks.py` on a schedule and after every ncaafb finals sweep,
+and places the picks itself (`picks.py --place --yes`): a quarter Kelly,
+at most $10 a bet, the cash on hand the only budget, each order resting
+`REST_HOURS` before it's cancelled. `make pause` stops that and `make
+resume` starts it again; `make autobet` changes the sizing. Each pick's
+rungs (`picks.py`'s "Rungs") rest until kickoff, and every run with the key
+cancels the ones the model no longer backs.
 
-Three objects in s3, each small JSON or TOML:
+Two emails, and only two (Nathan, 2026-11-01):
 
+- **A hold**, the moment a run makes one: a pick `picks.py --hold-qb` kept
+  back because its injury news names a quarterback, which the model doesn't
+  read. It needs a person's OK; the email has the line that places it.
+  Emailed once, not every hour it stays held (`unsent(held=True)`).
+- **The morning summary** (`jobs.py picks_summary`, 8am): every bet placed
+  since the last one, what's still resting, what settled, the holds still
+  waiting, and the account. Placements and cancelled rungs go there rather
+  than in an email each.
+
+Objects in s3, each small JSON or TOML:
+
+- `cassandra/betting/autobet.json` (batch bucket): `paused`, `max_bet`,
+  `kelly_fraction` (`Autobet`). None means the defaults: placing, as above.
 - `cassandra/betting/sent.json` (batch bucket): every pick emailed, by game
-  id, and each email's numbered list, so "place 1 and 3 from the 22:40
-  email" names games rather than positions in a list that has moved since.
-- `cassandra/betting/bedtime.json` (batch bucket): `until`, `budget`, and
-  `committed`, what the night's orders could cost at worst so far. Written
-  by `make bedtime` and `make awake` on a laptop, charged by the job.
+  id -- holds marked as such -- and each email's numbered list, so "place 1
+  and 3 from the 22:40 email" names games rather than positions in a list
+  that has moved since.
+- `cassandra/betting/summary.json` (batch bucket): when the last morning
+  summary went out, which is where the next one starts.
 - `cassandra/picks.lock` (temp bucket): held for a run's length, so an
   hourly run and a finals-triggered one never price -- or place -- at once.
   Written with `If-None-Match: *`, so only one of two racing runs gets it.
@@ -25,14 +39,14 @@ The overrides file (`cassandra.overrides`) lives at
 `cassandra/betting/overrides.toml` for the job; `make push-overrides`
 copies a laptop's up.
 
-A bedtime run that places also copies its picks and orders files to
-`cassandra/betting/picks/` and `orders/` (`keep`). They say what the
-model gave each bet, and `make ledger` reads them; the container's copies
-go when it does.
+Every run copies its picks file, and the orders file when it placed, to
+`cassandra/betting/picks/` and `orders/` (`keep`). They say what the model
+gave each bet: `make ledger` reads them, and so does the morning summary.
 """
 
 import json
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -42,22 +56,27 @@ import pandas as pd
 from botocore.exceptions import ClientError
 
 from cassandra.constants import CASSANDRA_HOME
-from cassandra.picks import order_fee
 
 SENT_KEY = "cassandra/betting/sent.json"
-BEDTIME_KEY = "cassandra/betting/bedtime.json"
+AUTOBET_KEY = "cassandra/betting/autobet.json"
+SUMMARY_KEY = "cassandra/betting/summary.json"
 OVERRIDES_KEY = "cassandra/betting/overrides.toml"
 #: Where a run writes every game it priced (`picks.py`) and the orders it
 #: sent (`placing.place`), by the s3 prefix `keep` copies them to.
+ORDERS_PREFIX = "cassandra/betting/orders/"
 RUN_FILES = {
     "cassandra/betting/picks/": CASSANDRA_HOME / "betting" / "picks",
-    "cassandra/betting/orders/": CASSANDRA_HOME / "betting" / "orders",
+    ORDERS_PREFIX: CASSANDRA_HOME / "betting" / "orders",
 }
 LOCK_KEY = "cassandra/picks.lock"
 #: A run takes about five minutes; one holding the lock this long has died.
 LOCK_STALE = timedelta(minutes=30)
-#: An order rests at least this long, however close the wake-up time is.
-MIN_REST = timedelta(minutes=30)
+#: How long a pick's order rests before it's cancelled. The backtest's edge
+#: was mostly gone twelve hours after the entry; a later run re-prices the
+#: game and places again if it's still a pick.
+REST_HOURS = 12.0
+#: How far back the first morning summary looks, with no last one to start at.
+SUMMARY_DAY = timedelta(hours=24)
 #: Emails kept in `sent.json`: a week of hourly runs and then some.
 EMAILS_KEPT = 200
 
@@ -143,101 +162,47 @@ def keep(s3: Any, bucket: str, since: datetime, orders: bool = True) -> list[str
 
 
 # ------------------------------------------------------------------------------
-# Bedtime
+# Autobet
 # ------------------------------------------------------------------------------
 
 
 @dataclass
-class Bedtime:
-    """Place the picks unattended until `until`, for at most `budget` dollars."""
+class Autobet:
+    """The rules the job places by. No file in s3 means these defaults."""
 
-    until: datetime
-    budget: float
-    committed: float = 0.0
+    paused: bool = False
     max_bet: float = 10.0
     kelly_fraction: float = 0.25
 
     @classmethod
-    def from_json(cls, value: dict) -> "Bedtime":
+    def from_json(cls, value: dict) -> "Autobet":
         return cls(
-            until=datetime.fromisoformat(value["until"]),
-            budget=float(value["budget"]),
-            committed=float(value.get("committed", 0.0)),
+            paused=bool(value.get("paused", False)),
             max_bet=float(value.get("max_bet", 10.0)),
             kelly_fraction=float(value.get("kelly_fraction", 0.25)),
         )
 
     def to_json(self) -> dict:
         return {
-            "until": self.until.isoformat(),
-            "budget": self.budget,
-            "committed": round(self.committed, 2),
+            "paused": self.paused,
             "max_bet": self.max_bet,
             "kelly_fraction": self.kelly_fraction,
         }
 
-    def asleep(self, now: datetime) -> bool:
-        return now < self.until
-
-    @property
-    def remaining(self) -> float:
-        return max(self.budget - self.committed, 0.0)
-
-    def rest_hours(self, now: datetime) -> float:
-        """How long tonight's orders rest: until the wake-up time."""
-        return max(self.until - now, MIN_REST).total_seconds() / 3600
-
-
-def bedtime(s3: Any, bucket: str) -> Bedtime | None:
-    found, _ = read_json(s3, bucket, BEDTIME_KEY)
-    return None if found is None else Bedtime.from_json(found)
-
-
-def charge(s3: Any, bucket: str, amount: float) -> Bedtime | None:
-    """Add a run's worst-case cost to the night's, unless bedtime has changed.
-
-    Conditional on the ETag read, so a `make awake` or a new `make bedtime`
-    while this run was placing isn't overwritten by the copy it started
-    with: the charge is re-applied to whatever is there now, and dropped if
-    bedtime was cleared.
-    """
-    for _ in range(3):
-        found, etag = read_json(s3, bucket, BEDTIME_KEY)
-        if found is None:
-            return None
-        night = Bedtime.from_json(found)
-        night.committed += amount
-        try:
-            s3.put_object(
-                Bucket=bucket,
-                Key=BEDTIME_KEY,
-                Body=json.dumps(night.to_json(), indent=1).encode(),
-                ContentType="application/json",
-                IfMatch=etag,
+    def describe(self) -> str:
+        if self.paused:
+            return (
+                "autobet paused: runs price and cancel stale rungs, and place nothing"
             )
-            return night
-        except ClientError as error:
-            if _code(error) not in ("PreconditionFailed", "ConditionalRequestConflict"):
-                raise
-    raise RuntimeError("bedtime.json kept changing under the charge")
+        return (
+            f"autobet on: {self.kelly_fraction:g} Kelly, at most ${self.max_bet:g} a "
+            f"bet, the cash on hand the budget, orders resting {REST_HOURS:g}h"
+        )
 
 
-def committed(placed: pd.DataFrame | None) -> float:
-    """What a run's orders cost at worst: fills at their price, rests at the limit."""
-    if placed is None or placed.empty or "filled" not in placed:
-        return 0.0
-    total = 0.0
-    for _, row in placed.iterrows():
-        filled = 0.0 if pd.isna(row.get("filled")) else float(row["filled"])
-        resting = 0.0 if pd.isna(row.get("resting")) else float(row["resting"])
-        if filled and not pd.isna(row.get("fill_price")):
-            fee = 0.0 if pd.isna(row.get("fee")) else float(row["fee"])
-            total += filled * float(row["fill_price"]) + fee
-        if resting:
-            total += resting * float(row["limit"]) + order_fee(
-                float(row["limit"]), int(resting)
-            )
-    return total
+def autobet(s3: Any, bucket: str) -> Autobet:
+    found, _ = read_json(s3, bucket, AUTOBET_KEY)
+    return Autobet() if found is None else Autobet.from_json(found)
 
 
 # ------------------------------------------------------------------------------
@@ -248,7 +213,7 @@ def committed(placed: pd.DataFrame | None) -> float:
 def unsent(picks: pd.DataFrame, sent: dict, held: bool = False) -> pd.DataFrame:
     """The picks no email has carried: a new game, or the same game's other side.
 
-    With `held`, the picks bedtime held on QB news (`picks.py --hold-qb`), for
+    With `held`, the picks a run held on QB news (`picks.py --hold-qb`), for
     which an email counts only if it carried the pick *as held*: a game first
     emailed as an ordinary pick, or placed, and held later is news. Iowa
     State, Oregon and Mississippi State were held silently on 2026-11-01
@@ -301,90 +266,32 @@ def only_args(game_ids: list[str]) -> str:
     return " ".join(f"--only {game_id}" for game_id in game_ids)
 
 
-def subject(
-    picks: pd.DataFrame,
-    fresh: pd.DataFrame,
-    placed: bool,
-    at: datetime,
-    cancelled: int = 0,
-    held: int = 0,
-) -> str:
-    """One line a phone shows whole."""
-    when = f"{at:%a %H:%M} CT"
-    kept = f"{held} held for you (QB news)"
-    if placed and picks.empty:
-        return f"Kalshi picks overnight: {kept} ({when})"
-    if placed:
-        return f"Placed {len(picks)} Kalshi picks overnight" + (
-            f", {kept} ({when})" if held else f" ({when})"
-        )
-    if fresh.empty:
-        return f"Cancelled {cancelled} resting Kalshi rung{'s' if cancelled != 1 else ''} ({when})"
-    names = ", ".join(ordered(fresh)["bet"])
-    head = f"{len(fresh)} new Kalshi pick{'s' if len(fresh) != 1 else ''} ({when}): "
-    return (head + names)[:99]
-
-
-def body(
-    picks: pd.DataFrame,
-    fresh: pd.DataFrame,
-    report: str,
-    placed: pd.DataFrame | None,
-    night: Bedtime | None,
-    slippage: float,
-    cancelled: Sequence[str] = (),
-    held: pd.DataFrame | None = None,
-) -> str:
-    """The email: the picks numbered as `picks.py` numbers them, how to place
-    each, then the run's whole printout. `held` are picks bedtime kept back
-    on QB news (`picks.py --hold-qb`), listed with the placed ones and a
-    line to place each by hand."""
-    from cassandra.placing import rung_line
-
+def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, str]:
+    """The email asking for an OK: a subject a phone shows whole, and each
+    held pick with its quarterback sentence and the line that places it,
+    numbered as `picks.py` numbers them (so "place 2" works in reply)."""
     offered = f"offered_within_{round(slippage * 100)}c"
-    new = set(fresh["game_id"])
-    kept = set() if held is None else set(held["game_id"])
-    listed = picks if held is None else pd.concat([picks, held], ignore_index=True)
-    lines = []
-    if kept:
+    names = ", ".join(ordered(held)["bet"])
+    count = f"{len(held)} Kalshi pick{'s' if len(held) != 1 else ''}"
+    need = "needs" if len(held) == 1 else "need"
+    subject = f"{count} {need} your OK, QB news ({at:%a %H:%M} CT): {names}"[:99]
+    lines = [
+        f"Held: {count} whose injury news names a quarterback, which the model "
+        "doesn't read. Check the starter; to place one, run its line or say "
+        'which in a Claude session ("place 1 from the hold email") -- it '
+        "re-prices first. Unplaced, it's left alone; the morning summary lists "
+        "it until then.",
+        "",
+    ]
+    for number, (_, row) in enumerate(ordered(held).iterrows(), start=1):
         lines.append(
-            f"Held for you: {len(kept)} pick{'s' if len(kept) != 1 else ''} whose "
-            "injury news names a quarterback, which the model doesn't read. "
-            "Check the starter, then place with the line under each."
+            f"{number}. {row['bet']} -- {row['game']}, {row['kickoff']:%a %H:%M} CT"
         )
-        lines.append("")
-    if cancelled:
-        lines.append("Took resting rungs off the book:")
-        lines += [line.strip() for line in cancelled]
-        lines.append("")
-    if placed is not None and not placed.empty:
-        lines.append(
-            "Bedtime: placed these as resting orders"
-            + (
-                f" until {night.until:%a %H:%M}; ${night.committed:,.2f} of "
-                f"${night.budget:,.2f} committed tonight."
-                if night is not None
-                else "."
-            )
-        )
-        lines.append("Run `make awake` to stop, or `make positions` to see fills.\n")
-    for number, (_, row) in enumerate(ordered(listed).iterrows(), start=1):
-        mark = (
-            "HELD "
-            if row["game_id"] in kept
-            else "NEW "
-            if row["game_id"] in new
-            else "    "
-        )
-        lines.append(
-            f"{number}. {mark}{row['bet']} -- {row['game']}, {row['kickoff']:%a %H:%M} CT"
-        )
+        lines.append(f"   QB news: {row['qb_news'][:240]}")
         lines.append(
             f"   {row['buy']}: {row['contracts']:.0f} @ <= {row['limit']:.2f}, "
             f"at most ${row['outlay']:.2f}"
         )
-        if placed is not None and row.get("rungs") and row["game_id"] not in kept:
-            lines.append(f"   {rung_line(row['rungs'])}")
         since = row.get("hours_since_entry")
         lines.append(
             f"   model {row['model']:.3f} vs market {row['market']:.3f} "
@@ -394,46 +301,219 @@ def body(
         )
         if row.get("no_plays"):
             lines.append(f"   last game's play-by-play not in yet: {row['no_plays']}")
-        if row["game_id"] in kept:
-            lines.append(f"   QB news: {row['qb_news'][:200]}")
-        if placed is None or row["game_id"] in kept:
-            lines.append(f'   place: make bet ARGS="--only {row["game_id"]}"')
+        lines.append(f'   place: make bet ARGS="--only {row["game_id"]}"')
         lines.append("")
-    if placed is None and len(picks) > 1:
+    if len(held) > 1:
         lines.append(
-            f'All of them: make bet ARGS="{only_args(list(ordered(picks)["game_id"]))}"'
+            f'All of them: make bet ARGS="{only_args(list(ordered(held)["game_id"]))}"'
         )
+    return subject, "\n".join(lines)
+
+
+# ------------------------------------------------------------------------------
+# The morning summary
+# ------------------------------------------------------------------------------
+
+
+def held_contract(fill: Mapping) -> str:
+    """What a fill bought on its ticker, "yes" or "no". Kalshi's V2 fills
+    write a NO bought through the book as `action=sell, side=no` (see
+    `cassandra.ledger`), and selling a YES nets to holding NO."""
+    if fill.get("side") == "yes" and fill.get("action") == "buy":
+        return "yes"
+    return "no"
+
+
+def placed_bets(fills: Sequence[Mapping], orders: pd.DataFrame) -> pd.DataFrame:
+    """The games `fills` bought, a row each: the team, contracts, average
+    price, cost with fees, and -- from the job's orders logs, by order id --
+    the model and edge it was placed on and the contracts that came from
+    rungs. A fill no log has (a bet made by hand) is named by its ticker."""
+    from cassandra.kalshi_trade import event_of
+
+    logged = (
+        orders.drop_duplicates("order_id").set_index("order_id")
+        if "order_id" in orders
+        else pd.DataFrame()
+    )
+    rows = []
+    for fill in fills:
+        held = held_contract(fill)
+        count = float(fill.get("count_fp") or fill.get("count") or 0)
+        price = float(fill.get(f"{held}_price_dollars") or 0)
+        code = fill["ticker"].rsplit("-", 1)[-1]
+        event = event_of(fill["ticker"])
+        if fill["order_id"] in logged.index:
+            log = logged.loc[fill["order_id"]]
+            bet, game = log["bet"], log["game"]
+            model, edge = float(log["model"]), float(log["edge"])
+            # The orders log is a CSV: its flag comes back "True"/"False".
+            rung = count if str(log.get("rung")).strip().lower() == "true" else 0.0
+        else:
+            bet, game = f"{held.upper()} {code}", event
+            model = edge = math.nan
+            rung = 0.0
+        rows.append(
+            {
+                "event": event,
+                "bet": bet,
+                "game": game,
+                "contracts": count,
+                "paid": price * count,
+                "cost": price * count + float(fill.get("fee_cost") or 0),
+                "model": model,
+                "edge": edge,
+                "rung": rung,
+            }
+        )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "event",
+                "bet",
+                "game",
+                "contracts",
+                "price",
+                "cost",
+                "model",
+                "edge",
+                "rung",
+            ]
+        )
+    found = (
+        pd.DataFrame(rows)
+        .groupby(["event", "bet"], as_index=False)
+        .agg(
+            game=("game", "first"),
+            contracts=("contracts", "sum"),
+            paid=("paid", "sum"),
+            cost=("cost", "sum"),
+            model=("model", "first"),
+            edge=("edge", "first"),
+            rung=("rung", "sum"),
+        )
+    )
+    found["price"] = found["paid"] / found["contracts"]
+    return found.drop(columns="paid").sort_values("cost", ascending=False)
+
+
+def settled_games(settlements: Sequence[Mapping]) -> pd.DataFrame:
+    """Each game `settlements` closed, its P&L with fees, and whether it won.
+    A YES-NO pair (a sale before the end, booked as a buy of the other side)
+    paid its dollar when it was netted, so it's counted back here as
+    `cassandra.ledger` counts it."""
+    from cassandra.kalshi_trade import event_of
+
+    pnl: dict[str, float] = {}
+    for s in settlements:
+        yes, no = float(s.get("yes_count_fp") or 0), float(s.get("no_count_fp") or 0)
+        cost = float(s.get("yes_total_cost_dollars") or 0) + float(
+            s.get("no_total_cost_dollars") or 0
+        )
+        paid = float(s.get("revenue") or 0) / 100 + min(yes, no)
+        event = event_of(s["ticker"])
+        pnl[event] = pnl.get(event, 0.0) + paid - cost - float(s.get("fee_cost") or 0)
+    found = pd.DataFrame({"event": list(pnl), "pnl": list(pnl.values())})
+    found["won"] = found["pnl"] > 0
+    return found.sort_values("pnl", ascending=False)
+
+
+def summary_email(
+    bets: pd.DataFrame,
+    resting: Sequence[Mapping],
+    settled: pd.DataFrame,
+    holds: Sequence[Mapping],
+    account: tuple[float, float],
+    titles: Mapping[str, str],
+    rules: Autobet,
+    since: datetime,
+    at: datetime,
+) -> tuple[str, str]:
+    """The morning email: what was placed since `since`, what still rests,
+    what settled, the holds still waiting, and the account."""
+    from cassandra.kalshi_trade import bought, is_rung, order_price
+
+    won, lost = int(settled["won"].sum()), int((~settled["won"]).sum())
+    subject = (
+        f"Kalshi {at:%a %b %-d}: {len(bets)} bet{'s' if len(bets) != 1 else ''} "
+        f"placed (${bets['cost'].sum():,.2f})"
+        + (
+            f", settled {won}-{lost} ({_money(settled['pnl'].sum())})"
+            if len(settled)
+            else ""
+        )
+    )
+    lines = [f"Since {since:%a %b %-d %H:%M} CT. {rules.describe()}.", ""]
+    lines.append(
+        f"Placed: {len(bets)} game{'s' if len(bets) != 1 else ''}, "
+        f"${bets['cost'].sum():,.2f} with fees" + (":" if len(bets) else ".")
+    )
+    for _, bet in bets.iterrows():
+        model = (
+            ""
+            if pd.isna(bet["model"])
+            else f"; model {bet['model']:.2f} (edge {bet['edge']:+.3f})"
+        )
+        rungs = f"; {bet['rung']:g} from rungs" if bet["rung"] else ""
         lines.append(
-            'Or reply in a Claude session, e.g. "place 1 and 3 from the '
-            'picks email" -- it reads the list from s3 and re-prices before buying.'
+            f"  {bet['bet']} -- {bet['game']}: {bet['contracts']:g} @ "
+            f"{bet['price']:.2f}, ${bet['cost']:.2f}{model}{rungs}"
         )
+    lines.append("")
+    if resting:
+        worst = sum(
+            float(o.get("remaining_count_fp") or 0)
+            * (order_price(o) if bought(o) == "yes" else 1 - order_price(o))
+            for o in resting
+        )
+        rungs = sum(1 for o in resting if is_rung(o))
+        lines += [
+            f"Resting: {len(resting)} order{'s' if len(resting) != 1 else ''}, up to "
+            f"${worst:,.2f} if they all fill ({rungs} of them rungs, until kickoff).",
+            "",
+        ]
+    if len(settled):
+        lines.append(f"Settled: {won}-{lost}, {_money(settled['pnl'].sum())}")
+        for _, game in settled.iterrows():
+            title = titles.get(game["event"], game["event"])
+            lines.append(
+                f"  {'won ' if game['won'] else 'lost'} {_money(game['pnl']):>8}  {title}"
+            )
         lines.append("")
-    lines.append("-" * 72)
-    lines.append(report)
-    return "\n".join(lines)
+    if holds:
+        lines.append(f"Waiting on you: {len(holds)} held on QB news, not placed")
+        lines += [
+            f'  {h["bet"]} -- {h["game"]}: make bet ARGS="--only {h["game_id"]}"'
+            for h in holds
+        ]
+        lines.append("")
+    cash, positions = account
+    lines.append(f"Account: ${cash:,.2f} cash, ${positions:,.2f} in open positions.")
+    return subject, "\n".join(lines)
+
+
+def _money(x: float) -> str:
+    return f"{'+' if x >= 0 else '-'}${abs(x):,.2f}"
+
+
+def holds_since(sent: dict, since: datetime) -> list[dict]:
+    """The picks emailed as held since `since`, newest first, as `sent.json`
+    keeps them: bet, game and game id."""
+    found = [
+        {"game_id": game_id, **game}
+        for game_id, game in sent.get("games", {}).items()
+        if game.get("held") and datetime.fromisoformat(game["at"]) >= since
+    ]
+    return sorted(found, key=lambda h: h["at"], reverse=True)
 
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def wake_time(text: str, now: datetime) -> datetime:
-    """`08:00` is the next 8am Central; anything else is an ISO timestamp."""
-    from cassandra.placing import CENTRAL
-
-    if len(text) <= 5 and ":" in text:
-        hour, minute = (int(part) for part in text.split(":"))
-        local = now.astimezone(CENTRAL)
-        wake = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if wake <= local:
-            wake += timedelta(days=1)
-        return wake.astimezone(UTC)
-    found = datetime.fromisoformat(text)
-    return (found if found.tzinfo else found.replace(tzinfo=CENTRAL)).astimezone(UTC)
-
-
 def main(argv: list[str] | None = None) -> None:
-    """`make bedtime` / `make awake` / `make push-overrides` / `make picks-status`."""
+    """`make pause` / `make resume` / `make autobet` / `make push-overrides` /
+    `make picks-status`."""
     import argparse
 
     from endgame_aws import Config
@@ -442,58 +522,40 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(prog="python -m cassandra.picks_job")
     commands = parser.add_subparsers(dest="command", required=True)
-    bed = commands.add_parser("bedtime", help="place the picks unattended until a time")
-    bed.add_argument(
-        "--until", required=True, help="e.g. 08:00 (Central) or an ISO time"
-    )
-    bed.add_argument(
-        "--budget", type=float, required=True, help="most the night commits"
-    )
-    bed.add_argument("--max-bet", type=float, default=10.0)
-    bed.add_argument("--kelly-fraction", type=float, default=0.25)
-    commands.add_parser("awake", help="stop placing; email the picks again")
+    commands.add_parser("pause", help="stop placing; runs still price")
+    commands.add_parser("resume", help="place the picks again")
+    rules = commands.add_parser("autobet", help="change how the job sizes its bets")
+    rules.add_argument("--max-bet", type=float)
+    rules.add_argument("--kelly-fraction", type=float)
     commands.add_parser("push-overrides", help="copy the overrides file up for the job")
-    commands.add_parser("status", help="bedtime, and the last emails' picks")
+    commands.add_parser("status", help="the autobet rules, and the last emails' picks")
     args = parser.parse_args(argv)
 
     s3 = client("s3")
     bucket = Config.init_from_file().bucket
-    now = now_utc()
-    if args.command == "bedtime":
-        night = Bedtime(
-            wake_time(args.until, now),
-            args.budget,
-            0.0,
-            args.max_bet,
-            args.kelly_fraction,
-        )
-        write_json(s3, bucket, BEDTIME_KEY, night.to_json())
-        print(
-            f"bedtime until {night.until.astimezone(CENTRAL):%a %H:%M} CT: up to "
-            f"${night.budget:,.2f}, ${night.max_bet:g} a bet, {night.kelly_fraction:g} Kelly"
-        )
-    elif args.command == "awake":
-        found = bedtime(s3, bucket)
-        s3.delete_object(Bucket=bucket, Key=BEDTIME_KEY)
-        print(
-            "awake: the next run emails"
-            + (f" (the night committed ${found.committed:,.2f})" if found else "")
-        )
+    current = autobet(s3, bucket)
+    if args.command in ("pause", "resume", "autobet"):
+        if args.command == "pause":
+            current.paused = True
+        elif args.command == "resume":
+            current.paused = False
+        else:
+            if args.max_bet is not None:
+                current.max_bet = args.max_bet
+            if args.kelly_fraction is not None:
+                current.kelly_fraction = args.kelly_fraction
+        write_json(s3, bucket, AUTOBET_KEY, current.to_json())
+        print(current.describe())
     elif args.command == "push-overrides":
-        from cassandra.constants import CASSANDRA_HOME
-
         local = CASSANDRA_HOME / "betting" / "overrides.toml"
         s3.put_object(Bucket=bucket, Key=OVERRIDES_KEY, Body=local.read_bytes())
         print(f"{local} -> s3://{bucket}/{OVERRIDES_KEY}")
     else:
-        found = bedtime(s3, bucket)
-        if found is None or not found.asleep(now):
-            print("awake: runs email new picks")
-        else:
-            print(
-                f"bedtime until {found.until.astimezone(CENTRAL):%a %H:%M} CT, "
-                f"${found.committed:,.2f} of ${found.budget:,.2f} committed"
-            )
+        print(current.describe())
+        last, _ = read_json(s3, bucket, SUMMARY_KEY)
+        if last:
+            at = datetime.fromisoformat(last["at"]).astimezone(CENTRAL)
+            print(f"last morning summary: {at:%a %H:%M} CT")
         sent, _ = read_json(s3, bucket, SENT_KEY)
         for email in (sent or {}).get("emails", [])[-5:]:
             at = datetime.fromisoformat(email["at"]).astimezone(CENTRAL)

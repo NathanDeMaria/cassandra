@@ -9,7 +9,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from cassandra import picks_job
-from cassandra.picks_job import Bedtime
+from cassandra.picks_job import Autobet
 
 NOW = datetime(2026, 10, 21, 3, 30, tzinfo=UTC)  # Tue 22:30 CT
 
@@ -119,71 +119,6 @@ def test_record_keeps_each_emails_numbered_list():
     assert json.loads(json.dumps(sent, default=str))
 
 
-def test_committed_counts_fills_at_price_and_rests_at_the_limit():
-    placed = pd.DataFrame(
-        [
-            {"filled": 4, "fill_price": 0.5, "fee": 0.07, "resting": 6, "limit": 0.55},
-            {"filled": 0, "fill_price": None, "fee": None, "resting": 0, "limit": 0.4},
-        ]
-    )
-    rest_fee = picks_job.order_fee(0.55, 6)
-    assert picks_job.committed(placed) == pytest.approx(2.07 + 3.3 + rest_fee)
-    assert picks_job.committed(None) == 0.0
-
-
-def test_a_charge_lands_on_the_bedtime_thats_there_now():
-    s3 = FakeS3()
-    night = Bedtime(NOW + timedelta(hours=9), 40.0)
-    picks_job.write_json(s3, "b", picks_job.BEDTIME_KEY, night.to_json())
-    charged = picks_job.charge(s3, "b", 12.5)
-    assert charged is not None and charged.remaining == pytest.approx(27.5)
-    s3.delete_object("b", picks_job.BEDTIME_KEY)  # make awake, mid-run
-    assert picks_job.charge(s3, "b", 5.0) is None
-
-
-def test_orders_rest_until_the_wake_up_time_but_not_for_nothing():
-    night = Bedtime(NOW + timedelta(hours=9), 40.0)
-    assert night.asleep(NOW)
-    assert night.rest_hours(NOW) == pytest.approx(9)
-    assert night.rest_hours(NOW + timedelta(hours=8, minutes=50)) == pytest.approx(0.5)
-    assert not night.asleep(NOW + timedelta(hours=9))
-
-
-def test_a_wake_time_is_the_next_one_in_central():
-    assert picks_job.wake_time("08:00", NOW) == datetime(2026, 10, 21, 13, tzinfo=UTC)
-    assert picks_job.wake_time("23:00", NOW) == datetime(2026, 10, 21, 4, tzinfo=UTC)
-    assert picks_job.wake_time("2026-10-21T09:15", NOW) == datetime(
-        2026, 10, 21, 14, 15, tzinfo=UTC
-    )
-
-
-def test_the_email_numbers_picks_and_says_how_to_place_each():
-    picks = _picks(("1", "Toledo Rockets", 0.09), ("2", "Ohio Bobcats", 0.06))
-    sent = picks_job.record({}, picks.iloc[:1], NOW, "s")
-    fresh = picks_job.unsent(picks, sent)
-    subject = picks_job.subject(picks, fresh, placed=False, at=NOW)
-    assert subject.startswith("1 new Kalshi pick (")
-    assert subject.endswith("Ohio Bobcats")
-    text = picks_job.body(picks, fresh, "REPORT", None, None, 0.01)
-    assert "1.     Toledo Rockets" in text and "2. NEW Ohio Bobcats" in text
-    assert 'make bet ARGS="--only 2"' in text
-    assert 'make bet ARGS="--only 1 --only 2"' in text
-    assert text.endswith("REPORT")
-
-
-def test_an_email_for_cancelled_rungs_alone_says_so():
-    picks = _picks(("1", "Toledo Rockets", 0.09))
-    sent = picks_job.record({}, picks, NOW, "s")
-    fresh = picks_job.unsent(picks, sent)
-    assert picks_job.subject(
-        picks, fresh, placed=False, at=NOW, cancelled=2
-    ).startswith("Cancelled 2 resting Kalshi rungs")
-    text = picks_job.body(
-        picks, fresh, "REPORT", None, None, 0.01, ["  cancelled the 0.40 rung"]
-    )
-    assert text.startswith("Took resting rungs off the book:\ncancelled the 0.40 rung")
-
-
 def test_keep_copies_up_only_this_runs_picks_and_orders(tmp_path, monkeypatch):
     picks_dir, orders_dir = tmp_path / "picks", tmp_path / "orders"
     picks_dir.mkdir()
@@ -223,35 +158,200 @@ def test_keep_leaves_a_dry_runs_orders_behind(tmp_path, monkeypatch):
     ]
 
 
-def test_an_email_for_cancelled_rungs_with_no_picks_at_all():
-    picks = _picks(("1", "Toledo Rockets", 0.09)).iloc[:0]
-    fresh = picks_job.unsent(picks, {})
-    assert fresh.empty and "game_id" in fresh
-    text = picks_job.body(
-        picks, fresh, "REPORT", None, None, 0.01, ["  cancelled the 0.40 rung"]
-    )
-    assert text.startswith("Took resting rungs off the book:")
-    assert picks_job.record({}, fresh, NOW, "s")["emails"][-1]["picks"] == []
+def test_no_autobet_file_means_placing_at_the_defaults():
+    s3 = FakeS3()
+    rules = picks_job.autobet(s3, "b")
+    assert rules == Autobet(paused=False, max_bet=10.0, kelly_fraction=0.25)
+    assert rules.describe().startswith("autobet on: 0.25 Kelly, at most $10 a bet")
+    picks_job.write_json(s3, "b", picks_job.AUTOBET_KEY, Autobet(paused=True).to_json())
+    assert picks_job.autobet(s3, "b").paused
+    assert picks_job.autobet(s3, "b").describe().startswith("autobet paused")
 
 
-def test_an_overnight_email_lists_the_picks_held_on_qb_news():
-    placed = _picks(("1", "Toledo Rockets", 0.09))
-    held = _picks(("2", "Ohio Bobcats", 0.12)).assign(
-        qb_news="Ohio's starter left with an ankle injury and is doubtful."
+def test_a_hold_email_says_why_and_how_to_place_each():
+    held = _picks(("1", "Toledo Rockets", 0.09), ("2", "Ohio Bobcats", 0.12)).assign(
+        qb_news="The starter left with an ankle injury and is doubtful."
     )
     at = NOW.astimezone(ZoneInfo("America/Chicago"))
-    assert picks_job.subject(placed, placed, placed=True, at=at, held=1).startswith(
-        "Placed 1 Kalshi picks overnight, 1 held for you (QB news)"
-    )
-    assert picks_job.subject(
-        placed.iloc[:0], placed.iloc[:0], placed=True, at=at, held=1
-    ).startswith("Kalshi picks overnight: 1 held for you (QB news)")
-    text = picks_job.body(
-        placed, placed, "REPORT", pd.DataFrame(), None, 0.01, (), held
-    )
-    assert text.startswith("Held for you: 1 pick whose injury news names a quarterback")
-    assert "1. HELD Ohio Bobcats" in text  # the bigger edge, at the same kickoff
-    assert "QB news: Ohio's starter left with an ankle injury" in text
-    # The held pick gets a line to place it; the placed one doesn't.
+    subject, text = picks_job.hold_email(held, at, 0.01)
+    assert subject.startswith("2 Kalshi picks need your OK, QB news (Tue 22:30 CT)")
+    assert subject.endswith("Ohio Bobcats, Toledo Rockets")
+    assert text.startswith("Held: 2 Kalshi picks whose injury news names a quarterback")
+    # Numbered as picks.py numbers them: same kickoff, the bigger edge first.
+    assert "1. Ohio Bobcats" in text and "2. Toledo Rockets" in text
+    assert "QB news: The starter left with an ankle injury" in text
     assert 'make bet ARGS="--only 2"' in text
-    assert 'make bet ARGS="--only 1"' not in text
+    assert 'All of them: make bet ARGS="--only 2 --only 1"' in text
+    one, _ = picks_job.hold_email(held.iloc[:1], at, 0.01)
+    assert one.startswith("1 Kalshi pick needs your OK")
+
+
+def _fill(order_id, ticker, side, action, count, yes, fee=0.05):
+    return {
+        "order_id": order_id,
+        "ticker": ticker,
+        "side": side,
+        "action": action,
+        "count_fp": str(count),
+        "yes_price_dollars": f"{yes:.2f}",
+        "no_price_dollars": f"{1 - yes:.2f}",
+        "fee_cost": str(fee),
+    }
+
+
+def test_the_summary_adds_up_each_games_fills_with_what_the_log_says():
+    orders = pd.DataFrame(
+        [
+            {
+                "order_id": "o1",
+                "bet": "Toledo Rockets",
+                "game": "Ohio @ Toledo",
+                "model": 0.62,
+                "edge": 0.08,
+                "rung": False,
+            },
+            {
+                "order_id": "o2",
+                "bet": "Toledo Rockets",
+                "game": "Ohio @ Toledo",
+                "model": 0.62,
+                "edge": 0.08,
+                "rung": True,
+            },
+        ]
+    )
+    fills = [
+        _fill("o1", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 6, 0.55),
+        _fill("o2", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 4, 0.50),
+        # A NO bought through the book, by hand: no log, named by its ticker.
+        _fill("o3", "KXNCAAFGAME-26NOV07BALKSU-BAL", "no", "sell", 5, 0.30),
+    ]
+    bets = picks_job.placed_bets(fills, orders).set_index("bet")
+    toledo = bets.loc["Toledo Rockets"]
+    assert toledo["contracts"] == 10 and toledo["rung"] == 4
+    assert toledo["price"] == pytest.approx((6 * 0.55 + 4 * 0.50) / 10)
+    assert toledo["cost"] == pytest.approx(6 * 0.55 + 4 * 0.50 + 0.10)
+    assert bets.loc["NO BAL"]["price"] == pytest.approx(0.70)
+    assert pd.isna(bets.loc["NO BAL"]["model"])
+
+
+def test_the_summary_counts_a_sale_before_the_end_as_paid():
+    settled = picks_job.settled_games(
+        [
+            {
+                "ticker": "E1-A",
+                "yes_count_fp": "10",
+                "yes_total_cost_dollars": "6",
+                "no_count_fp": "0",
+                "no_total_cost_dollars": "0",
+                "revenue": 1000,
+                "fee_cost": "0.1",
+            },
+            {
+                "ticker": "E2-B",
+                "yes_count_fp": "5",
+                "yes_total_cost_dollars": "3",
+                "no_count_fp": "0",
+                "no_total_cost_dollars": "0",
+                "revenue": 0,
+                "fee_cost": "0.05",
+            },
+            # 11 YES at 0.88, sold at 0.97: booked as 11 NO at 0.03, revenue 0.
+            {
+                "ticker": "E3-C",
+                "yes_count_fp": "11",
+                "yes_total_cost_dollars": "9.68",
+                "no_count_fp": "11",
+                "no_total_cost_dollars": "0.33",
+                "revenue": 0,
+                "fee_cost": "0.1",
+            },
+        ]
+    ).set_index("event")
+    assert settled.loc["E1", "pnl"] == pytest.approx(3.9) and settled.loc["E1", "won"]
+    assert (
+        settled.loc["E2", "pnl"] == pytest.approx(-3.05)
+        and not settled.loc["E2", "won"]
+    )
+    assert settled.loc["E3", "pnl"] == pytest.approx(11 - 9.68 - 0.33 - 0.1)
+
+
+def test_the_morning_summary_reads_top_to_bottom():
+    orders = pd.DataFrame(
+        [
+            {
+                "order_id": "o1",
+                "bet": "Toledo Rockets",
+                "game": "Ohio @ Toledo",
+                "model": 0.62,
+                "edge": 0.08,
+                "rung": False,
+            }
+        ]
+    )
+    bets = picks_job.placed_bets(
+        [_fill("o1", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 6, 0.55)], orders
+    )
+    settled = picks_job.settled_games(
+        [
+            {
+                "ticker": "E1-A",
+                "yes_count_fp": "10",
+                "yes_total_cost_dollars": "6",
+                "no_count_fp": "0",
+                "no_total_cost_dollars": "0",
+                "revenue": 1000,
+                "fee_cost": "0.1",
+            }
+        ]
+    )
+    resting = [
+        {
+            "ticker": "T-X",
+            "client_order_id": "rung-1",
+            "outcome_side": "yes",
+            "book_side": "bid",
+            "yes_price_dollars": "0.40",
+            "remaining_count_fp": "5",
+        }
+    ]
+    holds = [
+        {
+            "game_id": "9",
+            "bet": "Ohio Bobcats",
+            "game": "Ohio @ Toledo",
+            "at": NOW.isoformat(),
+        }
+    ]
+    central = ZoneInfo("America/Chicago")
+    subject, text = picks_job.summary_email(
+        bets,
+        resting,
+        settled,
+        holds,
+        (25.0, 120.0),
+        {"E1": "Alpha at Beta"},
+        Autobet(),
+        (NOW - timedelta(days=1)).astimezone(central),
+        NOW.astimezone(central),
+    )
+    assert subject == "Kalshi Tue Oct 20: 1 bet placed ($3.35), settled 1-0 (+$3.90)"
+    assert (
+        "Toledo Rockets -- Ohio @ Toledo: 6 @ 0.55, $3.35; model 0.62 (edge +0.080)"
+        in text
+    )
+    assert "Resting: 1 order, up to $2.00 if they all fill (1 of them rungs" in text
+    assert "won    +$3.90  Alpha at Beta" in text
+    assert 'Ohio Bobcats -- Ohio @ Toledo: make bet ARGS="--only 9"' in text
+    assert text.endswith("Account: $25.00 cash, $120.00 in open positions.")
+
+
+def test_holds_since_lists_only_the_picks_emailed_as_held_lately():
+    old = picks_job.record(
+        {}, _picks(("1", "Toledo Rockets", 0.09)), NOW - timedelta(days=2), "s"
+    )
+    held = _picks(("2", "Ohio Bobcats", 0.12)).assign(qb_news="Doubtful.")
+    sent = picks_job.record(old, held, NOW, "held")
+    assert [
+        h["game_id"] for h in picks_job.holds_since(sent, NOW - timedelta(days=1))
+    ] == ["2"]

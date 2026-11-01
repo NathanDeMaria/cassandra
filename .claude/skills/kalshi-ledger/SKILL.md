@@ -25,8 +25,8 @@ env -u VIRTUAL_ENV make ledger ARGS=--digest
 - **Which Python.** Run it from a worktree whose `.venv` is current (the `kalshi-tidy`
   one has its own). The shared `/workspaces/cassandra/.venv` is stale.
 - **No AWS login.** Without one it prints `no s3 (...)` and carries on. What's lost:
-  the cloud job's bedtime bets show no model price, and the themes aren't backed up to
-  s3. If bedtime was used that week, ask Nathan to log in (see the `aws-login-from-phone`
+  the cloud job's bets show no model price, and the themes aren't backed up to
+  s3. The cloud job places most bets, so ask Nathan to log in (see the `aws-login-from-phone`
   memory) rather than settle for `--offline`.
 
 The summary lines say what's missing. Watch for:
@@ -133,7 +133,7 @@ anything into a run of wins or losses.
 - **Bet-time prices** come from `~/.cassandra/betting/orders/*_orders.csv` (exact, by
   order id). Failing that, from the last `~/.cassandra/betting/picks/*.csv` run started
   before the first fill.
-- The cloud job copies every run's picks file, and a bedtime run's orders file, to
+- The cloud job copies every run's picks file, and its orders file when it placed, to
   `s3://<batch>/cassandra/betting/` under `picks/` and `orders/`, and `make ledger`
   pulls them down. Runs before that change only exist in CloudWatch (`/aws/batch/job`,
   streams `cassandra-picks/...`): each log's `=== N picks` table holds the picks' model
