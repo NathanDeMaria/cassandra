@@ -22,7 +22,7 @@ import gzip
 import json
 import logging
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -417,6 +417,20 @@ class News(NamedTuple):
     notes: list[injuries.Note]
     #: Per team, its last games' passers, e.g. "UCLA Bruins: Oct 17 ...".
     passers: list[str]
+
+
+def qb_news(picks: pd.DataFrame, news: Mapping[str, News]) -> dict[str, str]:
+    """The picks whose injury news names a quarterback, each with the first
+    sentence that does. The model reads a starter out only when told
+    (`--qb-out`), so these are the picks it may have priced on a QB who
+    won't play."""
+    found = {}
+    for game_id in picks["game_id"]:
+        notes = news.get(game_id, News([], [])).notes
+        qb = [note for note in notes if note.qb]
+        if qb:
+            found[game_id] = qb[0].sentence
+    return found
 
 
 def print_orders(

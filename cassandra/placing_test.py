@@ -178,3 +178,22 @@ def test_rungs_come_after_the_picks_out_of_the_cash(no_books):
         frame, matched, _args(rungs=(0.02, 0.04), rung_events={"E0"})
     )
     assert again["rungs"].iloc[0] == []
+
+
+def test_qb_news_names_the_picks_whose_news_names_a_quarterback():
+    from .injuries import Note
+
+    picks = pd.DataFrame({"game_id": ["g0", "g1", "g2"]})
+    news = {
+        "g0": placing.News(
+            [
+                Note("A", False, "The left tackle is out.", "story"),
+                Note("A", True, "The starting quarterback is doubtful.", "story"),
+            ],
+            [],
+        ),
+        "g1": placing.News([Note("B", False, "A linebacker is out.", "story")], []),
+    }
+    assert placing.qb_news(picks, news) == {
+        "g0": "The starting quarterback is doubtful."
+    }

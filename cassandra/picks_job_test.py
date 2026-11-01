@@ -2,6 +2,7 @@ import io
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -215,3 +216,26 @@ def test_an_email_for_cancelled_rungs_with_no_picks_at_all():
     )
     assert text.startswith("Took resting rungs off the book:")
     assert picks_job.record({}, fresh, NOW, "s")["emails"][-1]["picks"] == []
+
+
+def test_an_overnight_email_lists_the_picks_held_on_qb_news():
+    placed = _picks(("1", "Toledo Rockets", 0.09))
+    held = _picks(("2", "Ohio Bobcats", 0.12)).assign(
+        qb_news="Ohio's starter left with an ankle injury and is doubtful."
+    )
+    at = NOW.astimezone(ZoneInfo("America/Chicago"))
+    assert picks_job.subject(placed, placed, placed=True, at=at, held=1).startswith(
+        "Placed 1 Kalshi picks overnight, 1 held for you (QB news)"
+    )
+    assert picks_job.subject(
+        placed.iloc[:0], placed.iloc[:0], placed=True, at=at, held=1
+    ).startswith("Kalshi picks overnight: 1 held for you (QB news)")
+    text = picks_job.body(
+        placed, placed, "REPORT", pd.DataFrame(), None, 0.01, (), held
+    )
+    assert text.startswith("Held for you: 1 pick whose injury news names a quarterback")
+    assert "1. HELD Ohio Bobcats" in text  # the bigger edge, at the same kickoff
+    assert "QB news: Ohio's starter left with an ankle injury" in text
+    # The held pick gets a line to place it; the placed one doesn't.
+    assert 'make bet ARGS="--only 2"' in text
+    assert 'make bet ARGS="--only 1"' not in text

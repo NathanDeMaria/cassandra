@@ -50,7 +50,12 @@ News that lasts -- a starter out for the season -- goes in
 (`cassandra.overrides`), and every run applies it until then.
 Under the orders, each pick lists the injury sentences in its two teams'
 last two AP stories, and the next game's preview once there is one
-(`cassandra.injuries`); `QB!` marks one naming a quarterback.
+(`cassandra.injuries`); `QB!` marks one naming a quarterback. With
+`--hold-qb` those picks aren't placed: the rest are re-sized without them,
+and they come back on `Outcome.held` for a person to look at. Bedtime runs
+with it. In the week of Oct 31 the 12 QB-flagged bets went 6-6, the
+closing prices valued them at -3% (the other 27 at +5%), and Kansas State
+fell from 60c to 40c when its backup started.
 
 **Placing.** `--place` buys the picks, with a Kalshi API key (see
 `cassandra.kalshi_trade` for where it's read from; `--demo` for the demo
@@ -448,6 +453,8 @@ class Outcome(NamedTuple):
     placed: pd.DataFrame | None
     #: A line per resting rung this run cancelled.
     cancelled: tuple[str, ...] = ()
+    #: Picks `--hold-qb` kept back, each with its `qb_news` sentence.
+    held: pd.DataFrame | None = None
 
 
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
@@ -573,6 +580,12 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="with --place: place the orders without asking, and cut --budget "
         "to the cash on hand rather than stop (what bedtime runs with)",
+    )
+    parser.add_argument(
+        "--hold-qb",
+        action="store_true",
+        help="with --place: don't place a pick whose injury news names a "
+        "quarterback; re-size the rest and hand it back to look at",
     )
     parser.add_argument(
         "--notify",
@@ -946,10 +959,13 @@ def run(args: argparse.Namespace) -> Outcome:
     # each later list keeps the first one's games and reasons.
     unlisted: pd.Series | None = None
     news: dict[str, placing.News] = {}
+    held: dict[str, str] = {}
+    held_rows: list[pd.DataFrame] = []
     out = OUT_DIR / f"{league}_{model}_{started.astimezone(CENTRAL):%Y%m%d-%H%M}.csv"
     while True:
         frame["skip"] = priced_skips
         frame.loc[frame["game_id"].isin(dropped), "skip"] = "dropped at the prompt"
+        frame.loc[frame["game_id"].isin(held), "skip"] = "held: QB news"
         if unlisted is not None:
             off = frame["game_id"].isin(unlisted.index)
             frame.loc[off, "skip"] = frame.loc[off, "game_id"].map(unlisted)
@@ -965,19 +981,38 @@ def run(args: argparse.Namespace) -> Outcome:
         placing.print_orders(picks, news, args)
         print(f"\nevery matched game: {out}")
         if client is None or picks.empty or args.notify:
-            return Outcome(sized, picks, None, cancelled)
+            return Outcome(sized, picks, None, cancelled, _held(held_rows))
+        flagged = placing.qb_news(picks, news) if args.hold_qb else {}
+        if flagged:
+            held |= flagged
+            held_rows.append(
+                picks[picks["game_id"].isin(flagged)].assign(
+                    qb_news=lambda f: f["game_id"].map(flagged)
+                )
+            )
+            names = ", ".join(picks[picks["game_id"].isin(flagged)]["bet"])
+            print(f"\nheld for a look, QB news: {names}; re-sizing the rest")
+            continue
         answer = set() if args.yes else placing.ask(len(picks))
         if answer is None:
             print("nothing placed")
-            return Outcome(sized, picks, None, cancelled)
+            return Outcome(sized, picks, None, cancelled, _held(held_rows))
         if not answer:
             break
         order = picks.sort_values(["kickoff", "edge"], ascending=[True, False])
         dropped |= {order["game_id"].iloc[i - 1] for i in answer}
 
     return Outcome(
-        sized, picks, placing.place(client, picks, matched, args, out), cancelled
+        sized,
+        picks,
+        placing.place(client, picks, matched, args, out),
+        cancelled,
+        _held(held_rows),
     )
+
+
+def _held(rows: list[pd.DataFrame]) -> pd.DataFrame | None:
+    return pd.concat(rows, ignore_index=True) if rows else None
 
 
 if __name__ == "__main__":
