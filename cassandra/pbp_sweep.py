@@ -184,7 +184,11 @@ class SweepStats(NamedTuple):
         1980 and the processed plays start in 2006.
         """
         return (
-            self.scored + self.incomplete + self.no_score + self.unscored + self.disagreed
+            self.scored
+            + self.incomplete
+            + self.no_score
+            + self.unscored
+            + self.disagreed
         )
 
     def __str__(self) -> str:
@@ -285,6 +289,30 @@ def final_from_plays(plays: Sequence[Play]) -> tuple[int, int] | None:
     return None
 
 
+def final_before_end_marker(plays: Sequence[Play]) -> tuple[int, int] | None:
+    """The score on the last play before a closing end-of-period row, when
+    that row's score differs from it; None otherwise.
+
+    ESPN closes a game with an administrative row -- End of Game, End of
+    Regulation, End Period -- that carries a score, and `final_from_plays`
+    reads it. Usually it is the final. After a walk-off it can still hold
+    the score from before the last play: Illinois at Maryland on 2026-10-31
+    ends on a game-winning field goal at 17-20 and then an End of Regulation
+    row at 17-17. Read past it, that game covers its result; read off it,
+    the sweep drops it as incomplete, and a game whose stale row names the
+    other winner is dropped as a disagreement. 8 of 2026's first 1,150 games
+    with plays end like this, 22 of 2025's 1,675.
+    """
+    last = final_from_plays(plays)
+    for play in reversed(plays):
+        if play.home_score is None or play.away_score is None:
+            continue
+        if not (play.play_type or "").startswith("End"):
+            before = (play.home_score, play.away_score)
+            return before if before != last else None
+    return None
+
+
 def disagrees(final: tuple[int, int], played: Game) -> bool:
     """Do the plays and the stored result disagree about who *won*?
 
@@ -349,6 +377,10 @@ async def _sweep_week[T](
         if final is None:
             no_score += 1
             continue
+        # A closing row stale after a walk-off; the last play is the final.
+        before = final_before_end_marker(game.plays)
+        if before is not None and not covers(final, result) and covers(before, result):
+            final = before
         if disagrees(final, result):
             disagreed += 1
             logger.warning(
