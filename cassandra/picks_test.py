@@ -5,6 +5,8 @@ from endgame.types import Game
 
 from .markets import kalshi_fee
 from .picks import (
+    FAVORITE_EDGE,
+    MIN_EDGE,
     Book,
     Fixture,
     KalshiGame,
@@ -13,6 +15,7 @@ from .picks import (
     allocate,
     book,
     contracts_for,
+    edge_needed,
     entry,
     event_day,
     fillable,
@@ -284,7 +287,7 @@ def test_the_max_price_is_the_last_cent_that_clears_the_edge() -> None:
     def edge_at(ask: float) -> float:
         return 0.80 - (ask + kalshi_fee(ask)) / priced.overround
 
-    assert edge_at(highest) >= 0.05 > edge_at(highest + 0.01)
+    assert edge_at(highest) >= MIN_EDGE > edge_at(highest + 0.01)
     # NO on the opponent moves with the side's YES ask.
     cheaper = _matched(0.60, 0.42)._replace(away=_book("A", 0.42, 0.44))
     via_no = price(0.80, cheaper)
@@ -294,6 +297,29 @@ def test_the_max_price_is_the_last_cent_that_clears_the_edge() -> None:
     moved = max_price(0.80, via_no, cheaper.home._replace(ask=via_no.route.price))
     assert found is not None and moved is not None
     assert found == pytest.approx(moved - (0.60 - via_no.route.price))
+
+
+def test_a_favorite_needs_the_bigger_edge_at_80c_and_up() -> None:
+    assert edge_needed(0.79) == MIN_EDGE
+    assert edge_needed(0.80) == FAVORITE_EDGE
+    assert edge_needed(0.80, min_edge=0.12) == 0.12
+    matched = _matched(0.75, 0.24)
+    priced = price(0.90, matched)
+    assert priced is not None and priced.route is not None
+
+    def edge_at(ask: float) -> float:
+        return 0.90 - (ask + kalshi_fee(ask)) / priced.overround
+
+    # 0.81 would clear 7 points but not the 10 an 80c pick needs.
+    assert edge_at(0.81) >= MIN_EDGE and edge_at(0.81) < FAVORITE_EDGE
+    assert max_price(0.90, priced, matched.home) == 0.80
+    # Between the two bars, an 80c+ pick isn't one.
+    pricey = price(0.90, _matched(0.82, 0.17))
+    assert pricey is not None and pricey.cost is not None and pricey.cost >= 0.80
+    assert MIN_EDGE <= pricey.edge < FAVORITE_EDGE
+    assert skip_reason(pricey, "FBS", "FBS", [], timedelta(hours=1)) == (
+        "edge under 10 points at 80c+"
+    )
 
 
 def test_what_isnt_a_pick() -> None:

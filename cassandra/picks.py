@@ -10,7 +10,14 @@ October 2026, edge over Kalshi's no-vig price (`no_vig_home`):
     5+ points     +13% ± 5% (374)     +21% ± 11% (159)
 
 Under five points the overround eats the edge. Over five it held up in
-both seasons. In 2026 it faded as the book caught up: +21% at entry, +19%
+both seasons -- but not evenly. Rerun on 2025-26 in November 2026 with the
+live rule itself (the first qualifying hour, the cheaper route, the fee in
+the cost: 848 picks on the success model), and judged by the close, the
+5-7 point picks were worth nothing (-1.5%, 318 picks), and favorites at
+80c or more, which quarter Kelly gives 45% of the money, earned +2% a
+dollar. So the bar is 7 points, and 10 at 80c and up (`edge_needed`):
+97% of the expected dollars on 63% of the money, 11.7% a dollar against
+7.6%, in both seasons and on the roster model too. In 2026 it faded as the book caught up: +21% at entry, +19%
 six hours later, +13% at twelve, +4% after a day. So the bet is placed the
 night the previous week's games end, against the price up then.
 
@@ -36,7 +43,8 @@ bid. Taking the cheaper of the two never makes a pick worse than the one
 graded.
 
 **What isn't a pick** (`skip_reason`):
-- an edge under `MIN_EDGE`;
+- an edge under `MIN_EDGE`, or under `FAVORITE_EDGE` for a pick costing
+  `FAVORITE_PRICE` or more (`edge_needed`);
 - the model backing a team below FBS against an FBS one. The model's known
   miss on those games is under-rating the FBS side: 10-20 point FBS
   favorites beat it by about 2 points in 2015-25. So its edge on the
@@ -71,9 +79,15 @@ from .markets import MAX_OVERROUND, kalshi_fee
 NCAAFB_SERIES = ("KXNCAAFGAME", "KXNCAAFCSGAME")
 
 #: The smallest edge over the no-vig price worth betting. See the module
-#: docstring: this is where the backtest's ROI turned positive in both
-#: seasons it covers.
-MIN_EDGE = 0.05
+#: docstring: 5 is where the first backtest's ROI turned positive, but the
+#: 5-7 point picks were worth nothing against the close.
+MIN_EDGE = 0.07
+
+#: What a pick costing `FAVORITE_PRICE` or more (fee included) must clear
+#: instead: quarter Kelly stakes these the most, and at 5-10 points they
+#: barely beat the fee.
+FAVORITE_PRICE = 0.80
+FAVORITE_EDGE = 0.10
 
 #: How long after the entry a price is still worth betting. The 2026 edge
 #: over 5 points was +21% at the entry, +13% twelve hours later and +4% at a
@@ -562,10 +576,16 @@ def price(model_home: float, matched: Matched) -> Priced | None:
     )
 
 
+def edge_needed(cost: float, min_edge: float = MIN_EDGE) -> float:
+    """The edge a pick costing `cost` a contract, fee included, must clear."""
+    return max(min_edge, FAVORITE_EDGE) if cost >= FAVORITE_PRICE else min_edge
+
+
 def max_price(
     model: float, priced: Priced, side: Book, min_edge: float = MIN_EDGE
 ) -> float | None:
-    """The most the pick's route can cost, to the cent, and still clear `min_edge`.
+    """The most the pick's route can cost, to the cent, and still clear the
+    edge it needs at that price (`edge_needed`).
 
     The edge is the model against the side's share of the two asks, so a
     rising price eats it about a point a cent. This holds the overround
@@ -574,12 +594,18 @@ def max_price(
     """
     if priced.route is None or side.ask is None:
         return None
-    ceiling = (model - min_edge) * priced.overround
-    cents = [c for c in range(1, 100) if c / 100 + kalshi_fee(c / 100) <= ceiling]
-    if not cents:
+    shift = priced.route.price - side.ask
+    found = None
+    for cents in range(1, 100):
+        ask = cents / 100
+        route = ask + shift
+        need = edge_needed(route + kalshi_fee(route), min_edge)
+        if ask + kalshi_fee(ask) > (model - need) * priced.overround:
+            break
+        found = route
+    if found is None:
         return None
-    highest = priced.route.price + cents[-1] / 100 - side.ask
-    return min(math.floor(round(highest * 100, 6)) / 100, 0.99)
+    return min(math.floor(round(found * 100, 6)) / 100, 0.99)
 
 
 def skip_reason(
@@ -603,6 +629,8 @@ def skip_reason(
         return "nothing on offer"
     if priced.edge < min_edge:
         return "edge under threshold"
+    if priced.cost is not None and priced.edge < edge_needed(priced.cost, min_edge):
+        return f"edge under {FAVORITE_EDGE * 100:.0f} points at {FAVORITE_PRICE * 100:.0f}c+"
     if other_division == TOP_DIVISION and side_division != TOP_DIVISION:
         return "lower-division side vs FBS"
     return None

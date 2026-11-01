@@ -45,6 +45,8 @@ from .kalshi_trade import (
     rung_id,
 )
 from .picks import (
+    FAVORITE_EDGE,
+    FAVORITE_PRICE,
     allocate,
     contracts_for,
     fillable,
@@ -692,7 +694,8 @@ def print_picks(
     )
     print(
         f"\n=== {len(picks)} picks (edge ≥ {args.min_edge:.0%} over Kalshi's no-vig "
-        f"price), top {args.top} by edge; {sizing(args)}"
+        f"price, {max(args.min_edge, FAVORITE_EDGE):.0%} at {FAVORITE_PRICE * 100:.0f}c+), "
+        f"top {args.top} by edge; {sizing(args)}"
     )
     if not table.empty:
         with pd.option_context("display.width", 250, "display.max_colwidth", 60):
