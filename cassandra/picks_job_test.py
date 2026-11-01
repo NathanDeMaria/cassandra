@@ -98,6 +98,18 @@ def test_only_unemailed_picks_or_a_flipped_side_are_new():
     assert list(picks_job.unsent(flipped, sent)["game_id"]) == ["1"]
 
 
+def test_a_held_pick_is_news_until_an_email_carried_it_as_held():
+    # Emailed, then placed, as an ordinary pick ...
+    sent = picks_job.record({}, _picks(("1", "Toledo Rockets", 0.07)), NOW, "s")
+    held = _picks(("1", "Toledo Rockets", 0.08)).assign(qb_news="QB doubtful.")
+    assert list(picks_job.unsent(held, sent, held=True)["game_id"]) == ["1"]
+    assert picks_job.unsent(held, sent).empty
+    # ... then held once: the next hour's hold isn't news.
+    sent = picks_job.record(sent, held, NOW, "held")
+    assert sent["games"]["1"]["held"] is True
+    assert picks_job.unsent(held, sent, held=True).empty
+
+
 def test_record_keeps_each_emails_numbered_list():
     sent = picks_job.record(
         {}, _picks(("2", "Ohio Bobcats", 0.06), ("1", "Toledo Rockets", 0.09)), NOW, "s"

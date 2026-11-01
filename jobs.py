@@ -595,7 +595,7 @@ def _picks(kelly_fraction: float, max_bet: float, budget: float, espn: bool) -> 
             placed = outcome.placed
             # A pick held on QB news is emailed once, not every hour it's held.
             if outcome.held is not None:
-                held = picks_job.unsent(outcome.held, sent)
+                held = picks_job.unsent(outcome.held, sent, held=True)
                 held = None if held.empty else held
             if (placed is None or placed.empty) and held is None:
                 print("bedtime: nothing placed")

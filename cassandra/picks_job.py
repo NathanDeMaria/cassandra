@@ -245,12 +245,21 @@ def committed(placed: pd.DataFrame | None) -> float:
 # ------------------------------------------------------------------------------
 
 
-def unsent(picks: pd.DataFrame, sent: dict) -> pd.DataFrame:
-    """The picks no email has carried: a new game, or the same game's other side."""
+def unsent(picks: pd.DataFrame, sent: dict, held: bool = False) -> pd.DataFrame:
+    """The picks no email has carried: a new game, or the same game's other side.
+
+    With `held`, the picks bedtime held on QB news (`picks.py --hold-qb`), for
+    which an email counts only if it carried the pick *as held*: a game first
+    emailed as an ordinary pick, or placed, and held later is news. Iowa
+    State, Oregon and Mississippi State were held silently on 2026-11-01
+    because earlier emails had carried them as picks.
+    """
     games = sent.get("games", {})
     fresh = pd.Series(
         [
-            game_id not in games or games[game_id].get("bet") != bet
+            game_id not in games
+            or games[game_id].get("bet") != bet
+            or (held and not games[game_id].get("held"))
             for game_id, bet in zip(picks["game_id"], picks["bet"])
         ],
         index=picks.index,
@@ -272,6 +281,8 @@ def record(sent: dict, picks: pd.DataFrame, at: datetime, subject: str) -> dict:
             "game": row["game"],
             "edge": round(float(row["edge"]), 4),
             "at": at.isoformat(),
+            # A held pick carries its QB sentence; see `unsent(held=True)`.
+            "held": isinstance(row.get("qb_news"), str),
         }
         listed.append({"game_id": row["game_id"], "bet": row["bet"]})
     emails = [
@@ -382,7 +393,7 @@ def body(
             + ("" if since is None or pd.isna(since) else f"; {since:.0f}h since entry")
         )
         if row.get("no_plays"):
-            lines.append(f"   no EPA yet for {row['no_plays']}'s last game")
+            lines.append(f"   last game's play-by-play not in yet: {row['no_plays']}")
         if row["game_id"] in kept:
             lines.append(f"   QB news: {row['qb_news'][:200]}")
         if placed is None or row["game_id"] in kept:
