@@ -94,6 +94,12 @@ autobet:
 push-overrides:
 	poetry run python -m cassandra.picks_job push-overrides
 
+# `make login` logs in to AWS from a phone: it prints a link to approve and a
+# new one each time a code expires. `make login ARGS=status` says how long is
+# left. Plain python3, so it works without the virtualenv.
+login:
+	python3 aws_login.py $(ARGS)
+
 picks-status:
 	poetry run python -m cassandra.picks_job status
 
@@ -219,4 +225,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: lint check test report diagnose team-seasons evidence betting picks bet pause resume autobet push-overrides picks-status positions ledger publish build push manifest _ecr_login submit
+.PHONY: login lint check test report diagnose team-seasons evidence betting picks bet pause resume autobet push-overrides picks-status positions ledger publish build push manifest _ecr_login submit
