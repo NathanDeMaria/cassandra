@@ -152,14 +152,20 @@ renamed chain step stops these without an error anywhere; on a Saturday,
 ### Picks
 
 `cassandra-picks` runs `jobs.py picks`: `picks.py` against the live Kalshi
-ncaafb books, and an email (SNS topic `cassandra-picks`) whenever there's a
-pick no earlier email carried. It runs after every ncaafb finals sweep --
-the run that sees a next-week matchup's second team finish, and skips the
-ESPN top-up since the chain just wrote the season -- and hourly
-through `picks_schedules` (Saturday afternoon to Sunday night, weeknights).
-At bedtime (`make bedtime ARGS="--until 08:00 --budget 40"`, off with `make
-awake`) it places the picks itself, resting until the wake-up time, and
-emails what it placed. `cassandra.picks_job` has the state it keeps in s3.
+ncaafb books, placing the picks itself -- a quarter Kelly, at most $10 a
+bet, the cash on hand the budget, each order resting twelve hours. It runs
+after every ncaafb finals sweep -- the run that sees a next-week matchup's
+second team finish, and skips the ESPN top-up since the chain just wrote the
+season -- and hourly through `picks_schedules` (Saturday afternoon to Sunday
+night, weeknights). `make pause` stops it placing, `make resume` starts it
+again, and `make autobet` changes the sizing.
+
+It emails (SNS topic `cassandra-picks`) two things only: a pick held for a
+person's OK, the moment it's held -- injury news naming a quarterback, which
+the model doesn't read -- and the morning summary, `jobs.py picks_summary`
+at 8am (`picks_summary_schedule`): the bets placed since the last one, what
+still rests, what settled, and the holds still waiting. `cassandra.picks_job`
+has the state it keeps in s3.
 
 Two things by hand, once:
 
@@ -171,9 +177,9 @@ aws secretsmanager put-secret-value --secret-id cassandra/kalshi-key \
     --rawfile pem ~/.kalshi/private_key.pem '{key_id: $id, private_key: $pem}')"
 ```
 
-Without the key it still emails, sized on `--budget`, and never places.
-`CASSANDRA_PICKS_DRY_RUN=1` rehearses bedtime: the orders are printed, not
-sent. The job reads overrides from s3, so `make push-overrides` after
+Without the key it can't place or read the account, and does nothing.
+`CASSANDRA_PICKS_DRY_RUN=1` rehearses either job: the orders and emails are
+printed, not sent. The job reads overrides from s3, so `make push-overrides` after
 editing `~/.cassandra/betting/overrides.toml`.
 
 ## State between stages

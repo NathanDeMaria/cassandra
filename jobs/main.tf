@@ -137,8 +137,8 @@ data "aws_iam_policy_document" "job" {
     resources = ["arn:aws:s3:::${var.artifacts_bucket}/*"]
   }
 
-  # The picks job: email what it found, and read the Kalshi key it places
-  # with at bedtime. Both scoped to the one topic and the one secret.
+  # The picks job: email its holds and the morning summary, and read the
+  # Kalshi key it places with. Both scoped to the one topic and the one secret.
   statement {
     sid       = "EmailPicks"
     actions   = ["sns:Publish"]
@@ -411,8 +411,10 @@ module "publish" {
   environment_variables = local.job_environment
 }
 
-# Prices the Kalshi ncaafb books against the model and emails the picks no
-# earlier email had -- or, at bedtime, places them (`cassandra.picks_job`).
+# Prices the Kalshi ncaafb books against the model and places the picks, by
+# the autobet rules in s3 (`make pause` / `make resume` / `make autobet`).
+# It emails only a pick held for a person's OK; `picks_summary` below emails
+# the rest each morning (`cassandra.picks_job`).
 # Publish's memory, since it replays every stored season the way a release
 # build does.
 #
@@ -680,6 +682,21 @@ module "picks_schedule" {
   command             = ["picks"]
 }
 
+# The morning summary (`jobs.py picks_summary`): every bet placed since the
+# last one, what still rests, what settled, and the holds waiting on a
+# person. The picks job's own definition, for its key and its topic.
+module "picks_summary_schedule" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/job_schedule?ref=main"
+
+  schedule_name       = "${var.resource_name_prefix}-picks-summary"
+  schedule_expression = var.picks_summary_schedule
+  schedule_timezone   = var.schedule_timezone
+  job_definition      = module.picks.name
+  job_queue_arn       = local.shared.job_queue_arn
+  scheduler_role_arn  = local.shared.batch_scheduler_role_arn
+  command             = ["picks_summary"]
+}
+
 # Where the picks go. Subscribed by hand rather than here, so no address is
 # in the repo -- an email subscription needs a click on its confirmation
 # anyway, which terraform can't make:
@@ -690,8 +707,7 @@ resource "aws_sns_topic" "picks" {
   name = "${var.resource_name_prefix}-picks"
 }
 
-# The Kalshi API key the job places with at bedtime, and reads the account
-# with otherwise. Declared empty: the value is put by hand, so the key is
+# The Kalshi API key the job places with and reads the account with. Declared empty: the value is put by hand, so the key is
 # never in terraform state --
 #
 #   aws secretsmanager put-secret-value --secret-id cassandra/kalshi-key \
