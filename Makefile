@@ -108,6 +108,16 @@ picks-status:
 positions:
 	poetry run python positions.py $(ARGS)
 
+# What the account should be worth once the open Kalshi bets settle, by the
+# picks model: the expected balance and its spread (account_value.py).
+account-value:
+	poetry run python account_value.py $(ARGS)
+
+# How past weeks' bets did against what the model expected of them, with the
+# model replayed as of each bet (account_review.py; reads the ledger).
+account-review:
+	poetry run python account_review.py $(ARGS)
+
 # Every Kalshi bet so far, rebuilt from the account each run. It writes
 # ~/.cassandra/betting/ledger/report.md: the record, the model's and the
 # close's expected P&L, and CLV; the result types and game-flow tags added up
@@ -225,4 +235,4 @@ submit:
 	poetry run python jobs.py submit $(ARGS)
 
 
-.PHONY: login lint check test report diagnose team-seasons evidence betting picks bet pause resume autobet push-overrides picks-status positions ledger publish build push manifest _ecr_login submit
+.PHONY: login lint check test report diagnose team-seasons evidence betting picks bet pause resume autobet push-overrides picks-status positions account-value account-review ledger publish build push manifest _ecr_login submit
