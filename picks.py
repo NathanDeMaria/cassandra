@@ -412,9 +412,17 @@ async def _with_espn(seasons: list[Season]) -> list[Season]:
 
 
 def _replay(
-    league: str, model: str, seasons: list[Season], sources: MatchupSources
+    league: str,
+    model: str,
+    seasons: list[Season],
+    sources: MatchupSources,
+    priors: Path | None = None,
 ) -> tuple[Predictor, pd.DataFrame]:
-    """The model through every result, warmed the way `betting.py`'s replay is."""
+    """The model through every result, warmed the way `betting.py`'s replay is.
+
+    `priors` is where the warm start is built: this run's own file by
+    default, and a caller replaying several states of the season keeps its own.
+    """
     result = GENERATED_DIR / league / f"{model}_result.json"
     search = AUTHORED_DIR / league / f"{model}.json"
     odds = OddsDatabase({})
@@ -424,7 +432,7 @@ def _replay(
         weeks = frames.weeks_per_season([len(season.weeks) for season in seasons])
         # A private priors file: the shared one is rebuilt by whatever else
         # is replaying on this machine.
-        priors = PICKS_DIR / f"{league}_{model}_priors.json"
+        priors = priors or PICKS_DIR / f"{league}_{model}_priors.json"
         if rebuild_priors(
             load_predictor_class(config.predictor_class),
             league,
