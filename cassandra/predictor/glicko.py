@@ -6,6 +6,7 @@ from typing import Any, NamedTuple, Self
 import numpy as np
 from endgame.types import Game
 
+from ..offseason import OffseasonFacts
 from ..scoring import DEFAULT_SIGMOID_SCALE, get_scoring_function, sigmoid_of_margin
 from .adjustments import (
     DEFAULT_QB_OUT_PENALTY,
@@ -83,6 +84,11 @@ _MIN_SPREAD = 10.0**-_MAX_EXPONENT
 #: the ncaafb ladder -- so its value is a readable "how much more edge does
 #: the tier above get".
 _ANCHOR_SLOPE_SCALE = 400.0
+
+#: The departure category `coach_left_rating_shift` moves a team for: the
+#: coach left for another job. A fired coach's team measured as nothing in
+#: basketball, as in football; see `cassandra.offseason`.
+LEFT_FOR_JOB = "left_for_job"
 
 # The rating gap that reads as a 10-to-1 favorite when a game is *predicted*.
 # Elo's 400, which is also the scale the update learns at (`_Q`), so a model
@@ -185,6 +191,25 @@ class GlickoPredictor(Predictor):
         # it needs `scoring_method` "sigmoid", the one that reads a margin.
         luck_share: float = 0.0,
         season_regression: float = 0.0,
+        # A team whose head coach is gone since last season opened
+        # (`cassandra.offseason`'s departures; college basketball and
+        # football), at the rollover and after the league's own regression:
+        # `coach_change_regression` more of the way to its anchor and
+        # `coach_change_rating_rd` more deviation, added in quadrature and
+        # still under `initial_rd`, for any change; and
+        # `coach_left_rating_shift` rating points for a coach who left for
+        # another job, the one departure that moved a team in the residuals.
+        # Regression says the old coach's level is less of a guide, the
+        # deviation lets the first games correct it faster, the shift is
+        # the direction the measured miss has. All 0 is off. Named apart
+        # from `UnitMarginGlickoPredictor`'s `coach_left_shift` and
+        # `coach_change_rd`, which are in points and move its sides too.
+        coach_change_regression: float = 0.0,
+        coach_change_rating_rd: float = 0.0,
+        coach_left_rating_shift: float = 0.0,
+        # Where the coaching changes come from; the league's own unless a
+        # caller hands others over. Read only when a coach knob is on.
+        offseason: OffseasonFacts | None = None,
         # How many times each week's games are rated. 1 is Glicko as a
         # filter: a result is priced once, against what the opponent's
         # rating was that day, and never revisited. Above 1 the season so
@@ -222,6 +247,14 @@ class GlickoPredictor(Predictor):
         total, squares, count = unanchored_seen
         self._unanchored_seen = (float(total), float(squares), int(count))
         self._season_regression = validated_regression(season_regression)
+        self._coach_change_regression = validated_regression(coach_change_regression)
+        if coach_change_rating_rd < 0:
+            raise ValueError(
+                f"coach_change_rating_rd must be >= 0, got {coach_change_rating_rd}"
+            )
+        self._coach_change_rating_rd = coach_change_rating_rd
+        self._coach_left_rating_shift = coach_left_rating_shift
+        self._coach_facts = offseason
         self._home_advantage = home_advantage
         self._home_advantage_slope = home_advantage_slope
         self._k = k
@@ -683,6 +716,7 @@ class GlickoPredictor(Predictor):
             )
             for team, rating in self._ratings.items()
         }
+        self._adjust_for_coaches()
         # The season the smoother replays from starts here: after the
         # regression and the offseason widening, with no games yet.
         self._preseason = dict(self._ratings)
@@ -696,6 +730,42 @@ class GlickoPredictor(Predictor):
         self._entry_is_preseason = []
         self._week_rows = []
         self._entering = True
+
+    @property
+    def _reads_coaches(self) -> bool:
+        return bool(
+            self._coach_change_regression
+            or self._coach_change_rating_rd
+            or self._coach_left_rating_shift
+        )
+
+    def _adjust_for_coaches(self) -> None:
+        """This offseason's coaching changes, on the ratings just rolled over.
+
+        Before the smoother's preseason is taken, so its re-passes start from
+        the adjusted ratings rather than undoing them. A team not rated yet
+        enters at its anchor as any new team does; there is nothing of the
+        old coach's to discount.
+        """
+        if not self._reads_coaches:
+            return
+        if self._coach_facts is None:
+            self._coach_facts = OffseasonFacts.for_league(self._league)
+        for team, fact in self._coach_facts.seasons(self._season):
+            if fact.coach_departure is None or team not in self._ratings:
+                continue
+            current = self._ratings[team]
+            anchor = self.anchor(team)
+            rating = anchor + (1 - self._coach_change_regression) * (
+                current.rating - anchor
+            )
+            if fact.coach_departure == LEFT_FOR_JOB:
+                rating += self._coach_left_rating_shift
+            deviation = min(
+                self._initial_rd,
+                math.hypot(current.rating_deviation, self._coach_change_rating_rd),
+            )
+            self._ratings[team] = _Rating(rating, deviation)
 
     def postrun_callback(self) -> None:
         self._prior_manager.save(
@@ -749,6 +819,16 @@ class GlickoPredictor(Predictor):
                 else {}
             ),
             **({"luck_share": self._luck_share} if self._luck_share else {}),
+            # Only when on, like the blend's.
+            **(
+                {
+                    "coach_change_regression": self._coach_change_regression,
+                    "coach_change_rating_rd": self._coach_change_rating_rd,
+                    "coach_left_rating_shift": self._coach_left_rating_shift,
+                }
+                if self._reads_coaches
+                else {}
+            ),
         }
 
     @classmethod
