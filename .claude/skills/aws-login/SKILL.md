@@ -19,13 +19,19 @@ worktree without a virtualenv.
    python3 aws_login.py      # Bash, run_in_background: true, timeout 2400000
    ```
 
-2. Read the task's output file after a few seconds. Send Nathan the `approve:` link
-   **as a bare URL on its own line**, not markdown link text, so it taps through on a
-   phone. Then go on with any work that doesn't need AWS.
-3. If he says the link is dead, or comes back after ten minutes, read the output file
+2. Read the task's output file after a few seconds, and **put the `approve:` link in
+   your chat reply right away** -- the next thing you write, before any other tool
+   call. Nathan sees only your messages: a link in a log, a tool result or a tool
+   description never reaches him, and a login nobody can see is a login nobody
+   approves. A bare URL on its own line, not markdown link text, so it taps through
+   on a phone. Only then go on with work that doesn't need AWS.
+3. Don't sit in a blocking wait on the login (an `until` loop, `sleep`): he can't
+   see the link while you wait, and can't interrupt you to ask for it. Send the link
+   and end the turn, or keep working; the task notification says when it's done.
+4. If he says the link is dead, or comes back after ten minutes, read the output file
    again. It holds a newer `approve:` line once the old code has expired. Send that
-   one.
-4. The task notification says how it ended:
+   one in chat the same way -- every new code, as soon as it appears.
+5. The task notification says how it ended:
    - `logged in` (exit 0): carry on.
    - `3 codes expired unapproved` (exit 1): don't start another round while he's
      away. Say so and wait for him to ask ("log me in").

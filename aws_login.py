@@ -46,6 +46,11 @@ SESSION = timedelta(hours=float(os.environ.get("AWS_SESSION_HOURS", "8")))
 
 LOGIN = ["aws", "sso", "login", "--use-device-code", "--no-browser"]
 
+#: Printed under every link. Whoever runs this is usually an agent whose
+#: tool output Nathan never sees: a link left in a log is a login nobody
+#: can approve, so the reminder travels with the link.
+RELAY = "  ^ send this link to Nathan in the chat now, as a bare URL; he can't see this output"
+
 #: What the CLI says when a code ran out before anyone approved it.
 _EXPIRED = ("InvalidGrantException", "ExpiredTokenException", "expired")
 
@@ -105,7 +110,7 @@ def follow(pid: int) -> int:
         except FileNotFoundError:
             link = None
         if link and link != shown:
-            print(f"approve: {link}", flush=True)
+            print(f"approve: {link}\n{RELAY}", flush=True)
             shown = link
         time.sleep(3)
     arn = whoami()
@@ -129,7 +134,7 @@ def login(tries: int) -> int:
                 line = raw.strip()
                 if "user_code=" in line:
                     (STATE / "link").write_text(line)
-                    print(f"approve: {line}", flush=True)
+                    print(f"approve: {line}\n{RELAY}", flush=True)
                 elif line:
                     said.append(line)
             proc.wait()
