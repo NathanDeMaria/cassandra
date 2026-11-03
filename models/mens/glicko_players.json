@@ -45,6 +45,18 @@
         "home_advantage_slope": [
             -50,
             100
+        ],
+        "coach_left_rating_shift": [
+            -400,
+            0
+        ],
+        "coach_change_regression": [
+            0,
+            1
+        ],
+        "coach_change_rating_rd": [
+            0,
+            400
         ]
     },
     "fixed": {
@@ -67,7 +79,10 @@
             "season_rd_increase": 188.5,
             "season_regression": 0.052,
             "initial_rd": 403.663,
-            "home_advantage_slope": 0.0
+            "home_advantage_slope": 0.0,
+            "coach_left_rating_shift": 0.0,
+            "coach_change_regression": 0.0,
+            "coach_change_rating_rd": 0.0
         },
         {
             "glicko_share": 1.44,
@@ -80,7 +95,26 @@
             "season_rd_increase": 188.5,
             "season_regression": 0.3,
             "initial_rd": 300.0,
-            "home_advantage_slope": 40.0
+            "home_advantage_slope": 40.0,
+            "coach_left_rating_shift": 0.0,
+            "coach_change_regression": 0.0,
+            "coach_change_rating_rd": 0.0
+        },
+        {
+            "glicko_share": 1.44,
+            "player_rating_weight": 17.0,
+            "absence_weight": 17.8,
+            "luck_share": 0.4,
+            "player_variance_scale": 0.75,
+            "player_floor": 7.8,
+            "weekly_rd_increase": 30.0,
+            "season_rd_increase": 188.5,
+            "season_regression": 0.052,
+            "initial_rd": 403.663,
+            "home_advantage_slope": 0.0,
+            "coach_left_rating_shift": -200.0,
+            "coach_change_regression": 0.3,
+            "coach_change_rating_rd": 150.0
         }
     ]
 }

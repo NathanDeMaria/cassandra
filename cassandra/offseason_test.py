@@ -45,7 +45,7 @@ def test_nothing_to_compare_is_no_fact() -> None:
 
 
 def test_a_league_without_data_has_no_facts() -> None:
-    facts = OffseasonFacts.for_league("mens")
+    facts = OffseasonFacts.for_league("wnba")
     assert len(facts) == 0
     assert list(facts.seasons(2024)) == []
 
@@ -61,6 +61,22 @@ def test_the_league_facts_read_the_bundled_data() -> None:
     assert left.quality_change < -0.1
     assert facts.get("Oklahoma State Cowboys", None) is None
     assert facts.get("LSU Tigers", 2019) == pytest.approx((None, False, 0.0))
+
+
+def test_basketball_facts_are_the_coach_alone() -> None:
+    # A basketball season is its start year: 2024 is 2024-25.
+    mens = OffseasonFacts.for_league("mens")
+    arkansas = mens.get("Arkansas Razorbacks", 2024)  # Musselman to USC
+    assert arkansas == ("left_for_job", None, 0.0)
+    cal_poly = mens.get("Cal Poly Mustangs", 2024)
+    assert cal_poly is not None and cal_poly.coach_departure == "fired"
+    # Bryant's coach resigned in November 2023: the season after is the
+    # first one he didn't open.
+    bryant = mens.get("Bryant Bulldogs", 2024)
+    assert bryant is not None and bryant.coach_departure == "resigned"
+    womens = OffseasonFacts.for_league("womens")
+    schaefer = womens.get("Mississippi State Bulldogs", 2020)
+    assert schaefer is not None and schaefer.coach_departure == "left_for_job"
 
 
 def test_the_nfl_facts_are_keyed_by_nickname() -> None:

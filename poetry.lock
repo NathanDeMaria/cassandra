@@ -3032,7 +3032,7 @@ name = "say-youll-remember-me"
 version = "0.1.0"
 description = "What changed about a team between seasons: head coaches, coordinators, quarterbacks."
 optional = false
-python-versions = ">=3.12"
+python-versions = ">=3.14"
 groups = ["main"]
 files = []
 develop = false
@@ -3041,13 +3041,13 @@ develop = false
 call-it-what-you-want = "*"
 
 [package.extras]
-plays = ["endgame-aws ; python_version >= \"3.14\"", "lucky-ones[data] ; python_version >= \"3.14\""]
+plays = ["endgame-aws", "lucky-ones[data]"]
 
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/say-youll-remember-me.git"
-reference = "4ca747646aa2a2112889279f93ebc96ccd4e0122"
-resolved_reference = "4ca747646aa2a2112889279f93ebc96ccd4e0122"
+reference = "2051db413d58b0ea3f0b17ac8083b7870aa824d1"
+resolved_reference = "2051db413d58b0ea3f0b17ac8083b7870aa824d1"
 
 [[package]]
 name = "scikit-learn"
@@ -3680,4 +3680,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "923aa2196c1fee31f9d19ebeedcf17ff68d2e83090450ee238e3e2b2b0e48f45"
+content-hash = "f57f042bc750ab84c8f6f7efebcd958bf592ae4f5cbd02901a1a99a07a919207"

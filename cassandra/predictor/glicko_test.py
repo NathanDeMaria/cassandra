@@ -5,6 +5,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from ..offseason import OffseasonFact, OffseasonFacts
 from ..scoring import DEFAULT_SIGMOID_SCALE
 from . import smoothing
 from .base_predictor import MEAN_RATING
@@ -28,6 +29,79 @@ def test_pass_season_widens_the_rating_deviation(game: GameFactory) -> None:
     predictor.pass_season()
 
     assert predictor.get_rating("Team A").rating_deviation > before.rating_deviation
+
+
+def _coaches() -> OffseasonFacts:
+    """2021: Left's coach took another job, Fired's was fired, Kept's stayed."""
+    return OffseasonFacts(
+        {
+            ("Left", 2021): OffseasonFact("left_for_job", None, 0.0),
+            ("Fired", 2021): OffseasonFact("fired", None, 0.0),
+        }
+    )
+
+
+def _rolled(
+    coach_change_regression: float = 0.0,
+    coach_change_rating_rd: float = 0.0,
+    coach_left_rating_shift: float = 0.0,
+) -> GlickoPredictor:
+    predictor = GlickoPredictor(
+        "test_league",
+        initial_rd=400,
+        season_rd_increase=100,
+        season_regression=0.5,
+        anchors={"Left": 1500, "Fired": 1500, "Kept": 1500},
+        ratings={team: _Rating(1700, 100) for team in ("Left", "Fired", "Kept")},
+        offseason=_coaches(),
+        coach_change_regression=coach_change_regression,
+        coach_change_rating_rd=coach_change_rating_rd,
+        coach_left_rating_shift=coach_left_rating_shift,
+    )
+    predictor.pass_season(2021)
+    return predictor
+
+
+def test_a_coaching_change_regresses_widens_and_shifts() -> None:
+    """Any change: further toward the anchor, and less sure. Left for a job: lower too."""
+    predictor = _rolled(
+        coach_change_regression=0.5,
+        coach_change_rating_rd=200,
+        coach_left_rating_shift=-40,
+    )
+    kept, fired, left = (predictor.get_rating(t) for t in ("Kept", "Fired", "Left"))
+    # The league's regression takes 1700 to 1600, from 100 rd to sqrt(2) x 100.
+    assert kept.rating == pytest.approx(1600)
+    assert kept.rating_deviation == pytest.approx(100 * math.sqrt(2))
+    # Half again of the way to 1500, and 200 more deviation in quadrature.
+    assert fired.rating == pytest.approx(1550)
+    assert fired.rating_deviation == pytest.approx(math.hypot(100 * math.sqrt(2), 200))
+    assert left.rating == pytest.approx(1510)
+    assert left.rating_deviation == fired.rating_deviation
+
+
+def test_coaching_changes_are_off_by_default() -> None:
+    predictor = _rolled()
+    ratings = [predictor.get_rating(t).rating for t in ("Kept", "Fired", "Left")]
+    assert ratings == pytest.approx([1600] * 3)
+    assert "coach_left_rating_shift" not in predictor.state_dict()
+
+
+def test_a_coaching_change_stays_under_the_initial_rd() -> None:
+    predictor = _rolled(coach_change_rating_rd=1000)
+    assert predictor.get_rating("Fired").rating_deviation == 400
+
+
+def test_the_coach_knobs_survive_a_save(tmp_path) -> None:
+    predictor = _rolled(coach_change_regression=0.25, coach_left_rating_shift=-80)
+    path = tmp_path / "glicko.json"
+    predictor.save_state(path)
+    state = GlickoPredictor.load_state(path).state_dict()
+    assert (
+        state["coach_change_regression"],
+        state["coach_change_rating_rd"],
+        state["coach_left_rating_shift"],
+    ) == (0.25, 0.0, -80)
 
 
 def test_an_anchored_team_is_no_better_measured_than_any_other(

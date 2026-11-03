@@ -39,6 +39,18 @@ nothing to read. Its eight retirements run -2.9 points over the next
 season but +1.3 in the first four games: an old roster coming apart as the
 season goes, not something the offseason knew.
 
+**College basketball** (`mens`, `womens`) reads the coach and nothing
+else: say-youll-remember-me's basketball files hold head-coach changes only,
+from Division I's season articles, each named by the year its season starts
+as the stored seasons are. Measured against `glicko_players`' published
+probabilities (the 2026-10-31 fit), 2014-2025: a coach who left for
+another job leaves his old team 3.3 points worse than the model in the new
+coach's first five games (t -5.2) and about a point worse after; the
+women's, 4.4 (t -5.5), 2.5 in games 6-15. A fired coach's team is nothing
+(-0.3, +0.7), and retirements and resignations are small either way. As a
+correction fading over the first ten games, held out by season: -0.00011
+brier men's, -0.00013 women's.
+
 Keyed by the team name a `Matchup` carries: call-it-what-you-want's current
 name in college, which is also what the data files record; in the NFL,
 endgame's nickname for the franchise ("raiders"), made from the files'
@@ -65,7 +77,12 @@ NEWCOMER_MIN_ATTEMPTS = 100
 
 #: The leagues the data files cover. Any other league has no facts, and a
 #: model reading them sees every team as unchanged.
-FACTS_LEAGUES = ("ncaafb", "nfl")
+FACTS_LEAGUES = ("ncaafb", "nfl", "mens", "womens")
+
+#: What say-youll-remember-me calls endgame's basketball leagues. Its league
+#: names are call-it-what-you-want's, and only football's agree with
+#: endgame's.
+BASKETBALL_LEAGUES = {"mens": "ncaambb", "womens": "ncaawbb"}
 
 
 class OffseasonFact(NamedTuple):
@@ -192,6 +209,8 @@ def _league_facts(league: str) -> Mapping[tuple[str, int], OffseasonFact]:
     """
     if league not in FACTS_LEAGUES:
         return {}
+    if league in BASKETBALL_LEAGUES:
+        return _coach_facts(league)
     name = _namer(league)
     # The staff file covers exactly the peers: every FBS team-season in
     # college, every franchise's in the NFL.
@@ -222,6 +241,30 @@ def _league_facts(league: str) -> Mapping[tuple[str, int], OffseasonFact]:
             coach_departure=departed.reason if departed is not None else None,
             new_quarterback=new_qb,
             quality_change=change,
+        )
+    return facts
+
+
+def _coach_facts(league: str) -> Mapping[tuple[str, int], OffseasonFact]:
+    """A league with head-coach changes and nothing else: basketball's.
+
+    Every team-season some change answers for -- an offseason change's own
+    season, or the one after a mid-season change -- asked of `departure`,
+    so which change counts (the earliest, never an interim's) is that
+    package's answer here as it is for football.
+    """
+    files = BASKETBALL_LEAGUES[league]
+    name = _namer(league)
+    facts: dict[tuple[str, int], OffseasonFact] = {}
+    for change in syrm.head_coach_changes(files):
+        season = change.season + 1 if change.midseason else change.season
+        departed = syrm.departure(change.espn_id, season, files)
+        if departed is None:
+            continue
+        facts[(name(change.team), season)] = OffseasonFact(
+            coach_departure=departed.reason,
+            new_quarterback=None,
+            quality_change=0.0,
         )
     return facts
 
