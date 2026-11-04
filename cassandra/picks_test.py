@@ -9,8 +9,10 @@ from .picks import (
     FOOTBALL,
     MIN_EDGE,
     NCAAFB_SERIES,
+    NCAAWBB_SERIES,
     PICK_LEAGUES,
     TOP_DIVISION,
+    WOMENS,
     Book,
     Fixture,
     KalshiGame,
@@ -34,6 +36,7 @@ from .picks import (
     order_fee,
     previous_games,
     price,
+    ratings_waiting,
     routes,
     skip_reason,
     top_up,
@@ -418,3 +421,48 @@ def test_football_is_the_league_the_picks_were_built_on() -> None:
     assert FOOTBALL.series == NCAAFB_SERIES
     assert FOOTBALL.top_division == TOP_DIVISION
     assert FOOTBALL.plays
+
+
+def test_womens_waits_on_player_ratings_and_reads_no_plays() -> None:
+    assert PICK_LEAGUES["womens"] is WOMENS
+    assert WOMENS.series == NCAAWBB_SERIES
+    assert WOMENS.model == "glicko_players"
+    assert WOMENS.top_division is None
+    assert WOMENS.players and not WOMENS.plays and not WOMENS.news
+    assert not FOOTBALL.players and FOOTBALL.news
+
+
+def test_a_game_waits_for_ratings_dated_after_both_previous_games() -> None:
+    # Tuesday 7pm CT, Wednesday 01:00 UTC: Tuesday by Kalshi's Eastern date.
+    tuesday = datetime(2026, 11, 4, 1, 0, tzinfo=UTC)
+    last = {
+        "Alpha": PreviousGame("a", tuesday, True),
+        "Beta": PreviousGame("b", tuesday - timedelta(days=3), True),
+        "Gamma": None,  # an opener: nothing to wait for
+        "Delta": PreviousGame("d", tuesday, False),  # not final: another rule's
+        "Omega": PreviousGame("o", tuesday, True),  # never rated
+    }
+    newest = {
+        "Alpha": date(2026, 11, 3),  # the row of Tuesday's own morning
+        "Beta": date(2026, 11, 3),
+        "Gamma": date(2026, 11, 3),
+        "Delta": date(2026, 11, 3),
+    }
+    assert ratings_waiting(last, newest) == ["Alpha"]
+    # Wednesday morning's row covers Tuesday night's game.
+    assert ratings_waiting(last, {**newest, "Alpha": date(2026, 11, 4)}) == []
+
+
+def test_a_game_behind_on_ratings_isnt_a_pick() -> None:
+    priced = price(0.80, _matched(0.60, 0.42))
+    assert priced is not None
+    reason = skip_reason(
+        priced,
+        None,
+        None,
+        [],
+        timedelta(hours=2),
+        top_division=None,
+        ratings_behind=["Alpha"],
+    )
+    assert reason == "player ratings not in yet: Alpha"

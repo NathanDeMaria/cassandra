@@ -18,6 +18,10 @@ stops applying and a note on why:
 
 `until` is required, so a stale injury can't outlive the season unread. A
 run prints every override it applied and every one that has expired.
+
+An entry is football's unless it says otherwise: `league = "womens"`
+applies it to `picks.py --league womens` alone, so news about Iowa State's
+quarterback doesn't drop Iowa State's womens games.
 """
 
 from collections.abc import Iterable, Sequence
@@ -29,12 +33,17 @@ import tomllib
 
 KINDS = ("qb_out", "exclude")
 
+#: The league an entry with no `league` applies to: every entry written
+#: before there was a second one was football's.
+DEFAULT_LEAGUE = "ncaafb"
+
 
 class Override(NamedTuple):
     kind: str
     team: str
     until: date
     note: str
+    league: str = DEFAULT_LEAGUE
 
 
 def parse(text: str, source: str = "overrides") -> list[Override]:
@@ -54,7 +63,12 @@ def parse(text: str, source: str = "overrides") -> list[Override]:
                     f"{source}: [[{kind}]] {team!r} needs an until date, e.g. "
                     "until = 2026-11-28"
                 )
-            found.append(Override(kind, team, until, str(entry.get("note", ""))))
+            league = entry.get("league", DEFAULT_LEAGUE)
+            if not isinstance(league, str) or not league:
+                raise ValueError(f"{source}: [[{kind}]] {team!r} has a bad league")
+            found.append(
+                Override(kind, team, until, str(entry.get("note", "")), league)
+            )
     return found
 
 
@@ -73,6 +87,11 @@ def split(
     for override in overrides:
         (active if today <= override.until else expired).append(override)
     return active, expired
+
+
+def for_league(overrides: Iterable[Override], league: str) -> list[Override]:
+    """The overrides that apply to `league`'s games."""
+    return [o for o in overrides if o.league == league]
 
 
 def teams(overrides: Sequence[Override], kind: str) -> list[str]:

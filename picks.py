@@ -146,7 +146,7 @@ import pickle
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -155,6 +155,8 @@ import pyarrow as pa
 from call_it_what_you_want import ESPN, KALSHI, NCAA, TeamNamer, default_teams
 from endgame.async_tools import apply_in_parallel
 from endgame.football_plays import FootballLeague, get_game_plays
+from endgame.ncaabb.gender import NcaabbGender
+from endgame.ncaabb.ncaabb import get_ncaabb_season
 from endgame.ncaafb import get_season
 from endgame.types import Game, Season, merge_weekly_seasons
 from endgame_aws import Config
@@ -186,6 +188,7 @@ from cassandra.picks import (
     max_price,
     previous_games,
     price,
+    ratings_waiting,
     skip_reason,
 )
 from cassandra.placing import CENTRAL, DEFAULT_BUDGET
@@ -195,6 +198,11 @@ from cassandra.predictor.adjustments import MatchupSources
 from cassandra.predictor.config import load_predictor_class
 from cassandra.predictor.epa import EpaIndex
 from cassandra.predictor.opponent_prior import OpponentPriorManager
+from cassandra.predictor.player_ratings import (
+    load_player_ratings,
+    player_ratings_path,
+    season_for,
+)
 from cassandra.predictor.qb_out import QbOutIndex, load_qb_out
 from cassandra.qb_out_build import build_all as build_qb_out
 from cassandra.qb_starts import Doubt, GameQb, doubts, read_qb_starts
@@ -346,11 +354,12 @@ async def _qb_out_tonight(
 
 
 def _overrides(args: argparse.Namespace) -> list[overrides.Override]:
-    """The `--overrides` file's news still applying today, each printed."""
+    """The `--overrides` file's news for `--league` still applying today,
+    each printed."""
     if args.no_overrides:
         return []
     try:
-        found = overrides.load(args.overrides)
+        found = overrides.for_league(overrides.load(args.overrides), args.league)
     except ValueError as error:
         raise SystemExit(str(error)) from None
     active, expired = overrides.split(found, datetime.now(CENTRAL).date())
@@ -403,18 +412,43 @@ def _age(path: Path) -> str:
     return f"{when:%a %b %d %H:%M} CT"
 
 
-#: Each league's latest season, played and unplayed, straight from ESPN.
-_ESPN_SEASONS: dict[str, Callable[[int], Awaitable[Season]]] = {
-    "ncaafb": lambda year: get_season(year, use_cache=False, include_unplayed=True),
+async def _football_with_espn(seasons: list[Season]) -> list[Season]:
+    """The latest season topped up from ESPN, as endgame's own pull merges it."""
+    latest = max(seasons, key=lambda s: s.year)
+    fresh = await get_season(latest.year, use_cache=False, include_unplayed=True)
+    merged = merge_weekly_seasons([latest, fresh])
+    return [merged if s is latest else s for s in seasons]
+
+
+async def _womens_with_espn(seasons: list[Season]) -> list[Season]:
+    """The season being played topped up from ESPN, from its last finished
+    day on, its fixtures with it.
+
+    The season by today's date rather than the latest stored: in a season's
+    first days s3 may not have it yet. endgame merges what it fetched into
+    what's stored, keeping a final over a later read of it mid-game.
+    """
+    year = season_for(datetime.now(CENTRAL).date())
+    current = next((s for s in seasons if s.year == year), None)
+    fresh = await get_ncaabb_season(
+        year, NcaabbGender.womens, season_so_far=current, include_unplayed=True
+    )
+    return sorted(
+        [*(s for s in seasons if s.year != year), fresh], key=lambda s: s.year
+    )
+
+
+#: How each league's seasons are topped up from ESPN with tonight's scores
+#: and the fixtures ahead.
+_ESPN_TOP_UPS: dict[str, Callable[[list[Season]], Awaitable[list[Season]]]] = {
+    "ncaafb": _football_with_espn,
+    "womens": _womens_with_espn,
 }
 
 
 async def _with_espn(seasons: list[Season], league: str) -> list[Season]:
-    """The latest season topped up from ESPN, as endgame's own pull merges it."""
-    latest = max(seasons, key=lambda s: s.year)
-    fresh = await _ESPN_SEASONS[league](latest.year)
-    merged = merge_weekly_seasons([latest, fresh])
-    return [merged if s is latest else s for s in seasons]
+    """`seasons` with the one being played topped up from ESPN."""
+    return await _ESPN_TOP_UPS[league](seasons)
 
 
 def _replay(
@@ -754,6 +788,17 @@ def run(args: argparse.Namespace) -> Outcome:
         print(f"EPA index:      {_age(data / f'{league}_epa.json')}")
         print(f"QB index:       {_age(data / f'{league}_qb_out.json')}")
         print(f"QB starts:      {_age(data / f'{league}_qb_starts.json')}")
+    # Each team's newest player-ratings row, for `ratings_waiting`.
+    newest: dict[str, date] = {}
+    if spec.players:
+        rated = load_player_ratings(league)
+        newest = {team: rows[-1].as_of for team, rows in rated.items()}
+        print(
+            f"player ratings: {_age(player_ratings_path(league))}"
+            + (f", newest rows {max(newest.values()):%b %d}" if newest else "")
+        )
+        if not newest:
+            print(f"!! no {league} player ratings: the model prices unblended")
     if not args.no_espn:
         seasons = asyncio.run(_with_espn(seasons, league))
         print(
@@ -895,6 +940,7 @@ def run(args: argparse.Namespace) -> Outcome:
         listed = [b.opened for b in (found.home, found.away) if b.opened is not None]
         entered = entry(last.values(), max(listed) if listed else None)
         since_entry = None if entered is None else now - entered
+        behind = ratings_waiting(last, newest)
         no_plays = (
             []
             if epa is None
@@ -915,6 +961,7 @@ def run(args: argparse.Namespace) -> Outcome:
             timedelta(hours=args.max_since_entry),
             args.max_overround,
             spec.top_division,
+            behind,
         )
         unknown = sorted({game.home, game.away} & unread_teams)
         if reason is None and unknown:
@@ -1071,7 +1118,7 @@ def run(args: argparse.Namespace) -> Outcome:
         sized, picks = placing.size(frame, matched, args)
         if unlisted is None:
             unlisted = sized.set_index("game_id")["skip"].dropna()
-        if not args.no_news:
+        if spec.news and not args.no_news:
             fresh = picks[~picks["game_id"].isin(news.keys())]
             news.update(placing.injury_news(fresh, games, namer))
         OUT_DIR.mkdir(parents=True, exist_ok=True)

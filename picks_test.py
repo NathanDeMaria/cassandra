@@ -50,3 +50,6 @@ def test_a_league_prices_with_its_own_model_unless_told() -> None:
     assert parse(["--model", "glicko_margin_units_roster"]).model == (
         "glicko_margin_units_roster"
     )
+
+    womens = parse(["--league", "womens"])
+    assert (womens.league, womens.model) == ("womens", "glicko_players")
