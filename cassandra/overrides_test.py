@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from .overrides import Override, parse, split, teams
+from .overrides import Override, for_league, parse, split, teams
 
 TEXT = """
 [[qb_out]]
@@ -45,3 +45,18 @@ def test_an_override_applies_through_its_until_date():
 def test_a_malformed_override_is_an_error(text):
     with pytest.raises(ValueError):
         parse(text)
+
+
+def test_an_override_is_footballs_unless_it_names_a_league():
+    found = parse(
+        TEXT
+        + """
+[[exclude]]
+team = "Iowa State Cyclones"
+until = 2026-11-28
+league = "womens"
+"""
+    )
+    assert [o.league for o in found] == ["ncaafb", "ncaafb", "womens"]
+    assert teams(for_league(found, "womens"), "exclude") == ["Iowa State Cyclones"]
+    assert teams(for_league(found, "ncaafb"), "exclude") == ["Syracuse Orange"]

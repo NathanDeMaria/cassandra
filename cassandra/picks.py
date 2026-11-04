@@ -59,10 +59,22 @@ graded.
 
 **Leagues.** A `PickLeague` says what differs by league: its Kalshi series,
 its model, where its teams' Kalshi spellings are looked up, the division a
-lower one's edge doesn't count against, and whether its model reads
-play-by-play (EPA and starting quarterbacks). The edge, the entry and the
-window are the same for every league. `PICK_LEAGUES` holds the ones
+lower one's edge doesn't count against, whether its model reads
+play-by-play (EPA and starting quarterbacks) or player ratings, and
+whether a pick's injury news is read. The edge, the entry and the window
+are the same for every league. `PICK_LEAGUES` holds the ones
 `picks.py --league` takes.
+
+Womens basketball (`WOMENS`) is the second, on `glicko_players`. On
+Kalshi's 2025-26 books, at the entry and under the same bar, it made +45%
+± 9% over 833 picks -- most of it 89 longshots under 25c; capped at 3x a
+pick's cost, +14% -- and +24% two hours before tip (November 2026, the
+10-31 fit, which had seen that season). Mens, on the same tests, lost
+near tip and made +5% ± 3% at the entry, and isn't here. The model's
+players' margin is ten-minute-version's daily ratings, filed each morning,
+so a game also waits for those to cover both teams' previous games
+(`ratings_waiting`); waiting 12-24 hours past the final cost the backtest
+little (+46% to +42%).
 
 Everything here is a pure function of Kalshi's JSON, the fixtures and the
 model's probabilities; `picks.py` at the repo root does the fetching.
@@ -76,7 +88,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
-from call_it_what_you_want import NCAAFB
+from call_it_what_you_want import NCAAFB, NCAAWBB
 from endgame.types import Game
 
 from .betting import GAME_LENGTH
@@ -132,6 +144,12 @@ class PickLeague(NamedTuple):
     #: Whether the model reads play-by-play -- EPA and starting quarterbacks
     #: -- so a run checks who played quarterback and which games have plays.
     plays: bool
+    #: Whether the model reads ten-minute-version's player ratings, so a game
+    #: waits for them to cover both teams' previous games (`ratings_waiting`).
+    players: bool
+    #: Whether a pick's injury news is read off ESPN's stories
+    #: (`placing.injury_news`, football's).
+    news: bool
 
 
 FOOTBALL = PickLeague(
@@ -141,9 +159,27 @@ FOOTBALL = PickLeague(
     teams=NCAAFB,
     top_division=TOP_DIVISION,
     plays=True,
+    players=False,
+    news=True,
 )
 
-PICK_LEAGUES: dict[str, PickLeague] = {league.name: league for league in (FOOTBALL,)}
+#: Kalshi's womens college basketball moneylines.
+NCAAWBB_SERIES = ("KXNCAAWBGAME",)
+
+WOMENS = PickLeague(
+    name="womens",
+    series=NCAAWBB_SERIES,
+    model="glicko_players",
+    teams=NCAAWBB,
+    top_division=None,
+    plays=False,
+    players=True,
+    news=False,
+)
+
+PICK_LEAGUES: dict[str, PickLeague] = {
+    league.name: league for league in (FOOTBALL, WOMENS)
+}
 
 _EVENT_DATE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})")
 _MONTHS: dict[str, int] = {
@@ -563,6 +599,29 @@ def previous_games(
     return previous
 
 
+def ratings_waiting(
+    previous: Mapping[str, PreviousGame | None], newest: Mapping[str, date]
+) -> list[str]:
+    """The teams whose player ratings haven't caught up with their previous
+    game: `newest` is each team's latest row's `as_of`, the first day its
+    fit left out.
+
+    A row covers a game when it's dated after the game's Eastern date, as
+    Kalshi files it: a late tip out west is the next day in UTC, and a row
+    dated that day might not have seen it. A team with no rows at all --
+    one the ratings don't reach -- is never waited for, since none are
+    coming; the model prices it unblended.
+    """
+    return [
+        team
+        for team, game in previous.items()
+        if game is not None
+        and game.completed
+        and team in newest
+        and newest[team] <= game.date.astimezone(EASTERN).date()
+    ]
+
+
 def entry(
     previous: Iterable[PreviousGame | None], opened: datetime | None = None
 ) -> datetime | None:
@@ -657,14 +716,18 @@ def skip_reason(
     max_since_entry: timedelta = MAX_SINCE_ENTRY,
     max_overround: float = MAX_OVERROUND,
     top_division: str | None = TOP_DIVISION,
+    ratings_behind: Sequence[str] = (),
 ) -> str | None:
     """Why a priced game isn't a pick, or None if it is. See the module docstring.
 
     `top_division` is the league's (`PickLeague.top_division`): a side from
     below it isn't backed against a team in it. None turns the rule off.
+    `ratings_behind` are the teams `ratings_waiting` names.
     """
     if waiting_on:
         return f"previous game not final: {', '.join(waiting_on)}"
+    if ratings_behind:
+        return f"player ratings not in yet: {', '.join(ratings_behind)}"
     if since_entry is not None and since_entry > max_since_entry:
         return "past the entry window"
     if priced.overround > max_overround:
