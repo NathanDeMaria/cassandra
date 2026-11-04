@@ -144,6 +144,7 @@ import json
 import logging
 import pickle
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -151,7 +152,7 @@ from typing import NamedTuple
 
 import pandas as pd
 import pyarrow as pa
-from call_it_what_you_want import ESPN, KALSHI, NCAA, NCAAFB, TeamNamer, default_teams
+from call_it_what_you_want import ESPN, KALSHI, NCAA, TeamNamer, default_teams
 from endgame.async_tools import apply_in_parallel
 from endgame.football_plays import FootballLeague, get_game_plays
 from endgame.ncaafb import get_season
@@ -169,10 +170,11 @@ from cassandra.model_eval import rebuild_priors
 from cassandra.odds import OddsDatabase
 from cassandra.picks import (
     EASTERN,
+    FOOTBALL,
     MAX_SINCE_ENTRY,
     MIN_EDGE,
-    NCAAFB_SERIES,
     NOT_HAPPENING,
+    PICK_LEAGUES,
     RUNGS_UNDER,
     Book,
     Fixture,
@@ -195,13 +197,11 @@ from cassandra.predictor.epa import EpaIndex
 from cassandra.predictor.opponent_prior import OpponentPriorManager
 from cassandra.predictor.qb_out import QbOutIndex, load_qb_out
 from cassandra.qb_out_build import build_all as build_qb_out
-from cassandra.qb_starts import GameQb, doubts, read_qb_starts
+from cassandra.qb_starts import Doubt, GameQb, doubts, read_qb_starts
 from cassandra.replay_cache import AUTHORED_DIR, GENERATED_DIR
 from cassandra.residuals import team_tiers
 from cassandra.save_predictions import join_with_odds, read_all_seasons
 
-LEAGUE = "ncaafb"
-DEFAULT_MODEL = "glicko_margin_units_success"
 PICKS_DIR = CASSANDRA_HOME / "picks"
 PLAYS_DIR = PICKS_DIR / "plays"
 OUT_DIR = CASSANDRA_HOME / "betting" / "picks"
@@ -403,10 +403,16 @@ def _age(path: Path) -> str:
     return f"{when:%a %b %d %H:%M} CT"
 
 
-async def _with_espn(seasons: list[Season]) -> list[Season]:
+#: Each league's latest season, played and unplayed, straight from ESPN.
+_ESPN_SEASONS: dict[str, Callable[[int], Awaitable[Season]]] = {
+    "ncaafb": lambda year: get_season(year, use_cache=False, include_unplayed=True),
+}
+
+
+async def _with_espn(seasons: list[Season], league: str) -> list[Season]:
     """The latest season topped up from ESPN, as endgame's own pull merges it."""
     latest = max(seasons, key=lambda s: s.year)
-    fresh = await get_season(latest.year, use_cache=False, include_unplayed=True)
+    fresh = await _ESPN_SEASONS[league](latest.year)
     merged = merge_weekly_seasons([latest, fresh])
     return [merged if s is latest else s for s in seasons]
 
@@ -483,7 +489,15 @@ class Outcome(NamedTuple):
 
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--league",
+        choices=sorted(PICK_LEAGUES),
+        default=FOOTBALL.name,
+        help="the league to price and bet (`cassandra.picks.PickLeague`)",
+    )
+    parser.add_argument(
+        "--model", help="the model to price with (default: the league's own)"
+    )
     parser.add_argument(
         "--days",
         type=float,
@@ -650,6 +664,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         help="injury sentences shown per pick",
     )
     args = parser.parse_args(argv)
+    args.model = args.model or PICK_LEAGUES[args.league].model
     args.rungs = (
         ()
         if args.no_rungs or not args.rungs.strip()
@@ -665,44 +680,30 @@ def main() -> None:
     run(parse())
 
 
-def run(args: argparse.Namespace) -> Outcome:
-    started = datetime.now(UTC)
-    league, model = LEAGUE, args.model
+class Quarterbacks(NamedTuple):
+    """What a run knows of the starting quarterbacks (`_quarterbacks`)."""
 
-    # 1. Inputs.
-    if args.offline:
-        seasons = _from_cache(league)
-    else:
-        seasons = asyncio.run(_refresh_from_s3(league, model))
-    data = CASSANDRA_HOME / "predictor" / "data"
-    print(f"fit:            {_age(GENERATED_DIR / league / f'{model}_result.json')}")
-    print(f"seasons (s3):   {_age(_seasons_cache(league))}")
-    print(f"EPA index:      {_age(data / f'{league}_epa.json')}")
-    print(f"QB index:       {_age(data / f'{league}_qb_out.json')}")
-    print(f"QB starts:      {_age(data / f'{league}_qb_starts.json')}")
-    if not args.no_espn:
-        seasons = asyncio.run(_with_espn(seasons))
-        print(
-            f"latest season:  topped up from ESPN at {datetime.now(CENTRAL):%H:%M} CT"
-        )
-    seasons = without_exhibitions(seasons, league)
-    namer = TeamNamer.for_league(league)
-    latest = max(seasons, key=lambda s: s.year)
-    games = [namer.apply(g) for week in latest.weeks for g in week.games]
-    now = datetime.now(UTC)
-    horizon = now + timedelta(days=args.days)
+    #: The model's inputs, every game's QB-out flags in them.
+    sources: MatchupSources
+    #: Whose starter's last game says he may not start the next, by team.
+    doubted: dict[str, Doubt]
+    #: Recent games with no plays on ESPN yet, and the teams waiting on them.
+    blind: dict[str, set[str]]
 
-    # The quarterbacks: the stored index, tonight's games read off ESPN's
-    # plays as the sweep will read them, and `--qb-out` news for fixtures.
-    upcoming = [
-        g
-        for g in games
-        if not g.completed and g.status not in NOT_HAPPENING and now < g.date < horizon
-    ]
+
+def _quarterbacks(
+    args: argparse.Namespace,
+    league: str,
+    latest: Season,
+    games: list[Game],
+    upcoming: list[Game],
+    lasting: list[overrides.Override],
+) -> Quarterbacks:
+    """The stored index, tonight's games read off ESPN's plays as the sweep
+    will read them, and `--qb-out` news for fixtures, lasting or not."""
     tonight, blind, tonight_qbs = asyncio.run(
         _qb_out_tonight(league, latest, games, upcoming)
     )
-    unread_teams = {t for teams in blind.values() for t in teams}
     # Whose starter's last game says he may not start the next: the sweep's
     # copy of the season, and tonight's games on top (`cassandra.qb_starts`).
     stored_qbs = read_qb_starts(league)
@@ -715,7 +716,6 @@ def run(args: argparse.Namespace) -> Outcome:
         print(f"!! no {latest.year} quarterbacks stored: no team reads as in doubt")
     season_qbs.update(tonight_qbs)
     doubted = doubts(games, season_qbs)
-    lasting = _overrides(args)
     named = _qb_out_named(args.qb_out, upcoming)
     # A lasting QB out for a team with no game in the window (a bye) has
     # nothing to apply to this run.
@@ -723,7 +723,6 @@ def run(args: argparse.Namespace) -> Outcome:
         overrides.teams(lasting, "qb_out"), upcoming, strict=False
     ).items():
         named.setdefault(game, set()).update(out)
-    args.exclude = [*args.exclude, *overrides.teams(lasting, "exclude")]
     flags = {game: set(out) for game, out in load_qb_out(league).items()}
     for extra in (tonight, named):
         for game, out in extra.items():
@@ -735,6 +734,54 @@ def run(args: argparse.Namespace) -> Outcome:
                 f"{label + ':':<16}{', '.join(sorted(out))}  ({placing.fmt_game(by_id[game])})"
             )
     sources = MatchupSources.for_league(league)._replace(qb_out=QbOutIndex(flags))
+    return Quarterbacks(sources, doubted, blind)
+
+
+def run(args: argparse.Namespace) -> Outcome:
+    started = datetime.now(UTC)
+    spec = PICK_LEAGUES[args.league]
+    league, model = spec.name, args.model
+
+    # 1. Inputs.
+    if args.offline:
+        seasons = _from_cache(league)
+    else:
+        seasons = asyncio.run(_refresh_from_s3(league, model))
+    data = CASSANDRA_HOME / "predictor" / "data"
+    print(f"fit:            {_age(GENERATED_DIR / league / f'{model}_result.json')}")
+    print(f"seasons (s3):   {_age(_seasons_cache(league))}")
+    if spec.plays:
+        print(f"EPA index:      {_age(data / f'{league}_epa.json')}")
+        print(f"QB index:       {_age(data / f'{league}_qb_out.json')}")
+        print(f"QB starts:      {_age(data / f'{league}_qb_starts.json')}")
+    if not args.no_espn:
+        seasons = asyncio.run(_with_espn(seasons, league))
+        print(
+            f"latest season:  topped up from ESPN at {datetime.now(CENTRAL):%H:%M} CT"
+        )
+    seasons = without_exhibitions(seasons, league)
+    namer = TeamNamer.for_league(league)
+    latest = max(seasons, key=lambda s: s.year)
+    games = [namer.apply(g) for week in latest.weeks for g in week.games]
+    now = datetime.now(UTC)
+    horizon = now + timedelta(days=args.days)
+
+    upcoming = [
+        g
+        for g in games
+        if not g.completed and g.status not in NOT_HAPPENING and now < g.date < horizon
+    ]
+    lasting = _overrides(args)
+    args.exclude = [*args.exclude, *overrides.teams(lasting, "exclude")]
+    by_id = {g.game_id: g for g in games}
+    if spec.plays:
+        qbs = _quarterbacks(args, league, latest, games, upcoming, lasting)
+    else:
+        if args.qb_out or overrides.teams(lasting, "qb_out"):
+            raise SystemExit(f"--qb-out: {league}'s model doesn't read quarterbacks")
+        qbs = Quarterbacks(MatchupSources.for_league(league), {}, {})
+    sources, doubted, blind = qbs
+    unread_teams = {t for teams in blind.values() for t in teams}
 
     # 2. Replay.
     clock = time.time()
@@ -763,15 +810,15 @@ def run(args: argparse.Namespace) -> Outcome:
             t.espn_id
             for spelling in (side.code, side.team)
             if spelling
-            for t in teams.find(spelling, source=KALSHI, league=NCAAFB)
+            for t in teams.find(spelling, source=KALSHI, league=spec.teams)
         }
         if not found and side.team:
             found = {
-                t.espn_id for t in teams.find(side.team, source=ESPN, league=NCAAFB)
+                t.espn_id for t in teams.find(side.team, source=ESPN, league=spec.teams)
             }
         return frozenset(found)
 
-    markets = _kalshi_markets(NCAAFB_SERIES)
+    markets = _kalshi_markets(spec.series)
     kalshi, odd = kalshi_games(markets)
     # Today's events stay listed until they settle, and the ones under way
     # have no fixture left to match; from tomorrow (Eastern) on, a Kalshi
@@ -825,7 +872,7 @@ def run(args: argparse.Namespace) -> Outcome:
 
     # 4. Price.
     tier = team_tiers(df, league)
-    epa = EpaIndex.for_league(league)
+    epa = EpaIndex.for_league(league) if spec.plays else None
     rows = []
     year = latest.year
 
@@ -848,11 +895,15 @@ def run(args: argparse.Namespace) -> Outcome:
         listed = [b.opened for b in (found.home, found.away) if b.opened is not None]
         entered = entry(last.values(), max(listed) if listed else None)
         since_entry = None if entered is None else now - entered
-        no_plays = [
-            t
-            for t, p in last.items()
-            if p is not None and p.completed and epa.get(p.game_id) is None
-        ]
+        no_plays = (
+            []
+            if epa is None
+            else [
+                t
+                for t, p in last.items()
+                if p is not None and p.completed and epa.get(p.game_id) is None
+            ]
+        )
 
         reason = skip_reason(
             priced,
@@ -863,6 +914,7 @@ def run(args: argparse.Namespace) -> Outcome:
             args.min_edge,
             timedelta(hours=args.max_since_entry),
             args.max_overround,
+            spec.top_division,
         )
         unknown = sorted({game.home, game.away} & unread_teams)
         if reason is None and unknown:

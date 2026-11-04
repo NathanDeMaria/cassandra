@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from endgame.types import Game
 
-from picks import QB_UNREAD_WINDOW, qb_reads
+from picks import QB_UNREAD_WINDOW, parse, qb_reads
 
 NOW = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)  # Tue 22:00 CT
 
@@ -42,3 +42,11 @@ def test_only_recent_unread_games_are_read_off_espn() -> None:
     later = NOW - week + QB_UNREAD_WINDOW - timedelta(hours=1)
     unread, _, _ = qb_reads(games, stored, upcoming, later)
     assert "Wheeling@Toledo" in unread
+
+
+def test_a_league_prices_with_its_own_model_unless_told() -> None:
+    args = parse([])
+    assert (args.league, args.model) == ("ncaafb", "glicko_margin_units_success")
+    assert parse(["--model", "glicko_margin_units_roster"]).model == (
+        "glicko_margin_units_roster"
+    )

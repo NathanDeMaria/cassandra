@@ -6,7 +6,11 @@ from endgame.types import Game
 from .markets import kalshi_fee
 from .picks import (
     FAVORITE_EDGE,
+    FOOTBALL,
     MIN_EDGE,
+    NCAAFB_SERIES,
+    PICK_LEAGUES,
+    TOP_DIVISION,
     Book,
     Fixture,
     KalshiGame,
@@ -336,6 +340,9 @@ def test_what_isnt_a_pick() -> None:
     assert reason("FCS", "FBS") == "lower-division side vs FBS"
     assert reason("FBS", "FCS") == ""
     assert reason("FCS", "FCS") == ""
+    # A league with no such rule backs a lower side like any other.
+    assert reason("D2", "D1", top_division=None) == ""
+    assert reason("D2", "D1", top_division="D1") == "lower-division side vs D1"
     assert reason("FBS", "FBS", waiting=["Alpha"]).startswith("previous game")
     assert reason("FBS", "FBS", since=timedelta(days=2)) == "past the entry window"
     assert reason("FBS", "FBS", min_edge=0.5) == "edge under threshold"
@@ -404,3 +411,10 @@ def test_rungs_stay_within_the_max_bet():
     # Nothing rests under a cent.
     low = rungs(0.60, 0.03, 0, 0, (0.02, 0.04), 100, 0.25, 10)
     assert [p for p, _ in low] == [0.01]
+
+
+def test_football_is_the_league_the_picks_were_built_on() -> None:
+    assert PICK_LEAGUES["ncaafb"] is FOOTBALL
+    assert FOOTBALL.series == NCAAFB_SERIES
+    assert FOOTBALL.top_division == TOP_DIVISION
+    assert FOOTBALL.plays
