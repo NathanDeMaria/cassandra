@@ -50,7 +50,7 @@ PRIORS = CASSANDRA_HOME / "picks" / "review_priors.json"
 
 def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--model", default=picks.DEFAULT_MODEL)
+    parser.add_argument("--model", default=picks.FOOTBALL.model)
     parser.add_argument(
         "--week",
         action="append",
@@ -117,15 +117,15 @@ def replayed(bets: pd.DataFrame, seasons, namer, model: str) -> pd.Series:
         # game's plays, so a flag for a game not yet played is a leak.
         flags = {
             game: set(out)
-            for game, out in load_qb_out(picks.LEAGUE).items()
+            for game, out in load_qb_out(picks.FOOTBALL.name).items()
             if game in over
         }
-        sources = MatchupSources.for_league(picks.LEAGUE)._replace(
+        sources = MatchupSources.for_league(picks.FOOTBALL.name)._replace(
             qb_out=QbOutIndex(flags)
         )
         state_seasons = [cut if s is latest else s for s in seasons]
         predictor, _ = picks._replay(
-            picks.LEAGUE, model, state_seasons, sources, PRIORS
+            picks.FOOTBALL.name, model, state_seasons, sources, PRIORS
         )
         games = {g.game_id: namer.apply(g) for week in cut.weeks for g in week.games}
         for index in indexes:
@@ -170,7 +170,7 @@ def main() -> None:
     bets = settled_bets(args.week)
     if bets.empty:
         return
-    league = picks.LEAGUE
+    league = picks.FOOTBALL.name
     seasons = (
         picks._from_cache(league)
         if args.offline

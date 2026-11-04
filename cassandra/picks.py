@@ -57,6 +57,13 @@ graded.
   the later of those games ending and the market opening (`entry`). A game
   after a bye can have its previous games end before Kalshi lists it.
 
+**Leagues.** A `PickLeague` says what differs by league: its Kalshi series,
+its model, where its teams' Kalshi spellings are looked up, the division a
+lower one's edge doesn't count against, and whether its model reads
+play-by-play (EPA and starting quarterbacks). The edge, the entry and the
+window are the same for every league. `PICK_LEAGUES` holds the ones
+`picks.py --league` takes.
+
 Everything here is a pure function of Kalshi's JSON, the fixtures and the
 model's probabilities; `picks.py` at the repo root does the fetching.
 """
@@ -69,6 +76,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
+from call_it_what_you_want import NCAAFB
 from endgame.types import Game
 
 from .betting import GAME_LENGTH
@@ -105,6 +113,37 @@ NOT_HAPPENING = frozenset({"STATUS_CANCELED", "STATUS_POSTPONED"})
 #: The division a team must be in for the model's edge on it to count
 #: against a team from a lower one. See the module docstring.
 TOP_DIVISION = "FBS"
+
+
+class PickLeague(NamedTuple):
+    """What a league's picks run reads, and what it rules out. See the module
+    docstring's "Leagues"."""
+
+    #: Cassandra's name for it: its s3 seasons, models and team namer.
+    name: str
+    #: The Kalshi series its games are listed in.
+    series: tuple[str, ...]
+    #: The model it prices with unless `picks.py --model` says otherwise.
+    model: str
+    #: call-it-what-you-want's league, which Kalshi's spellings are filed under.
+    teams: str
+    #: `skip_reason`'s `top_division`; None for no such rule.
+    top_division: str | None
+    #: Whether the model reads play-by-play -- EPA and starting quarterbacks
+    #: -- so a run checks who played quarterback and which games have plays.
+    plays: bool
+
+
+FOOTBALL = PickLeague(
+    name="ncaafb",
+    series=NCAAFB_SERIES,
+    model="glicko_margin_units_success",
+    teams=NCAAFB,
+    top_division=TOP_DIVISION,
+    plays=True,
+)
+
+PICK_LEAGUES: dict[str, PickLeague] = {league.name: league for league in (FOOTBALL,)}
 
 _EVENT_DATE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})")
 _MONTHS: dict[str, int] = {
@@ -617,8 +656,13 @@ def skip_reason(
     min_edge: float = MIN_EDGE,
     max_since_entry: timedelta = MAX_SINCE_ENTRY,
     max_overround: float = MAX_OVERROUND,
+    top_division: str | None = TOP_DIVISION,
 ) -> str | None:
-    """Why a priced game isn't a pick, or None if it is. See the module docstring."""
+    """Why a priced game isn't a pick, or None if it is. See the module docstring.
+
+    `top_division` is the league's (`PickLeague.top_division`): a side from
+    below it isn't backed against a team in it. None turns the rule off.
+    """
     if waiting_on:
         return f"previous game not final: {', '.join(waiting_on)}"
     if since_entry is not None and since_entry > max_since_entry:
@@ -631,6 +675,10 @@ def skip_reason(
         return "edge under threshold"
     if priced.cost is not None and priced.edge < edge_needed(priced.cost, min_edge):
         return f"edge under {FAVORITE_EDGE * 100:.0f} points at {FAVORITE_PRICE * 100:.0f}c+"
-    if other_division == TOP_DIVISION and side_division != TOP_DIVISION:
-        return "lower-division side vs FBS"
+    if (
+        top_division is not None
+        and other_division == top_division
+        and side_division != top_division
+    ):
+        return f"lower-division side vs {top_division}"
     return None

@@ -49,7 +49,7 @@ LOOKBACK = timedelta(days=5)
 
 def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--model", default=picks.DEFAULT_MODEL)
+    parser.add_argument("--model", default=picks.FOOTBALL.model)
     parser.add_argument("--offline", action="store_true", help="skip s3")
     parser.add_argument("--no-espn", action="store_true", help="skip the ESPN top-up")
     parser.add_argument(
@@ -105,15 +105,17 @@ def model_home_probabilities(args, seasons, namer, fixtures):
         if not g.completed and g.status not in NOT_HAPPENING and g.date > now
     ]
     tonight, _, _ = asyncio.run(
-        picks._qb_out_tonight(picks.LEAGUE, latest, games, upcoming)
+        picks._qb_out_tonight(picks.FOOTBALL.name, latest, games, upcoming)
     )
     named = picks._qb_out_named(args.qb_out, upcoming)
-    flags = {game: set(out) for game, out in load_qb_out(picks.LEAGUE).items()}
+    flags = {game: set(out) for game, out in load_qb_out(picks.FOOTBALL.name).items()}
     for extra in (tonight, named):
         for game, out in extra.items():
             flags.setdefault(game, set()).update(out)
-    sources = MatchupSources.for_league(picks.LEAGUE)._replace(qb_out=QbOutIndex(flags))
-    predictor, _ = picks._replay(picks.LEAGUE, args.model, seasons, sources)
+    sources = MatchupSources.for_league(picks.FOOTBALL.name)._replace(
+        qb_out=QbOutIndex(flags)
+    )
+    predictor, _ = picks._replay(picks.FOOTBALL.name, args.model, seasons, sources)
     return {
         f.game.game_id: predictor.predict_game(f.game).team1_win_prob for f in fixtures
     }
@@ -137,14 +139,14 @@ def main() -> None:
         print(f"cash ${cash:,.2f}; no open positions")
         return
 
-    league = picks.LEAGUE
+    league = picks.FOOTBALL.name
     seasons = (
         picks._from_cache(league)
         if args.offline
         else asyncio.run(picks._refresh_from_s3(league, args.model))
     )
     if not args.no_espn:
-        seasons = asyncio.run(picks._with_espn(seasons))
+        seasons = asyncio.run(picks._with_espn(seasons, league))
     seasons = without_exhibitions(seasons, league)
     namer = TeamNamer.for_league(league)
     latest = max(seasons, key=lambda s: s.year)
