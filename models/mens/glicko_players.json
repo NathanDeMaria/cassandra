@@ -131,6 +131,22 @@
             "coach_left_rating_shift": -100.0,
             "coach_change_regression": 0.3,
             "coach_change_rating_rd": 300.0
+        },
+        {
+            "glicko_share": 1.4255,
+            "player_rating_weight": 17.0,
+            "absence_weight": 11.8,
+            "luck_share": 0.36,
+            "player_variance_scale": 0.4,
+            "player_floor": 9.4,
+            "weekly_rd_increase": 39.6,
+            "season_rd_increase": 153.5,
+            "season_regression": 0.276,
+            "initial_rd": 288.0,
+            "home_advantage_slope": 34.0,
+            "coach_left_rating_shift": -76.0,
+            "coach_change_regression": 0.14,
+            "coach_change_rating_rd": 300.0
         }
     ]
 }
