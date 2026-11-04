@@ -10,10 +10,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
+import numpy as np
 from bayes_opt import BayesianOptimization
 
 from .box import ParameterBound as _ParameterBound
-from .box import Seed, continuous_range, for_bayes_opt, is_integer, misplaced
+from .box import (
+    Seed,
+    continuous_range,
+    for_bayes_opt,
+    from_unit,
+    is_integer,
+    misplaced,
+    scaled_range,
+    to_unit,
+)
 from .checkpoint import Checkpoint
 
 # What each searchable parameter can be, whatever range a config asks for.
@@ -273,8 +283,11 @@ def optimize(
         if problem is not None:
             raise ValueError(f"seed {dict(seed)}: {problem}")
 
+    def scaled(**point: Any) -> float:
+        return function(**from_unit(point, param_bounds))
+
     optimizer = BayesianOptimization(
-        f=function,
+        f=scaled,
         # The docs confirm list-of-str is how you do categorical
         # https://bayesian-optimization.github.io/BayesianOptimization/3.2.0/parameter_types.html#3.-Categorical-variables
         pbounds=for_bayes_opt(param_bounds),
@@ -282,11 +295,11 @@ def optimize(
     )
     total = len(seeds) + INIT_POINTS + iterations
 
-    resumed = _load(optimizer, checkpoint)
+    resumed = _load(optimizer, checkpoint, param_bounds)
     if resumed:
         print(f"[optimize] resumed at probe {resumed} of {total}")
     last_chunk: float | None = None
-    with _saving_on_sigterm(optimizer, checkpoint):
+    with _saving_on_sigterm(optimizer, checkpoint, param_bounds):
         while len(optimizer.res) < total:
             done = len(optimizer.res)
             if (
@@ -308,7 +321,7 @@ def optimize(
                 for seed in seeds:
                     # Queued, so maximize scores them first: it drains the
                     # queue before it draws the random start.
-                    optimizer.probe(params=dict(seed), lazy=True)
+                    optimizer.probe(params=to_unit(seed, param_bounds), lazy=True)
                 handed = len(seeds) + INIT_POINTS
             init_points = INIT_POINTS if done == 0 else 0
             step = min(checkpoint_every, total - done)
@@ -316,14 +329,18 @@ def optimize(
             # before it counts iterations, so a chunk smaller than the start
             # runs the start and no more.
             optimizer.maximize(init_points=init_points, n_iter=step - handed)
-            _save(optimizer, checkpoint)
+            _save(optimizer, checkpoint, param_bounds)
             last_chunk = clock() - started
 
     if optimizer.max is None:
         raise ValueError("Optimizer did not find a maximum")
 
+    results = [
+        {**probe, "params": from_unit(probe["params"], param_bounds)}
+        for probe in optimizer.res
+    ]
     diagnostics = _diagnose(
-        optimizer.res, param_bounds, iterations=iterations, seeded=len(seeds)
+        results, param_bounds, iterations=iterations, seeded=len(seeds)
     )
     for warning in diagnostics.warnings():
         print(f"[optimize] {warning}")
@@ -332,10 +349,14 @@ def optimize(
     # save for the retry, and one that finished has nothing left to resume.
     if checkpoint is not None:
         checkpoint.clear()
-    return optimizer.max["target"], optimizer.max["params"]
+    return optimizer.max["target"], from_unit(optimizer.max["params"], param_bounds)
 
 
-def _load(optimizer: BayesianOptimization, checkpoint: Checkpoint | None) -> int:
+def _load(
+    optimizer: BayesianOptimization,
+    checkpoint: Checkpoint | None,
+    param_bounds: Mapping[str, _ParameterBound],
+) -> int:
     """Restore a save into `optimizer`; the number of probes it carried, 0 if none.
 
     A save for a different box is left alone and said so. The retry after a
@@ -358,28 +379,78 @@ def _load(optimizer: BayesianOptimization, checkpoint: Checkpoint | None) -> int
             f"({', '.join(optimizer.space.keys)}): starting over"
         )
         return 0
+    # The same names with different bounds -- a bound widened between the
+    # attempts -- still resumes: the saved probes are points in the old box,
+    # moved into this one before `load_state` registers them.
+    _rescale(saved, optimizer, param_bounds)
     # `load_state` wants a path, not bytes.
-    with tempfile.NamedTemporaryFile(suffix=".json") as handle:
-        handle.write(state)
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w") as handle:
+        json.dump(saved, handle)
         handle.flush()
         optimizer.load_state(handle.name)
-    # The same names with different bounds -- a bound widened between the
-    # attempts -- loads fine: `load_state` keeps the bounds this attempt was
-    # given and registers the saved probes as points, which they still are.
     return len(optimizer.res)
 
 
-def _save(optimizer: BayesianOptimization, checkpoint: Checkpoint | None) -> None:
+# Where a save records the box its probes were scaled in. bayes_opt's own
+# "pbounds" can't say: it only ever sees [0, 1].
+_SAVED_BOX = "cassandra_box"
+
+
+def _rescale(
+    saved: dict[str, Any],
+    optimizer: BayesianOptimization,
+    param_bounds: Mapping[str, _ParameterBound],
+) -> None:
+    """Move a save's probes from the box they were scaled in into `param_bounds`.
+
+    A save without a recorded box predates the scaling (`scaled_range`), so
+    its probes are in the config's own units -- a retry that lands across
+    that deploy resumes rather than reading 188.5 as a fraction.
+    """
+    box = saved.get(_SAVED_BOX, {})
+    params = np.asarray(saved["params"], dtype=np.float64)
+    if params.size == 0:
+        return
+    for name in optimizer.space.keys:
+        span = scaled_range(param_bounds[name])
+        # Unchanged bounds are left alone rather than scaled out and back
+        # in: the round trip is off in the last bit, and a resumed search
+        # has to reproduce the unbroken one probe for probe.
+        if span is None or box.get(name) == list(span):
+            continue
+        column = optimizer.space.masks[name]
+        values = params[:, column]
+        if name in box:
+            old_low, old_high = box[name]
+            values = old_low + values * (old_high - old_low)
+        low, high = span
+        params[:, column] = (values - low) / (high - low)
+    saved["params"] = params.tolist()
+
+
+def _save(
+    optimizer: BayesianOptimization,
+    checkpoint: Checkpoint | None,
+    param_bounds: Mapping[str, _ParameterBound],
+) -> None:
     if checkpoint is None:
         return
     with tempfile.NamedTemporaryFile(suffix=".json") as handle:
         optimizer.save_state(handle.name)
-        checkpoint.save(Path(handle.name).read_bytes())
+        state = json.loads(Path(handle.name).read_text())
+    state[_SAVED_BOX] = {
+        name: list(span)
+        for name, bound in param_bounds.items()
+        if (span := scaled_range(bound)) is not None
+    }
+    checkpoint.save(json.dumps(state).encode())
 
 
 @contextmanager
 def _saving_on_sigterm(
-    optimizer: BayesianOptimization, checkpoint: Checkpoint | None
+    optimizer: BayesianOptimization,
+    checkpoint: Checkpoint | None,
+    param_bounds: Mapping[str, _ParameterBound],
 ) -> Iterator[None]:
     """Save the search when the container is told to stop.
 
@@ -400,7 +471,7 @@ def _saving_on_sigterm(
 
     def handler(signum: int, frame: object) -> None:
         print("[optimize] SIGTERM: saving the search before stopping", flush=True)
-        _save(optimizer, checkpoint)
+        _save(optimizer, checkpoint, param_bounds)
         raise SystemExit(128 + signum)
 
     previous = signal.signal(signal.SIGTERM, handler)

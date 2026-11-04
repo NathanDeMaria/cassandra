@@ -471,3 +471,65 @@ def test_optimize__a_cut_short_search_clears_its_checkpoint(tmp_path: Path) -> N
     )
 
     assert save.load() is None
+
+
+# --- scaling -----------------------------------------------------------------
+#
+# bayes_opt searches each fractional bound as a fraction of its width (see
+# `box.scaled_range`); the objective, the seeds and the answer stay in the
+# config's own units.
+
+
+def test_optimize__the_objective_sees_the_config_units() -> None:
+    seen: list[float] = []
+
+    def f(rd: float) -> float:
+        seen.append(rd)
+        return -((rd - 450.0) ** 2)
+
+    _, params = optimize(f, {"rd": (200.0, 800.0)}, iterations=5)
+
+    assert min(seen) >= 200.0 and max(seen) <= 800.0
+    assert max(seen) - min(seen) > 100.0
+    assert 200.0 <= float(params["rd"]) <= 800.0
+
+
+def test_optimize__a_seed_comes_back_as_itself() -> None:
+    """188.5, not 188.49999999999997: a held seed reads as the seed."""
+    seen: list[float] = []
+
+    def f(rd: float) -> float:
+        seen.append(rd)
+        return -((rd - 188.5) ** 2)
+
+    _, params = optimize(f, {"rd": (100.0, 600.0)}, iterations=2, seeds=[{"rd": 188.5}])
+
+    assert seen[0] == 188.5
+    assert params["rd"] == 188.5
+
+
+def test_optimize__a_narrow_knob_moves_beside_wide_ones() -> None:
+    """The reason for the scaling, in a box shaped like glicko_players'.
+
+    In raw units the surrogate fits one length scale to the deviations'
+    hundreds, and the share's whole range is a single point inside it: from
+    a seed that is off only in the share, main's search at twenty iterations
+    gained nothing and left the share at 0.9.
+    """
+    wide = ["initial_rd", "season_rd", "coach_rd", "shift"]
+    bounds: dict[str, Any] = {"share": (0.55, 2.0), "regression": (0.0, 1.0)}
+    bounds |= {name: (0.0, 600.0) for name in wide}
+
+    def f(share: float, regression: float, **deviations: float) -> float:
+        return (
+            -(((share - 1.2) / 1.45) ** 2)
+            - (regression - 0.3) ** 2
+            - sum(((value - 300.0) / 600.0) ** 2 for value in deviations.values())
+        )
+
+    seed = {"share": 0.9, "regression": 0.3} | {name: 300.0 for name in wide}
+    target, params = optimize(f, bounds, iterations=20, seeds=[seed])
+
+    # The seed is f = -0.043 and the peak 0.
+    assert target > 0.75 * f(**seed)
+    assert float(params["share"]) > 1.1

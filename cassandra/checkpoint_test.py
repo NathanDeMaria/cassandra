@@ -121,14 +121,16 @@ def test_a_sigterm_saves_before_stopping(tmp_path: Path) -> None:
     # retry pays for it again.
     resumed_path = interrupted.probes[:11] + resumed.probes
     assert len(resumed_path) == len(unbroken.probes)
-    # Approximately, unlike the chunk-boundary reloads above, which are
-    # exact: a save taken mid-probe carries a random state already advanced
-    # for the suggestion in flight, so the resumed acquisition search starts
-    # from different seeds and lands on the same optimum to ~1e-6 -- and
-    # those differences compound to ~1e-4 by the twentieth probe after. The
-    # same search, not a different one; a retry that lands a chunk boundary
-    # off gets the exact one.
-    assert np.allclose(resumed_path, unbroken.probes, atol=1e-3)
+    # The same answer, not the same path, unlike the chunk-boundary reloads
+    # above, which are exact: a save taken mid-probe carries a random state
+    # already advanced for the suggestion in flight, so the restarts that fit
+    # the surrogate's length scale start elsewhere and the next few probes
+    # go elsewhere too. Both finish at the bowl's peak, where random probes
+    # score around -10. A retry that lands a chunk boundary off gets the
+    # exact path.
+    assert resumed_path[:11] == unbroken.probes[:11]
+    assert max(_bowl(*probe) for probe in resumed_path) > -1e-3
+    assert max(_bowl(*probe) for probe in unbroken.probes) > -1e-3
 
 
 def test_a_finished_search_drops_its_save(tmp_path: Path) -> None:
@@ -274,3 +276,51 @@ def test_a_save_with_the_same_names_and_wider_bounds_resumes(tmp_path: Path) -> 
 
     # Five saved, so the retry scores the five that were left and no more.
     assert len(resumed.probes) == 5
+
+
+def _saved_probes(
+    checkpoint: FileCheckpoint, bounds: dict[str, tuple[float, float]]
+) -> list[tuple[float, float]]:
+    """What a search over `bounds` would resume with, in the config's units."""
+    from bayes_opt import BayesianOptimization
+
+    from .box import for_bayes_opt, from_unit
+    from .optimize import _load
+
+    optimizer = BayesianOptimization(f=None, pbounds=for_bayes_opt(bounds))
+    _load(optimizer, checkpoint, bounds)
+    return [
+        (point["x"], point["y"])
+        for point in (from_unit(probe["params"], bounds) for probe in optimizer.res)
+    ]
+
+
+def test_a_wider_bound_resumes_with_the_probes_where_they_were(
+    tmp_path: Path,
+) -> None:
+    """The save is in fractions of the old box; the retry's box is wider."""
+    checkpoint = FileCheckpoint(tmp_path / "search.json")
+    first = _Recording(fail_at=7)
+    with pytest.raises(RuntimeError):
+        optimize(first, BOUNDS, iterations=5, checkpoint=checkpoint, checkpoint_every=5)
+
+    wider = {"x": (-6.0, 6.0), "y": (-3.0, 3.0)}
+    assert np.allclose(_saved_probes(checkpoint, wider), first.probes[:5])
+
+
+def test_a_save_from_before_the_scaling_resumes_in_the_config_units(
+    tmp_path: Path,
+) -> None:
+    """A retry that lands across the deploy reads the old save's raw values."""
+    checkpoint = FileCheckpoint(tmp_path / "search.json")
+    first = _Recording(fail_at=7)
+    with pytest.raises(RuntimeError):
+        optimize(first, BOUNDS, iterations=5, checkpoint=checkpoint, checkpoint_every=5)
+
+    # What the save looked like before: no box, the probes in raw units.
+    saved = json.loads(checkpoint.load() or b"")
+    del saved["cassandra_box"]
+    saved["params"] = [[x, y] for x, y in first.probes[:5]]
+    checkpoint.save(json.dumps(saved).encode())
+
+    assert np.allclose(_saved_probes(checkpoint, BOUNDS), first.probes[:5])

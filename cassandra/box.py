@@ -34,12 +34,74 @@ def is_integer(bound: ParameterBound) -> bool:
     return len(bound) == 3 and bound[2] == INTEGER
 
 
+def scaled_range(bound: ParameterBound) -> tuple[float, float] | None:
+    """The `(low, high)` a fractional bound is searched in as [0, 1]; None for the rest.
+
+    bayes_opt fits one length scale to every dimension in the units it is
+    handed, so a box that mixes `initial_rd: [200, 800]` with
+    `glicko_share: [0.55, 2]` gets a length scale of a few hundred, and
+    across that the shares and regressions are all the same point: the
+    surrogate cannot see them move, and the search spends its probes in the
+    corners of the wide dimensions. Searching each fractional bound as a
+    fraction of its width puts every one on the same footing.
+
+    Whole-numbered bounds keep their own units -- bayes_opt rounds them in
+    its kernel, which only works on the integers themselves, and they span a
+    few steps, close to a unit already -- and so do categoricals, which it
+    one-hot encodes. A bound with no width has nothing to scale.
+    """
+    span = continuous_range(bound)
+    if span is None or is_integer(bound) or span[1] <= span[0]:
+        return None
+    return span
+
+
 def for_bayes_opt(param_bounds: Mapping[str, ParameterBound]) -> dict[str, Any]:
-    """The box as `BayesianOptimization(pbounds=)` takes it."""
+    """The box as `BayesianOptimization(pbounds=)` takes it, see `scaled_range`."""
     return {
-        name: (bound[0], bound[1], int) if is_integer(bound) else bound
+        name: (
+            (0.0, 1.0)
+            if scaled_range(bound) is not None
+            else (bound[0], bound[1], int)
+            if is_integer(bound)
+            else bound
+        )
         for name, bound in param_bounds.items()
     }
+
+
+def to_unit(point: Seed, param_bounds: Mapping[str, ParameterBound]) -> dict[str, Any]:
+    """`point` in the units `for_bayes_opt` searches."""
+    out: dict[str, Any] = {}
+    for name, value in point.items():
+        span = scaled_range(param_bounds[name])
+        if span is None:
+            out[name] = value
+        else:
+            low, high = span
+            out[name] = (float(value) - low) / (high - low)
+    return out
+
+
+def from_unit(
+    point: Mapping[str, Any], param_bounds: Mapping[str, ParameterBound]
+) -> dict[str, Any]:
+    """The inverse of `to_unit`: a point bayes_opt proposed, in the config's units.
+
+    Rounded to twelve significant figures, so a seed comes back as itself
+    -- 188.5 rather than 188.49999999999997 -- and a published fit reads as
+    the seed it held rather than a neighbour of it.
+    """
+    out: dict[str, Any] = {}
+    for name, value in point.items():
+        span = scaled_range(param_bounds[name])
+        if span is None:
+            out[name] = value
+        else:
+            low, high = span
+            value = float(f"{low + float(value) * (high - low):.12g}")
+            out[name] = min(high, max(low, value))
+    return out
 
 
 def misplaced(seed: Seed, param_bounds: Mapping[str, ParameterBound]) -> str | None:
