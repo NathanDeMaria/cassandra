@@ -221,3 +221,54 @@ def test_a_rung_goes_when_its_side_has_its_starter_in_doubt():
     assert placing.stale_rungs(orders, frame, matched) == []
     [(_, why)] = placing.stale_rungs(orders, frame, matched, hold_qb=True)
     assert why == "QB in doubt: Home Team: A.Ace (5 starts) didn't play Oct 31"
+
+
+def test_a_leagues_exposure_is_its_positions_and_resting_orders():
+    held = [
+        {"ticker": "KXNCAAWBGAME-26NOV05UCFFLA-FLA", "market_exposure_dollars": "4.20"},
+        {"ticker": "KXNCAAFGAME-26NOV07OSUPUR-OSU", "market_exposure_dollars": "9.00"},
+    ]
+    resting = [
+        # 10 YES at 30c, and a NO bid at a 60c YES price: 5 NO at 40c.
+        {
+            "ticker": "KXNCAAWBGAME-26NOV05JACMIA-JAC",
+            "side": "yes",
+            "action": "buy",
+            "yes_price_dollars": "0.30",
+            "remaining_count_fp": "10",
+        },
+        {
+            "ticker": "KXNCAAWBGAME-26NOV05HAMPSMU-SMU",
+            "side": "no",
+            "action": "buy",
+            "yes_price_dollars": "0.60",
+            "remaining_count_fp": "5",
+        },
+        {
+            "ticker": "KXNCAAFGAME-26NOV07OSUPUR-PUR",
+            "side": "yes",
+            "action": "buy",
+            "yes_price_dollars": "0.10",
+            "remaining_count_fp": "50",
+        },
+    ]
+    womens = placing.league_exposure(held, resting, ("KXNCAAWBGAME",))
+    assert womens == pytest.approx(4.20 + 3.00 + 2.00)
+    football = placing.league_exposure(held, resting, ("KXNCAAFGAME", "KXNCAAFCSGAME"))
+    assert football == pytest.approx(9.00 + 5.00)
+    # A quarter of $100 with $9.20 out leaves $15.80, and never less than none.
+    assert placing.exposure_room(100.0, 0.25, womens) == pytest.approx(15.80)
+    assert placing.exposure_room(100.0, 0.05, womens) == 0.0
+
+
+def test_a_longshot_is_sized_smaller_and_says_so(no_books):
+    frame, matched = _frame([0, 0])
+    frame["cost"] = [0.44, 0.12]
+    frame["limit"] = [0.43, 0.11]
+    frame["model"] = [0.60, 0.30]
+    _, full = placing.size(frame, matched, _args())
+    args = _args(longshot_price=0.25, longshot_scale=0.5)
+    _, shrunk = placing.size(frame, matched, args)
+    assert shrunk["contracts"].iloc[0] == full["contracts"].iloc[0]
+    assert shrunk["contracts"].iloc[1] < full["contracts"].iloc[1]
+    assert "0.5x under 25c" in placing.sizing(args)

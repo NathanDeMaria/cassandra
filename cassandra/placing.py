@@ -47,6 +47,7 @@ from .kalshi_trade import (
 from .picks import (
     FAVORITE_EDGE,
     FAVORITE_PRICE,
+    Longshots,
     allocate,
     contracts_for,
     fillable,
@@ -88,8 +89,11 @@ def sizing(args: argparse.Namespace) -> str:
         found = (
             f"${_budget(args):g} split by Kelly weight, at most ${args.max_bet:g} a bet"
         )
+    longshots = _longshots(args)
+    if longshots.scale != 1.0 and longshots.price > 0:
+        found += f", {longshots.scale:g}x under {longshots.price * 100:g}c"
     if args.kelly_fraction is not None and args.budget is not None:
-        found += f", ${args.budget:g} this run"
+        found += f", ${args.budget:,.2f} this run"
     if args.cash is not None:
         found += f", ${args.cash:,.2f} cash"
     return found
@@ -113,6 +117,7 @@ def _targets(picks: pd.DataFrame, args: argparse.Namespace) -> list[int]:
     """Each pick's contracts before what's held: Kelly on the bankroll, or a
     Kelly-weighted share of the budget. Either way at most `--max-bet`."""
     limits = list(picks["limit"])
+    longshots = _longshots(args)
     if args.kelly_fraction is not None:
         return kelly_counts(
             list(picks["model"]),
@@ -121,12 +126,55 @@ def _targets(picks: pd.DataFrame, args: argparse.Namespace) -> list[int]:
             args.bankroll,
             args.kelly_fraction,
             args.max_bet,
+            longshots,
         )
-    weights = [kelly(m, c) for m, c in zip(picks["model"], picks["cost"])]
+    weights = [
+        longshots.of(c) * kelly(m, c) for m, c in zip(picks["model"], picks["cost"])
+    ]
     return [
         min(n, contracts_for(args.max_bet, limit))
         for n, limit in zip(allocate(_budget(args), limits, weights), limits)
     ]
+
+
+def _longshots(args: argparse.Namespace) -> Longshots:
+    """`--longshot-price` and `--longshot-scale`, or no shrink."""
+    return Longshots(
+        getattr(args, "longshot_price", 0.0), getattr(args, "longshot_scale", 1.0)
+    )
+
+
+def league_exposure(
+    market_positions: Sequence[Mapping],
+    resting: Sequence[Mapping],
+    series: Sequence[str],
+) -> float:
+    """Dollars a league has at risk: what its open positions cost
+    (`market_exposure_dollars`), and the most its resting orders -- rungs
+    too -- could still spend. A market is the league's when its ticker is in
+    one of `series`, the league's (`PickLeague.series`).
+    """
+
+    def ours(ticker: str) -> bool:
+        return ticker.split("-", 1)[0] in series
+
+    held = sum(
+        float(p.get("market_exposure_dollars") or 0)
+        for p in market_positions
+        if ours(p["ticker"])
+    )
+    waiting = sum(
+        float(o.get("remaining_count_fp") or 0) * order_price(o)
+        for o in resting
+        if ours(o["ticker"])
+    )
+    return held + waiting
+
+
+def exposure_room(bankroll: float, max_exposure: float, exposure: float) -> float:
+    """What a league may still put at risk: `max_exposure` of the bankroll,
+    less what it has there already, and never below nothing."""
+    return max(max_exposure * bankroll - exposure, 0.0)
 
 
 def size(
@@ -228,7 +276,8 @@ def _rungs(
             (row["held"] + row["contracts"]) * row["limit"] + row["fee"],
             unders,
             args.bankroll,
-            args.kelly_fraction,
+            # A longshot's rungs are shrunk with it.
+            args.kelly_fraction * _longshots(args).of(row["cost"]),
             args.max_bet,
         )
         for _, row in picks.iterrows()

@@ -522,14 +522,13 @@ def _picks(espn: bool) -> None:
             return
         rules = picks_job.autobet(s3, bucket)
         print(rules.describe())
-        argv = [
-            "--place",
-            "--kelly-fraction",
-            str(rules.kelly_fraction),
-            "--max-bet",
-            str(rules.max_bet),
-        ]
-        if rules.paused:
+        league = picks_job.FIRST_LEAGUE
+        placing = rules.placing(league)
+        # A league with no rules is still priced, at the defaults, and placed
+        # nowhere: its stale rungs still come off.
+        sizing = rules.leagues.get(league) or picks_job.LeagueRules()
+        argv = ["--place", "--league", league, *sizing.argv()]
+        if not placing:
             # Priced on the real account, nothing placed; the rungs already
             # resting still come off when the model stops backing them.
             argv += ["--notify", "--dry-run"] + (
@@ -552,7 +551,7 @@ def _picks(espn: bool) -> None:
         # so a bet is read against the run that made it; the orders only
         # when they were really sent.
         if not rehearsal:
-            for key in picks_job.keep(s3, bucket, now, orders=not rules.paused):
+            for key in picks_job.keep(s3, bucket, now, orders=placing):
                 print(f"kept s3://{bucket}/{key}")
 
         # The one email a run sends: a hold no email has carried. Placements

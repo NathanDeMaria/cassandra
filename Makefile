@@ -77,16 +77,19 @@ bet:
 # The cloud picks job (`jobs.py picks`, cassandra/picks_job.py) places the
 # picks itself, all day: a quarter Kelly, at most $10 a bet, the cash on hand
 # the budget. It emails only a pick held on QB news, and a summary at 8am.
-# `make pause` stops it placing and `make resume` starts it again; `make
-# autobet ARGS="--max-bet 15 --kelly-fraction 0.2"` changes the sizing. The
+# `make pause` stops it placing and `make resume` starts it again (one league
+# with ARGS="--league womens"); `make autobet ARGS="--max-bet 15
+# --kelly-fraction 0.2"` changes football's sizing, and `ARGS="--league womens
+# --kelly-fraction 0.125 --max-bet 5 --max-exposure 0.25 --longshot-price 0.25
+# --longshot-scale 0.5"` opts womens in at its own (`--remove` drops it). The
 # job reads its overrides from s3: `make push-overrides` after editing
 # ~/.cassandra/betting/overrides.toml. `make picks-status` says whether it's
 # placing, and lists the last emails' picks with their --only ids.
 pause:
-	poetry run python -m cassandra.picks_job pause
+	poetry run python -m cassandra.picks_job pause $(ARGS)
 
 resume:
-	poetry run python -m cassandra.picks_job resume
+	poetry run python -m cassandra.picks_job resume $(ARGS)
 
 autobet:
 	poetry run python -m cassandra.picks_job autobet $(ARGS)

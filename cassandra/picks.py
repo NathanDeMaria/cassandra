@@ -434,6 +434,25 @@ def allocate(
     return [0] * len(prices)
 
 
+class Longshots(NamedTuple):
+    """A pick costing under `price`, fee included, is staked at `scale` of
+    what it would be otherwise. The default shrinks nothing.
+
+    Womens basketball's backtest edge sat mostly in longshots: at the entry,
+    89 picks under 25c made +346% and everything else about +14%. Books that
+    early are thin -- half had traded nothing -- and a 3c ask may be one
+    contract nobody corrected; until live fills say those prices are real,
+    they're staked smaller.
+    """
+
+    price: float = 0.0
+    scale: float = 1.0
+
+    def of(self, cost: float) -> float:
+        """The share of its stake a pick costing `cost` gets."""
+        return self.scale if cost < self.price else 1.0
+
+
 def kelly_counts(
     probabilities: Sequence[float],
     costs: Sequence[float],
@@ -441,6 +460,7 @@ def kelly_counts(
     bankroll: float,
     fraction: float,
     max_bet: float,
+    longshots: Longshots = Longshots(),
 ) -> list[int]:
     """Contracts for each pick staked on its own: `fraction` of Kelly on `bankroll`.
 
@@ -448,9 +468,12 @@ def kelly_counts(
     are, so picks that turn up an hour apart are sized alike. Each stake is
     at most `max_bet`, and the contracts are counted at the pick's limit
     price, fee included, so a fill at the limit costs no more than the stake.
+    A longshot's stake is shrunk first (`Longshots`).
     """
     return [
-        contracts_for(min(fraction * kelly(p, c) * bankroll, max_bet), limit)
+        contracts_for(
+            min(fraction * longshots.of(c) * kelly(p, c) * bankroll, max_bet), limit
+        )
         for p, c, limit in zip(probabilities, costs, limits)
     ]
 
@@ -717,12 +740,14 @@ def skip_reason(
     max_overround: float = MAX_OVERROUND,
     top_division: str | None = TOP_DIVISION,
     ratings_behind: Sequence[str] = (),
+    min_price: float = 0.0,
 ) -> str | None:
     """Why a priced game isn't a pick, or None if it is. See the module docstring.
 
     `top_division` is the league's (`PickLeague.top_division`): a side from
     below it isn't backed against a team in it. None turns the rule off.
-    `ratings_behind` are the teams `ratings_waiting` names.
+    `ratings_behind` are the teams `ratings_waiting` names. A pick costing
+    under `min_price`, fee included, isn't one; the default keeps them all.
     """
     if waiting_on:
         return f"previous game not final: {', '.join(waiting_on)}"
@@ -738,6 +763,8 @@ def skip_reason(
         return "edge under threshold"
     if priced.cost is not None and priced.edge < edge_needed(priced.cost, min_edge):
         return f"edge under {FAVORITE_EDGE * 100:.0f} points at {FAVORITE_PRICE * 100:.0f}c+"
+    if priced.cost is not None and priced.cost < min_price:
+        return f"price under {min_price * 100:g}c"
     if (
         top_division is not None
         and other_division == top_division

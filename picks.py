@@ -166,7 +166,13 @@ from cassandra import overrides, placing
 from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
-from cassandra.kalshi_trade import KalshiClient, event_of, is_rung, public_get
+from cassandra.kalshi_trade import (
+    KalshiClient,
+    event_of,
+    is_rung,
+    public_get,
+    signed_positions,
+)
 from cassandra.markets import MAX_OVERROUND
 from cassandra.model_eval import rebuild_priors
 from cassandra.odds import OddsDatabase
@@ -573,6 +579,34 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         help="with --kelly-fraction: the bankroll to size on, instead of the account's",
     )
     parser.add_argument(
+        "--max-exposure",
+        type=float,
+        metavar="SHARE",
+        help="with --place: the most of the bankroll this league's open positions "
+        "and resting orders may hold, e.g. 0.25; this run spends only what's left",
+    )
+    parser.add_argument(
+        "--longshot-price",
+        type=float,
+        default=0.0,
+        metavar="COST",
+        help="a pick costing under this, fee included, is staked at "
+        "--longshot-scale of its size (`cassandra.picks.Longshots`)",
+    )
+    parser.add_argument(
+        "--longshot-scale",
+        type=float,
+        default=1.0,
+        help="the share of its stake a pick under --longshot-price gets",
+    )
+    parser.add_argument(
+        "--min-price",
+        type=float,
+        default=0.0,
+        metavar="COST",
+        help="skip picks costing under this, fee included",
+    )
+    parser.add_argument(
         "--top",
         type=int,
         default=10,
@@ -962,6 +996,7 @@ def run(args: argparse.Namespace) -> Outcome:
             args.max_overround,
             spec.top_division,
             behind,
+            args.min_price,
         )
         unknown = sorted({game.home, game.away} & unread_teams)
         if reason is None and unknown:
@@ -1023,7 +1058,8 @@ def run(args: argparse.Namespace) -> Outcome:
     if args.place:
         client = KalshiClient.from_env(demo=args.demo, dry_run=args.dry_run)
         cash, invested = client.account()
-        positions = client.positions()
+        held_markets = client.market_positions()
+        positions = signed_positions(held_markets)
         orders = client.resting_orders()
         resting = {event_of(o["ticker"]) for o in orders if not is_rung(o)}
         rung_orders = [o for o in orders if is_rung(o)]
@@ -1044,6 +1080,18 @@ def run(args: argparse.Namespace) -> Outcome:
             raise SystemExit(
                 f"--budget ${args.budget:g} is more than the ${cash:,.2f} on hand"
             )
+        if args.max_exposure is not None:
+            # The league's share of the account: what it has at risk now
+            # counts against it, and only the rest can go out this run.
+            bankroll = args.bankroll if args.bankroll is not None else cash + invested
+            at_risk = placing.league_exposure(held_markets, orders, spec.series)
+            room = placing.exposure_room(bankroll, args.max_exposure, at_risk)
+            print(
+                f"{league} at risk: ${at_risk:,.2f} of its "
+                f"${args.max_exposure * bankroll:,.2f} cap "
+                f"({args.max_exposure:g} of ${bankroll:,.2f}); ${room:,.2f} left"
+            )
+            args.budget = room if args.budget is None else min(args.budget, room)
         for i, row in frame.iterrows():
             found = matched[row["game_id"]]
             side, other = (

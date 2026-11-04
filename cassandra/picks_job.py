@@ -2,10 +2,13 @@
 emailed, a lock -- and the emails themselves.
 
 The job runs `picks.py` on a schedule and after every ncaafb finals sweep,
-and places the picks itself (`picks.py --place --yes`): a quarter Kelly,
-at most $10 a bet, the cash on hand the only budget, each order resting
-`REST_HOURS` before it's cancelled. `make pause` stops that and `make
-resume` starts it again; `make autobet` changes the sizing. Each pick's
+and places the picks itself (`picks.py --place --yes`) by each league's
+rules (`LeagueRules`): football's default is a quarter Kelly, at most $10 a
+bet, the cash on hand the only budget, each order resting `REST_HOURS`
+before it's cancelled. A league with a `max_exposure` spends only what its
+share of the bankroll has left. `make pause` stops that and `make resume`
+starts it again, the whole job or `ARGS="--league L"`'s; `make autobet`
+changes a league's sizing, or adds one. Each pick's
 rungs (`picks.py`'s "Rungs") rest until kickoff, and every run with the key
 cancels the ones the model no longer backs.
 
@@ -22,8 +25,10 @@ Two emails, and only two (Nathan, 2026-11-01):
 
 Objects in s3, each small JSON or TOML:
 
-- `cassandra/betting/autobet.json` (batch bucket): `paused`, `max_bet`,
-  `kelly_fraction` (`Autobet`). None means the defaults: placing, as above.
+- `cassandra/betting/autobet.json` (batch bucket): `paused`, and under
+  `leagues` each league's rules (`Autobet`, `LeagueRules`). None means the
+  defaults: football placing, as above. A file from before `leagues`, its
+  `max_bet` and `kelly_fraction` at the top, reads as football's.
 - `cassandra/betting/sent.json` (batch bucket): every pick emailed, by game
   id -- holds marked as such -- and each email's numbered list, so "place 1
   and 3 from the 22:40 email" names games rather than positions in a list
@@ -44,10 +49,11 @@ Every run copies its picks file, and the orders file when it placed, to
 gave each bet: `make ledger` reads them, and so does the morning summary.
 """
 
+import argparse
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -166,37 +172,146 @@ def keep(s3: Any, bucket: str, since: datetime, orders: bool = True) -> list[str
 # ------------------------------------------------------------------------------
 
 
+#: The league an old, flat `autobet.json` -- one set of rules, from before
+#: there were two leagues -- is read as.
+FIRST_LEAGUE = "ncaafb"
+
+
+@dataclass
+class LeagueRules:
+    """How the job sizes one league's bets. See `picks.py`'s "Sizing"."""
+
+    kelly_fraction: float = 0.25
+    max_bet: float = 10.0
+    #: The most of the bankroll the league's open positions and resting
+    #: orders may hold (`picks.py --max-exposure`); None for no cap.
+    max_exposure: float | None = None
+    #: A pick costing under `longshot_price` is staked at `longshot_scale`
+    #: of its Kelly (`cassandra.picks.Longshots`).
+    longshot_price: float = 0.0
+    longshot_scale: float = 1.0
+    #: A pick costing under this isn't placed (`picks.py --min-price`).
+    min_price: float = 0.0
+    #: Priced, not placed: the league's own `make pause`.
+    paused: bool = False
+
+    @classmethod
+    def from_json(cls, value: dict) -> "LeagueRules":
+        exposure = value.get("max_exposure")
+        return cls(
+            kelly_fraction=float(value.get("kelly_fraction", 0.25)),
+            max_bet=float(value.get("max_bet", 10.0)),
+            max_exposure=None if exposure is None else float(exposure),
+            longshot_price=float(value.get("longshot_price", 0.0)),
+            longshot_scale=float(value.get("longshot_scale", 1.0)),
+            min_price=float(value.get("min_price", 0.0)),
+            paused=bool(value.get("paused", False)),
+        )
+
+    def to_json(self) -> dict:
+        return {
+            "kelly_fraction": self.kelly_fraction,
+            "max_bet": self.max_bet,
+            "max_exposure": self.max_exposure,
+            "longshot_price": self.longshot_price,
+            "longshot_scale": self.longshot_scale,
+            "min_price": self.min_price,
+            "paused": self.paused,
+        }
+
+    def argv(self) -> list[str]:
+        """`picks.py`'s sizing flags for these rules."""
+        found = [
+            "--kelly-fraction",
+            f"{self.kelly_fraction:g}",
+            "--max-bet",
+            f"{self.max_bet:g}",
+        ]
+        if self.max_exposure is not None:
+            found += ["--max-exposure", f"{self.max_exposure:g}"]
+        if self.longshot_price > 0 and self.longshot_scale != 1.0:
+            found += [
+                "--longshot-price",
+                f"{self.longshot_price:g}",
+                "--longshot-scale",
+                f"{self.longshot_scale:g}",
+            ]
+        if self.min_price > 0:
+            found += ["--min-price", f"{self.min_price:g}"]
+        return found
+
+    def describe(self) -> str:
+        found = f"{self.kelly_fraction:g} Kelly, at most ${self.max_bet:g} a bet"
+        if self.max_exposure is not None:
+            found += f", at most {self.max_exposure:.0%} of the bankroll at risk"
+        if self.longshot_price > 0 and self.longshot_scale != 1.0:
+            found += f", {self.longshot_scale:g}x stakes under {self.longshot_price * 100:g}c"
+        if self.min_price > 0:
+            found += f", nothing under {self.min_price * 100:g}c"
+        return found
+
+
+def _first_league_only() -> dict[str, LeagueRules]:
+    return {FIRST_LEAGUE: LeagueRules()}
+
+
 @dataclass
 class Autobet:
-    """The rules the job places by. No file in s3 means these defaults."""
+    """The rules the job places by. No file in s3 means these defaults:
+    football at a quarter Kelly and $10 a bet, and no other league.
+
+    A league with no rules isn't placed: each one is opted into with `make
+    autobet ARGS="--league ..."`. Every league sizes on the whole bankroll
+    and spends the same cash, so a league that shouldn't take what another
+    needs has a `max_exposure`.
+    """
 
     paused: bool = False
-    max_bet: float = 10.0
-    kelly_fraction: float = 0.25
+    leagues: dict[str, LeagueRules] = field(default_factory=_first_league_only)
 
     @classmethod
     def from_json(cls, value: dict) -> "Autobet":
+        if "leagues" not in value:
+            # The flat file of one league's rules, and the pause, as written
+            # before there were two.
+            return cls(
+                paused=bool(value.get("paused", False)),
+                leagues={FIRST_LEAGUE: LeagueRules.from_json(value)},
+            )
         return cls(
             paused=bool(value.get("paused", False)),
-            max_bet=float(value.get("max_bet", 10.0)),
-            kelly_fraction=float(value.get("kelly_fraction", 0.25)),
+            leagues={
+                league: LeagueRules.from_json(rules)
+                for league, rules in value["leagues"].items()
+            },
         )
 
     def to_json(self) -> dict:
         return {
             "paused": self.paused,
-            "max_bet": self.max_bet,
-            "kelly_fraction": self.kelly_fraction,
+            "leagues": {
+                league: rules.to_json() for league, rules in self.leagues.items()
+            },
         }
+
+    def placing(self, league: str) -> bool:
+        """Whether the job places `league`'s picks: it has rules, and neither
+        it nor the whole job is paused."""
+        rules = self.leagues.get(league)
+        return not self.paused and rules is not None and not rules.paused
 
     def describe(self) -> str:
         if self.paused:
             return (
                 "autobet paused: runs price and cancel stale rungs, and place nothing"
             )
+        leagues = "; ".join(
+            f"{league} {'paused' if rules.paused else rules.describe()}"
+            for league, rules in sorted(self.leagues.items())
+        )
         return (
-            f"autobet on: {self.kelly_fraction:g} Kelly, at most ${self.max_bet:g} a "
-            f"bet, the cash on hand the budget, orders resting {REST_HOURS:g}h"
+            f"autobet on: {leagues or 'no leagues'}; the cash on hand the budget, "
+            f"orders resting {REST_HOURS:g}h"
         )
 
 
@@ -513,39 +628,90 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
+def parse(argv: list[str] | None = None) -> argparse.Namespace:
+    """`main`'s commands: `pause` and `resume`, the whole job or `--league`'s;
+    `autobet --league L` to set (or with `--remove`, drop) one league's rules,
+    a league not listed yet starting from `LeagueRules`' defaults; and
+    `push-overrides` and `status`."""
+    parser = argparse.ArgumentParser(prog="python -m cassandra.picks_job")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name, help in (
+        ("pause", "stop placing; runs still price"),
+        ("resume", "place the picks again"),
+    ):
+        command = commands.add_parser(name, help=help)
+        command.add_argument("--league", help="only this league (default: all)")
+    rules = commands.add_parser("autobet", help="change how the job sizes its bets")
+    rules.add_argument("--league", default=FIRST_LEAGUE)
+    rules.add_argument("--max-bet", type=float)
+    rules.add_argument("--kelly-fraction", type=float)
+    rules.add_argument("--max-exposure", type=float, metavar="SHARE")
+    rules.add_argument(
+        "--no-max-exposure", action="store_true", help="lift the league's cap"
+    )
+    rules.add_argument("--longshot-price", type=float, metavar="COST")
+    rules.add_argument("--longshot-scale", type=float)
+    rules.add_argument("--min-price", type=float, metavar="COST")
+    rules.add_argument(
+        "--remove", action="store_true", help="drop the league: it isn't placed"
+    )
+    commands.add_parser("push-overrides", help="copy the overrides file up for the job")
+    commands.add_parser("status", help="the autobet rules, and the last emails' picks")
+    return parser.parse_args(argv)
+
+
+def changed(current: Autobet, args: argparse.Namespace) -> Autobet:
+    """The rules after a `pause`, `resume` or `autobet` command."""
+    leagues = {name: replace(rules) for name, rules in current.leagues.items()}
+    found = Autobet(current.paused, leagues)
+    if args.command in ("pause", "resume"):
+        paused = args.command == "pause"
+        if args.league is None:
+            found.paused = paused
+        elif args.league in leagues:
+            leagues[args.league].paused = paused
+        else:
+            raise ValueError(
+                f"no rules for {args.league}: add them with `make autobet "
+                f'ARGS="--league {args.league} ..."`'
+            )
+        return found
+    if args.remove:
+        leagues.pop(args.league, None)
+        return found
+    rules = leagues.setdefault(args.league, LeagueRules())
+    for name in (
+        "kelly_fraction",
+        "max_bet",
+        "max_exposure",
+        "longshot_price",
+        "longshot_scale",
+        "min_price",
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(rules, name, value)
+    if args.no_max_exposure:
+        rules.max_exposure = None
+    return found
+
+
 def main(argv: list[str] | None = None) -> None:
     """`make pause` / `make resume` / `make autobet` / `make push-overrides` /
     `make picks-status`."""
-    import argparse
-
     from endgame_aws import Config
 
     from cassandra.placing import CENTRAL
 
-    parser = argparse.ArgumentParser(prog="python -m cassandra.picks_job")
-    commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("pause", help="stop placing; runs still price")
-    commands.add_parser("resume", help="place the picks again")
-    rules = commands.add_parser("autobet", help="change how the job sizes its bets")
-    rules.add_argument("--max-bet", type=float)
-    rules.add_argument("--kelly-fraction", type=float)
-    commands.add_parser("push-overrides", help="copy the overrides file up for the job")
-    commands.add_parser("status", help="the autobet rules, and the last emails' picks")
-    args = parser.parse_args(argv)
-
+    args = parse(argv)
     s3 = client("s3")
     bucket = Config.init_from_file().bucket
     current = autobet(s3, bucket)
     if args.command in ("pause", "resume", "autobet"):
-        if args.command == "pause":
-            current.paused = True
-        elif args.command == "resume":
-            current.paused = False
-        else:
-            if args.max_bet is not None:
-                current.max_bet = args.max_bet
-            if args.kelly_fraction is not None:
-                current.kelly_fraction = args.kelly_fraction
+        try:
+            current = changed(current, args)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
         write_json(s3, bucket, AUTOBET_KEY, current.to_json())
         print(current.describe())
     elif args.command == "push-overrides":

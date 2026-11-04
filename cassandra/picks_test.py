@@ -16,6 +16,7 @@ from .picks import (
     Book,
     Fixture,
     KalshiGame,
+    Longshots,
     Matched,
     PreviousGame,
     allocate,
@@ -466,3 +467,29 @@ def test_a_game_behind_on_ratings_isnt_a_pick() -> None:
         ratings_behind=["Alpha"],
     )
     assert reason == "player ratings not in yet: Alpha"
+
+
+def test_a_longshot_is_staked_at_its_share_of_kelly():
+    shrink = Longshots(price=0.25, scale=0.5)
+    assert shrink.of(0.24) == 0.5 and shrink.of(0.25) == 1.0
+    assert Longshots().of(0.01) == 1.0
+    # Kelly at p .3, cost .1 is .22: a quarter on $100 is $5.56, halved $2.78.
+    full = kelly_counts([0.3], [0.1], [0.1], 100, 0.25, 10)
+    half = kelly_counts([0.3], [0.1], [0.1], 100, 0.25, 10, shrink)
+    assert full == [contracts_for(0.25 * kelly(0.3, 0.1) * 100, 0.1)]
+    assert half == [contracts_for(0.125 * kelly(0.3, 0.1) * 100, 0.1)]
+    # A favorite isn't touched.
+    assert kelly_counts([0.9], [0.6], [0.6], 100, 0.25, 10, shrink) == kelly_counts(
+        [0.9], [0.6], [0.6], 100, 0.25, 10
+    )
+
+
+def test_a_pick_under_the_price_floor_isnt_one():
+    cheap = price(0.20, _matched(0.88, 0.08))
+    assert cheap is not None and cheap.cost is not None and cheap.cost < 0.10
+    fresh = timedelta(hours=1)
+    assert skip_reason(cheap, None, None, [], fresh, top_division=None) is None
+    assert (
+        skip_reason(cheap, None, None, [], fresh, top_division=None, min_price=0.10)
+        == "price under 10c"
+    )

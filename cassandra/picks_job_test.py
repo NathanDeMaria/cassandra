@@ -9,7 +9,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from cassandra import picks_job
-from cassandra.picks_job import Autobet
+from cassandra.picks_job import Autobet, LeagueRules
 
 NOW = datetime(2026, 10, 21, 3, 30, tzinfo=UTC)  # Tue 22:30 CT
 
@@ -161,8 +161,11 @@ def test_keep_leaves_a_dry_runs_orders_behind(tmp_path, monkeypatch):
 def test_no_autobet_file_means_placing_at_the_defaults():
     s3 = FakeS3()
     rules = picks_job.autobet(s3, "b")
-    assert rules == Autobet(paused=False, max_bet=10.0, kelly_fraction=0.25)
-    assert rules.describe().startswith("autobet on: 0.25 Kelly, at most $10 a bet")
+    assert rules == Autobet(paused=False, leagues={"ncaafb": LeagueRules()})
+    assert rules.placing("ncaafb") and not rules.placing("womens")
+    assert rules.describe().startswith(
+        "autobet on: ncaafb 0.25 Kelly, at most $10 a bet"
+    )
     picks_job.write_json(s3, "b", picks_job.AUTOBET_KEY, Autobet(paused=True).to_json())
     assert picks_job.autobet(s3, "b").paused
     assert picks_job.autobet(s3, "b").describe().startswith("autobet paused")
@@ -355,3 +358,66 @@ def test_holds_since_lists_only_the_picks_emailed_as_held_lately():
     assert [
         h["game_id"] for h in picks_job.holds_since(sent, NOW - timedelta(days=1))
     ] == ["2"]
+
+
+def test_an_autobet_file_from_before_leagues_is_footballs():
+    old = {"paused": False, "max_bet": 15.0, "kelly_fraction": 0.2}
+    rules = Autobet.from_json(old)
+    assert rules.leagues == {"ncaafb": LeagueRules(kelly_fraction=0.2, max_bet=15.0)}
+    assert Autobet.from_json(rules.to_json()) == rules
+
+
+def test_a_league_is_opted_in_paused_and_dropped_on_its_own():
+    def run(rules: Autobet, *argv: str) -> Autobet:
+        return picks_job.changed(rules, picks_job.parse(list(argv)))
+
+    rules = run(
+        Autobet(),
+        "autobet",
+        "--league",
+        "womens",
+        "--kelly-fraction",
+        "0.125",
+        "--max-bet",
+        "5",
+        "--max-exposure",
+        "0.25",
+        "--longshot-price",
+        "0.25",
+        "--longshot-scale",
+        "0.5",
+    )
+    womens = rules.leagues["womens"]
+    assert womens == LeagueRules(0.125, 5.0, 0.25, 0.25, 0.5)
+    assert rules.leagues["ncaafb"] == LeagueRules()
+    assert womens.argv() == [
+        "--kelly-fraction",
+        "0.125",
+        "--max-bet",
+        "5",
+        "--max-exposure",
+        "0.25",
+        "--longshot-price",
+        "0.25",
+        "--longshot-scale",
+        "0.5",
+    ]
+    assert LeagueRules().argv() == ["--kelly-fraction", "0.25", "--max-bet", "10"]
+    assert "womens 0.125 Kelly, at most $5 a bet, at most 25% of the bankroll" in (
+        rules.describe()
+    )
+
+    paused = run(rules, "pause", "--league", "womens")
+    assert not paused.placing("womens") and paused.placing("ncaafb")
+    assert rules.placing("womens"), "the rules changed were a copy"
+    assert "womens paused" in paused.describe()
+    assert run(paused, "resume", "--league", "womens").placing("womens")
+    everything = run(rules, "pause")
+    assert not everything.placing("ncaafb") and not everything.placing("womens")
+
+    uncapped = run(rules, "autobet", "--league", "womens", "--no-max-exposure")
+    assert uncapped.leagues["womens"].max_exposure is None
+    dropped = run(rules, "autobet", "--league", "womens", "--remove")
+    assert "womens" not in dropped.leagues
+    with pytest.raises(ValueError, match="no rules for mens"):
+        run(rules, "pause", "--league", "mens")
