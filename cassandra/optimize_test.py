@@ -476,7 +476,7 @@ def test_optimize__a_cut_short_search_clears_its_checkpoint(tmp_path: Path) -> N
 # --- scaling -----------------------------------------------------------------
 #
 # bayes_opt searches each fractional bound as a fraction of its width (see
-# `box.scaled_range`); the objective, the seeds and the answer stay in the
+# `box.Scale`); the objective, the seeds and the answer stay in the
 # config's own units.
 
 
@@ -533,3 +533,46 @@ def test_optimize__a_narrow_knob_moves_beside_wide_ones() -> None:
     # The seed is f = -0.043 and the peak 0.
     assert target > 0.75 * f(**seed)
     assert float(params["share"]) > 1.1
+
+
+@pytest.mark.parametrize("value", [0.0, 0.2, 5.1, 19.99, 20.0])
+def test_scale__a_log_bound_round_trips_through_zero(value: float) -> None:
+    from .box import Scale
+
+    log = Scale(0.0, 20.0, log=True)
+    assert log.from_unit(log.to_unit(value)) == value
+    assert log.to_unit(0.0) == 0.0 and log.to_unit(20.0) == 1.0
+
+
+def test_scale__a_log_bound_spreads_the_bottom_of_its_range() -> None:
+    """[1, 40, "log"]: 2 to 4 gets several times the room it gets on a line."""
+    from .box import Scale
+
+    log = Scale(1.0, 40.0, log=True)
+    linear = Scale(1.0, 40.0)
+    assert log.to_unit(4.0) - log.to_unit(2.0) > 3 * (
+        linear.to_unit(4.0) - linear.to_unit(2.0)
+    )
+
+
+def test_optimize__a_log_bound_is_probed_in_the_config_units() -> None:
+    seen: list[float] = []
+
+    def f(weight: float) -> float:
+        seen.append(weight)
+        return -((weight - 3.0) ** 2)
+
+    bounds: dict[str, Any] = {"weight": (0.0, 40.0, "log")}
+    _, params = optimize(f, bounds, iterations=8, seeds=[{"weight": 0.0}])
+
+    assert seen[0] == 0.0
+    assert min(seen) >= 0.0 and max(seen) <= 40.0
+    assert abs(float(params["weight"]) - 3.0) < 1.0
+
+
+def test_diagnose__a_log_bound_hit_keeps_its_marker() -> None:
+    results = _results([1.0, 2.0, 3.0, 4.0], w=[39.9] * 4, x=[0.5] * 4)
+    bounds: dict[str, Any] = {"w": (1.0, 40.0, "log"), "x": (0.0, 1.0)}
+
+    (hit,) = _diagnose(results, bounds).bound_hits
+    assert 'try "w": [1, 79, "log"]' in str(hit)

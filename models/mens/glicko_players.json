@@ -8,11 +8,13 @@
         ],
         "player_rating_weight": [
             1,
-            40
+            40,
+            "log"
         ],
         "absence_weight": [
             0,
-            50
+            50,
+            "log"
         ],
         "luck_share": [
             0,
@@ -20,11 +22,13 @@
         ],
         "player_variance_scale": [
             0.0,
-            20.0
+            20.0,
+            "log"
         ],
         "player_floor": [
             0.0,
-            20.0
+            20.0,
+            "log"
         ],
         "weekly_rd_increase": [
             0,

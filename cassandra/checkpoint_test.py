@@ -11,6 +11,7 @@ import json
 import os
 import signal
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -279,7 +280,7 @@ def test_a_save_with_the_same_names_and_wider_bounds_resumes(tmp_path: Path) -> 
 
 
 def _saved_probes(
-    checkpoint: FileCheckpoint, bounds: dict[str, tuple[float, float]]
+    checkpoint: FileCheckpoint, bounds: dict[str, Any]
 ) -> list[tuple[float, float]]:
     """What a search over `bounds` would resume with, in the config's units."""
     from bayes_opt import BayesianOptimization
@@ -324,3 +325,15 @@ def test_a_save_from_before_the_scaling_resumes_in_the_config_units(
     checkpoint.save(json.dumps(saved).encode())
 
     assert np.allclose(_saved_probes(checkpoint, BOUNDS), first.probes[:5])
+
+
+def test_a_bound_turned_log_resumes_with_the_probes_where_they_were(
+    tmp_path: Path,
+) -> None:
+    checkpoint = FileCheckpoint(tmp_path / "search.json")
+    first = _Recording(fail_at=7)
+    with pytest.raises(RuntimeError):
+        optimize(first, BOUNDS, iterations=5, checkpoint=checkpoint, checkpoint_every=5)
+
+    logged: dict[str, Any] = {"x": (-3.0, 3.0, "log"), "y": (-3.0, 3.0)}
+    assert np.allclose(_saved_probes(checkpoint, logged), first.probes[:5])
