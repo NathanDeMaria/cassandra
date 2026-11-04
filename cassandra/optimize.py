@@ -12,18 +12,23 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 
 import numpy as np
 from bayes_opt import BayesianOptimization
+from bayes_opt.acquisition import UpperConfidenceBound
 
-from .box import ParameterBound as _ParameterBound
 from .box import (
+    INTEGER,
+    LOG,
+    Scale,
     Seed,
     continuous_range,
     for_bayes_opt,
     from_unit,
     is_integer,
+    is_log,
     misplaced,
-    scaled_range,
+    scale,
     to_unit,
 )
+from .box import ParameterBound as _ParameterBound
 from .checkpoint import Checkpoint
 
 # What each searchable parameter can be, whatever range a config asks for.
@@ -80,9 +85,10 @@ class _BoundHit:
     # A wider bound to try, ready to paste into the model config. None when the
     # hit edge can't be widened.
     suggestion: tuple[float, float] | None
-    # Whether the bound searches whole numbers, so the suggestion keeps the
-    # marker: pasted without it, an int parameter turns into a float one.
-    integer: bool = False
+    # The bound's third element, "int" or "log", so the suggestion keeps it:
+    # pasted without it, an int parameter turns into a float one and a log
+    # one into a linear one.
+    marker: str | None = None
 
     def __str__(self) -> str:
         low, high = self.bounds
@@ -106,7 +112,7 @@ class _BoundHit:
                 "the search is asking for something the model can't do"
             )
         new_low, new_high = self.suggestion
-        marker = ', "int"' if self.integer else ""
+        marker = f', "{self.marker}"' if self.marker else ""
         return (
             f'{head}: try "{self.parameter}": '
             f"[{_number(new_low)}, {_number(new_high)}{marker}]"
@@ -227,6 +233,21 @@ def _diagnose(
 # not draw them again.
 INIT_POINTS = 5
 
+# How far the search reaches for the unknown: UCB scores a point at its
+# predicted value plus KAPPA predicted deviations. bayes_opt's 2.576 is
+# built for a search that starts from nothing; ours start from a seed that
+# is already close, where the gains are in its neighbourhood and 2.576 in
+# thirteen dimensions spends every probe on corners the surrogate knows
+# least about -- glicko_players had not beaten its seed in a run since the
+# seeds went in. In a synthetic glicko_players-shaped box with the optimum
+# a few percent of each range from the seed, 2.576 captured none of the
+# available gain in 100 iterations and 0.5 captured 96-100%; with one knob
+# far off, 0.5 still found it, faster. On the real womens replay it is a
+# start, not a cure: the first search to beat that seed, by 8e-6 on its last
+# probe, where a local compass search found 4.3e-5 in 371. One length scale
+# per dimension on top of this found nothing at all.
+KAPPA = 0.5
+
 # Probes between saves. A probe on ncaafb is five to ten seconds of replay,
 # so this is a couple of minutes of work at risk between saves -- the SIGTERM
 # save below is what covers the gap when the reclaim is announced -- against
@@ -292,6 +313,7 @@ def optimize(
         # https://bayesian-optimization.github.io/BayesianOptimization/3.2.0/parameter_types.html#3.-Categorical-variables
         pbounds=for_bayes_opt(param_bounds),
         random_state=1,
+        acquisition_function=UpperConfidenceBound(kappa=KAPPA),
     )
     total = len(seeds) + INIT_POINTS + iterations
 
@@ -403,7 +425,7 @@ def _rescale(
 ) -> None:
     """Move a save's probes from the box they were scaled in into `param_bounds`.
 
-    A save without a recorded box predates the scaling (`scaled_range`), so
+    A save without a recorded box predates the scaling (`box.Scale`), so
     its probes are in the config's own units -- a retry that lands across
     that deploy resumes rather than reading 188.5 as a fraction.
     """
@@ -412,19 +434,18 @@ def _rescale(
     if params.size == 0:
         return
     for name in optimizer.space.keys:
-        span = scaled_range(param_bounds[name])
+        now = scale(param_bounds[name])
+        then = Scale.from_saved(box[name]) if name in box else None
         # Unchanged bounds are left alone rather than scaled out and back
         # in: the round trip is off in the last bit, and a resumed search
         # has to reproduce the unbroken one probe for probe.
-        if span is None or box.get(name) == list(span):
+        if now is None or then == now:
             continue
         column = optimizer.space.masks[name]
-        values = params[:, column]
-        if name in box:
-            old_low, old_high = box[name]
-            values = old_low + values * (old_high - old_low)
-        low, high = span
-        params[:, column] = (values - low) / (high - low)
+        params[:, column] = [
+            [now.to_unit(value if then is None else then.from_unit(value))]
+            for value in params[:, column].ravel()
+        ]
     saved["params"] = params.tolist()
 
 
@@ -439,9 +460,9 @@ def _save(
         optimizer.save_state(handle.name)
         state = json.loads(Path(handle.name).read_text())
     state[_SAVED_BOX] = {
-        name: list(span)
+        name: found.saved()
         for name, bound in param_bounds.items()
-        if (span := scaled_range(bound)) is not None
+        if (found := scale(bound)) is not None
     }
     checkpoint.save(json.dumps(state).encode())
 
@@ -510,8 +531,16 @@ def _find_bound_hits(
             bounds=(low, high),
             top_share=in_zone / len(top_params),
             suggestion=_widen(name, (low, high), edge),
-            integer=is_integer(param_bounds[name]),
+            marker=_marker(param_bounds[name]),
         )
+
+
+def _marker(bound: _ParameterBound) -> str | None:
+    if is_integer(bound):
+        return INTEGER
+    if is_log(bound):
+        return LOG
+    return None
 
 
 def _widen(
