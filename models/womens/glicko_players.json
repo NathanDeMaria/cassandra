@@ -57,10 +57,13 @@
         "coach_change_rating_rd": [
             0,
             400
+        ],
+        "home_advantage": [
+            45,
+            110
         ]
     },
     "fixed": {
-        "home_advantage": 77.10475710658311,
         "scoring_method": "sigmoid",
         "sigmoid_scale": 6.886004210295965,
         "passes": 3
@@ -81,7 +84,8 @@
             "initial_rd": 547.389,
             "coach_left_rating_shift": 0.0,
             "coach_change_regression": 0.0,
-            "coach_change_rating_rd": 0.0
+            "coach_change_rating_rd": 0.0,
+            "home_advantage": 77.10475710658311
         },
         {
             "glicko_share": 1.45,
@@ -96,7 +100,8 @@
             "initial_rd": 400.0,
             "coach_left_rating_shift": 0.0,
             "coach_change_regression": 0.0,
-            "coach_change_rating_rd": 0.0
+            "coach_change_rating_rd": 0.0,
+            "home_advantage": 77.10475710658311
         },
         {
             "glicko_share": 1.45,
@@ -111,7 +116,8 @@
             "initial_rd": 400.0,
             "coach_left_rating_shift": -200.0,
             "coach_change_regression": 0.3,
-            "coach_change_rating_rd": 300.0
+            "coach_change_rating_rd": 300.0,
+            "home_advantage": 77.10475710658311
         },
         {
             "glicko_share": 1.45,
@@ -126,7 +132,8 @@
             "initial_rd": 400.0,
             "coach_left_rating_shift": -200.0,
             "coach_change_regression": 0.3,
-            "coach_change_rating_rd": 0.0
+            "coach_change_rating_rd": 0.0,
+            "home_advantage": 77.10475710658311
         },
         {
             "glicko_share": 1.4645,
@@ -141,7 +148,24 @@
             "initial_rd": 352.0,
             "coach_left_rating_shift": -232.0,
             "coach_change_regression": 0.22,
-            "coach_change_rating_rd": 268.0
+            "coach_change_rating_rd": 268.0,
+            "home_advantage": 77.10475710658311
+        },
+        {
+            "glicko_share": 1.4645,
+            "player_rating_weight": 15.1,
+            "absence_weight": 19.0,
+            "luck_share": 0.38,
+            "player_variance_scale": 5.3,
+            "player_floor": 7.7,
+            "weekly_rd_increase": 40.0,
+            "season_rd_increase": 230.0,
+            "season_regression": 0.132,
+            "initial_rd": 352.0,
+            "coach_left_rating_shift": -232.0,
+            "coach_change_regression": 0.22,
+            "coach_change_rating_rd": 268.0,
+            "home_advantage": 73.0
         }
     ]
 }
