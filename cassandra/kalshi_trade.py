@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -185,6 +185,17 @@ def event_of(ticker: str) -> str:
     return ticker.rsplit("-", 1)[0]
 
 
+def signed_positions(market_positions: Iterable[Mapping]) -> dict[str, float]:
+    """`KalshiClient.market_positions` as each market's position: YES
+    contracts positive, NO negative, none for a market with none."""
+    found: dict[str, float] = {}
+    for position in market_positions:
+        count = float(position.get("position_fp") or position.get("position") or 0)
+        if count:
+            found[position["ticker"]] = count
+    return found
+
+
 class KalshiError(RuntimeError):
     pass
 
@@ -283,12 +294,7 @@ class KalshiClient:
 
     def positions(self) -> dict[str, float]:
         """Each market's open position: YES contracts positive, NO negative."""
-        found: dict[str, float] = {}
-        for position in self.market_positions():
-            count = float(position.get("position_fp") or position.get("position") or 0)
-            if count:
-                found[position["ticker"]] = count
-        return found
+        return signed_positions(self.market_positions())
 
     def market(self, ticker: str) -> dict:
         """One market: its title, quotes and status."""

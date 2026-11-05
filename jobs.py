@@ -522,14 +522,15 @@ def _picks(espn: bool) -> None:
             return
         rules = picks_job.autobet(s3, bucket)
         print(rules.describe())
-        argv = [
-            "--place",
-            "--kelly-fraction",
-            str(rules.kelly_fraction),
-            "--max-bet",
-            str(rules.max_bet),
-        ]
-        if rules.paused:
+        league = picks_job.FIRST_LEAGUE
+        placing = rules.placing(league)
+        found = rules.leagues.get(league)
+        if found is None:
+            # No bar to price it by, and nothing to place.
+            print(f"no autobet rules for {league}: nothing priced or placed")
+            return
+        argv = ["--place", "--league", league, *found.argv()]
+        if not placing:
             # Priced on the real account, nothing placed; the rungs already
             # resting still come off when the model stops backing them.
             argv += ["--notify", "--dry-run"] + (
@@ -539,7 +540,7 @@ def _picks(espn: bool) -> None:
             # The cash on hand is the budget, and a pick on QB news or with its
             # starter in doubt (`cassandra.qb_starts`) waits for a person: the
             # model doesn't read a starter out unless told.
-            argv += ["--yes", "--hold-qb", "--rest", f"{picks_job.REST_HOURS:g}"]
+            argv += ["--yes", "--hold-qb"]
             if rehearsal:
                 argv.append("--dry-run")
         if not espn:
@@ -552,7 +553,7 @@ def _picks(espn: bool) -> None:
         # so a bet is read against the run that made it; the orders only
         # when they were really sent.
         if not rehearsal:
-            for key in picks_job.keep(s3, bucket, now, orders=not rules.paused):
+            for key in picks_job.keep(s3, bucket, now, orders=placing):
                 print(f"kept s3://{bucket}/{key}")
 
         # The one email a run sends: a hold no email has carried. Placements

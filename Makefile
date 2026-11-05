@@ -61,32 +61,36 @@ betting:
 
 # What to bet on Kalshi this week: the model against the live order books.
 # Run it once the night's last game is final -- the edge `betting` found is
-# at that first price and fades within a day. `--offline` when the AWS login
-# has lapsed, e.g. `make picks ARGS="--offline --stake 25"`.
+# at that first price and fades as the book catches up. Its bar and limits
+# are the league's rules in s3's autobet.json. `--offline` when the AWS
+# login has lapsed, e.g. `make picks ARGS="--offline"`.
 picks:
 	poetry run python picks.py $(ARGS)
 
 # The same, then buy the picks on Kalshi after showing them and asking. Needs
 # a Kalshi API key (see cassandra/kalshi_trade.py). Each pick is staked on its
-# own, a quarter of Kelly on the account, at most $10; e.g.
-# `make bet ARGS="--offline"`. Injury news that lasts (a starter out for the
-# season) goes in ~/.cassandra/betting/overrides.toml, not ARGS.
+# own, by the league's rules in s3's autobet.json; e.g. `make bet
+# ARGS="--offline"`. Injury news that lasts (a starter out for the season)
+# goes in ~/.cassandra/betting/overrides.toml, not ARGS.
 bet:
-	poetry run python picks.py --place --kelly-fraction 0.25 --max-bet 10 $(ARGS)
+	poetry run python picks.py --place $(ARGS)
 
 # The cloud picks job (`jobs.py picks`, cassandra/picks_job.py) places the
-# picks itself, all day: a quarter Kelly, at most $10 a bet, the cash on hand
-# the budget. It emails only a pick held on QB news, and a summary at 8am.
-# `make pause` stops it placing and `make resume` starts it again; `make
-# autobet ARGS="--max-bet 15 --kelly-fraction 0.2"` changes the sizing. The
+# picks itself, all day, by each league's rules in s3's autobet.json, the cash
+# on hand the budget. It emails only a pick held on QB news, and a summary at
+# 8am. `make pause` stops it placing and `make resume` starts it again (one
+# league with ARGS="--league L"); `make autobet ARGS="--league L
+# --kelly-fraction F --max-bet DOLLARS"` sets a league's sizing, adding it if
+# it has none, and `--max-exposure`, `--longshot-price`, `--longshot-scale`
+# and `--min-price` its limits (`--remove` drops it). The
 # job reads its overrides from s3: `make push-overrides` after editing
 # ~/.cassandra/betting/overrides.toml. `make picks-status` says whether it's
 # placing, and lists the last emails' picks with their --only ids.
 pause:
-	poetry run python -m cassandra.picks_job pause
+	poetry run python -m cassandra.picks_job pause $(ARGS)
 
 resume:
-	poetry run python -m cassandra.picks_job resume
+	poetry run python -m cassandra.picks_job resume $(ARGS)
 
 autobet:
 	poetry run python -m cassandra.picks_job autobet $(ARGS)
