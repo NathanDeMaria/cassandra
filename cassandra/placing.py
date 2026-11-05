@@ -45,8 +45,6 @@ from .kalshi_trade import (
     rung_id,
 )
 from .picks import (
-    FAVORITE_EDGE,
-    FAVORITE_PRICE,
     Longshots,
     allocate,
     contracts_for,
@@ -68,9 +66,10 @@ ESPN_SUMMARY = (
 )
 #: How many of each team's last games' stories are read for injury news.
 NEWS_GAMES = 2
-#: Dollars split over a run's picks when neither --budget nor
-#: --kelly-fraction says otherwise.
-DEFAULT_BUDGET = 20.0
+#: A nominal budget, split over a run's picks to show them with contracts
+#: when neither --budget nor --kelly-fraction says what to stake: a run
+#: that places always has the league's Kelly fraction.
+DISPLAY_BUDGET = 100.0
 
 
 def fmt_game(game: Game) -> str:
@@ -100,8 +99,9 @@ def sizing(args: argparse.Namespace) -> str:
 
 
 def _budget(args: argparse.Namespace) -> float:
-    """`--budget`, or the old default of $20 when splitting with no fraction."""
-    return DEFAULT_BUDGET if args.budget is None else args.budget
+    """`--budget`, or the nominal `DISPLAY_BUDGET` when splitting with no
+    fraction."""
+    return DISPLAY_BUDGET if args.budget is None else args.budget
 
 
 def limit_price(price: float, ceiling: float | None, slippage: float) -> float:
@@ -209,7 +209,10 @@ def size(
                 f"already held ({frame.at[i, 'held']:g} of {targets[i]})"
             )
         ranked = ranked.drop(full)
-    frame.loc[ranked.index[args.top :], "skip"] = f"outside the top {args.top} by edge"
+    if args.top is not None:
+        frame.loc[ranked.index[args.top :], "skip"] = (
+            f"outside the top {args.top} by edge"
+        )
     caps = [c for c in (args.budget, args.cash) if c is not None]
     if caps:
         counts = pd.Series(
@@ -756,10 +759,16 @@ def print_picks(
             for name, fmt in columns.items()
         }
     )
+    rule = args.rule
+    favorites = (
+        f", {rule.edge_needed(1.0):.0%} at {rule.favorite_price * 100:g}c+"
+        if rule.favorite_price is not None and rule.favorite_edge is not None
+        else ""
+    )
+    top = "" if args.top is None else f", top {args.top} by edge"
     print(
-        f"\n=== {len(picks)} picks (edge ≥ {args.min_edge:.0%} over Kalshi's no-vig "
-        f"price, {max(args.min_edge, FAVORITE_EDGE):.0%} at {FAVORITE_PRICE * 100:.0f}c+), "
-        f"top {args.top} by edge; {sizing(args)}"
+        f"\n=== {len(picks)} picks (edge ≥ {rule.min_edge:.0%} over Kalshi's no-vig "
+        f"price{favorites}){top}; {sizing(args)}"
     )
     if not table.empty:
         with pd.option_context("display.width", 250, "display.max_colwidth", 60):

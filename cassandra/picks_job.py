@@ -3,10 +3,10 @@ emailed, a lock -- and the emails themselves.
 
 The job runs `picks.py` on a schedule and after every ncaafb finals sweep,
 and places the picks itself (`picks.py --place --yes`) by each league's
-rules (`LeagueRules`) in `autobet.json`, the cash on hand the only budget,
-each order resting `REST_HOURS` before it's cancelled. A league with a
-`max_exposure` spends only what its share of the bankroll has left. The
-rules' values live only in that file. `make pause` stops that and `make resume`
+rules (`LeagueRules`) in `autobet.json` -- the bar a pick must clear, its
+stake, how long its order rests -- the cash on hand the only budget. A
+league with a `max_exposure` spends only what its share of the bankroll has
+left. The rules' values live only in that file. `make pause` stops that and `make resume`
 starts it again, the whole job or `ARGS="--league L"`'s; `make autobet`
 changes a league's sizing, or adds one. Each pick's
 rungs (`picks.py`'s "Rungs") rest until kickoff, and every run with the key
@@ -54,7 +54,7 @@ import argparse
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -78,10 +78,6 @@ RUN_FILES = {
 LOCK_KEY = "cassandra/picks.lock"
 #: A run takes about five minutes; one holding the lock this long has died.
 LOCK_STALE = timedelta(minutes=30)
-#: How long a pick's order rests before it's cancelled. The backtest's edge
-#: was mostly gone twelve hours after the entry; a later run re-prices the
-#: game and places again if it's still a pick.
-REST_HOURS = 12.0
 #: How far back the first morning summary looks, with no last one to start at.
 SUMMARY_DAY = timedelta(hours=24)
 #: Emails kept in `sent.json`: a week of hourly runs and then some.
@@ -178,16 +174,32 @@ def keep(s3: Any, bucket: str, since: datetime, orders: bool = True) -> list[str
 FIRST_LEAGUE = "ncaafb"
 
 
+#: The rules a league can't be priced or placed without.
+REQUIRED = (
+    "kelly_fraction",
+    "max_bet",
+    "min_edge",
+    "max_since_entry_hours",
+    "max_overround",
+)
+
+
 @dataclass
 class LeagueRules:
-    """How the job sizes one league's bets. See `picks.py`'s "Sizing".
-
-    The stake has no default: a league is placed only on a fraction and a
-    cap someone wrote into `autobet.json`. The limits default to none.
+    """How the job picks and sizes one league's bets: `picks.py`'s flags of
+    the same names, which say what each does. The values live only in
+    `autobet.json`; `REQUIRED` have none here, and the rest default to off.
     """
 
     kelly_fraction: float
     max_bet: float
+    #: The pick's bar (`cassandra.picks.PickRule`).
+    min_edge: float
+    max_since_entry_hours: float
+    max_overround: float
+    favorite_price: float | None = None
+    favorite_edge: float | None = None
+    min_price: float = 0.0
     #: The most of the bankroll the league's open positions and resting
     #: orders may hold (`picks.py --max-exposure`); None for no cap.
     max_exposure: float | None = None
@@ -195,57 +207,51 @@ class LeagueRules:
     #: of its Kelly (`cassandra.picks.Longshots`).
     longshot_price: float = 0.0
     longshot_scale: float = 1.0
-    #: A pick costing under this isn't placed (`picks.py --min-price`).
-    min_price: float = 0.0
+    #: How far past the ask an order may pay.
+    slippage: float = 0.0
+    #: Only this many picks a run, the biggest edges; None for all.
+    top: int | None = None
+    #: Cents under each pick's price to rest bids until kickoff.
+    rungs: tuple[float, ...] = ()
+    #: How long an order rests before it's cancelled; None for
+    #: immediate-or-cancel.
+    rest_hours: float | None = None
     #: Priced, not placed: the league's own `make pause`.
     paused: bool = False
 
     @classmethod
     def from_json(cls, value: dict) -> "LeagueRules":
-        missing = [k for k in ("kelly_fraction", "max_bet") if value.get(k) is None]
+        missing = [name for name in REQUIRED if value.get(name) is None]
         if missing:
-            raise ValueError(f"league rules without {' or '.join(missing)}: {value}")
-        exposure = value.get("max_exposure")
-        return cls(
-            kelly_fraction=float(value["kelly_fraction"]),
-            max_bet=float(value["max_bet"]),
-            max_exposure=None if exposure is None else float(exposure),
-            longshot_price=float(value.get("longshot_price", 0.0)),
-            longshot_scale=float(value.get("longshot_scale", 1.0)),
-            min_price=float(value.get("min_price", 0.0)),
-            paused=bool(value.get("paused", False)),
-        )
+            raise ValueError(f"league rules without {', '.join(missing)}: {value}")
+        known = {f.name for f in fields(cls)}
+        found = {k: v for k, v in value.items() if k in known and v is not None}
+        if "rungs" in found:
+            found["rungs"] = tuple(float(c) for c in found["rungs"])
+        if "top" in found:
+            found["top"] = int(found["top"])
+        return cls(**found)
 
     def to_json(self) -> dict:
-        return {
-            "kelly_fraction": self.kelly_fraction,
-            "max_bet": self.max_bet,
-            "max_exposure": self.max_exposure,
-            "longshot_price": self.longshot_price,
-            "longshot_scale": self.longshot_scale,
-            "min_price": self.min_price,
-            "paused": self.paused,
-        }
+        found = asdict(self)
+        found["rungs"] = list(self.rungs)
+        return found
 
     def argv(self) -> list[str]:
-        """`picks.py`'s sizing flags for these rules."""
-        found = [
-            "--kelly-fraction",
-            f"{self.kelly_fraction:g}",
-            "--max-bet",
-            f"{self.max_bet:g}",
-        ]
-        if self.max_exposure is not None:
-            found += ["--max-exposure", f"{self.max_exposure:g}"]
-        if self.longshot_price > 0 and self.longshot_scale != 1.0:
-            found += [
-                "--longshot-price",
-                f"{self.longshot_price:g}",
-                "--longshot-scale",
-                f"{self.longshot_scale:g}",
-            ]
-        if self.min_price > 0:
-            found += ["--min-price", f"{self.min_price:g}"]
+        """`picks.py`'s flags for these rules: every one that's set."""
+        found = []
+        for name, value in asdict(self).items():
+            if name == "paused" or value is None:
+                continue
+            flag = "--" + name.replace("_", "-")
+            if name == "rest_hours":
+                flag = "--rest"
+            elif name == "max_since_entry_hours":
+                flag = "--max-since-entry"
+            if name == "rungs":
+                found += ["--rungs", ",".join(f"{c:g}" for c in value) or "none"]
+            else:
+                found += [flag, f"{value:g}"]
         return found
 
     def describe(self) -> str:
@@ -256,6 +262,8 @@ class LeagueRules:
             found += f", {self.longshot_scale:g}x stakes under {self.longshot_price * 100:g}c"
         if self.min_price > 0:
             found += f", nothing under {self.min_price * 100:g}c"
+        if self.rest_hours is not None:
+            found += f", orders resting {self.rest_hours:g}h"
         return found
 
 
@@ -315,10 +323,7 @@ class Autobet:
             f"{league} {'paused' if rules.paused else rules.describe()}"
             for league, rules in sorted(self.leagues.items())
         )
-        return (
-            f"autobet on: {leagues or 'no leagues'}; the cash on hand the budget, "
-            f"orders resting {REST_HOURS:g}h"
-        )
+        return f"autobet on: {leagues or 'no leagues'}; the cash on hand the budget"
 
 
 def autobet(s3: Any, bucket: str) -> Autobet:
@@ -634,10 +639,18 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
+def _cents(text: str) -> tuple[float, ...]:
+    return tuple(float(c) for c in text.split(",") if c.strip())
+
+
+#: How `autobet` reads a rule that isn't a plain number.
+_RULE_TYPES: dict[str, Any] = {"top": int, "rungs": _cents}
+
+
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
     """`main`'s commands: `pause` and `resume`, the whole job or `--league`'s;
     `autobet --league L` to set (or with `--remove`, drop) one league's rules,
-    a league not listed yet needing its fraction and max bet; and
+    a league not listed yet needing every one of `REQUIRED`; and
     `push-overrides` and `status`."""
     parser = argparse.ArgumentParser(prog="python -m cassandra.picks_job")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -647,17 +660,25 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     ):
         command = commands.add_parser(name, help=help)
         command.add_argument("--league", help="only this league (default: all)")
-    rules = commands.add_parser("autobet", help="change how the job sizes its bets")
-    rules.add_argument("--league", default=FIRST_LEAGUE)
-    rules.add_argument("--max-bet", type=float)
-    rules.add_argument("--kelly-fraction", type=float)
-    rules.add_argument("--max-exposure", type=float, metavar="SHARE")
-    rules.add_argument(
-        "--no-max-exposure", action="store_true", help="lift the league's cap"
+    rules = commands.add_parser(
+        "autobet", help="change how the job picks and sizes a league's bets"
     )
-    rules.add_argument("--longshot-price", type=float, metavar="COST")
-    rules.add_argument("--longshot-scale", type=float)
-    rules.add_argument("--min-price", type=float, metavar="COST")
+    rules.add_argument("--league", default=FIRST_LEAGUE)
+    for rule in fields(LeagueRules):
+        if rule.name == "paused":
+            continue
+        rules.add_argument(
+            "--" + rule.name.replace("_", "-"),
+            type=_RULE_TYPES.get(rule.name, float),
+            help="cents, comma-separated" if rule.name == "rungs" else None,
+        )
+    rules.add_argument(
+        "--clear",
+        action="append",
+        default=[],
+        metavar="RULE",
+        help="set an optional rule back to off, e.g. --clear max_exposure",
+    )
     rules.add_argument(
         "--remove", action="store_true", help="drop the league: it isn't placed"
     )
@@ -685,26 +706,31 @@ def changed(current: Autobet, args: argparse.Namespace) -> Autobet:
     if args.remove:
         leagues.pop(args.league, None)
         return found
+    given = {
+        rule.name: getattr(args, rule.name)
+        for rule in fields(LeagueRules)
+        if rule.name != "paused" and getattr(args, rule.name) is not None
+    }
     if args.league not in leagues:
-        if args.kelly_fraction is None or args.max_bet is None:
-            raise ValueError(
-                f"{args.league} has no rules yet: give it --kelly-fraction and --max-bet"
-            )
-        leagues[args.league] = LeagueRules(args.kelly_fraction, args.max_bet)
+        missing = [name for name in REQUIRED if name not in given]
+        if missing:
+            flags = " ".join("--" + name.replace("_", "-") for name in missing)
+            raise ValueError(f"{args.league} has no rules yet: give it {flags}")
+        leagues[args.league] = LeagueRules(**given)
     rules = leagues[args.league]
-    for name in (
-        "kelly_fraction",
-        "max_bet",
-        "max_exposure",
-        "longshot_price",
-        "longshot_scale",
-        "min_price",
-    ):
-        value = getattr(args, name)
-        if value is not None:
-            setattr(rules, name, value)
-    if args.no_max_exposure:
-        rules.max_exposure = None
+    for name, value in given.items():
+        setattr(rules, name, value)
+    defaults = {
+        rule.name: rule.default
+        for rule in fields(LeagueRules)
+        if rule.name not in REQUIRED
+    }
+    for name in args.clear:
+        if name not in defaults:
+            raise ValueError(
+                f"--clear {name}: not an optional rule ({sorted(defaults)})"
+            )
+        setattr(rules, name, defaults[name])
     return found
 
 

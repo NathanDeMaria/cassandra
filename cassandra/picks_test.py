@@ -5,9 +5,7 @@ from endgame.types import Game
 
 from .markets import kalshi_fee
 from .picks import (
-    FAVORITE_EDGE,
     FOOTBALL,
-    MIN_EDGE,
     NCAAFB_SERIES,
     NCAAWBB_SERIES,
     PICK_LEAGUES,
@@ -18,11 +16,11 @@ from .picks import (
     KalshiGame,
     Longshots,
     Matched,
+    PickRule,
     PreviousGame,
     allocate,
     book,
     contracts_for,
-    edge_needed,
     entry,
     event_day,
     fillable,
@@ -44,6 +42,15 @@ from .picks import (
 )
 
 SATURDAY = datetime(2026, 10, 17, 18, 0, tzinfo=UTC)
+
+#: A bar for the tests; its numbers are arbitrary.
+RULE = PickRule(
+    min_edge=0.06,
+    max_since_entry=timedelta(hours=20),
+    max_overround=1.12,
+    favorite_price=0.75,
+    favorite_edge=0.12,
+)
 
 
 def _market(event: str, code: str, team: str, bid="0.4000", ask="0.4200", **extra):
@@ -286,47 +293,51 @@ def test_the_model_takes_the_side_it_likes_more_than_the_market() -> None:
 
 
 def test_the_max_price_is_the_last_cent_that_clears_the_edge() -> None:
+    # One bar at every price; `test_a_favorite_needs_the_bigger_edge` has two.
+    rule = RULE._replace(favorite_price=None)
     matched = _matched(0.60, 0.42)
     priced = price(0.80, matched)
     assert priced is not None and priced.route is not None
-    highest = max_price(0.80, priced, matched.home)
+    highest = max_price(0.80, priced, matched.home, rule)
     assert highest is not None and highest > priced.route.price
 
     def edge_at(ask: float) -> float:
         return 0.80 - (ask + kalshi_fee(ask)) / priced.overround
 
-    assert edge_at(highest) >= MIN_EDGE > edge_at(highest + 0.01)
+    assert edge_at(highest) >= rule.min_edge > edge_at(highest + 0.01)
     # NO on the opponent moves with the side's YES ask.
     cheaper = _matched(0.60, 0.42)._replace(away=_book("A", 0.42, 0.44))
     via_no = price(0.80, cheaper)
     assert via_no is not None and via_no.route is not None
     assert via_no.route.action == "no"
-    found = max_price(0.80, via_no, cheaper.home)
-    moved = max_price(0.80, via_no, cheaper.home._replace(ask=via_no.route.price))
+    found = max_price(0.80, via_no, cheaper.home, rule)
+    moved = max_price(0.80, via_no, cheaper.home._replace(ask=via_no.route.price), rule)
     assert found is not None and moved is not None
     assert found == pytest.approx(moved - (0.60 - via_no.route.price))
 
 
-def test_a_favorite_needs_the_bigger_edge_at_80c_and_up() -> None:
-    assert edge_needed(0.79) == MIN_EDGE
-    assert edge_needed(0.80) == FAVORITE_EDGE
-    assert edge_needed(0.80, min_edge=0.12) == 0.12
+def test_a_favorite_needs_the_bigger_edge() -> None:
+    assert RULE.edge_needed(0.74) == RULE.min_edge
+    assert RULE.edge_needed(0.75) == RULE.favorite_edge
+    assert RULE._replace(min_edge=0.15).edge_needed(0.80) == 0.15
+    assert RULE._replace(favorite_price=None).edge_needed(0.99) == RULE.min_edge
     matched = _matched(0.75, 0.24)
     priced = price(0.90, matched)
     assert priced is not None and priced.route is not None
 
-    def edge_at(ask: float) -> float:
-        return 0.90 - (ask + kalshi_fee(ask)) / priced.overround
+    def clears(ask: float) -> bool:
+        edge = 0.90 - (ask + kalshi_fee(ask)) / priced.overround
+        return edge >= RULE.edge_needed(ask + kalshi_fee(ask))
 
-    # 0.81 would clear 7 points but not the 10 an 80c pick needs.
-    assert edge_at(0.81) >= MIN_EDGE and edge_at(0.81) < FAVORITE_EDGE
-    assert max_price(0.90, priced, matched.home) == 0.80
-    # Between the two bars, an 80c+ pick isn't one.
+    # The ceiling is the last cent clearing the bar its own price needs.
+    highest = max_price(0.90, priced, matched.home, RULE)
+    assert highest is not None and clears(highest) and not clears(highest + 0.01)
+    # Between the two bars, a favorite isn't a pick.
     pricey = price(0.90, _matched(0.82, 0.17))
-    assert pricey is not None and pricey.cost is not None and pricey.cost >= 0.80
-    assert MIN_EDGE <= pricey.edge < FAVORITE_EDGE
-    assert skip_reason(pricey, "FBS", "FBS", [], timedelta(hours=1)) == (
-        "edge under 10 points at 80c+"
+    assert pricey is not None and pricey.cost is not None
+    assert pricey.cost >= 0.75 and RULE.min_edge <= pricey.edge < 0.12
+    assert skip_reason(pricey, "FBS", "FBS", [], timedelta(hours=1), RULE) == (
+        "edge under 12 points at 75c+"
     )
 
 
@@ -335,8 +346,10 @@ def test_what_isnt_a_pick() -> None:
     assert priced is not None and priced.edge > 0.05
     fresh = timedelta(hours=2)
 
-    def reason(side, other, waiting=(), since=fresh, **kwargs):
-        return skip_reason(priced, side, other, list(waiting), since, **kwargs) or ""
+    def reason(side, other, waiting=(), since=fresh, rule=RULE, **kwargs):
+        return (
+            skip_reason(priced, side, other, list(waiting), since, rule, **kwargs) or ""
+        )
 
     assert reason("FBS", "FBS") == ""
     assert reason("FBS", "FBS", since=None) == ""
@@ -349,10 +362,12 @@ def test_what_isnt_a_pick() -> None:
     assert reason("D2", "D1", top_division="D1") == "lower-division side vs D1"
     assert reason("FBS", "FBS", waiting=["Alpha"]).startswith("previous game")
     assert reason("FBS", "FBS", since=timedelta(days=2)) == "past the entry window"
-    assert reason("FBS", "FBS", min_edge=0.5) == "edge under threshold"
+    assert reason("FBS", "FBS", rule=RULE._replace(min_edge=0.5)) == (
+        "edge under threshold"
+    )
     wide = price(0.80, _matched(0.60, 0.55))
     assert wide is not None
-    assert (skip_reason(wide, "FBS", "FBS", [], fresh) or "").startswith(
+    assert (skip_reason(wide, "FBS", "FBS", [], fresh, RULE) or "").startswith(
         "book too wide"
     )
 
@@ -463,6 +478,7 @@ def test_a_game_behind_on_ratings_isnt_a_pick() -> None:
         None,
         [],
         timedelta(hours=2),
+        RULE,
         top_division=None,
         ratings_behind=["Alpha"],
     )
@@ -487,8 +503,9 @@ def test_a_pick_under_the_price_floor_isnt_one():
     cheap = price(0.20, _matched(0.88, 0.08))
     assert cheap is not None and cheap.cost is not None and cheap.cost < 0.10
     fresh = timedelta(hours=1)
-    assert skip_reason(cheap, None, None, [], fresh, top_division=None) is None
+    assert skip_reason(cheap, None, None, [], fresh, RULE, top_division=None) is None
+    floored = RULE._replace(min_price=0.10)
     assert (
-        skip_reason(cheap, None, None, [], fresh, top_division=None, min_price=0.10)
+        skip_reason(cheap, None, None, [], fresh, floored, top_division=None)
         == "price under 10c"
     )

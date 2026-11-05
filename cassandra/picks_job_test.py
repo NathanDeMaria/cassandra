@@ -2,6 +2,7 @@ import io
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -358,67 +359,132 @@ def test_holds_since_lists_only_the_picks_emailed_as_held_lately():
     ] == ["2"]
 
 
-def test_an_autobet_file_from_before_leagues_is_footballs():
-    old = {"paused": False, "max_bet": 7.0, "kelly_fraction": 0.3}
-    rules = Autobet.from_json(old)
-    assert rules.leagues == {"ncaafb": LeagueRules(kelly_fraction=0.3, max_bet=7.0)}
-    assert rules.placing("ncaafb")
+#: A league's required rules for the tests; the numbers are arbitrary.
+REQUIRED = {
+    "kelly_fraction": 0.3,
+    "max_bet": 7.0,
+    "min_edge": 0.06,
+    "max_since_entry_hours": 20.0,
+    "max_overround": 1.12,
+}
+
+
+def _rules(**optional: Any) -> LeagueRules:
+    """`REQUIRED`'s rules, and any optional ones."""
+    return LeagueRules(
+        kelly_fraction=0.3,
+        max_bet=7.0,
+        min_edge=0.06,
+        max_since_entry_hours=20.0,
+        max_overround=1.12,
+        **optional,
+    )
+
+
+REQUIRED_FLAGS = [
+    "--kelly-fraction",
+    "0.3",
+    "--max-bet",
+    "7",
+    "--min-edge",
+    "0.06",
+    "--max-since-entry-hours",
+    "20",
+    "--max-overround",
+    "1.12",
+]
+
+
+def test_an_autobet_file_round_trips_and_an_old_one_says_whats_missing():
+    rules = Autobet(leagues={"ncaafb": _rules(rungs=(1.0, 3.0), top=6, rest_hours=5.0)})
     assert Autobet.from_json(rules.to_json()) == rules
+    # The flat file from before leagues: football's, and short of a bar now.
+    with pytest.raises(ValueError, match="without min_edge"):
+        Autobet.from_json({"paused": False, "max_bet": 7.0, "kelly_fraction": 0.3})
     # The pause alone, as `make pause` wrote it with no rules: none to place.
     assert Autobet.from_json({"paused": True}) == Autobet(paused=True)
 
 
-def test_a_league_needs_its_stake_written_down():
-    with pytest.raises(ValueError, match="without max_bet"):
-        LeagueRules.from_json({"kelly_fraction": 0.3})
-    with pytest.raises(ValueError, match="give it --kelly-fraction and --max-bet"):
+def test_a_league_needs_its_required_rules_written_down():
+    with pytest.raises(ValueError, match="without max_overround"):
+        LeagueRules.from_json(
+            {k: v for k, v in REQUIRED.items() if k != "max_overround"}
+        )
+    with pytest.raises(ValueError, match="give it --kelly-fraction --max-bet"):
         picks_job.changed(Autobet(), picks_job.parse(["autobet", "--league", "womens"]))
+
+
+def test_league_rules_are_picks_flags():
+    rules = _rules(
+        favorite_price=0.7,
+        favorite_edge=0.11,
+        max_exposure=0.4,
+        slippage=0.02,
+        top=6,
+        rungs=(1.0, 3.0),
+        rest_hours=5.0,
+    )
+    assert rules.argv() == [
+        "--kelly-fraction", "0.3",
+        "--max-bet", "7",
+        "--min-edge", "0.06",
+        "--max-since-entry", "20",
+        "--max-overround", "1.12",
+        "--favorite-price", "0.7",
+        "--favorite-edge", "0.11",
+        "--min-price", "0",
+        "--max-exposure", "0.4",
+        "--longshot-price", "0",
+        "--longshot-scale", "1",
+        "--slippage", "0.02",
+        "--top", "6",
+        "--rungs", "1,3",
+        "--rest", "5",
+    ]  # fmt: skip
+    import picks
+
+    args = picks.parse(["--place", *rules.argv()])
+    picks.apply_rules(args, None)
+    assert args.rule.min_edge == 0.06 and args.rule.favorite_edge == 0.11
+    assert args.rungs == (0.01, 0.03) and args.rest == 5.0 and args.top == 6
+    assert "--rungs" in _rules().argv()  # none, said so
 
 
 def test_a_league_is_opted_in_paused_and_dropped_on_its_own():
     def run(rules: Autobet, *argv: str) -> Autobet:
         return picks_job.changed(rules, picks_job.parse(list(argv)))
 
-    football = LeagueRules(kelly_fraction=0.3, max_bet=7.0)
+    football = _rules()
     rules = run(
         Autobet(leagues={"ncaafb": football}),
         "autobet",
         "--league",
         "womens",
-        "--kelly-fraction",
-        "0.2",
-        "--max-bet",
-        "3",
+        *REQUIRED_FLAGS,
         "--max-exposure",
         "0.4",
         "--longshot-price",
         "0.15",
         "--longshot-scale",
         "0.6",
+        "--rungs",
+        "1,3",
     )
     womens = rules.leagues["womens"]
-    assert womens == LeagueRules(0.2, 3.0, 0.4, 0.15, 0.6)
+    assert womens == _rules(
+        max_exposure=0.4,
+        longshot_price=0.15,
+        longshot_scale=0.6,
+        rungs=(1.0, 3.0),
+    )
     assert rules.leagues["ncaafb"] == football
-    assert womens.argv() == [
-        "--kelly-fraction",
-        "0.2",
-        "--max-bet",
-        "3",
-        "--max-exposure",
-        "0.4",
-        "--longshot-price",
-        "0.15",
-        "--longshot-scale",
-        "0.6",
-    ]
-    assert football.argv() == ["--kelly-fraction", "0.3", "--max-bet", "7"]
-    assert "womens 0.2 Kelly, at most $3 a bet, at most 40% of the bankroll" in (
+    assert "womens 0.3 Kelly, at most $7 a bet, at most 40% of the bankroll" in (
         rules.describe()
     )
     # A league already listed changes only what's given.
-    assert run(rules, "autobet", "--league", "womens", "--max-bet", "4").leagues[
-        "womens"
-    ] == LeagueRules(0.2, 4.0, 0.4, 0.15, 0.6)
+    bigger = run(rules, "autobet", "--league", "womens", "--max-bet", "4")
+    assert bigger.leagues["womens"].max_bet == 4.0
+    assert bigger.leagues["womens"].max_exposure == 0.4
 
     paused = run(rules, "pause", "--league", "womens")
     assert not paused.placing("womens") and paused.placing("ncaafb")
@@ -428,8 +494,14 @@ def test_a_league_is_opted_in_paused_and_dropped_on_its_own():
     everything = run(rules, "pause")
     assert not everything.placing("ncaafb") and not everything.placing("womens")
 
-    uncapped = run(rules, "autobet", "--league", "womens", "--no-max-exposure")
-    assert uncapped.leagues["womens"].max_exposure is None
+    cleared = run(
+        rules, "autobet", "--league", "womens", "--clear", "max_exposure",
+        "--clear", "rungs",
+    )  # fmt: skip
+    assert cleared.leagues["womens"].max_exposure is None
+    assert cleared.leagues["womens"].rungs == ()
+    with pytest.raises(ValueError, match="not an optional rule"):
+        run(rules, "autobet", "--league", "womens", "--clear", "min_edge")
     dropped = run(rules, "autobet", "--league", "womens", "--remove")
     assert "womens" not in dropped.leagues
     with pytest.raises(ValueError, match="no rules for mens"):

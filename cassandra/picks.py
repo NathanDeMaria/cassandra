@@ -2,39 +2,25 @@
 
 `betting.py` grades a model's picks after the fact. On Kalshi's college
 football moneylines it found an edge at the *entry* -- the first price after
-both teams' previous game -- and only past a threshold. The roster model,
-October 2026, edge over Kalshi's no-vig price (`no_vig_home`):
+both teams' previous game -- and only past a threshold: under it the
+overround eats the edge. Judged by the close, the smallest qualifying edges
+were worth little, and so were favorites at a small edge, which Kelly
+stakes the most -- so a favorite needs a bigger one. The edge faded as the
+book caught up, so a price is taken only for a while after the entry. Every
+one of those bars is a league's rules (`PickRule`, in s3's autobet.json);
+none of their values are kept here.
 
-    edge          2025                2026
-    0-5 points    -7% ROI (321)       -1% (154)
-    5+ points     +13% ± 5% (374)     +21% ± 11% (159)
-
-Under five points the overround eats the edge. Over five it held up in
-both seasons -- but not evenly. Rerun on 2025-26 in November 2026 with the
-live rule itself (the first qualifying hour, the cheaper route, the fee in
-the cost: 848 picks on the success model), and judged by the close, the
-5-7 point picks were worth nothing (-1.5%, 318 picks), and favorites at
-80c or more, which quarter Kelly gives 45% of the money, earned +2% a
-dollar. So the bar is 7 points, and 10 at 80c and up (`edge_needed`):
-97% of the expected dollars on 63% of the money, 11.7% a dollar against
-7.6%, in both seasons and on the roster model too. In 2026 it faded as the book caught up: +21% at entry, +19%
-six hours later, +13% at twelve, +4% after a day. So the bet is placed the
-night the previous week's games end, against the price up then.
-
-The default is the success-rate model (`glicko_margin_units_success`)
+The default model is the success-rate one (`glicko_margin_units_success`)
 since 2026-10-14: it forecasts better held out, and on these books the two
-can't be told apart -- over 2025-26 at the entry, brier 0.1535 against
-the roster model's 0.1537 (the book's 0.1601), weight on the model 0.80
-against 0.79, and at five points of edge +11% ROI (568 bets) against +14%
-(559), at ten +27% (241) against +20% (249). This
-module is that bet, made live. It takes every open Kalshi game, finds its
-ESPN fixture, and prices it against the model the way
-the backtest did.
+can't be told apart -- over 2025-26 at the entry, brier 0.1535 against the
+roster model's 0.1537 (the book's 0.1601), weight on the model 0.80 against
+0.79. This module is that bet, made live. It takes every open Kalshi game,
+finds its ESPN fixture, and prices it against the model the way the
+backtest did.
 
 **The edge** is the backtest's: each team's own YES ask plus Kalshi's taker
 fee, normalized to sum to one, against the model's probability. A book
-whose two costs sum past `markets.MAX_OVERROUND` wasn't a market in the
-backtest and isn't one here.
+whose two costs sum past the rule's `max_overround` isn't a market.
 
 **The price** is the cheapest way to back the side, which the backtest
 didn't look for. A team's YES and its opponent's NO pay on the same result,
@@ -43,16 +29,17 @@ bid. Taking the cheaper of the two never makes a pick worse than the one
 graded.
 
 **What isn't a pick** (`skip_reason`):
-- an edge under `MIN_EDGE`, or under `FAVORITE_EDGE` for a pick costing
-  `FAVORITE_PRICE` or more (`edge_needed`);
+- an edge under the rule's `min_edge`, or under its `favorite_edge` for a
+  pick costing its `favorite_price` or more (`PickRule.edge_needed`), or a
+  pick costing under its `min_price`;
 - the model backing a team below FBS against an FBS one. The model's known
   miss on those games is under-rating the FBS side: 10-20 point FBS
   favorites beat it by about 2 points in 2015-25. So its edge on the
   lower side is mostly that miss.
 - a game where either team's previous game isn't final. The model hasn't
   seen that result yet, and the backtest's entry waited for it.
-- a game whose entry was more than `MAX_SINCE_ENTRY` ago. By then the
-  market has caught up, and the backtest's close showed no edge. The entry
+- a game whose entry was longer ago than the rule's `max_since_entry`. By
+  then the market has caught up. The entry
   is the backtest's: the first price after both teams' previous games, so
   the later of those games ending and the market opening (`entry`). A game
   after a bye can have its previous games end before Kalshi lists it.
@@ -66,15 +53,15 @@ are the same for every league. `PICK_LEAGUES` holds the ones
 `picks.py --league` takes.
 
 Womens basketball (`WOMENS`) is the second, on `glicko_players`. On
-Kalshi's 2025-26 books, at the entry and under the same bar, it made +45%
-± 9% over 833 picks -- most of it 89 longshots under 25c; capped at 3x a
-pick's cost, +14% -- and +24% two hours before tip (November 2026, the
-10-31 fit, which had seen that season). Mens, on the same tests, lost
-near tip and made +5% ± 3% at the entry, and isn't here. The model's
+Kalshi's 2025-26 books, at the entry and under football's kind of bar, its
+picks paid -- most of it on longshots, with smaller but positive returns
+on the rest, and less two hours before tip (November 2026, the 10-31 fit,
+which had seen that season). Mens, on the same tests, lost near tip and
+was barely positive at the entry, and isn't here. The model's
 players' margin is ten-minute-version's daily ratings, filed each morning,
 so a game also waits for those to cover both teams' previous games
-(`ratings_waiting`); waiting 12-24 hours past the final cost the backtest
-little (+46% to +42%).
+(`ratings_waiting`); waiting a morning past the final cost the backtest
+little.
 
 Everything here is a pure function of Kalshi's JSON, the fixtures and the
 model's probabilities; `picks.py` at the repo root does the fetching.
@@ -92,28 +79,44 @@ from call_it_what_you_want import NCAAFB, NCAAWBB
 from endgame.types import Game
 
 from .betting import GAME_LENGTH
-from .markets import MAX_OVERROUND, kalshi_fee
+from .markets import kalshi_fee
 
 #: Kalshi's college football moneylines. FCS-only games are in their own
 #: series, which is how gold-rush lists them too.
 NCAAFB_SERIES = ("KXNCAAFGAME", "KXNCAAFCSGAME")
 
-#: The smallest edge over the no-vig price worth betting. See the module
-#: docstring: 5 is where the first backtest's ROI turned positive, but the
-#: 5-7 point picks were worth nothing against the close.
-MIN_EDGE = 0.07
 
-#: What a pick costing `FAVORITE_PRICE` or more (fee included) must clear
-#: instead: quarter Kelly stakes these the most, and at 5-10 points they
-#: barely beat the fee.
-FAVORITE_PRICE = 0.80
-FAVORITE_EDGE = 0.10
+class PickRule(NamedTuple):
+    """What a priced game must clear to be a pick (`skip_reason`). Its values
+    are a league's rules in s3's autobet.json (`picks_job.LeagueRules`);
+    none are kept here.
+    """
 
-#: How long after the entry a price is still worth betting. The 2026 edge
-#: over 5 points was +21% at the entry, +13% twelve hours later and +4% at a
-#: day; favorites held theirs for the day, underdogs lost most of it by
-#: twelve hours.
-MAX_SINCE_ENTRY = timedelta(hours=24)
+    #: The smallest edge over the no-vig price worth betting.
+    min_edge: float
+    #: How long after the entry a price is still worth taking. The edge fades
+    #: as the book catches up.
+    max_since_entry: timedelta
+    #: The most a book's two costs may sum to and still be a market.
+    max_overround: float
+    #: A pick costing `favorite_price` or more, fee included, must clear
+    #: `favorite_edge` instead: Kelly stakes those the most, and a small edge
+    #: on them barely beats the fee. None for no such rule.
+    favorite_price: float | None = None
+    favorite_edge: float | None = None
+    #: A pick costing less than this, fee included, isn't one.
+    min_price: float = 0.0
+
+    def edge_needed(self, cost: float) -> float:
+        """The edge a pick costing `cost` a contract, fee included, must clear."""
+        if (
+            self.favorite_price is not None
+            and self.favorite_edge is not None
+            and cost >= self.favorite_price
+        ):
+            return max(self.min_edge, self.favorite_edge)
+        return self.min_edge
+
 
 #: Kalshi files a game under its US Eastern date. So does `match`.
 EASTERN = ZoneInfo("America/New_York")
@@ -414,11 +417,11 @@ def allocate(
     re-split among the rest, so the money goes to bets that can be placed
     rather than being left unspent.
 
-    Split by Kelly weight, $20 a week on the top 10 picks by edge made
-    +29% on the 2025-26 Kalshi entries, against +23% for the same $20 split
-    evenly over every pick -- which left 40% of picks below one contract.
-    Ranking by expected return instead made +32%, but it buys longshots
-    (56% underdogs against 35%), and 23 weeks can't tell any of the three
+    Split by Kelly weight, a fixed weekly budget over the top picks by edge
+    beat the same budget split evenly over every pick on the 2025-26 Kalshi
+    entries -- which left many picks below one contract. Ranking by expected
+    return instead did a little better, but it buys longshots, and 23 weeks
+    can't tell any of the three
     apart.
     """
     active = [i for i, weight in enumerate(weights) if weight > 0]
@@ -477,17 +480,6 @@ def kelly_counts(
     ]
 
 
-#: How far under a pick's price its rungs rest: limit bids left on the book
-#: until kickoff, filling if the price comes back down to them. On the
-#: 2025-26 entries (701 picks, Kalshi's hourly candles) a bid 2 cents under
-#: filled 68% of the time and a bid 4 under 46%, and those fills returned
-#: +15% and +24% against +6% and +8% for the entry on the same games -- a
-#: lower price, and no taker fee. What fills is a little worse than the
-#: model says, the market having moved for a reason, but by under a point
-#: through 4 cents; by 6 it was 4 points and most of the gain.
-RUNGS_UNDER = (0.02, 0.04)
-
-
 def rungs(
     probability: float,
     price: float,
@@ -499,6 +491,14 @@ def rungs(
     max_bet: float,
 ) -> list[tuple[float, int]]:
     """The rungs under a pick: (price, contracts) for each of `unders`.
+
+    Rungs are limit bids left on the book under a pick's price until
+    kickoff, filling if the price comes back down to them. On the 2025-26
+    entries, shallow ones filled often and returned more than the entry on
+    the same games -- a lower price, and no taker fee. What fills is a
+    little worse than the model says, the market having moved for a reason;
+    deep enough, that took most of the gain. How deep is the league's
+    rules' `rungs`.
 
     Each rung buys what Kelly adds at its lower price over what the pick
     and the rungs above it already cover (`covered` contracts, costing at
@@ -696,16 +696,9 @@ def price(model_home: float, matched: Matched) -> Priced | None:
     )
 
 
-def edge_needed(cost: float, min_edge: float = MIN_EDGE) -> float:
-    """The edge a pick costing `cost` a contract, fee included, must clear."""
-    return max(min_edge, FAVORITE_EDGE) if cost >= FAVORITE_PRICE else min_edge
-
-
-def max_price(
-    model: float, priced: Priced, side: Book, min_edge: float = MIN_EDGE
-) -> float | None:
+def max_price(model: float, priced: Priced, side: Book, rule: PickRule) -> float | None:
     """The most the pick's route can cost, to the cent, and still clear the
-    edge it needs at that price (`edge_needed`).
+    edge it needs at that price (`PickRule.edge_needed`).
 
     The edge is the model against the side's share of the two asks, so a
     rising price eats it about a point a cent. This holds the overround
@@ -719,7 +712,7 @@ def max_price(
     for cents in range(1, 100):
         ask = cents / 100
         route = ask + shift
-        need = edge_needed(route + kalshi_fee(route), min_edge)
+        need = rule.edge_needed(route + kalshi_fee(route))
         if ask + kalshi_fee(ask) > (model - need) * priced.overround:
             break
         found = route
@@ -734,36 +727,36 @@ def skip_reason(
     other_division: str | None,
     waiting_on: Sequence[str],
     since_entry: timedelta | None,
-    min_edge: float = MIN_EDGE,
-    max_since_entry: timedelta = MAX_SINCE_ENTRY,
-    max_overround: float = MAX_OVERROUND,
+    rule: PickRule,
     top_division: str | None = TOP_DIVISION,
     ratings_behind: Sequence[str] = (),
-    min_price: float = 0.0,
 ) -> str | None:
-    """Why a priced game isn't a pick, or None if it is. See the module docstring.
+    """Why a priced game isn't a pick, or None if it is. See the module
+    docstring; `rule` is the league's bar.
 
     `top_division` is the league's (`PickLeague.top_division`): a side from
     below it isn't backed against a team in it. None turns the rule off.
-    `ratings_behind` are the teams `ratings_waiting` names. A pick costing
-    under `min_price`, fee included, isn't one; the default keeps them all.
+    `ratings_behind` are the teams `ratings_waiting` names.
     """
     if waiting_on:
         return f"previous game not final: {', '.join(waiting_on)}"
     if ratings_behind:
         return f"player ratings not in yet: {', '.join(ratings_behind)}"
-    if since_entry is not None and since_entry > max_since_entry:
+    if since_entry is not None and since_entry > rule.max_since_entry:
         return "past the entry window"
-    if priced.overround > max_overround:
+    if priced.overround > rule.max_overround:
         return f"book too wide ({priced.overround:.2f})"
     if priced.route is None:
         return "nothing on offer"
-    if priced.edge < min_edge:
+    if priced.edge < rule.min_edge:
         return "edge under threshold"
-    if priced.cost is not None and priced.edge < edge_needed(priced.cost, min_edge):
-        return f"edge under {FAVORITE_EDGE * 100:.0f} points at {FAVORITE_PRICE * 100:.0f}c+"
-    if priced.cost is not None and priced.cost < min_price:
-        return f"price under {min_price * 100:g}c"
+    if priced.cost is not None and priced.edge < rule.edge_needed(priced.cost):
+        return (
+            f"edge under {(rule.favorite_edge or 0) * 100:g} points at "
+            f"{(rule.favorite_price or 0) * 100:g}c+"
+        )
+    if priced.cost is not None and priced.cost < rule.min_price:
+        return f"price under {rule.min_price * 100:g}c"
     if (
         top_division is not None
         and other_division == top_division

@@ -524,10 +524,12 @@ def _picks(espn: bool) -> None:
         print(rules.describe())
         league = picks_job.FIRST_LEAGUE
         placing = rules.placing(league)
-        # A league with no rules is still priced and placed nowhere: its
-        # stale rungs still come off.
-        sizing = rules.leagues.get(league)
-        argv = ["--place", "--league", league, *(sizing.argv() if sizing else [])]
+        found = rules.leagues.get(league)
+        if found is None:
+            # No bar to price it by, and nothing to place.
+            print(f"no autobet rules for {league}: nothing priced or placed")
+            return
+        argv = ["--place", "--league", league, *found.argv()]
         if not placing:
             # Priced on the real account, nothing placed; the rungs already
             # resting still come off when the model stops backing them.
@@ -538,7 +540,7 @@ def _picks(espn: bool) -> None:
             # The cash on hand is the budget, and a pick on QB news or with its
             # starter in doubt (`cassandra.qb_starts`) waits for a person: the
             # model doesn't read a starter out unless told.
-            argv += ["--yes", "--hold-qb", "--rest", f"{picks_job.REST_HOURS:g}"]
+            argv += ["--yes", "--hold-qb"]
             if rehearsal:
                 argv.append("--dry-run")
         if not espn:

@@ -2,11 +2,11 @@
 
     python picks.py                    # refresh from s3, tonight's scores from ESPN
     python picks.py --offline          # no s3: the copies the last run saved
-    python picks.py --budget 25 --top 8
+    python picks.py --league womens    # another league, by its own rules
     python picks.py --place            # ...then buy them, after asking
 
 Run it once the last of the night's games is final. That's when the
-backtest bought, and the edge it measured was gone within a day (see
+backtest bought, and the edge it measured faded as the book caught up (see
 `cassandra.picks`). Each run does five things:
 
 1. **Inputs.** It downloads the model's fit, the predictor data (EPA,
@@ -80,8 +80,21 @@ by ESPN game id or team: the line each pick in the picks email carries.
 **Unattended.** `jobs.py picks` runs this in the cloud, on a schedule and
 after every finals sweep (`cassandra.picks_job`), with `--place --yes
 --hold-qb --rest`: no prompt, the cash on hand the budget, a pick on QB
-news held back, and orders that rest twelve hours. Paused (`make pause`),
-it runs with `--notify` instead -- size and print, then stop.
+news held back, and orders resting as long as the league's rules say.
+Paused (`make pause`), it runs with `--notify` instead -- size and print,
+then stop.
+
+**Rules.** Every bar, stake and limit here is the league's rules in s3's
+`cassandra/betting/autobet.json` (`picks_job.LeagueRules`, set with `make
+autobet`): the edge a pick needs (`--min-edge`, `--favorite-price` and
+`--favorite-edge`), the entry window (`--max-since-entry`), the widest
+book (`--max-overround`), the price floor (`--min-price`), `--slippage`,
+`--top` and `--max-bet`; and for a run that places, the stake
+(`--kelly-fraction`), its limits (`--max-exposure`, the longshot shrink)
+and the `--rungs`. A run reads them, and keeps a copy for `--offline`; a
+flag given overrides its rule for that run. A league with no rules can't
+be priced: there's no bar to price it by. None of the values are kept in
+this repository.
 
 **Sizing.** Each pick has a target number of contracts:
 
@@ -90,8 +103,9 @@ it runs with `--notify` instead -- size and print, then stop.
   Each pick is sized on its own, so a run every half hour sizes a pick the
   same whichever run finds it, and there's no need to know how many picks
   the week holds;
-- without it, a Kelly-weighted share of `--budget` (default $20) over this
-  run's picks, as the backtest's weekly bet was sized.
+- without it, a Kelly-weighted share of `--budget` over this run's picks,
+  as the backtest's weekly bet was sized; with neither, a nominal budget,
+  only to show the picks with contracts.
 
 A pick's target is at most `--max-bet`. Contracts already held on its side
 count toward it and only the rest is bought, so a partial fill is topped up
@@ -107,14 +121,13 @@ Each order is a limit order:
   than the pick's target;
 - it's immediate-or-cancel, so what isn't on offer now is dropped (books
   this thin rarely hold a whole order). `--rest HOURS` leaves the rest at
-  the limit until then instead -- the backtest's edge was mostly gone by
-  twelve hours.
+  the limit until then instead.
 
 The cheapest route is tried first and what it left goes to the other one.
 What filled is written to `~/.cassandra/betting/orders/`.
 
 **Rungs.** Under `--kelly-fraction`, each pick also leaves limit bids
-`--rungs` cents under its price (2 and 4 by default), resting until
+`--rungs` cents under its price, resting until
 kickoff, for the price to come back down to; see `cassandra.picks.rungs`
 for how they're sized and what the backtest found. They're paid for out
 of the same `--budget` and cash, after the picks themselves. A rung
@@ -162,7 +175,7 @@ from endgame.types import Game, Season, merge_weekly_seasons
 from endgame_aws import Config
 from endgame_aws.pbp_transform import transform_game_to_table
 
-from cassandra import overrides, placing
+from cassandra import overrides, picks_job, placing
 from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
@@ -173,19 +186,16 @@ from cassandra.kalshi_trade import (
     public_get,
     signed_positions,
 )
-from cassandra.markets import MAX_OVERROUND
 from cassandra.model_eval import rebuild_priors
 from cassandra.odds import OddsDatabase
 from cassandra.picks import (
     EASTERN,
     FOOTBALL,
-    MAX_SINCE_ENTRY,
-    MIN_EDGE,
     NOT_HAPPENING,
     PICK_LEAGUES,
-    RUNGS_UNDER,
     Book,
     Fixture,
+    PickRule,
     entry,
     event_day,
     held_on,
@@ -197,7 +207,8 @@ from cassandra.picks import (
     ratings_waiting,
     skip_reason,
 )
-from cassandra.placing import CENTRAL, DEFAULT_BUDGET
+from cassandra.picks_job import Autobet, LeagueRules
+from cassandra.placing import CENTRAL, DISPLAY_BUDGET
 from cassandra.predictor import OptimizationConfig, Predictor, load_predictor
 from cassandra.predictor import frame as frames
 from cassandra.predictor.adjustments import MatchupSources
@@ -545,33 +556,40 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         help="price games kicking off this far ahead (Kalshi lists about two weeks out)",
     )
     parser.add_argument(
-        "--min-edge", type=float, default=MIN_EDGE, help="edge over the no-vig price"
+        "--min-edge", type=float, help="edge over the no-vig price a pick needs"
+    )
+    parser.add_argument(
+        "--favorite-price",
+        type=float,
+        metavar="COST",
+        help="a pick costing this or more, fee included, needs --favorite-edge",
+    )
+    parser.add_argument(
+        "--favorite-edge", type=float, help="the edge a --favorite-price pick needs"
     )
     parser.add_argument(
         "--max-since-entry",
         type=float,
-        default=MAX_SINCE_ENTRY.total_seconds() / 3600,
         metavar="HOURS",
-        help="skip games whose entry (both previous games over) was longer ago; "
-        "the 2025-26 edge was +15%% in the first 6h, +3%% at 12-24h",
+        help="skip games whose entry (both previous games over) was longer ago",
     )
     parser.add_argument(
         "--max-overround",
         type=float,
-        default=MAX_OVERROUND,
         help="skip books whose two costs sum past this: too wide to price",
     )
     parser.add_argument(
         "--budget",
         type=float,
         help="most dollars this run spends, fees included; split over the "
-        f"picks by Kelly weight unless --kelly-fraction (default ${DEFAULT_BUDGET:g})",
+        "picks by Kelly weight unless --kelly-fraction (or a nominal "
+        f"${DISPLAY_BUDGET:g}, to show them, with neither)",
     )
     parser.add_argument(
         "--kelly-fraction",
         type=float,
         help="stake each pick on its own: this fraction of Kelly on the bankroll "
-        "(the account's cash plus open positions with --place), e.g. 0.25",
+        "(the account's cash plus open positions with --place)",
     )
     parser.add_argument(
         "--bankroll",
@@ -588,7 +606,6 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--longshot-price",
         type=float,
-        default=0.0,
         metavar="COST",
         help="a pick costing under this, fee included, is staked at "
         "--longshot-scale of its size (`cassandra.picks.Longshots`)",
@@ -596,27 +613,22 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--longshot-scale",
         type=float,
-        default=1.0,
         help="the share of its stake a pick under --longshot-price gets",
     )
     parser.add_argument(
         "--min-price",
         type=float,
-        default=0.0,
         metavar="COST",
         help="skip picks costing under this, fee included",
     )
     parser.add_argument(
-        "--top",
-        type=int,
-        default=10,
-        help="bet only this many picks, the biggest edges",
+        "--top", type=int, help="bet only this many picks, the biggest edges"
     )
     parser.add_argument(
         "--slippage",
         type=float,
-        default=0.01,
-        help="how far past the best price to count contracts on offer",
+        help="how far past the best price an order may pay, and contracts on "
+        "offer are counted",
     )
     parser.add_argument(
         "--only",
@@ -660,10 +672,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "--all", action="store_true", help="print every matched game, not just picks"
     )
     parser.add_argument(
-        "--max-bet",
-        type=float,
-        default=5.0,
-        help="most dollars on any one pick, fee included",
+        "--max-bet", type=float, help="most dollars on any one pick, fee included"
     )
     parser.add_argument(
         "--place",
@@ -709,9 +718,8 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--rungs",
-        default=",".join(f"{u * 100:g}" for u in RUNGS_UNDER),
         help="with --kelly-fraction: cents under each pick's price to leave "
-        "bids resting until kickoff, comma-separated",
+        "bids resting until kickoff, comma-separated ('none' for none)",
     )
     parser.add_argument(
         "--no-rungs", action="store_true", help="leave no bids under the picks"
@@ -733,12 +741,102 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
     args.model = args.model or PICK_LEAGUES[args.league].model
-    args.rungs = (
-        ()
-        if args.no_rungs or not args.rungs.strip()
-        else tuple(float(c) / 100 for c in args.rungs.split(","))
-    )
+    if args.rungs is not None:
+        args.rungs = (
+            ()
+            if args.rungs.strip().lower() in ("", "none")
+            else tuple(float(c) / 100 for c in args.rungs.split(","))
+        )
+    if args.no_rungs:
+        args.rungs = ()
     return args
+
+
+#: The last rules read from s3, for `--offline`.
+RULES_CACHE = PICKS_DIR / "autobet.json"
+
+#: The flags a league's rules fill when a run doesn't give them, by the
+#: rule's name where it differs.
+_FROM_RULES = {
+    "min_edge": "min_edge",
+    "favorite_price": "favorite_price",
+    "favorite_edge": "favorite_edge",
+    "max_since_entry": "max_since_entry_hours",
+    "max_overround": "max_overround",
+    "min_price": "min_price",
+    "slippage": "slippage",
+    "top": "top",
+    "max_bet": "max_bet",
+}
+#: ...and the ones it fills only for a run that places, which reads the
+#: account: the stake and its limits.
+_SIZING_FROM_RULES = (
+    "kelly_fraction",
+    "max_exposure",
+    "longshot_price",
+    "longshot_scale",
+)
+
+
+def _league_rules(league: str, offline: bool) -> LeagueRules | None:
+    """`league`'s rules in s3's autobet.json, a copy kept for `--offline`;
+    None when it has none."""
+    if offline:
+        if not RULES_CACHE.exists():
+            return None
+        found = Autobet.from_json(json.loads(RULES_CACHE.read_text()))
+    else:
+        found = picks_job.autobet(
+            picks_job.client("s3"), Config.init_from_file().bucket
+        )
+        PICKS_DIR.mkdir(parents=True, exist_ok=True)
+        RULES_CACHE.write_text(json.dumps(found.to_json(), indent=1))
+    return found.leagues.get(league)
+
+
+def apply_rules(args: argparse.Namespace, rules: LeagueRules | None) -> None:
+    """Fill every flag the run didn't give from the league's rules, and the
+    run's bar (`args.rule`). A rule the league needs and nobody gave is an
+    error; the rest are off.
+    """
+    names = list(_FROM_RULES.items())
+    if args.place:
+        names += [(name, name) for name in _SIZING_FROM_RULES]
+    for flag, name in names:
+        if getattr(args, flag) is None and rules is not None:
+            setattr(args, flag, getattr(rules, name))
+    if args.rungs is None:
+        args.rungs = (
+            tuple(c / 100 for c in rules.rungs)
+            if rules is not None and args.place
+            else ()
+        )
+    missing = [
+        flag
+        for flag in ("min_edge", "max_since_entry", "max_overround", "max_bet")
+        if getattr(args, flag) is None
+    ]
+    if missing:
+        raise SystemExit(
+            f"no {args.league} rule for {', '.join('--' + m.replace('_', '-') for m in missing)}: "
+            f'pass it, or set the league\'s rules (make autobet ARGS="--league {args.league} ...")'
+        )
+    for flag, off in (
+        ("min_price", 0.0),
+        ("slippage", 0.0),
+        ("longshot_price", 0.0),
+        ("longshot_scale", 1.0),
+    ):
+        if getattr(args, flag) is None:
+            setattr(args, flag, off)
+    args.rule = PickRule(
+        min_edge=args.min_edge,
+        max_since_entry=timedelta(hours=args.max_since_entry),
+        max_overround=args.max_overround,
+        favorite_price=args.favorite_price,
+        favorite_edge=args.favorite_edge,
+        min_price=args.min_price,
+    )
 
 
 def main() -> None:
@@ -809,6 +907,7 @@ def run(args: argparse.Namespace) -> Outcome:
     started = datetime.now(UTC)
     spec = PICK_LEAGUES[args.league]
     league, model = spec.name, args.model
+    apply_rules(args, _league_rules(league, args.offline))
 
     # 1. Inputs.
     if args.offline:
@@ -991,12 +1090,9 @@ def run(args: argparse.Namespace) -> Outcome:
             division(other),
             waiting,
             since_entry,
-            args.min_edge,
-            timedelta(hours=args.max_since_entry),
-            args.max_overround,
+            args.rule,
             spec.top_division,
             behind,
-            args.min_price,
         )
         unknown = sorted({game.home, game.away} & unread_teams)
         if reason is None and unknown:
@@ -1021,7 +1117,7 @@ def run(args: argparse.Namespace) -> Outcome:
                 if route is None
                 else f"{route.action.upper()} {route.ticker}",
                 "price": None if route is None else route.price,
-                "max_price": max_price(model_side, priced, book, args.min_edge),
+                "max_price": max_price(model_side, priced, book, args.rule),
                 "cost": priced.cost,
                 "ev": priced.expected_return,
                 "size_at_price": None if route is None else route.size,

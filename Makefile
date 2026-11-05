@@ -61,18 +61,19 @@ betting:
 
 # What to bet on Kalshi this week: the model against the live order books.
 # Run it once the night's last game is final -- the edge `betting` found is
-# at that first price and fades within a day. `--offline` when the AWS login
-# has lapsed, e.g. `make picks ARGS="--offline --stake 25"`.
+# at that first price and fades as the book catches up. Its bar and limits
+# are the league's rules in s3's autobet.json. `--offline` when the AWS
+# login has lapsed, e.g. `make picks ARGS="--offline"`.
 picks:
 	poetry run python picks.py $(ARGS)
 
 # The same, then buy the picks on Kalshi after showing them and asking. Needs
 # a Kalshi API key (see cassandra/kalshi_trade.py). Each pick is staked on its
-# own, a quarter of Kelly on the account, at most $10; e.g.
-# `make bet ARGS="--offline"`. Injury news that lasts (a starter out for the
-# season) goes in ~/.cassandra/betting/overrides.toml, not ARGS.
+# own, by the league's rules in s3's autobet.json; e.g. `make bet
+# ARGS="--offline"`. Injury news that lasts (a starter out for the season)
+# goes in ~/.cassandra/betting/overrides.toml, not ARGS.
 bet:
-	poetry run python picks.py --place --kelly-fraction 0.25 --max-bet 10 $(ARGS)
+	poetry run python picks.py --place $(ARGS)
 
 # The cloud picks job (`jobs.py picks`, cassandra/picks_job.py) places the
 # picks itself, all day, by each league's rules in s3's autobet.json, the cash

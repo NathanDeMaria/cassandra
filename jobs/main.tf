@@ -666,7 +666,7 @@ resource "aws_iam_role_policy" "sweeps_after_finals" {
 # ------------------------------------------------------------------------------
 # Hourly through the windows a matchup's book goes from wide to priced: the
 # backtest's entries after Saturday games tightened Sat 9pm-Sun 3am, and the
-# edge was mostly gone by twelve hours (`picks.py --max-since-entry`). The
+# edge faded within hours (`picks.py --max-since-entry`). The
 # finals rule above catches each entry as it opens; these catch the books
 # that tighten after it. Weekday nights are for the midweek games.
 module "picks_schedule" {
