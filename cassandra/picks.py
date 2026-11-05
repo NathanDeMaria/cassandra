@@ -184,6 +184,17 @@ PICK_LEAGUES: dict[str, PickLeague] = {
     league.name: league for league in (FOOTBALL, WOMENS)
 }
 
+
+def league_of(ticker: str) -> str | None:
+    """The league a Kalshi market or event is in, by its series; None for
+    one no `PickLeague` lists."""
+    series = ticker.split("-", 1)[0]
+    for league in PICK_LEAGUES.values():
+        if series in league.series:
+            return league.name
+    return None
+
+
 _EVENT_DATE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})")
 _MONTHS: dict[str, int] = {
     name: number

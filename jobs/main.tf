@@ -682,6 +682,59 @@ module "picks_schedule" {
   command             = ["picks"]
 }
 
+# Womens basketball's books, hourly through the day its games are played,
+# on the half hour so a run doesn't start with football's and wait on its
+# lock. A game's entry is the first price once both teams' previous games
+# are rated (`cassandra.picks.ratings_waiting`), which is each morning's
+# player ratings -- so the rule below runs one as soon as they land.
+module "womens_picks_schedule" {
+  source   = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/job_schedule?ref=main"
+  for_each = var.womens_picks_schedules
+
+  schedule_name       = "${var.resource_name_prefix}-picks-womens-${each.key}"
+  schedule_expression = each.value
+  schedule_timezone   = var.schedule_timezone
+  job_definition      = module.picks.name
+  job_queue_arn       = local.shared.job_queue_arn
+  scheduler_role_arn  = local.shared.batch_scheduler_role_arn
+  command             = ["picks", "--league", "womens"]
+}
+
+# The player ratings are the launcher's array job (`cassandra.batch.dag`),
+# named `cassandra-player-ratings-<stamp>`. Its children and the parent
+# each report SUCCEEDED; the picks lock turns the extra runs away.
+resource "aws_cloudwatch_event_rule" "picks_after_player_ratings" {
+  name        = "${var.resource_name_prefix}-picks-after-player-ratings"
+  description = "The morning's basketball player ratings are in"
+
+  event_pattern = jsonencode({
+    source      = ["aws.batch"]
+    detail-type = ["Batch Job State Change"]
+    detail = {
+      status  = ["SUCCEEDED"]
+      jobName = [{ prefix = "cassandra-player-ratings-" }]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "picks_after_player_ratings" {
+  rule      = aws_cloudwatch_event_rule.picks_after_player_ratings.name
+  target_id = "picks-womens"
+  arn       = local.shared.job_queue_arn
+  role_arn  = aws_iam_role.sweeps_after_finals.arn
+
+  batch_target {
+    job_definition = module.picks.name
+    job_name       = "${var.resource_name_prefix}-picks-after-player-ratings-womens"
+  }
+
+  input = jsonencode({
+    ContainerOverrides = {
+      Command = ["picks", "--league", "womens"]
+    }
+  })
+}
+
 # The morning summary (`jobs.py picks_summary`): every bet placed since the
 # last one, what still rests, what settled, and the holds waiting on a
 # person. The picks job's own definition, for its key and its topic.

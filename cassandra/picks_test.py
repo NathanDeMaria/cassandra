@@ -29,6 +29,7 @@ from .picks import (
     kalshi_games,
     kelly,
     kelly_counts,
+    league_of,
     match,
     max_price,
     no_vig_home,
@@ -509,3 +510,9 @@ def test_a_pick_under_the_price_floor_isnt_one():
         skip_reason(cheap, None, None, [], fresh, floored, top_division=None)
         == "price under 10c"
     )
+
+
+def test_a_ticker_names_its_league_by_series():
+    assert league_of("KXNCAAFCSGAME-26NOV07MONTWEB-MONT") == "ncaafb"
+    assert league_of("KXNCAAWBGAME-26NOV05SIEME") == "womens"
+    assert league_of("KXNCAAMBGAME-26NOV05X-Y") is None

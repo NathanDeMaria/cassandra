@@ -1,14 +1,18 @@
 """What `jobs.py picks` keeps between runs: the autobet rules, what it has
 emailed, a lock -- and the emails themselves.
 
-The job runs `picks.py` on a schedule and after every ncaafb finals sweep,
-and places the picks itself (`picks.py --place --yes`) by each league's
-rules (`LeagueRules`) in `autobet.json` -- the bar a pick must clear, its
-stake, how long its order rests -- the cash on hand the only budget. A
-league with a `max_exposure` spends only what its share of the bankroll has
-left. The rules' values live only in that file. `make pause` stops that and `make resume`
-starts it again, the whole job or `ARGS="--league L"`'s; `make autobet`
-changes a league's sizing, or adds one. Each pick's
+The job runs `picks.py` for one league a run (`jobs.py picks --league`):
+football on its schedules and after every ncaafb finals sweep, womens
+basketball hourly through the day and once each morning's player ratings
+land. It places the picks itself (`picks.py --place --yes`) by each
+league's rules (`LeagueRules`) in `autobet.json` -- the bar a pick must
+clear, its stake, how long its order rests, never past kickoff -- the cash
+on hand the only budget. A league with a `max_exposure` spends only what
+its share of the bankroll has left. The rules' values live only in that
+file. The leagues share the account, so they share the lock, and a run
+waits its turn for it (`wait_for`). `make pause` stops placing and `make
+resume` starts it again, the whole job or `ARGS="--league L"`'s; `make
+autobet` changes a league's rules, or adds one. Each pick's
 rungs (`picks.py`'s "Rungs") rest until kickoff, and every run with the key
 cancels the ones the model no longer backs.
 
@@ -20,7 +24,8 @@ Two emails, and only two (Nathan, 2026-11-01):
   Emailed once, not every hour it stays held (`unsent(held=True)`).
 - **The morning summary** (`jobs.py picks_summary`, 8am): every bet placed
   since the last one, what's still resting, what settled, the holds still
-  waiting, and the account. Placements and cancelled rungs go there rather
+  waiting, and the account; bets and settlements by league once there's
+  more than one. Placements and cancelled rungs go there rather
   than in an email each.
 
 Objects in s3, each small JSON or TOML:
@@ -53,7 +58,8 @@ gave each bet: `make ledger` reads them, and so does the morning summary.
 import argparse
 import json
 import math
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -78,6 +84,10 @@ RUN_FILES = {
 LOCK_KEY = "cassandra/picks.lock"
 #: A run takes about five minutes; one holding the lock this long has died.
 LOCK_STALE = timedelta(minutes=30)
+#: How long a run waits for another to finish with the lock, and how often
+#: it looks.
+LOCK_WAIT = timedelta(minutes=15)
+LOCK_POLL = timedelta(seconds=30)
 #: How far back the first morning summary looks, with no last one to start at.
 SUMMARY_DAY = timedelta(hours=24)
 #: Emails kept in `sent.json`: a week of hourly runs and then some.
@@ -142,6 +152,28 @@ def acquire(s3: Any, bucket: str, now: datetime, owner: str) -> bool:
             return False
         s3.delete_object(Bucket=bucket, Key=LOCK_KEY)
     return False
+
+
+def wait_for(
+    s3: Any,
+    bucket: str,
+    owner: str,
+    wait: timedelta = LOCK_WAIT,
+    poll: timedelta = LOCK_POLL,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Take the run lock, waiting up to `wait` for another run to finish
+    with it: two leagues' schedules, and the triggers after a final or the
+    morning's player ratings, can land in the same minute, and each run has
+    its own league to price. False if it's still held after `wait`."""
+    deadline = clock() + wait
+    while True:
+        if acquire(s3, bucket, clock(), owner):
+            return True
+        if clock() >= deadline:
+            return False
+        sleep(poll.total_seconds())
 
 
 def release(s3: Any, bucket: str) -> None:
@@ -559,7 +591,7 @@ def summary_email(
 ) -> tuple[str, str]:
     """The morning email: what was placed since `since`, what still rests,
     what settled, the holds still waiting, and the account."""
-    from cassandra.kalshi_trade import bought, is_rung, order_price
+    from cassandra.kalshi_trade import is_rung, order_price
 
     won, lost = int(settled["won"].sum()), int((~settled["won"]).sum())
     subject = (
@@ -576,23 +608,28 @@ def summary_email(
         f"Placed: {len(bets)} game{'s' if len(bets) != 1 else ''}, "
         f"${bets['cost'].sum():,.2f} with fees" + (":" if len(bets) else ".")
     )
-    for _, bet in bets.iterrows():
-        model = (
-            ""
-            if pd.isna(bet["model"])
-            else f"; model {bet['model']:.2f} (edge {bet['edge']:+.3f})"
-        )
-        rungs = f"; {bet['rung']:g} from rungs" if bet["rung"] else ""
-        lines.append(
-            f"  {bet['bet']} -- {bet['game']}: {bet['contracts']:g} @ "
-            f"{bet['price']:.2f}, ${bet['cost']:.2f}{model}{rungs}"
-        )
+    for league, group in _by_league(bets):
+        if league is not None:
+            lines.append(
+                f"  {league}: {len(group)} game{'s' if len(group) != 1 else ''}, "
+                f"${group['cost'].sum():,.2f}"
+            )
+        for _, bet in group.iterrows():
+            model = (
+                ""
+                if pd.isna(bet["model"])
+                else f"; model {bet['model']:.2f} (edge {bet['edge']:+.3f})"
+            )
+            rungs = f"; {bet['rung']:g} from rungs" if bet["rung"] else ""
+            lines.append(
+                f"  {bet['bet']} -- {bet['game']}: {bet['contracts']:g} @ "
+                f"{bet['price']:.2f}, ${bet['cost']:.2f}{model}{rungs}"
+            )
     lines.append("")
     if resting:
+        # `order_price` is already the price of the contract the order buys.
         worst = sum(
-            float(o.get("remaining_count_fp") or 0)
-            * (order_price(o) if bought(o) == "yes" else 1 - order_price(o))
-            for o in resting
+            float(o.get("remaining_count_fp") or 0) * order_price(o) for o in resting
         )
         rungs = sum(1 for o in resting if is_rung(o))
         lines += [
@@ -602,11 +639,17 @@ def summary_email(
         ]
     if len(settled):
         lines.append(f"Settled: {won}-{lost}, {_money(settled['pnl'].sum())}")
-        for _, game in settled.iterrows():
-            title = titles.get(game["event"], game["event"])
-            lines.append(
-                f"  {'won ' if game['won'] else 'lost'} {_money(game['pnl']):>8}  {title}"
-            )
+        for league, group in _by_league(settled):
+            if league is not None:
+                lines.append(
+                    f"  {league}: {int(group['won'].sum())}-"
+                    f"{int((~group['won']).sum())}, {_money(group['pnl'].sum())}"
+                )
+            for _, game in group.iterrows():
+                title = titles.get(game["event"], game["event"])
+                lines.append(
+                    f"  {'won ' if game['won'] else 'lost'} {_money(game['pnl']):>8}  {title}"
+                )
         lines.append("")
     if holds:
         lines.append(f"Waiting on you: {len(holds)} held on a QB check, not placed")
@@ -618,6 +661,28 @@ def summary_email(
     cash, positions = account
     lines.append(f"Account: ${cash:,.2f} cash, ${positions:,.2f} in open positions.")
     return subject, "\n".join(lines)
+
+
+def _by_league(
+    frame: pd.DataFrame,
+) -> list[tuple[str | None, pd.DataFrame]]:
+    """`frame`'s rows by the league of their `event`, in `PICK_LEAGUES`' order
+    and then any other; one group with no league named when there's only
+    one league (or none) among them, so a single league's email reads as
+    it always has."""
+    from cassandra.picks import PICK_LEAGUES, league_of
+
+    if frame.empty:
+        return []
+    leagues = frame["event"].map(lambda e: league_of(e) or "other")
+    if leagues.nunique() < 2:
+        return [(None, frame)]
+    order = [*PICK_LEAGUES, "other"]
+    return [
+        (league, frame[leagues == league])
+        for league in order
+        if (leagues == league).any()
+    ]
 
 
 def _money(x: float) -> str:

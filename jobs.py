@@ -488,7 +488,14 @@ def _kalshi_key(secret_id: str | None) -> bool:
     return True
 
 
-def _picks(espn: bool) -> None:
+def picks_script_leagues() -> list[str]:
+    """The leagues `picks.py --league` takes."""
+    from cassandra.picks import PICK_LEAGUES
+
+    return sorted(PICK_LEAGUES)
+
+
+def _picks(espn: bool, league: str) -> None:
     import logging
     import uuid
 
@@ -500,12 +507,15 @@ def _picks(espn: bool) -> None:
     logging.getLogger("endgame_aws.pbp_transform").setLevel(logging.ERROR)
     s3 = picks_job.client("s3")
     bucket, scratch = _bucket(), temp_bucket()
-    now = picks_job.now_utc()
-    if not picks_job.acquire(
-        s3, scratch, now, os.environ.get("AWS_BATCH_JOB_ID", str(uuid.uuid4()))
-    ):
-        print("another picks run holds the lock; this one has nothing to add")
+    owner = f"{league} {os.environ.get('AWS_BATCH_JOB_ID', uuid.uuid4())}"
+    if not picks_job.wait_for(s3, scratch, owner):
+        print(
+            f"another picks run held the lock for {picks_job.LOCK_WAIT}: "
+            f"{league} waits for its next run"
+        )
         return
+    # After the wait: the files this run writes are the ones kept.
+    now = picks_job.now_utc()
     try:
         try:
             found = s3.get_object(Bucket=bucket, Key=picks_job.OVERRIDES_KEY)
@@ -522,7 +532,6 @@ def _picks(espn: bool) -> None:
             return
         rules = picks_job.autobet(s3, bucket)
         print(rules.describe())
-        league = picks_job.FIRST_LEAGUE
         placing = rules.placing(league)
         found = rules.leagues.get(league)
         if found is None:
@@ -805,10 +814,12 @@ class Jobs:
         asyncio.run(_epa([league], None, rebuild=False, upload=True))
         asyncio.run(_qb_out([league], None, upload=True, latest=True))
 
-    def picks(self, espn: bool = True) -> None:
-        """Price the Kalshi ncaafb books and place the picks, by the autobet
+    def picks(self, espn: bool = True, league: str = "ncaafb") -> None:
+        """Price `league`'s Kalshi books and place the picks, by its autobet
         rules in s3 (`make pause` / `make resume` / `make autobet`); email
-        only a pick held for a person's OK. See `cassandra.picks_job`.
+        only a pick held for a person's OK. See `cassandra.picks_job`. One
+        league a run: they share the account, so they share a lock, and a
+        run waits its turn (`picks_job.wait_for`).
 
         `--espn=False` skips the season's top-up from ESPN (`picks.py
         --no-espn`). The run after a final passes it: the chain that wrote
@@ -816,7 +827,9 @@ class Jobs:
         scoreboard reads that would only say it again. The hourly runs keep
         it, since they're the ones that catch a final no chain has written.
         """
-        _picks(espn)
+        if league not in picks_script_leagues():
+            raise SystemExit(f"--league {league}: not one of {picks_script_leagues()}")
+        _picks(espn, league)
 
     def picks_summary(self) -> None:
         """Email the morning summary: the Kalshi bets placed since the last
