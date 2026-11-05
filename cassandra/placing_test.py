@@ -272,3 +272,15 @@ def test_a_longshot_is_sized_smaller_and_says_so(no_books):
     assert shrunk["contracts"].iloc[0] == full["contracts"].iloc[0]
     assert shrunk["contracts"].iloc[1] < full["contracts"].iloc[1]
     assert "0.6x under 15c" in placing.sizing(args)
+
+
+def test_an_order_rests_no_later_than_kickoff():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 11, 5, 15, 0, tzinfo=UTC)
+    tip = now + timedelta(hours=3)
+    assert placing.order_expiry(None, tip, now) is None
+    assert placing.order_expiry(2.0, tip, now) == int(
+        (now + timedelta(hours=2)).timestamp()
+    )
+    assert placing.order_expiry(8.0, tip, now) == int(tip.timestamp())

@@ -88,6 +88,33 @@ def test_a_dead_runs_lock_is_taken():
     assert picks_job.acquire(s3, "tmp", later, "b")
 
 
+def test_a_run_waits_its_turn_for_the_lock():
+    s3 = FakeS3()
+    assert picks_job.acquire(s3, "tmp", NOW, "football")
+    clock = [NOW]
+    slept: list[float] = []
+    release_on_second = [True]
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += timedelta(seconds=seconds)
+        if len(slept) == 2 and release_on_second[0]:
+            picks_job.release(s3, "tmp")  # football's run ends
+
+    poll = timedelta(seconds=30)
+    assert picks_job.wait_for(
+        s3, "tmp", "womens", timedelta(minutes=5), poll, lambda: clock[0], sleep
+    )
+    assert slept == [30.0, 30.0]
+    # Held past the wait, the run gives up rather than queue forever.
+    slept.clear()
+    release_on_second[0] = False
+    assert not picks_job.wait_for(
+        s3, "tmp", "mens", timedelta(minutes=1), poll, lambda: clock[0], sleep
+    )
+    assert slept == [30.0, 30.0]
+
+
 def test_only_unemailed_picks_or_a_flipped_side_are_new():
     sent = picks_job.record({}, _picks(("1", "Toledo Rockets", 0.07)), NOW, "s")
     now = _picks(
@@ -506,3 +533,71 @@ def test_a_league_is_opted_in_paused_and_dropped_on_its_own():
     assert "womens" not in dropped.leagues
     with pytest.raises(ValueError, match="no rules for mens"):
         run(rules, "pause", "--league", "mens")
+
+
+def test_the_summary_splits_leagues_and_prices_a_resting_no():
+    orders = pd.DataFrame(
+        [
+            {
+                "order_id": o,
+                "bet": bet,
+                "game": game,
+                "model": 0.6,
+                "edge": 0.1,
+                "rung": False,
+            }
+            for o, bet, game in (
+                ("o1", "Toledo Rockets", "Ohio @ Toledo"),
+                ("o2", "Maine Black Bears", "Siena @ Maine"),
+            )
+        ]
+    )
+    bets = picks_job.placed_bets(
+        [
+            _fill("o1", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 6, 0.55),
+            _fill("o2", "KXNCAAWBGAME-26NOV05SIEME-ME", "yes", "buy", 4, 0.40),
+        ],
+        orders,
+    )
+    settled = picks_job.settled_games(
+        [
+            {
+                "ticker": "KXNCAAWBGAME-26NOV04LINWDEN-LINW",
+                "yes_count_fp": "0",
+                "yes_total_cost_dollars": "0",
+                "no_count_fp": "5",
+                "no_total_cost_dollars": "2",
+                "revenue": 500,
+                "fee_cost": "0",
+            }
+        ]
+    )
+    # 10 NO at a 70c YES price: 30c each, $3.00 at worst.
+    resting = [
+        {
+            "ticker": "KXNCAAWBGAME-26NOV05HAMPSMU-SMU",
+            "outcome_side": "no",
+            "book_side": "bid",
+            "yes_price_dollars": "0.70",
+            "remaining_count_fp": "10",
+        }
+    ]
+    central = ZoneInfo("America/Chicago")
+    _, text = picks_job.summary_email(
+        bets,
+        resting,
+        settled,
+        [],
+        (25.0, 120.0),
+        {},
+        Autobet(),
+        (NOW - timedelta(days=1)).astimezone(central),
+        NOW.astimezone(central),
+    )
+    assert "  ncaafb: 1 game, $3.35" in text
+    assert "  womens: 1 game, $1.65" in text
+    assert text.index("ncaafb: 1 game") < text.index("Toledo Rockets --")
+    assert text.index("Toledo Rockets --") < text.index("womens: 1 game")
+    assert "up to $3.00 if they all fill" in text
+    # One league settled: no league line over it.
+    assert "  womens: 1-0" not in text

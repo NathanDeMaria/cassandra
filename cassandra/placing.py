@@ -592,15 +592,12 @@ def place(
     """Send the orders: the cheapest route first, what it left on the other.
 
     Each is a limit order at the pick's `limit`, so nothing fills at a price
-    that doesn't clear the edge. Immediate-or-cancel unless `--rest`.
+    that doesn't clear the edge. Immediate-or-cancel unless `--rest`, and
+    never resting past kickoff (`order_expiry`).
     """
-    expires = (
-        None
-        if args.rest is None
-        else int((datetime.now(UTC) + timedelta(hours=args.rest)).timestamp())
-    )
     rows = []
     for _, row in picks.sort_values("kickoff").iterrows():
+        expires = order_expiry(args.rest, row["kickoff"], datetime.now(UTC))
         found = matched[row["game_id"]]
         side, other = (
             (found.home, found.away) if row["bet_home"] else (found.away, found.home)
@@ -672,6 +669,22 @@ def place(
         f"{filled['game_id'].nunique()} games for ${spent:,.2f}; orders: {log}"
     )
     return placed
+
+
+def order_expiry(
+    rest_hours: float | None, kickoff: datetime, now: datetime
+) -> int | None:
+    """When a pick's order stops resting, as Kalshi takes it (epoch seconds):
+    `rest_hours` from now, or kickoff if that's sooner; None for
+    immediate-or-cancel.
+
+    Kalshi trades a game while it's played, so an order left past kickoff
+    could fill at a pregame price on an in-game book. A football pick is
+    usually days ahead, but a basketball entry can be hours before tip.
+    """
+    if rest_hours is None:
+        return None
+    return int(min(now + timedelta(hours=rest_hours), kickoff).timestamp())
 
 
 def _place_rungs(

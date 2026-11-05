@@ -186,6 +186,14 @@ variable "picks_summary_schedule" {
   default     = "cron(0 8 * * ? *)"
 }
 
+variable "womens_picks_schedules" {
+  description = "When the picks job looks at womens basketball's Kalshi books (`jobs.py picks --league womens`), besides after each morning's player ratings. EventBridge Scheduler cron expressions in schedule_timezone, keyed by a name for each schedule. On the half hour, so they don't start with football's on the hour: the two share a lock."
+  type        = map(string)
+  default = {
+    daily = "cron(30 10-22 * * ? *)"
+  }
+}
+
 variable "picks_schedules" {
   description = "When the picks job looks at the Kalshi books, besides after every ncaafb finals sweep. EventBridge Scheduler cron expressions in schedule_timezone, keyed by a name for each schedule."
   type        = map(string)
