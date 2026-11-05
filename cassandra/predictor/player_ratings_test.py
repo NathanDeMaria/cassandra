@@ -216,8 +216,8 @@ def test_the_file_reads_by_canonical_name_in_date_order(
     try:
         assert load_player_ratings("nfl") == {
             "Home U": [
-                TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2025),
-                TeamAsOf(date(2024, 11, 11), 4.0, 70.0, 2025, 2.5, 4.5),
+                TeamAsOf(date(2024, 11, 4), 10.0, 70.0, 2025, games=0),
+                TeamAsOf(date(2024, 11, 11), 4.0, 70.0, 2025, 2.5, 4.5, games=1),
             ]
         }
     finally:
@@ -330,3 +330,43 @@ def test_a_blend_weighed_by_uncertainty_round_trips_and_needs_a_weight() -> None
     assert "player_floor" not in _weighed(_sure(5.0), 100.0).state_dict()
     with pytest.raises(ValueError, match="player_rating_weight"):
         GlickoPredictor("test_league", player_variance_scale=1.0)
+
+
+def test_roster_change_is_the_first_row_less_last_seasons_last() -> None:
+    from datetime import date
+
+    from .player_ratings import PlayerRatingIndex, TeamAsOf
+
+    index = PlayerRatingIndex(
+        {
+            "A": [
+                TeamAsOf(date(2020, 12, 1), -4.0, 70.0, 2020),
+                TeamAsOf(date(2021, 3, 1), 1.0, 70.0, 2020),
+                TeamAsOf(date(2021, 11, 1), 6.0, 70.0, 2021, games=0),
+                TeamAsOf(date(2022, 1, 1), 9.0, 70.0, 2021),
+            ],
+            "B": [TeamAsOf(date(2021, 11, 1), 2.0, 70.0, 2021)],
+        }
+    )
+    assert index.roster_change("A", 2021) == 5.0
+    # Nothing from 2020 to have changed from, and no 2022 yet.
+    assert index.roster_change("B", 2021) is None
+    assert index.roster_change("A", 2022) is None
+
+
+def test_a_team_first_rated_after_its_opener_has_no_roster_change() -> None:
+    """A fresh prior after a game is a reset, not a roster change."""
+    from datetime import date
+
+    from .player_ratings import PlayerRatingIndex, TeamAsOf
+
+    index = PlayerRatingIndex(
+        {
+            "Small": [
+                TeamAsOf(date(2021, 3, 1), -60.0, 70.0, 2020, games=25),
+                TeamAsOf(date(2021, 11, 5), -5.0, 70.0, 2021, games=1),
+            ]
+        }
+    )
+    assert index.preseason("Small", 2021) is None
+    assert index.roster_change("Small", 2021) is None
