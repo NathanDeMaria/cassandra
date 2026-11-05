@@ -470,17 +470,16 @@ def test_a_game_behind_on_ratings_isnt_a_pick() -> None:
 
 
 def test_a_longshot_is_staked_at_its_share_of_kelly():
-    shrink = Longshots(price=0.25, scale=0.5)
-    assert shrink.of(0.24) == 0.5 and shrink.of(0.25) == 1.0
+    shrink = Longshots(price=0.15, scale=0.6)
+    assert shrink.of(0.14) == 0.6 and shrink.of(0.15) == 1.0
     assert Longshots().of(0.01) == 1.0
-    # Kelly at p .3, cost .1 is .22: a quarter on $100 is $5.56, halved $2.78.
-    full = kelly_counts([0.3], [0.1], [0.1], 100, 0.25, 10)
-    half = kelly_counts([0.3], [0.1], [0.1], 100, 0.25, 10, shrink)
-    assert full == [contracts_for(0.25 * kelly(0.3, 0.1) * 100, 0.1)]
-    assert half == [contracts_for(0.125 * kelly(0.3, 0.1) * 100, 0.1)]
+    full = kelly_counts([0.3], [0.1], [0.1], 200, 0.3, 50)
+    shrunk = kelly_counts([0.3], [0.1], [0.1], 200, 0.3, 50, shrink)
+    assert full == [contracts_for(0.3 * kelly(0.3, 0.1) * 200, 0.1)]
+    assert shrunk == [contracts_for(0.6 * 0.3 * kelly(0.3, 0.1) * 200, 0.1)]
     # A favorite isn't touched.
-    assert kelly_counts([0.9], [0.6], [0.6], 100, 0.25, 10, shrink) == kelly_counts(
-        [0.9], [0.6], [0.6], 100, 0.25, 10
+    assert kelly_counts([0.9], [0.6], [0.6], 200, 0.3, 50, shrink) == kelly_counts(
+        [0.9], [0.6], [0.6], 200, 0.3, 50
     )
 
 

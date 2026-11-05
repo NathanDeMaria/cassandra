@@ -256,8 +256,8 @@ def test_a_leagues_exposure_is_its_positions_and_resting_orders():
     assert womens == pytest.approx(4.20 + 3.00 + 2.00)
     football = placing.league_exposure(held, resting, ("KXNCAAFGAME", "KXNCAAFCSGAME"))
     assert football == pytest.approx(9.00 + 5.00)
-    # A quarter of $100 with $9.20 out leaves $15.80, and never less than none.
-    assert placing.exposure_room(100.0, 0.25, womens) == pytest.approx(15.80)
+    # 40% of $100 with $9.20 out leaves $30.80, and never less than none.
+    assert placing.exposure_room(100.0, 0.4, womens) == pytest.approx(30.80)
     assert placing.exposure_room(100.0, 0.05, womens) == 0.0
 
 
@@ -267,8 +267,8 @@ def test_a_longshot_is_sized_smaller_and_says_so(no_books):
     frame["limit"] = [0.43, 0.11]
     frame["model"] = [0.60, 0.30]
     _, full = placing.size(frame, matched, _args())
-    args = _args(longshot_price=0.25, longshot_scale=0.5)
+    args = _args(longshot_price=0.15, longshot_scale=0.6)
     _, shrunk = placing.size(frame, matched, args)
     assert shrunk["contracts"].iloc[0] == full["contracts"].iloc[0]
     assert shrunk["contracts"].iloc[1] < full["contracts"].iloc[1]
-    assert "0.5x under 25c" in placing.sizing(args)
+    assert "0.6x under 15c" in placing.sizing(args)

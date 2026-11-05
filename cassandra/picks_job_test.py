@@ -158,14 +158,12 @@ def test_keep_leaves_a_dry_runs_orders_behind(tmp_path, monkeypatch):
     ]
 
 
-def test_no_autobet_file_means_placing_at_the_defaults():
+def test_no_autobet_file_means_nothing_is_placed():
     s3 = FakeS3()
     rules = picks_job.autobet(s3, "b")
-    assert rules == Autobet(paused=False, leagues={"ncaafb": LeagueRules()})
-    assert rules.placing("ncaafb") and not rules.placing("womens")
-    assert rules.describe().startswith(
-        "autobet on: ncaafb 0.25 Kelly, at most $10 a bet"
-    )
+    assert rules == Autobet(paused=False, leagues={})
+    assert not rules.placing("ncaafb")
+    assert rules.describe().startswith("autobet on: no leagues")
     picks_job.write_json(s3, "b", picks_job.AUTOBET_KEY, Autobet(paused=True).to_json())
     assert picks_job.autobet(s3, "b").paused
     assert picks_job.autobet(s3, "b").describe().startswith("autobet paused")
@@ -361,51 +359,66 @@ def test_holds_since_lists_only_the_picks_emailed_as_held_lately():
 
 
 def test_an_autobet_file_from_before_leagues_is_footballs():
-    old = {"paused": False, "max_bet": 15.0, "kelly_fraction": 0.2}
+    old = {"paused": False, "max_bet": 7.0, "kelly_fraction": 0.3}
     rules = Autobet.from_json(old)
-    assert rules.leagues == {"ncaafb": LeagueRules(kelly_fraction=0.2, max_bet=15.0)}
+    assert rules.leagues == {"ncaafb": LeagueRules(kelly_fraction=0.3, max_bet=7.0)}
+    assert rules.placing("ncaafb")
     assert Autobet.from_json(rules.to_json()) == rules
+    # The pause alone, as `make pause` wrote it with no rules: none to place.
+    assert Autobet.from_json({"paused": True}) == Autobet(paused=True)
+
+
+def test_a_league_needs_its_stake_written_down():
+    with pytest.raises(ValueError, match="without max_bet"):
+        LeagueRules.from_json({"kelly_fraction": 0.3})
+    with pytest.raises(ValueError, match="give it --kelly-fraction and --max-bet"):
+        picks_job.changed(Autobet(), picks_job.parse(["autobet", "--league", "womens"]))
 
 
 def test_a_league_is_opted_in_paused_and_dropped_on_its_own():
     def run(rules: Autobet, *argv: str) -> Autobet:
         return picks_job.changed(rules, picks_job.parse(list(argv)))
 
+    football = LeagueRules(kelly_fraction=0.3, max_bet=7.0)
     rules = run(
-        Autobet(),
+        Autobet(leagues={"ncaafb": football}),
         "autobet",
         "--league",
         "womens",
         "--kelly-fraction",
-        "0.125",
+        "0.2",
         "--max-bet",
-        "5",
+        "3",
         "--max-exposure",
-        "0.25",
+        "0.4",
         "--longshot-price",
-        "0.25",
+        "0.15",
         "--longshot-scale",
-        "0.5",
+        "0.6",
     )
     womens = rules.leagues["womens"]
-    assert womens == LeagueRules(0.125, 5.0, 0.25, 0.25, 0.5)
-    assert rules.leagues["ncaafb"] == LeagueRules()
+    assert womens == LeagueRules(0.2, 3.0, 0.4, 0.15, 0.6)
+    assert rules.leagues["ncaafb"] == football
     assert womens.argv() == [
         "--kelly-fraction",
-        "0.125",
+        "0.2",
         "--max-bet",
-        "5",
+        "3",
         "--max-exposure",
-        "0.25",
+        "0.4",
         "--longshot-price",
-        "0.25",
+        "0.15",
         "--longshot-scale",
-        "0.5",
+        "0.6",
     ]
-    assert LeagueRules().argv() == ["--kelly-fraction", "0.25", "--max-bet", "10"]
-    assert "womens 0.125 Kelly, at most $5 a bet, at most 25% of the bankroll" in (
+    assert football.argv() == ["--kelly-fraction", "0.3", "--max-bet", "7"]
+    assert "womens 0.2 Kelly, at most $3 a bet, at most 40% of the bankroll" in (
         rules.describe()
     )
+    # A league already listed changes only what's given.
+    assert run(rules, "autobet", "--league", "womens", "--max-bet", "4").leagues[
+        "womens"
+    ] == LeagueRules(0.2, 4.0, 0.4, 0.15, 0.6)
 
     paused = run(rules, "pause", "--league", "womens")
     assert not paused.placing("womens") and paused.placing("ncaafb")

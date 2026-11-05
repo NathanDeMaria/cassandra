@@ -3,10 +3,10 @@ emailed, a lock -- and the emails themselves.
 
 The job runs `picks.py` on a schedule and after every ncaafb finals sweep,
 and places the picks itself (`picks.py --place --yes`) by each league's
-rules (`LeagueRules`): football's default is a quarter Kelly, at most $10 a
-bet, the cash on hand the only budget, each order resting `REST_HOURS`
-before it's cancelled. A league with a `max_exposure` spends only what its
-share of the bankroll has left. `make pause` stops that and `make resume`
+rules (`LeagueRules`) in `autobet.json`, the cash on hand the only budget,
+each order resting `REST_HOURS` before it's cancelled. A league with a
+`max_exposure` spends only what its share of the bankroll has left. The
+rules' values live only in that file. `make pause` stops that and `make resume`
 starts it again, the whole job or `ARGS="--league L"`'s; `make autobet`
 changes a league's sizing, or adds one. Each pick's
 rungs (`picks.py`'s "Rungs") rest until kickoff, and every run with the key
@@ -26,9 +26,10 @@ Two emails, and only two (Nathan, 2026-11-01):
 Objects in s3, each small JSON or TOML:
 
 - `cassandra/betting/autobet.json` (batch bucket): `paused`, and under
-  `leagues` each league's rules (`Autobet`, `LeagueRules`). None means the
-  defaults: football placing, as above. A file from before `leagues`, its
-  `max_bet` and `kelly_fraction` at the top, reads as football's.
+  `leagues` each league's rules (`Autobet`, `LeagueRules`). No file, or no
+  rules for a league, means nothing of it is placed. A file from before
+  `leagues`, its `max_bet` and `kelly_fraction` at the top, reads as
+  football's.
 - `cassandra/betting/sent.json` (batch bucket): every pick emailed, by game
   id -- holds marked as such -- and each email's numbered list, so "place 1
   and 3 from the 22:40 email" names games rather than positions in a list
@@ -179,10 +180,14 @@ FIRST_LEAGUE = "ncaafb"
 
 @dataclass
 class LeagueRules:
-    """How the job sizes one league's bets. See `picks.py`'s "Sizing"."""
+    """How the job sizes one league's bets. See `picks.py`'s "Sizing".
 
-    kelly_fraction: float = 0.25
-    max_bet: float = 10.0
+    The stake has no default: a league is placed only on a fraction and a
+    cap someone wrote into `autobet.json`. The limits default to none.
+    """
+
+    kelly_fraction: float
+    max_bet: float
     #: The most of the bankroll the league's open positions and resting
     #: orders may hold (`picks.py --max-exposure`); None for no cap.
     max_exposure: float | None = None
@@ -197,10 +202,13 @@ class LeagueRules:
 
     @classmethod
     def from_json(cls, value: dict) -> "LeagueRules":
+        missing = [k for k in ("kelly_fraction", "max_bet") if value.get(k) is None]
+        if missing:
+            raise ValueError(f"league rules without {' or '.join(missing)}: {value}")
         exposure = value.get("max_exposure")
         return cls(
-            kelly_fraction=float(value.get("kelly_fraction", 0.25)),
-            max_bet=float(value.get("max_bet", 10.0)),
+            kelly_fraction=float(value["kelly_fraction"]),
+            max_bet=float(value["max_bet"]),
             max_exposure=None if exposure is None else float(exposure),
             longshot_price=float(value.get("longshot_price", 0.0)),
             longshot_scale=float(value.get("longshot_scale", 1.0)),
@@ -251,14 +259,10 @@ class LeagueRules:
         return found
 
 
-def _first_league_only() -> dict[str, LeagueRules]:
-    return {FIRST_LEAGUE: LeagueRules()}
-
-
 @dataclass
 class Autobet:
-    """The rules the job places by. No file in s3 means these defaults:
-    football at a quarter Kelly and $10 a bet, and no other league.
+    """The rules the job places by. No file in s3 means none: nothing is
+    placed.
 
     A league with no rules isn't placed: each one is opted into with `make
     autobet ARGS="--league ..."`. Every league sizes on the whole bankroll
@@ -267,11 +271,13 @@ class Autobet:
     """
 
     paused: bool = False
-    leagues: dict[str, LeagueRules] = field(default_factory=_first_league_only)
+    leagues: dict[str, LeagueRules] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, value: dict) -> "Autobet":
         if "leagues" not in value:
+            if value.get("kelly_fraction") is None and value.get("max_bet") is None:
+                return cls(paused=bool(value.get("paused", False)))
             # The flat file of one league's rules, and the pause, as written
             # before there were two.
             return cls(
@@ -631,7 +637,7 @@ def now_utc() -> datetime:
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
     """`main`'s commands: `pause` and `resume`, the whole job or `--league`'s;
     `autobet --league L` to set (or with `--remove`, drop) one league's rules,
-    a league not listed yet starting from `LeagueRules`' defaults; and
+    a league not listed yet needing its fraction and max bet; and
     `push-overrides` and `status`."""
     parser = argparse.ArgumentParser(prog="python -m cassandra.picks_job")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -679,7 +685,13 @@ def changed(current: Autobet, args: argparse.Namespace) -> Autobet:
     if args.remove:
         leagues.pop(args.league, None)
         return found
-    rules = leagues.setdefault(args.league, LeagueRules())
+    if args.league not in leagues:
+        if args.kelly_fraction is None or args.max_bet is None:
+            raise ValueError(
+                f"{args.league} has no rules yet: give it --kelly-fraction and --max-bet"
+            )
+        leagues[args.league] = LeagueRules(args.kelly_fraction, args.max_bet)
+    rules = leagues[args.league]
     for name in (
         "kelly_fraction",
         "max_bet",

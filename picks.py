@@ -583,7 +583,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         metavar="SHARE",
         help="with --place: the most of the bankroll this league's open positions "
-        "and resting orders may hold, e.g. 0.25; this run spends only what's left",
+        "and resting orders may hold, as a share; this run spends only what's left",
     )
     parser.add_argument(
         "--longshot-price",

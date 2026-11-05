@@ -524,10 +524,10 @@ def _picks(espn: bool) -> None:
         print(rules.describe())
         league = picks_job.FIRST_LEAGUE
         placing = rules.placing(league)
-        # A league with no rules is still priced, at the defaults, and placed
-        # nowhere: its stale rungs still come off.
-        sizing = rules.leagues.get(league) or picks_job.LeagueRules()
-        argv = ["--place", "--league", league, *sizing.argv()]
+        # A league with no rules is still priced and placed nowhere: its
+        # stale rungs still come off.
+        sizing = rules.leagues.get(league)
+        argv = ["--place", "--league", league, *(sizing.argv() if sizing else [])]
         if not placing:
             # Priced on the real account, nothing placed; the rungs already
             # resting still come off when the model stops backing them.

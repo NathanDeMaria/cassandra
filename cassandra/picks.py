@@ -438,11 +438,10 @@ class Longshots(NamedTuple):
     """A pick costing under `price`, fee included, is staked at `scale` of
     what it would be otherwise. The default shrinks nothing.
 
-    Womens basketball's backtest edge sat mostly in longshots: at the entry,
-    89 picks under 25c made +346% and everything else about +14%. Books that
-    early are thin -- half had traded nothing -- and a 3c ask may be one
-    contract nobody corrected; until live fills say those prices are real,
-    they're staked smaller.
+    Womens basketball's backtest edge at the entry sat mostly in its
+    cheapest picks, on books so early that many had traded nothing: a
+    longshot's ask may be one contract nobody corrected. Until live fills
+    say those prices are real, they can be staked smaller.
     """
 
     price: float = 0.0
