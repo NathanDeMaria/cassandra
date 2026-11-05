@@ -210,6 +210,17 @@ class GlickoPredictor(Predictor):
         # Where the coaching changes come from; the league's own unless a
         # caller hands others over. Read only when a coach knob is on.
         offseason: OffseasonFacts | None = None,
+        # Rating points per point of `PlayerRatingIndex.roster_change` (net
+        # per 100), added to each team at the rollover after the regression
+        # and the coaching changes. The rating carried into a season is last
+        # season's team, and until enough games have moved it the blend
+        # reads that team beside the players' new one: on mens 2014+, the
+        # outcomes wanted about 0.04 logit more per point of the players'
+        # offseason change in a team's first games, fading to nothing by
+        # its twentieth, and the market leaned the same way. Shifting the
+        # rating is that fade for free -- the season's results wash the
+        # shift out as they wash out any preseason error. 0 is off.
+        roster_change_shift: float = 0.0,
         # How many times each week's games are rated. 1 is Glicko as a
         # filter: a result is priced once, against what the opponent's
         # rating was that day, and never revisited. Above 1 the season so
@@ -255,6 +266,7 @@ class GlickoPredictor(Predictor):
         self._coach_change_rating_rd = coach_change_rating_rd
         self._coach_left_rating_shift = coach_left_rating_shift
         self._coach_facts = offseason
+        self._roster_change_shift = roster_change_shift
         self._home_advantage = home_advantage
         self._home_advantage_slope = home_advantage_slope
         self._k = k
@@ -717,6 +729,7 @@ class GlickoPredictor(Predictor):
             for team, rating in self._ratings.items()
         }
         self._adjust_for_coaches()
+        self._shift_for_rosters()
         # The season the smoother replays from starts here: after the
         # regression and the offseason widening, with no games yet.
         self._preseason = dict(self._ratings)
@@ -730,6 +743,25 @@ class GlickoPredictor(Predictor):
         self._entry_is_preseason = []
         self._week_rows = []
         self._entering = True
+
+    def _shift_for_rosters(self) -> None:
+        """Move each team by what its players say the offseason did to it.
+
+        Before the smoother's preseason is taken, like the coaching changes,
+        so its re-passes start from the shifted ratings. A team the player
+        file doesn't know both seasons of keeps its rating.
+        """
+        if not self._roster_change_shift or self._season is None:
+            return
+        index = self._adjustments.sources.player_ratings
+        for team, current in list(self._ratings.items()):
+            change = index.roster_change(team, self._season)
+            if change is None:
+                continue
+            self._ratings[team] = _Rating(
+                current.rating + self._roster_change_shift * change,
+                current.rating_deviation,
+            )
 
     @property
     def _reads_coaches(self) -> bool:
@@ -827,6 +859,11 @@ class GlickoPredictor(Predictor):
                     "coach_left_rating_shift": self._coach_left_rating_shift,
                 }
                 if self._reads_coaches
+                else {}
+            ),
+            **(
+                {"roster_change_shift": self._roster_change_shift}
+                if self._roster_change_shift
                 else {}
             ),
         }

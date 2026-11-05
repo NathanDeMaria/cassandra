@@ -104,6 +104,60 @@ def test_the_coach_knobs_survive_a_save(tmp_path) -> None:
     ) == (0.25, 0.0, -80)
 
 
+def _roster_rolled(roster_change_shift: float) -> GlickoPredictor:
+    """2021: Up's players rose 4 net per 100 over the offseason, Down's fell
+    2, Flat's held, and New has no 2020 to have changed from."""
+    from datetime import date
+
+    from .adjustments import MatchupSources
+    from .player_ratings import PlayerRatingIndex, TeamAsOf
+
+    def rows(before: float | None, after: float) -> list[TeamAsOf]:
+        out = [] if before is None else [TeamAsOf(date(2021, 3, 1), before, 70.0, 2020)]
+        return out + [
+            TeamAsOf(date(2021, 11, 1), after, 70.0, 2021, games=0),
+            TeamAsOf(date(2021, 12, 1), after + 9, 70.0, 2021, games=4),
+        ]
+
+    index = PlayerRatingIndex(
+        {"Up": rows(1, 5), "Down": rows(3, 1), "Flat": rows(2, 2), "New": rows(None, 7)}
+    )
+    teams = ("Up", "Down", "Flat", "New")
+    predictor = GlickoPredictor(
+        "test_league",
+        season_regression=0.5,
+        anchors={team: 1500 for team in teams},
+        ratings={team: _Rating(1700, 100) for team in teams},
+        sources=MatchupSources.for_league("test_league")._replace(player_ratings=index),
+        roster_change_shift=roster_change_shift,
+    )
+    predictor.pass_season(2021)
+    return predictor
+
+
+def test_a_roster_change_shifts_the_rolled_over_rating() -> None:
+    """The season's first row less last season's last, at the shift per point."""
+    predictor = _roster_rolled(10)
+    ratings = {t: predictor.get_rating(t).rating for t in ("Up", "Down", "Flat", "New")}
+    # The league's regression takes 1700 to 1600 first; the later 2021 row
+    # (+9) is what the players learned in season, not the offseason.
+    assert ratings == pytest.approx(
+        {"Up": 1640, "Down": 1580, "Flat": 1600, "New": 1600}
+    )
+
+
+def test_roster_changes_are_off_by_default() -> None:
+    predictor = _roster_rolled(0)
+    assert predictor.get_rating("Up").rating == pytest.approx(1600)
+    assert "roster_change_shift" not in predictor.state_dict()
+
+
+def test_the_roster_knob_survives_a_save(tmp_path) -> None:
+    path = tmp_path / "glicko.json"
+    _roster_rolled(15).save_state(path)
+    assert GlickoPredictor.load_state(path).state_dict()["roster_change_shift"] == 15
+
+
 def test_an_anchored_team_is_no_better_measured_than_any_other(
     game: GameFactory,
 ) -> None:

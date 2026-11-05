@@ -147,6 +147,9 @@ class TeamAsOf(NamedTuple):
     # per 100, how sure ten-minute-version's fit is of `net` (its posterior
     # sd at the row's shares); None for a row from before the file carried it
     net_sd: float | None = None
+    # the team's games this season before `as_of`: 0 is a preseason row; None
+    # where a caller building rows by hand has no use for it
+    games: int | None = None
 
     @property
     def strength(self) -> float:
@@ -185,6 +188,7 @@ def load_player_ratings(league: str) -> Mapping[str, Sequence[TeamAsOf]]:
                 int(row["season"]),
                 float(row["available"]) if row.get("available") else None,
                 float(row["net_sd"]) if row.get("net_sd") else None,
+                int(float(row["games"])) if row.get("games") else None,
             )
         )
     return {team: sorted(rows) for team, rows in found.items()}
@@ -309,6 +313,36 @@ class PlayerRatingIndex:
             if row.season == season:
                 return row
         return None
+
+    def preseason(self, team: str, season: int) -> TeamAsOf | None:
+        """The team's row of `season` from before it had played, if it has one.
+
+        Its first row of the season, and only if that row counts no games: a
+        team the file first rates after its opener -- most non-D1 teams, and
+        every team the file gains mid-season -- enters at a fresh prior, and
+        the gap between that and last season's rating is a reset, not
+        anything that happened to the roster. In the 2026 file those resets
+        ran to 60 net per 100 against a D1 spread of about 5.
+        """
+        for row in self._teams.get(team, ()):
+            if row.season == season:
+                return row if row.games == 0 else None
+        return None
+
+    def roster_change(self, team: str, season: int) -> float | None:
+        """How far the team's players moved it over the offseason, net per
+        100: its preseason row of `season` less its last of the season before.
+
+        The roster turned over between the two -- graduations, transfers,
+        recruits, a returning player's growth -- and this is the player
+        model's read of what that did. None if either row is missing: a
+        team new to the file has no "before" to change from, and one with
+        no preseason row no "after" (see `preseason`).
+        """
+        now, before = self.preseason(team, season), self.newest(team, season - 1)
+        if now is None or before is None:
+            return None
+        return now.net - before.net
 
     def margin(self, matchup: Matchup) -> float | None:
         """The players' neutral-site margin for the home side; None if either
