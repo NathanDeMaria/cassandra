@@ -5,7 +5,7 @@ For reading, not predicting: no model loads this, so the files sit under
 their own prefix rather than `predictor/data/`, which every optimize child
 pulls. A morning rewrites the current season (`cassandra.player_ratings_build`);
 finished seasons are a one-off upload. `publish` turns each into
-`models/{league}/players_{season}.json`.
+`models/{league}/players_{season}.json.gz`.
 """
 
 import csv

@@ -38,7 +38,7 @@ consumer can say of a played game what the model priced. See
 `qb_out_artifact`. Mens and womens get `models/{league}/player_ratings.json`
 the same way: each team's newest players' row, which a model rebuilt from
 its release needs to blend them into a game ahead. See
-`player_ratings_artifact`. They also get `models/{league}/players_{season}.json`,
+`player_ratings_artifact`. They also get `models/{league}/players_{season}.json.gz`,
 every player of each season, for a page to read. See `_publish_players`.
 
 The one judgment call it does make is *when* the offseason rollover lands in
@@ -48,6 +48,7 @@ ratings after the replay rather than its predictions during one. See
 """
 
 import asyncio
+import gzip
 import json
 import sys
 from collections.abc import Collection, Iterator, Sequence
@@ -653,7 +654,10 @@ async def _publish_players(
     league: str, out: Path, upload: bool, source_bucket: str, upload_bucket: str
 ) -> None:
     """Every season of the league's players on disk and in the bucket. A page's
-    table, so a bad one is reported and costs the league none of its models."""
+    table, so a bad one is reported and costs the league none of its models.
+    Gzipped here so the server can hand a browser the bytes as they are: parsed,
+    a season takes 8 MB of its 512, and it's a small fraction of that like this.
+    """
     if league not in PLAYER_RATING_LEAGUES:
         return
     try:
@@ -662,13 +666,13 @@ async def _publish_players(
         )
         for path in found:
             stored = read_players_file(path)
-            payload = stored.model_dump_json().encode()
+            payload = gzip.compress(stored.model_dump_json().encode(), mtime=0)
             _write_league_artifact(
                 payload, players_artifact_path(out, league, stored.season)
             )
             if upload:
                 await _upload_league_artifact(
-                    payload, upload_bucket, league, f"players_{stored.season}.json"
+                    payload, upload_bucket, league, f"players_{stored.season}.json.gz"
                 )
         print(f"=== {league}/players ===\n  {len(found)} seasons")
     except Exception as exc:
