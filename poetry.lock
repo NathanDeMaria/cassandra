@@ -3240,8 +3240,8 @@ scipy = ">=1.16"
 [package.source]
 type = "git"
 url = "https://github.com/NathanDeMaria/ten-minute-version.git"
-reference = "a87bc285bcafa71507528b0a7b8e9145cc8957b6"
-resolved_reference = "a87bc285bcafa71507528b0a7b8e9145cc8957b6"
+reference = "053b0224a09cb528d48db24e75c7fd4b1e5f088c"
+resolved_reference = "053b0224a09cb528d48db24e75c7fd4b1e5f088c"
 
 [[package]]
 name = "termcolor"
@@ -3680,4 +3680,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "9dfba00e9109697595d67e6ce459ed99c235a5f12b79a0acb98839e4c6715b59"
+content-hash = "3d1c109368c24a46d6362898d681240d2fa01fc805dd222ec104d7e37902676f"
