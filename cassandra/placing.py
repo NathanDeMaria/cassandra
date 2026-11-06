@@ -606,7 +606,13 @@ def place(
     its `error`, and the next pick goes on.
     """
     rows = []
-    balances = client.shard_balances()
+    try:
+        balances = client.shard_balances()
+    except KalshiError as error:
+        # Not worth losing the run's orders over: one on a funded shard still
+        # goes through, and one that isn't is rejected and emailed.
+        print(f"  !! no shard balances, so nothing moved: {error}")
+        balances = {}
     for _, row in picks.sort_values("kickoff").iterrows():
         expires = order_expiry(args.rest, row["kickoff"], datetime.now(UTC))
         found = matched[row["game_id"]]

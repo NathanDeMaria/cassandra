@@ -1,4 +1,7 @@
 import base64
+import io
+import urllib.error
+from email.message import Message
 
 import pytest
 from cryptography.hazmat.primitives import hashes
@@ -179,3 +182,55 @@ def test_a_dry_runs_transfer_is_printed_not_sent(monkeypatch, capsys):
     monkeypatch.setattr(client, "_request", boom)
     assert client.transfer(0, 3, 500) == "dry-run"
     assert "dry run, not sent" in capsys.readouterr().out
+
+
+def _answers(monkeypatch, *codes):
+    """`urlopen` answering each of `codes` in turn: the calls it took, and
+    the waits between them."""
+    calls: list[str] = []
+    waits: list[float] = []
+    left = list(codes)
+
+    def urlopen(request, timeout):
+        calls.append(request.get_method())
+        code = left.pop(0)
+        if code != 200:
+            raise urllib.error.HTTPError(
+                request.full_url, code, "no", Message(), io.BytesIO(b"{}")
+            )
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("time.sleep", waits.append)
+    return calls, waits
+
+
+def test_a_read_tries_again_after_a_429(monkeypatch):
+    client = KalshiClient("id", Ed25519PrivateKey.generate())
+    calls, waits = _answers(monkeypatch, 429, 429, 200)
+    assert client._request("GET", "/portfolio/balance") == {"ok": True}
+    assert calls == ["GET"] * 3
+    assert [w for w in waits if w >= 1] == [1.0, 2.0]
+
+
+def test_a_read_gives_up_after_its_tries(monkeypatch):
+    client = KalshiClient("id", Ed25519PrivateKey.generate())
+    _answers(monkeypatch, 429, 429, 429, 429)
+    with pytest.raises(KalshiError, match="429"):
+        client._request("GET", "/portfolio/balance")
+
+
+def test_a_write_is_never_repeated(monkeypatch):
+    client = KalshiClient("id", Ed25519PrivateKey.generate())
+    calls, _ = _answers(monkeypatch, 429, 200)
+    with pytest.raises(KalshiError, match="429"):
+        client._request("POST", "/portfolio/events/orders", {})
+    assert calls == ["POST"]
+
+
+def test_only_a_429_is_tried_again(monkeypatch):
+    client = KalshiClient("id", Ed25519PrivateKey.generate())
+    calls, _ = _answers(monkeypatch, 500, 200)
+    with pytest.raises(KalshiError, match="500"):
+        client._request("GET", "/portfolio/balance")
+    assert calls == ["GET"]
