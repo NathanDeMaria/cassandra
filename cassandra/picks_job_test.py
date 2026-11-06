@@ -601,3 +601,74 @@ def test_the_summary_splits_leagues_and_prices_a_resting_no():
     assert "up to $3.00 if they all fill" in text
     # One league settled: no league line over it.
     assert "  womens: 1-0" not in text
+
+
+SHARD_ERROR = (
+    'POST /portfolio/events/orders: 404 {"error":{"code":'
+    '"insufficient_shard_balance","message":"insufficient shard balance"}}'
+)
+
+
+def _rejections() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"game": "J @ M", "bet": "Jax", "ticker": "T-J", "error": SHARD_ERROR},
+            {"game": "O @ T", "bet": "Toledo", "ticker": "T-T", "order_id": "o1"},
+            {"game": "S @ I", "bet": "Indiana", "ticker": "T-I", "error": "timed out"},
+        ]
+    )
+
+
+def test_a_rejection_is_an_orders_row_with_an_error():
+    found = picks_job.rejected_orders(_rejections())
+    assert list(found["bet"]) == ["Jax", "Indiana"]
+    assert list(found["reason"]) == ["insufficient_shard_balance", "timed out"]
+    assert picks_job.rejected_orders(None).empty
+    assert picks_job.rejected_orders(pd.DataFrame({"order_id": ["o1"]})).empty
+
+
+def test_a_rejection_is_emailed_once_for_its_market_and_reason():
+    found = picks_job.rejected_orders(_rejections())
+    assert len(picks_job.unreported(found, {})) == 2
+    sent = picks_job.record_rejected({"games": {"1": {}}}, found, NOW)
+    assert sent["games"] == {"1": {}}, "what else it holds stays"
+    assert picks_job.unreported(found, sent).empty
+    # A different reason on the same market is news.
+    other = found.assign(reason="market_closed")
+    assert len(picks_job.unreported(other, sent)) == 2
+    # And a week on, the same one is again.
+    later = picks_job.record_rejected(sent, found.iloc[:0], NOW + timedelta(days=8))
+    assert later["rejected"] == {}
+    # A hold's email keeps them.
+    held = picks_job.record(sent, _picks(("1", "Toledo Rockets", 0.07)), NOW, "s")
+    assert held["rejected"] == sent["rejected"]
+
+
+def test_the_rejection_email_says_what_wasnt_placed():
+    found = picks_job.rejected_orders(_rejections())
+    subject, text = picks_job.rejected_email(found, NOW)
+    assert subject.startswith("2 Kalshi orders rejected")
+    assert "insufficient_shard_balance" in subject
+    assert "Jax -- J @ M (T-J)" in text
+    assert "weren't placed" in text
+
+
+def test_the_summary_lists_rejections_once_each():
+    rows = pd.concat([_rejections(), _rejections().iloc[[0]]], ignore_index=True)
+    central = ZoneInfo("America/Chicago")
+    _, text = picks_job.summary_email(
+        picks_job.placed_bets([], pd.DataFrame()),
+        [],
+        picks_job.settled_games([]),
+        [],
+        (25.0, 120.0),
+        {},
+        Autobet(),
+        (NOW - timedelta(days=1)).astimezone(central),
+        NOW.astimezone(central),
+        picks_job.rejected_orders(rows),
+    )
+    assert "Rejected by Kalshi: 3, not placed" in text
+    assert "Jax -- J @ M: insufficient_shard_balance (2 times)" in text
+    assert "Indiana -- S @ I: timed out" in text
+    assert text.index("Rejected by Kalshi") < text.index("Account:")

@@ -17,6 +17,7 @@ from .kalshi_trade import (
     order_price,
     rung_id,
     sign,
+    transfer_body,
 )
 
 
@@ -138,3 +139,43 @@ def test_a_rung_is_told_by_its_client_order_id_and_priced_from_its_side():
     }
     assert is_rung(order) and not is_rung({"client_order_id": "abc"})
     assert order_price(order) == pytest.approx(0.38)
+
+
+def test_a_transfer_stays_on_the_event_contracts_exchange():
+    body = transfer_body(0, 3, 12_500)
+    assert body.pop("client_transfer_id")
+    assert body == {
+        "source": "event_contract",
+        "destination": "event_contract",
+        "amount": 12_500,
+        "source_exchange_shard": 0,
+        "destination_exchange_shard": 3,
+    }
+    # A new id each time: Kalshi treats a reused one as the same transfer.
+    assert (
+        transfer_body(0, 3, 1)["client_transfer_id"]
+        != transfer_body(0, 3, 1)["client_transfer_id"]
+    )
+
+
+def test_shard_balances_are_read_in_centicents(monkeypatch):
+    client = KalshiClient("id", Ed25519PrivateKey.generate())
+    breakdown = [
+        {"balance": "0.5556", "exchange_index": 0},
+        {"balance": "12.0000", "exchange_index": 3},
+    ]
+    monkeypatch.setattr(client, "_request", lambda *_: {"balance_breakdown": breakdown})
+    assert client.shard_balances() == {0: 5556, 3: 120_000}
+    monkeypatch.setattr(client, "_request", lambda *_: {"balance": 100})
+    assert client.shard_balances() == {}
+
+
+def test_a_dry_runs_transfer_is_printed_not_sent(monkeypatch, capsys):
+    client = KalshiClient("id", Ed25519PrivateKey.generate(), dry_run=True)
+
+    def boom(*_):
+        raise AssertionError("sent")
+
+    monkeypatch.setattr(client, "_request", boom)
+    assert client.transfer(0, 3, 500) == "dry-run"
+    assert "dry run, not sent" in capsys.readouterr().out

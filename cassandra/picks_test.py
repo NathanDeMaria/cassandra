@@ -38,6 +38,7 @@ from .picks import (
     price,
     ratings_waiting,
     routes,
+    shard_transfers,
     skip_reason,
     top_up,
 )
@@ -516,3 +517,24 @@ def test_a_ticker_names_its_league_by_series():
     assert league_of("KXNCAAFCSGAME-26NOV07MONTWEB-MONT") == "ncaafb"
     assert league_of("KXNCAAWBGAME-26NOV05SIEME") == "womens"
     assert league_of("KXNCAAMBGAME-26NOV05X-Y") is None
+
+
+def test_a_book_keeps_its_exchange_shard():
+    market = _market("E-26OCT17AB", "A", "Alpha")
+    assert book(market).shard == 0
+    assert book({**market, "exchange_index": 3}).shard == 3
+
+
+def test_a_shard_is_topped_up_from_the_fullest_others():
+    # Enough there already: nothing moves.
+    assert shard_transfers({0: 900, 3: 500}, 3, 500) == []
+    # The shortfall only, not the whole need.
+    assert shard_transfers({0: 900, 3: 200}, 3, 500) == [(0, 300)]
+    # Back the other way: winnings on the basketball shard pay for football.
+    assert shard_transfers({0: 0, 3: 900}, 0, 500) == [(3, 500)]
+    # Across two sources, the fullest first.
+    assert shard_transfers({0: 100, 1: 300, 3: 0}, 3, 350) == [(1, 300), (0, 50)]
+    # Short of it all: as much as there is.
+    assert shard_transfers({0: 100, 3: 0}, 3, 500) == [(0, 100)]
+    # A shard the listing hasn't got yet is an empty one.
+    assert shard_transfers({0: 900}, 3, 500) == [(0, 500)]
