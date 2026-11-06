@@ -431,3 +431,16 @@ def test_a_refused_transfer_sends_no_order(tmp_path, monkeypatch):
     placed = placing.place(exchange, picks, matched, args, out)
     assert exchange.log == []
     assert placed is not None and "nope" in placed["error"].iloc[0]
+
+
+def test_no_shard_balances_doesnt_lose_the_runs_orders(tmp_path, monkeypatch):
+    picks, matched, args, out = _placing(tmp_path, monkeypatch, ["F-A"], shard=0)
+    exchange = _Exchange({0: 100_000})
+
+    def limited() -> dict[int, int]:
+        raise KalshiError("GET /portfolio/balance: 429")
+
+    monkeypatch.setattr(exchange, "shard_balances", limited)
+    placed = placing.place(exchange, picks, matched, args, out)
+    assert exchange.log == [("buy", "F-A")]
+    assert placed is not None and placed["filled"].iloc[0] == 5

@@ -39,6 +39,9 @@ DEMO_API = "https://demo-api.kalshi.co/trade-api/v2"
 _KEY_DIR = Path.home() / ".kalshi"
 # Kalshi's basic tier allows about 10 writes and 20 reads a second.
 _PACE = 1 / 8
+# Seconds a read waits before each try again after a 429. Reads only: a write
+# isn't repeated by anything here, so an order can't go twice.
+_READ_RETRIES = (1.0, 2.0, 4.0)
 
 
 def public_get(path: str, params: dict | None = None) -> dict:
@@ -267,13 +270,18 @@ class KalshiClient:
         request = urllib.request.Request(
             self.base + path, data=data, headers=headers, method=method
         )
-        time.sleep(_PACE)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode(errors="replace")[:500]
-            raise KalshiError(f"{method} {path}: {error.code} {detail}") from None
+        retries = list(_READ_RETRIES) if method == "GET" else []
+        while True:
+            time.sleep(_PACE)
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as error:
+                if error.code == 429 and retries:
+                    time.sleep(retries.pop(0))
+                    continue
+                detail = error.read().decode(errors="replace")[:500]
+                raise KalshiError(f"{method} {path}: {error.code} {detail}") from None
 
     def _pages(self, path: str, key: str, params: dict) -> list[dict]:
         found: list[dict] = []
