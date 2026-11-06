@@ -38,7 +38,8 @@ consumer can say of a played game what the model priced. See
 `qb_out_artifact`. Mens and womens get `models/{league}/player_ratings.json`
 the same way: each team's newest players' row, which a model rebuilt from
 its release needs to blend them into a game ahead. See
-`player_ratings_artifact`.
+`player_ratings_artifact`. They also get `models/{league}/players_{season}.json`,
+every player of each season, for a page to read. See `_publish_players`.
 
 The one judgment call it does make is *when* the offseason rollover lands in
 a release, since publishing is the only caller that reads a predictor's
@@ -62,6 +63,7 @@ from endgame.types import Season
 from endgame_aws import Config, save_data_to_s3
 from pydantic import ValidationError
 
+from cassandra.batch import artifacts
 from cassandra.columns import GameDfColumns
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.markets import close_probabilities, market_databases
@@ -72,6 +74,7 @@ from cassandra.model_eval import (
     score_predictions,
 )
 from cassandra.odds import OddsDatabase
+from cassandra.players import PLAYERS_PREFIX, read_players_file
 from cassandra.predictor import (
     PLAYER_RATING_LEAGUES,
     QB_LEAGUES,
@@ -96,6 +99,7 @@ from cassandra.serving import (
     metrics_from_scored,
     model_dir,
     player_ratings_artifact_path,
+    players_artifact_path,
     predictions_bytes,
     predictions_frame,
     predictions_path,
@@ -645,6 +649,32 @@ async def _publish_league_facts(
             print(f"  uploaded s3://{bucket}/{key}")
 
 
+async def _publish_players(
+    league: str, out: Path, upload: bool, source_bucket: str, upload_bucket: str
+) -> None:
+    """Every season of the league's players on disk and in the bucket. A page's
+    table, so a bad one is reported and costs the league none of its models."""
+    if league not in PLAYER_RATING_LEAGUES:
+        return
+    try:
+        found = await artifacts.download(
+            source_bucket, f"{PLAYERS_PREFIX}{league}_players_"
+        )
+        for path in found:
+            stored = read_players_file(path)
+            payload = stored.model_dump_json().encode()
+            _write_league_artifact(
+                payload, players_artifact_path(out, league, stored.season)
+            )
+            if upload:
+                await _upload_league_artifact(
+                    payload, upload_bucket, league, f"players_{stored.season}.json"
+                )
+        print(f"=== {league}/players ===\n  {len(found)} seasons")
+    except Exception as exc:
+        print(f"  FAILED {league}/players: {exc}")
+
+
 def _by_league(jobs: Sequence[_Job]) -> Iterator[tuple[str, list[_Job]]]:
     ordered = sorted(jobs, key=lambda j: (j.league, j.model))
     for league, group in groupby(ordered, key=lambda j: j.league):
@@ -688,6 +718,7 @@ async def _publish(
         # it as a pointer, and a page reading it beside an older release is
         # reading the same index that release was replayed with.
         await _publish_league_facts(league, out, upload, upload_bucket)
+        await _publish_players(league, out, upload, bucket, upload_bucket)
         # Both venues' prices on this league's games, once for all its models.
         # A league gold-rush doesn't pull reads as two empty books.
         markets = await market_databases(bucket, league)

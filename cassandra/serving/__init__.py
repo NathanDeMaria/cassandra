@@ -16,6 +16,7 @@ from .layout import (
     league_dir,
     model_dir,
     player_ratings_artifact_path,
+    players_artifact_path,
     qb_out_artifact_path,
 )
 from .predictions import (
