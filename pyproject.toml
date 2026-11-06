@@ -227,7 +227,7 @@ lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev =
 #
 # Pinned for the reason lucky-ones is: the release files that ship inside it
 # (the box-score, recruit and newcomer priors) are the model.
-ten-minute-version = {git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "9b7787ffdfea2651b767ca68bfde29049e978130"}
+ten-minute-version = {git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "fd41cb0c4c3cfb5563cab1cdf08b9bad1a8e83be"}
 
 
 [tool.poetry.group.dev.dependencies]

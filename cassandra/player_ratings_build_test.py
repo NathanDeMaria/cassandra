@@ -60,6 +60,21 @@ def _patch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bucket: _Bucket) -> 
         "player_ratings_path",
         lambda league: tmp_path / f"{league}_player_ratings.csv",
     )
+    monkeypatch.setattr(
+        player_ratings_build, "luck_path", lambda league: tmp_path / "no_luck.csv"
+    )
+    monkeypatch.setattr(
+        player_ratings_build,
+        "players_csv_path",
+        lambda league, season: tmp_path / "players" / f"{league}_players_{season}.csv",
+    )
+    monkeypatch.setattr(
+        player_ratings_build,
+        "roster_path",
+        lambda league, season: tmp_path
+        / "players"
+        / f"{league}_{season}_roster.parquet",
+    )
     monkeypatch.setattr("ten_minute_version.build.morning", bucket.morning)
 
 
@@ -86,3 +101,32 @@ def test_a_morning_runs_on_the_copies_and_uploads_the_file(
     )
     assert run["kit"].endswith("/live") and run["out"] == str(tmp_path)
     assert bucket.uploaded == [tmp_path / "womens_player_ratings.csv"]
+
+
+def test_a_morning_keeps_its_table_and_roster_for_the_next_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bucket = _Bucket(kit=True)
+    _patch(monkeypatch, tmp_path, bucket)
+    kept = tmp_path / "players" / "mens_2026_roster.parquet"
+    kept.parent.mkdir()
+    kept.write_bytes(b"last roster")
+    seen: list[bytes] = []
+
+    async def download(bucket_name: str, prefix: str) -> list[Path]:
+        return [kept] if prefix == "players/mens_2026_roster.parquet" else []
+
+    def morning(league, season, today, **paths) -> None:
+        tables = Path(paths["tables"]) / "league=mens" / "season=2026"
+        seen.append((tables / "roster.parquet").read_bytes())
+        (tables / "roster.parquet").write_bytes(b"this morning's")
+        (Path(paths["out"]) / "mens_players_2026.csv").write_text("table")
+
+    monkeypatch.setattr(player_ratings_build.artifacts, "download", download)
+    monkeypatch.setattr("ten_minute_version.build.morning", morning)
+    assert asyncio.run(refresh("b", "mens", date(2026, 11, 10)))
+    table = tmp_path / "players" / "mens_players_2026.csv"
+    assert seen == [b"last roster"]
+    assert kept.read_bytes() == b"this morning's" and table.read_text() == "table"
+    assert not (tmp_path / "mens_players_2026.csv").exists()
+    assert set(bucket.uploaded) == {table, kept, tmp_path / "mens_player_ratings.csv"}

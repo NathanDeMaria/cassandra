@@ -1107,3 +1107,36 @@ def test_a_league_without_tiers_publishes_its_success_rates(
         ):
             assert np.isfinite(side.epa) and abs(side.epa) < 1
             assert side.sd > 0
+
+
+def test_a_basketball_league_publishes_a_file_per_season_of_players(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "mens_players_2026.csv"
+    source.write_text(
+        "league,season,as_of,athlete_id,player,team_id,team,projected,offense,defense,"
+        "total,offense_sd,defense_sd,total_sd,vs_team,games,starts,minutes,share\n"
+        "mens,2026,2026-11-05,1,Pat,9,Team,false,1,2,3,1,1,1.4,2.5,4,4,100,0.5\n"
+    )
+
+    async def download(bucket: str, prefix: str) -> list[Path]:
+        assert prefix == "players/mens_players_"
+        return [source]
+
+    monkeypatch.setattr(publish.artifacts, "download", download)
+    out = tmp_path / "out"
+    asyncio.run(publish._publish_players("mens", out, False, "src", "dst"))
+    written = out / "models" / "mens" / "players_2026.json"
+    assert '"Pat"' in written.read_text()
+    asyncio.run(publish._publish_players("nfl", tmp_path / "none", False, "src", "dst"))
+    assert not (tmp_path / "none").exists()
+
+
+def test_a_bad_players_file_costs_a_league_none_of_its_models(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def download(bucket: str, prefix: str) -> list[Path]:
+        raise OSError("no")
+
+    monkeypatch.setattr(publish.artifacts, "download", download)
+    asyncio.run(publish._publish_players("mens", tmp_path, False, "src", "dst"))

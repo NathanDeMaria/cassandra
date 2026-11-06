@@ -24,6 +24,10 @@ the predictor data prefix -- with `{league}_luck.csv` (`cassandra.predictor.
 luck`), which it adds the games before today to. About 250MB a league; the fit is seconds, the
 rosters a few minutes until every team has played.
 
+A morning also rewrites the season's players' table (`cassandra.players`),
+for reading only. It and each team's last roster, which `morning` keeps for
+players who haven't played yet, live under their own prefix.
+
 A season with no kit -- the summer, before one is built for the next -- is
 skipped, not failed: the file keeps what it has, and the model blends
 nothing into a game the file doesn't reach.
@@ -31,6 +35,7 @@ nothing into a game the file doesn't reach.
 
 import asyncio
 import logging
+import shutil
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -38,6 +43,7 @@ from pathlib import Path
 from aiobotocore.session import get_session
 
 from cassandra.batch import artifacts
+from cassandra.players import PLAYERS_PREFIX, players_csv_path, roster_path
 from cassandra.predictor.luck import load_luck, luck_path
 from cassandra.predictor.player_ratings import (
     load_player_ratings,
@@ -105,6 +111,11 @@ async def refresh(bucket: str, league: str, today: date | None = None) -> bool:
             return False
         await artifacts.download(bucket, f"predictor/data/{league}_player_ratings.csv")
         await artifacts.download(bucket, f"predictor/data/{league}_luck.csv")
+        roster = roster_path(league, season)
+        tables = work / "stints" / f"league={league}" / f"season={season}"
+        if await artifacts.download(bucket, f"{PLAYERS_PREFIX}{roster.name}"):
+            tables.mkdir(parents=True, exist_ok=True)
+            shutil.copy(roster, tables / "roster.parquet")
         path = player_ratings_path(league)
         path.parent.mkdir(parents=True, exist_ok=True)
         morning(
@@ -119,9 +130,22 @@ async def refresh(bucket: str, league: str, today: date | None = None) -> bool:
             roster_root=str(work / "rosters"),
             out=str(path.parent),
         )
+        table = players_csv_path(league, season)
+        written = path.parent / table.name
+        reading = []
+        if written.exists():
+            table.parent.mkdir(parents=True, exist_ok=True)
+            written.replace(table)
+            reading.append(table)
+        if (tables / "roster.parquet").exists():
+            roster.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(tables / "roster.parquet", roster)
+            reading.append(roster)
     load_player_ratings.cache_clear()
     load_luck.cache_clear()
     luck = luck_path(league)
     keys = await artifacts.upload(bucket, [path, *([luck] if luck.exists() else [])])
     logger.info("%s: wrote %s", league, keys)
+    if reading:
+        logger.info("%s: wrote %s", league, await artifacts.upload(bucket, reading))
     return True
