@@ -21,8 +21,10 @@ import argparse
 import gzip
 import json
 import logging
+import math
+import time
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,6 +38,7 @@ from endgame.types import Game
 from . import injuries
 from .constants import CASSANDRA_HOME
 from .kalshi_trade import (
+    CENTICENTS,
     KalshiClient,
     KalshiError,
     bought,
@@ -55,6 +58,7 @@ from .picks import (
     order_fee,
     routes,
     rungs,
+    shard_transfers,
     top_up,
 )
 
@@ -66,6 +70,10 @@ ESPN_SUMMARY = (
 )
 #: How many of each team's last games' stories are read for injury news.
 NEWS_GAMES = 2
+#: How long a run waits for a transfer between shards to land before it gives
+#: up on the pick, and how often it looks. Kalshi processes them asynchronously.
+FUND_WAIT = timedelta(seconds=30)
+FUND_POLL = timedelta(seconds=1)
 #: A nominal budget, split over a run's picks to show them with contracts
 #: when neither --budget nor --kelly-fraction says what to stake: a run
 #: that places always has the league's Kelly fraction.
@@ -593,15 +601,29 @@ def place(
 
     Each is a limit order at the pick's `limit`, so nothing fills at a price
     that doesn't clear the edge. Immediate-or-cancel unless `--rest`, and
-    never resting past kickoff (`order_expiry`).
+    never resting past kickoff (`order_expiry`). Each pick's shard is funded
+    first (`fund_shard`). An order or a transfer that fails is logged with
+    its `error`, and the next pick goes on.
     """
     rows = []
+    balances = client.shard_balances()
     for _, row in picks.sort_values("kickoff").iterrows():
         expires = order_expiry(args.rest, row["kickoff"], datetime.now(UTC))
         found = matched[row["game_id"]]
         side, other = (
             (found.home, found.away) if row["bet_home"] else (found.away, found.home)
         )
+        try:
+            fund_shard(
+                client,
+                balances,
+                side.shard,
+                row["outlay"] + row.get("rung_outlay", 0.0),
+            )
+        except KalshiError as error:
+            print(f"  !! {row['bet']}: {error}")
+            rows.append(_rejected(row, side.ticker, error))
+            continue
         wanted = int(row["contracts"])
         failed = False
         for route in routes(side, other):
@@ -615,9 +637,7 @@ def place(
                 )
             except KalshiError as error:
                 print(f"  !! {row['bet']}: {error}")
-                rows.append(
-                    {"bet": row["bet"], "ticker": route.ticker, "error": str(error)}
-                )
+                rows.append(_rejected(row, route.ticker, error))
                 failed = True
                 break
             rows.append(
@@ -671,6 +691,61 @@ def place(
     return placed
 
 
+def _rejected(row: pd.Series, ticker: str, error: KalshiError) -> dict:
+    """An orders log's row for what Kalshi turned away, for the job's email
+    and the morning summary (`picks_job.rejected_orders`)."""
+    return {
+        "placed_at": datetime.now(CENTRAL),
+        "game": row["game"],
+        "game_id": row["game_id"],
+        "bet": row["bet"],
+        "ticker": ticker,
+        "error": str(error),
+    }
+
+
+def fund_shard(
+    client: KalshiClient,
+    balances: dict[int, int],
+    shard: int,
+    dollars: float,
+    wait: timedelta = FUND_WAIT,
+    poll: timedelta = FUND_POLL,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Have `dollars` on `shard` for a pick's orders, moving it from the other
+    shards if it isn't there, and set it aside in `balances`, this run's read
+    of them in centicents (`KalshiClient.shard_balances`).
+
+    What an order pays comes from its market's shard alone, and the leagues
+    trade on different ones. A transfer is processed asynchronously, so this
+    waits for the money to land; `KalshiError` if it hasn't by `wait`, or if
+    Kalshi turns the transfer down. No breakdown to read means nothing to
+    move. A dry run prints the moves and doesn't wait.
+    """
+    if not balances:
+        return
+    need = math.ceil(round(dollars * CENTICENTS, 6))
+    moves = shard_transfers(balances, shard, need)
+    for source, amount in moves:
+        client.transfer(source, shard, amount)
+        balances[source] -= amount
+        balances[shard] = balances.get(shard, 0) + amount
+        print(f"  moved ${amount / CENTICENTS:,.2f} from shard {source} to {shard}")
+    if moves and not client.dry_run:
+        deadline = datetime.now(UTC) + wait
+        while (found := client.shard_balances()).get(shard, 0) < need:
+            if datetime.now(UTC) >= deadline:
+                raise KalshiError(
+                    f"transfer to shard {shard} not in after {wait}: it holds "
+                    f"{found.get(shard, 0) / CENTICENTS:,.2f}, this pick needs "
+                    f"{need / CENTICENTS:,.2f}"
+                )
+            sleep(poll.total_seconds())
+        balances.update(found)
+    balances[shard] = balances.get(shard, 0) - need
+
+
 def order_expiry(
     rest_hours: float | None, kickoff: datetime, now: datetime
 ) -> int | None:
@@ -702,9 +777,7 @@ def _place_rungs(
             done = client.buy(route.ticker, route.action, count, at, kickoff, rung_id())
         except KalshiError as error:
             print(f"  !! {row['bet']} rung at {at:.2f}: {error}")
-            rows.append(
-                {"bet": row["bet"], "ticker": route.ticker, "error": str(error)}
-            )
+            rows.append(_rejected(row, route.ticker, error))
             break
         rows.append(
             {

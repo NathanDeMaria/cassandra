@@ -565,10 +565,19 @@ def _picks(espn: bool, league: str) -> None:
             for key in picks_job.keep(s3, bucket, now, orders=placing):
                 print(f"kept s3://{bucket}/{key}")
 
-        # The one email a run sends: a hold no email has carried. Placements
-        # and cancelled rungs go in the morning summary.
+        # The emails a run sends: an order Kalshi rejected and a hold, each if
+        # no email has carried it. Placements and cancelled rungs go in the
+        # morning summary. A rejection doesn't fail the run: a retry could
+        # place twice, and the other picks went through.
         sent, _ = picks_job.read_json(s3, bucket, picks_job.SENT_KEY)
         sent = sent or {}
+        rejected = picks_job.unreported(picks_job.rejected_orders(outcome.placed), sent)
+        if not rejected.empty:
+            subject, text = picks_job.rejected_email(rejected, now.astimezone(CENTRAL))
+            _email(subject, text, rehearsal)
+            if not rehearsal:
+                sent = picks_job.record_rejected(sent, rejected, now)
+                picks_job.write_json(s3, bucket, picks_job.SENT_KEY, sent)
         if outcome.held is None:
             return
         held = picks_job.unsent(outcome.held, sent, held=True)
@@ -645,6 +654,12 @@ def _picks_summary() -> None:
                 logs.append(pd.read_csv(io.BytesIO(body), dtype={"order_id": str}))
     orders = pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
     bets = picks_job.placed_bets(fills, orders)
+    rejected = picks_job.rejected_orders(orders)
+    if not rejected.empty:
+        # The logs reach back past `since`, for a rung's old order; a
+        # rejection is only news since the last summary.
+        placed = pd.to_datetime(rejected["placed_at"], utc=True, errors="coerce")
+        rejected = rejected[placed >= since]
     settled = picks_job.settled_games(settlements)
     titles = {}
     for event in settled["event"]:
@@ -663,6 +678,7 @@ def _picks_summary() -> None:
         picks_job.autobet(s3, bucket),
         since.astimezone(CENTRAL),
         now.astimezone(CENTRAL),
+        rejected,
     )
     _email(subject, text, rehearsal)
     if not rehearsal:

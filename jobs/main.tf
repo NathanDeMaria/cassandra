@@ -701,8 +701,11 @@ module "womens_picks_schedule" {
 }
 
 # The player ratings are the launcher's array job (`cassandra.batch.dag`),
-# named `cassandra-player-ratings-<stamp>`. Its children and the parent
-# each report SUCCEEDED; the picks lock turns the extra runs away.
+# named `cassandra-player-ratings-<stamp>`. Its children and the parent each
+# report SUCCEEDED, and only a child has `arrayProperties.index`: leaving those
+# out is one run a morning, once both leagues are in, where it was three. A
+# scoped run of one league is a plain job, with no `arrayProperties`, and
+# matches too.
 resource "aws_cloudwatch_event_rule" "picks_after_player_ratings" {
   name        = "${var.resource_name_prefix}-picks-after-player-ratings"
   description = "The morning's basketball player ratings are in"
@@ -713,6 +716,9 @@ resource "aws_cloudwatch_event_rule" "picks_after_player_ratings" {
     detail = {
       status  = ["SUCCEEDED"]
       jobName = [{ prefix = "cassandra-player-ratings-" }]
+      arrayProperties = {
+        index = [{ exists = false }]
+      }
     }
   })
 }

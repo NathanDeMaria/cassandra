@@ -1,10 +1,12 @@
 import argparse
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 import pandas as pd
 import pytest
 
 from . import placing
+from .kalshi_trade import Fill, KalshiClient, KalshiError
 from .picks import Book
 
 
@@ -275,8 +277,6 @@ def test_a_longshot_is_sized_smaller_and_says_so(no_books):
 
 
 def test_an_order_rests_no_later_than_kickoff():
-    from datetime import UTC, datetime, timedelta
-
     now = datetime(2026, 11, 5, 15, 0, tzinfo=UTC)
     tip = now + timedelta(hours=3)
     assert placing.order_expiry(None, tip, now) is None
@@ -284,3 +284,150 @@ def test_an_order_rests_no_later_than_kickoff():
         (now + timedelta(hours=2)).timestamp()
     )
     assert placing.order_expiry(8.0, tip, now) == int(tip.timestamp())
+
+
+class _Exchange(KalshiClient):
+    """The Kalshi client's side of placing: shards that a transfer reaches
+    `lag` reads after it's sent, and orders that fail on the tickers named."""
+
+    def __init__(self, shards, lag=0, dry_run=False, reject=(), refuse=False):
+        self.shards = dict(shards)
+        self.lag = lag
+        self.dry_run = dry_run
+        self.reject = reject
+        self.refuse = refuse
+        self.landing: list[list] = []
+        self.log: list[tuple] = []
+
+    def shard_balances(self):
+        for move in self.landing:
+            move[0] -= 1
+            if move[0] < 0:
+                self.shards[move[1]] = self.shards.get(move[1], 0) + move[2]
+        self.landing = [move for move in self.landing if move[0] >= 0]
+        return dict(self.shards)
+
+    def transfer(self, source, destination, centicents):
+        if self.refuse:
+            raise KalshiError("POST transfer: 403 nope")
+        self.log.append(("transfer", source, destination, centicents))
+        self.shards[source] -= centicents
+        self.landing.append([self.lag, destination, centicents])
+        return "t1"
+
+    def buy(self, ticker, action, count, limit, expires_at=None, client_order_id=None):
+        self.log.append(("buy", ticker))
+        if ticker in self.reject:
+            raise KalshiError(
+                'POST: 404 {"error":{"code":"insufficient_shard_balance"}}'
+            )
+        return Fill("o1", float(count), 0.0, limit, 0.01)
+
+
+def _no_sleep(_: float) -> None:
+    pass
+
+
+def test_funding_moves_only_whats_short_and_sets_it_aside():
+    exchange = _Exchange({0: 100_000, 3: 10_000})
+    balances = exchange.shard_balances()
+    placing.fund_shard(exchange, balances, 3, 0.50, sleep=_no_sleep)
+    assert exchange.log == []  # $1 there, 50c needed
+    assert balances[3] == 5_000
+    placing.fund_shard(exchange, balances, 3, 2.00, sleep=_no_sleep)
+    assert exchange.log == [("transfer", 0, 3, 15_000)]
+    assert balances == {0: 85_000, 3: 5_000}  # what the landed read says, less this
+
+
+def test_funding_waits_for_the_transfer_to_land():
+    exchange = _Exchange({0: 100_000, 3: 0}, lag=3)
+    slept: list[float] = []
+    balances = {0: 100_000, 3: 0}
+    placing.fund_shard(exchange, balances, 3, 1.00, sleep=slept.append)
+    assert slept == [1.0, 1.0, 1.0]
+    assert balances[3] == 0
+
+
+def test_funding_gives_up_on_a_transfer_that_doesnt_land():
+    exchange = _Exchange({0: 100_000, 3: 0}, lag=10**6)
+    with pytest.raises(KalshiError, match="not in after"):
+        placing.fund_shard(
+            exchange,
+            {0: 100_000, 3: 0},
+            3,
+            1.00,
+            wait=timedelta(0),
+            sleep=_no_sleep,
+        )
+
+
+def test_a_dry_run_moves_on_paper_and_doesnt_wait():
+    exchange = _Exchange({0: 100_000, 3: 0}, lag=10**6, dry_run=True)
+    balances = {0: 100_000, 3: 0}
+
+    def boom(_: float) -> None:
+        raise AssertionError("waited")
+
+    placing.fund_shard(exchange, balances, 3, 1.00, sleep=boom)
+    assert balances == {0: 90_000, 3: 0}
+
+
+def test_an_account_with_no_breakdown_moves_nothing():
+    exchange = _Exchange({})
+    placing.fund_shard(exchange, {}, 3, 1.00, sleep=_no_sleep)
+    assert exchange.log == []
+
+
+def _placing(tmp_path, monkeypatch, tickers: list[str], shard: int = 3):
+    monkeypatch.setattr(placing, "ORDERS_DIR", tmp_path)
+    kickoff = datetime(2026, 11, 7, 18, 0, tzinfo=UTC)
+    rows, matched = [], {}
+    for i, ticker in enumerate(tickers):
+        side = _book(ticker)._replace(shard=shard, bid=None)
+        other = _book(f"{ticker}-OTHER")._replace(shard=shard, bid=None)
+        matched[f"g{i}"] = _Matched(side, other)
+        rows.append(
+            {
+                "game_id": f"g{i}",
+                "game": f"A{i} @ B{i}",
+                "bet": f"B{i}",
+                "bet_home": True,
+                "kickoff": kickoff + timedelta(hours=i),
+                "contracts": 5,
+                "limit": 0.43,
+                "outlay": 2.25,
+                "rung_outlay": 0.0,
+                "model": 0.6,
+                "edge": 0.1,
+                "rungs": [],
+            }
+        )
+    args = argparse.Namespace(rest=None, demo=False, dry_run=False)
+    return pd.DataFrame(rows), matched, args, tmp_path / "picks.csv"
+
+
+def test_a_pick_is_funded_before_its_order(tmp_path, monkeypatch):
+    picks, matched, args, out = _placing(tmp_path, monkeypatch, ["W-A"])
+    exchange = _Exchange({0: 100_000, 3: 0})
+    placed = placing.place(exchange, picks, matched, args, out)
+    assert exchange.log == [("transfer", 0, 3, 22_500), ("buy", "W-A")]
+    assert placed is not None and placed["filled"].iloc[0] == 5
+
+
+def test_a_rejected_order_is_logged_and_the_next_pick_goes_on(tmp_path, monkeypatch):
+    picks, matched, args, out = _placing(tmp_path, monkeypatch, ["W-A", "W-B"])
+    exchange = _Exchange({0: 100_000, 3: 100_000}, reject={"W-A"})
+    placed = placing.place(exchange, picks, matched, args, out)
+    assert placed is not None
+    bad = placed[placed["error"].notna()].iloc[0]
+    assert (bad["bet"], bad["game"], bad["ticker"]) == ("B0", "A0 @ B0", "W-A")
+    assert pd.notna(bad["placed_at"])
+    assert ("buy", "W-B") in exchange.log
+
+
+def test_a_refused_transfer_sends_no_order(tmp_path, monkeypatch):
+    picks, matched, args, out = _placing(tmp_path, monkeypatch, ["W-A"])
+    exchange = _Exchange({0: 100_000, 3: 0}, refuse=True)
+    placed = placing.place(exchange, picks, matched, args, out)
+    assert exchange.log == []
+    assert placed is not None and "nope" in placed["error"].iloc[0]

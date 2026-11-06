@@ -222,6 +222,8 @@ class Book(NamedTuple):
     volume_24h: float
     #: When Kalshi opened the market; None when the listing doesn't say.
     opened: datetime | None = None
+    #: The exchange shard it trades on, whose balance pays for an order on it.
+    shard: int = 0
 
     @property
     def spread(self) -> float | None:
@@ -292,6 +294,7 @@ def book(market: Mapping) -> Book:
         volume=_number(market.get("volume_fp")) or 0.0,
         volume_24h=_number(market.get("volume_24h_fp")) or 0.0,
         opened=_time(market.get("open_time")) if market.get("open_time") else None,
+        shard=int(market.get("exchange_index") or 0),
     )
 
 
@@ -535,6 +538,27 @@ def rungs(
         covered += count
         covered_cost += count * at + order_fee(at, count)
     return found
+
+
+def shard_transfers(
+    balances: Mapping[int, int], shard: int, need: int
+) -> list[tuple[int, int]]:
+    """What to move to `shard` so it holds `need`, in the units given: (source
+    shard, amount) for each move, the fullest other shards first. Short of
+    `need` when the shards don't hold that much between them; none when
+    `shard` has enough, so cash already there stays put.
+    """
+    short = need - balances.get(shard, 0)
+    moves = []
+    for source, held in sorted(balances.items(), key=lambda item: -item[1]):
+        if short <= 0:
+            break
+        if source == shard or held <= 0:
+            continue
+        amount = min(held, short)
+        moves.append((source, amount))
+        short -= amount
+    return moves
 
 
 def held_on(

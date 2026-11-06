@@ -16,16 +16,20 @@ autobet` changes a league's rules, or adds one. Each pick's
 rungs (`picks.py`'s "Rungs") rest until kickoff, and every run with the key
 cancels the ones the model no longer backs.
 
-Two emails, and only two (Nathan, 2026-11-01):
+Three emails, and only three (Nathan, 2026-11-01 and 2026-11-06):
 
 - **A hold**, the moment a run makes one: a pick `picks.py --hold-qb` kept
   back because its injury news names a quarterback, which the model doesn't
   read. It needs a person's OK; the email has the line that places it.
   Emailed once, not every hour it stays held (`unsent(held=True)`).
+- **A rejection**, the moment a run has one: an order or transfer Kalshi
+  turned away (`rejected_email`). The job otherwise reports success, and the
+  first womens order was rejected silently on 2026-11-04. Emailed once per
+  market and reason (`unreported`), not every hour it fails again.
 - **The morning summary** (`jobs.py picks_summary`, 8am): every bet placed
   since the last one, what's still resting, what settled, the holds still
-  waiting, and the account; bets and settlements by league once there's
-  more than one. Placements and cancelled rungs go there rather
+  waiting, what was rejected, and the account; bets and settlements by
+  league once there's more than one. Placements and cancelled rungs go there rather
   than in an email each.
 
 Objects in s3, each small JSON or TOML:
@@ -58,6 +62,7 @@ gave each bet: `make ledger` reads them, and so does the morning summary.
 import argparse
 import json
 import math
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -92,6 +97,8 @@ LOCK_POLL = timedelta(seconds=30)
 SUMMARY_DAY = timedelta(hours=24)
 #: Emails kept in `sent.json`: a week of hourly runs and then some.
 EMAILS_KEPT = 200
+#: How long a rejection stays told in `sent.json`.
+REJECTED_KEPT = timedelta(days=7)
 
 
 def client(service: str) -> Any:
@@ -394,6 +401,69 @@ def unsent(picks: pd.DataFrame, sent: dict, held: bool = False) -> pd.DataFrame:
     return picks[fresh]
 
 
+def _reason(error: str) -> str:
+    """What Kalshi said, short: its error code, or the start of the message."""
+    found = re.search(r'"code":\s*"([^"]+)"', error)
+    return found.group(1) if found else error[:120]
+
+
+def rejected_orders(orders: pd.DataFrame | None) -> pd.DataFrame:
+    """The rows of an orders log that Kalshi turned away, each with its short
+    `reason`. An order filled or resting has no `error`."""
+    if orders is None or "error" not in orders:
+        return pd.DataFrame(columns=["game", "bet", "ticker", "error", "reason"])
+    found = orders[orders["error"].notna()].copy()
+    found["reason"] = found["error"].map(_reason)
+    return found
+
+
+def unreported(rejected: pd.DataFrame, sent: dict) -> pd.DataFrame:
+    """The rejections no email has carried: a run an hour later that gets the
+    same answer on the same market isn't news."""
+    told = sent.get("rejected", {})
+    fresh = pd.Series(
+        [
+            f"{ticker}|{reason}" not in told
+            for ticker, reason in zip(rejected["ticker"], rejected["reason"])
+        ],
+        index=rejected.index,
+        dtype=bool,
+    )
+    return rejected[fresh]
+
+
+def record_rejected(sent: dict, rejected: pd.DataFrame, at: datetime) -> dict:
+    """`sent` with these rejections in it. Ones older than `REJECTED_KEPT` go,
+    so a reason that comes back later is told again."""
+    keep = {
+        key: when
+        for key, when in sent.get("rejected", {}).items()
+        if at - datetime.fromisoformat(when) < REJECTED_KEPT
+    }
+    for ticker, reason in zip(rejected["ticker"], rejected["reason"]):
+        keep[f"{ticker}|{reason}"] = at.isoformat()
+    return {**sent, "rejected": keep}
+
+
+def rejected_email(rejected: pd.DataFrame, at: datetime) -> tuple[str, str]:
+    """The email saying Kalshi turned orders away: nothing else would, since
+    the run itself succeeds."""
+    count = f"{len(rejected)} Kalshi order{'s' if len(rejected) != 1 else ''}"
+    reasons = ", ".join(sorted(set(rejected["reason"])))
+    subject = f"{count} rejected ({at:%a %H:%M} CT): {reasons}"[:99]
+    lines = [
+        f"Kalshi turned away {count}, so these bets weren't placed. A later run "
+        "tries each again while it's still a pick, and this email won't repeat "
+        "for the same market and reason.",
+        "",
+    ]
+    for _, row in rejected.iterrows():
+        lines.append(f"{row['bet']} -- {row['game']} ({row['ticker']})")
+        lines.append(f"  {row['error'][:300]}")
+        lines.append("")
+    return subject, "\n".join(lines)
+
+
 def record(sent: dict, picks: pd.DataFrame, at: datetime, subject: str) -> dict:
     """`sent` with this email's picks in it, numbered as the email numbers them."""
     games = dict(sent.get("games", {}))
@@ -412,7 +482,7 @@ def record(sent: dict, picks: pd.DataFrame, at: datetime, subject: str) -> dict:
         *sent.get("emails", []),
         {"at": at.isoformat(), "subject": subject, "picks": listed},
     ]
-    return {"games": games, "emails": emails[-EMAILS_KEPT:]}
+    return {**sent, "games": games, "emails": emails[-EMAILS_KEPT:]}
 
 
 def ordered(picks: pd.DataFrame) -> pd.DataFrame:
@@ -588,9 +658,11 @@ def summary_email(
     rules: Autobet,
     since: datetime,
     at: datetime,
+    rejected: pd.DataFrame | None = None,
 ) -> tuple[str, str]:
     """The morning email: what was placed since `since`, what still rests,
-    what settled, the holds still waiting, and the account."""
+    what settled, the holds still waiting, what Kalshi rejected, and the
+    account."""
     from cassandra.kalshi_trade import is_rung, order_price
 
     won, lost = int(settled["won"].sum()), int((~settled["won"]).sum())
@@ -657,6 +729,14 @@ def summary_email(
             f'  {h["bet"]} -- {h["game"]}: make bet ARGS="--only {h["game_id"]}"'
             for h in holds
         ]
+        lines.append("")
+    if rejected is not None and not rejected.empty:
+        lines.append(f"Rejected by Kalshi: {len(rejected)}, not placed")
+        for (bet, game, reason), group in rejected.groupby(
+            ["bet", "game", "reason"], sort=False
+        ):
+            times = f" ({len(group)} times)" if len(group) > 1 else ""
+            lines.append(f"  {bet} -- {game}: {reason}{times}")
         lines.append("")
     cash, positions = account
     lines.append(f"Account: ${cash:,.2f} cash, ${positions:,.2f} in open positions.")

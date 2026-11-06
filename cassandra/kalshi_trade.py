@@ -185,6 +185,23 @@ def event_of(ticker: str) -> str:
     return ticker.rsplit("-", 1)[0]
 
 
+#: Centicents to the dollar: what Kalshi counts a transfer in.
+CENTICENTS = 10_000
+
+
+def transfer_body(source: int, destination: int, centicents: int) -> dict:
+    """`POST /portfolio/intra_exchange_instance_transfer`'s body: within the
+    event contracts exchange, from one shard to another."""
+    return {
+        "source": "event_contract",
+        "destination": "event_contract",
+        "amount": centicents,
+        "source_exchange_shard": source,
+        "destination_exchange_shard": destination,
+        "client_transfer_id": str(uuid.uuid4()),
+    }
+
+
 def signed_positions(market_positions: Iterable[Mapping]) -> dict[str, float]:
     """`KalshiClient.market_positions` as each market's position: YES
     contracts positive, NO negative, none for a market with none."""
@@ -281,6 +298,35 @@ class KalshiClient:
     def balance(self) -> float:
         """Cash on hand, in dollars."""
         return self.account()[0]
+
+    def shard_balances(self) -> dict[int, int]:
+        """Cash on hand on each exchange shard, in centicents; empty when the
+        account's balance doesn't break it down. See `transfer`."""
+        response = self._request("GET", "/portfolio/balance")
+        return {
+            int(found["exchange_index"]): round(float(found["balance"]) * CENTICENTS)
+            for found in response.get("balance_breakdown") or []
+        }
+
+    def transfer(self, source: int, destination: int, centicents: int) -> str:
+        """Move cash between two exchange shards: its transfer's id.
+
+        Kalshi keeps a balance per shard, and an order through the API is
+        paid for from its market's shard alone: with nothing there it's
+        rejected (`insufficient_shard_balance`), whatever the other shards
+        hold. The transfer is processed asynchronously, so the money isn't
+        there as soon as this returns; `placing.fund_shard` waits for it.
+        """
+        body = transfer_body(source, destination, centicents)
+        if self.dry_run:
+            print(
+                "    dry run, not sent: POST "
+                f"/portfolio/intra_exchange_instance_transfer {json.dumps(body)}"
+            )
+            return "dry-run"
+        return self._request(
+            "POST", "/portfolio/intra_exchange_instance_transfer", body
+        )["transfer_id"]
 
     def market_positions(self) -> list[dict]:
         """Every unsettled market position as Kalshi sends it: `position_fp`
