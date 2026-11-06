@@ -6,6 +6,7 @@ the replay, the fit, the assembly, and the bytes on disk.
 """
 
 import asyncio
+import gzip
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1112,6 +1113,8 @@ def test_a_league_without_tiers_publishes_its_success_rates(
 def test_a_basketball_league_publishes_a_file_per_season_of_players(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from cassandra.players import PlayersFile
+
     source = tmp_path / "mens_players_2026.csv"
     source.write_text(
         "league,season,as_of,athlete_id,player,team_id,team,projected,offense,defense,"
@@ -1126,8 +1129,9 @@ def test_a_basketball_league_publishes_a_file_per_season_of_players(
     monkeypatch.setattr(publish.artifacts, "download", download)
     out = tmp_path / "out"
     asyncio.run(publish._publish_players("mens", out, False, "src", "dst"))
-    written = out / "models" / "mens" / "players_2026.json"
-    assert '"Pat"' in written.read_text()
+    written = out / "models" / "mens" / "players_2026.json.gz"
+    stored = PlayersFile.model_validate_json(gzip.decompress(written.read_bytes()))
+    assert stored.season == 2026 and stored.players[0].player == "Pat"
     asyncio.run(publish._publish_players("nfl", tmp_path / "none", False, "src", "dst"))
     assert not (tmp_path / "none").exists()
 

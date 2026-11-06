@@ -10,7 +10,7 @@ The layout, rooted at a bucket or at a local `--out` directory:
 
     models/{league}/qb_out.json
     models/{league}/player_ratings.json
-    models/{league}/players_{season}.json
+    models/{league}/players_{season}.json.gz
     models/{league}/{model}/latest.json
     models/{league}/{model}/runs/{run_id}.json
     models/{league}/{model}/history.parquet
@@ -60,4 +60,4 @@ def player_ratings_artifact_path(root: Path, league: str) -> Path:
 def players_artifact_path(root: Path, league: str, season: int) -> Path:
     """Where a league's season of players lives: a file rather than a
     directory, because every directory under a league is read as a model."""
-    return league_dir(root, league) / f"players_{season}.json"
+    return league_dir(root, league) / f"players_{season}.json.gz"
