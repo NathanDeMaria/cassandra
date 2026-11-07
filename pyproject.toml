@@ -1,11 +1,95 @@
-[tool.poetry]
+[project]
 name = "cassandra"
 version = "0.1.0"
-description = ""
-authors = []
+description = "Team ratings and win probabilities"
+readme = "README.md"
+# The oldest Python this supports, not the one it's developed on: a library
+# that asks for a newer interpreter than its consumers run can't be installed.
+requires-python = ">=3.14"
+dependencies = [
+    "endgame",
+    "call-it-what-you-want",
+    "say-youll-remember-me",
+    "aiofiles>=25.1.0,<26",
+    "numpy>=2.4.0,<3",
+    "pandas>=2.3.3,<3",
+    "pydantic>=2.12.5,<3",
+]
 
-[tool.poetry.dependencies]
-python = "^3.14"
+[dependency-groups]
+# Fitting and CLI, not serving. A consumer that installs cassandra as a
+# dependency -- the webapp -- gets `main` and nothing else, because dependency
+# groups never make it into package metadata. That's what keeps scikit-learn
+# out of a web image whose only job is to read a saved calibration and call
+# np.interp on it. `uv sync` here still picks this up with no flags (default-groups below), so
+# local dev and CI are unaffected.
+#
+# The cost: `pip install cassandra` gives you a package that can rehydrate a
+# fit but not produce one. IsotonicProbToMarginFitter.fit imports sklearn
+# lazily so the ImportError lands there rather than at import time, and
+# `cassandra/__init__.py` defers its fit-path re-exports for the same reason.
+fit = [
+    "scikit-learn>=1.8.0,<2",
+    # Signs the Kalshi orders `picks.py --place` sends (`cassandra.kalshi_trade`).
+    "cryptography>=46",
+    # Parquet, for `history.parquet` and `predictions.parquet`. pandas resolves
+    # the engine inside `to_parquet`/`read_parquet` rather than at import, which
+    # is what lets `cassandra.serving.history` and `.predictions` define their
+    # schemas and build their rows in a serving install that has no pyarrow --
+    # `predictions_test.test_the_schemas_import_without_pyarrow` holds that.
+    # Only the reads and writes need this, and only the fitting side calls them.
+    #
+    # So it is here rather than in `main`, for the reason `endgame_aws` is: at
+    # ~152MB it is the single biggest thing that could land in a web image, and
+    # the whole point of the split is that the image reading a release never
+    # pays for it. The webapp does have pyarrow -- it reads endgame's play-by-
+    # play -- so it can read these two files; it just doesn't get it from us.
+    #
+    # Declared rather than left to endgame_aws's and lucky-ones' transitive
+    # copy, the same call `lucky-ones`' `data` extra is documented as making
+    # below: an import in this repo should be backed by something that says why
+    # it's there.
+    "pyarrow>=25.0.1,<26",
+    "fire>=0.7.1,<0.8",
+    "bayesian-optimization>=3.2.1,<4",
+    # The Glicko smoother's sweep, compiled. It is here rather than in `main`
+    # because it is a fitting dependency in the strict sense: an install without
+    # it replays the same model through `_smooth_with_dicts`, three times slower
+    # and to the same ratings, which is the right trade for a web image reading
+    # a release and the wrong one for a search that runs the sweep 20,000 times.
+    # `cassandra.predictor.smoothing` imports it inside a function so that stays
+    # true, and `release_test.test_reading_a_release_never_imports_numba` holds
+    # it.
+    #
+    # It costs the deployed image ~90MB (llvmlite is most of it) and nothing in
+    # build time -- there are manylinux wheels for 3.14, and no compiler is
+    # needed to install one. What it does need is numpy below 2.6, which is
+    # inside the `^2.4` above; a numpy that moves past it will hold this back,
+    # and the fallback is what makes that survivable rather than urgent.
+    "numba>=0.68.0,<0.69",
+    "endgame-aws",
+    "lucky-ones[data]",
+    "ten-minute-version",
+]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.17.3",
+    "ty>=0.0.94",
+    "types-aiofiles>=25.1.0.20251011",
+    "ipykernel>=7.1.0",
+    "matplotlib>=3.10.8",
+    "pandas-stubs>=2.3.3.251219",
+    "scikit-learn-stubs>=0.0.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cassandra"]
+
+[tool.uv.sources]
 # The game and season types, and nothing that fetches them. Every predictor
 # and the release schema read `endgame.types.Game`, so this is genuinely a
 # serving dependency -- unlike `endgame_aws`, which reads the bucket those
@@ -37,15 +121,15 @@ python = "^3.14"
 # Then to the ESPN cache buster: `site.api.espn.com` serves a URL read on an
 # interval its own previous read's copy, so `picks.py`'s top-up of tonight's
 # scores could miss the games that just went final. EndGame #110.
-endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "19c1055cd0941465c0ae8a8e4239fdcea729bf37", subdirectory = "py-endgame"}
+endgame = { git = "https://github.com/NathanDeMaria/EndGame.git", rev = "19c1055cd0941465c0ae8a8e4239fdcea729bf37", subdirectory = "py-endgame" }
 # Team knowledge: which names are the same team, and what division and
 # conference each played in. Pure python apart from its extras, so it costs a
 # serving install one dependency it already has.
 #
-# Pinned to a rev like endgame_aws is: unpinned, `poetry install` moves the
+# Pinned to a rev like endgame_aws is: unpinned, a fresh lock moves the
 # team data under a replay without anything in the diff saying so, and a
 # team's rating history depends on its identity being the same from one run
-# to the next. Bump it deliberately with `poetry update`.
+# to the next. Bump it deliberately with `uv lock --upgrade-package`.
 #
 # This bump is for the classifications: ciwyw #12 files the 2026 football
 # season, the first rows on record for it, and without them
@@ -56,7 +140,7 @@ endgame = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "19c1055c
 # `league` filter there, and left out they behave as before. Checked rather
 # than assumed: every one of ncaafb's 1,118 stored names resolves to the same
 # canonical team across the bump, and a `glicko_full` replay is identical.
-call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "cc9c9e19e3e56eb48f7745853613aff51ca372b8"}
+call-it-what-you-want = { git = "https://github.com/NathanDeMaria/call-it-what-you-want.git", rev = "cc9c9e19e3e56eb48f7745853613aff51ca372b8" }
 # What changed about a team between seasons -- head-coach changes and why,
 # coordinators, quarterback seasons -- and the play-text quarterback parser
 # `cassandra.qb_out_build` reads starters with, which lived here as
@@ -66,63 +150,7 @@ call-it-what-you-want = {git = "https://github.com/NathanDeMaria/call-it-what-yo
 #
 # Pinned like call-it-what-you-want, for the same reason: the offseason facts
 # a replay reads should move only with a deliberate bump.
-say-youll-remember-me = {git = "https://github.com/NathanDeMaria/say-youll-remember-me.git", rev = "bcab6ebeb9a0d7b33ae9c2755ca8d8e1cfe59a5d"}
-aiofiles = "^25.1.0"
-numpy = "^2.4.0"
-pandas = "^2.3.3"
-pydantic = "^2.12.5"
-
-
-# Fitting and CLI, not serving. A consumer that installs cassandra as a
-# dependency -- the webapp -- gets `main` and nothing else, because poetry
-# groups never make it into package metadata. That's what keeps scikit-learn
-# out of a web image whose only job is to read a saved calibration and call
-# np.interp on it. `poetry install` here still picks this up with no flags, so
-# local dev and CI are unaffected.
-#
-# The cost: `pip install cassandra` gives you a package that can rehydrate a
-# fit but not produce one. IsotonicProbToMarginFitter.fit imports sklearn
-# lazily so the ImportError lands there rather than at import time, and
-# `cassandra/__init__.py` defers its fit-path re-exports for the same reason.
-[tool.poetry.group.fit.dependencies]
-scikit-learn = "^1.8.0"
-# Signs the Kalshi orders `picks.py --place` sends (`cassandra.kalshi_trade`).
-cryptography = ">=46"
-# Parquet, for `history.parquet` and `predictions.parquet`. pandas resolves
-# the engine inside `to_parquet`/`read_parquet` rather than at import, which
-# is what lets `cassandra.serving.history` and `.predictions` define their
-# schemas and build their rows in a serving install that has no pyarrow --
-# `predictions_test.test_the_schemas_import_without_pyarrow` holds that.
-# Only the reads and writes need this, and only the fitting side calls them.
-#
-# So it is here rather than in `main`, for the reason `endgame_aws` is: at
-# ~152MB it is the single biggest thing that could land in a web image, and
-# the whole point of the split is that the image reading a release never
-# pays for it. The webapp does have pyarrow -- it reads endgame's play-by-
-# play -- so it can read these two files; it just doesn't get it from us.
-#
-# Declared rather than left to endgame_aws's and lucky-ones' transitive
-# copy, the same call `lucky-ones`' `data` extra is documented as making
-# below: an import in this repo should be backed by something that says why
-# it's there.
-pyarrow = "^25.0.1"
-fire = "^0.7.1"
-bayesian-optimization = "^3.2.1"
-# The Glicko smoother's sweep, compiled. It is here rather than in `main`
-# because it is a fitting dependency in the strict sense: an install without
-# it replays the same model through `_smooth_with_dicts`, three times slower
-# and to the same ratings, which is the right trade for a web image reading
-# a release and the wrong one for a search that runs the sweep 20,000 times.
-# `cassandra.predictor.smoothing` imports it inside a function so that stays
-# true, and `release_test.test_reading_a_release_never_imports_numba` holds
-# it.
-#
-# It costs the deployed image ~90MB (llvmlite is most of it) and nothing in
-# build time -- there are manylinux wheels for 3.14, and no compiler is
-# needed to install one. What it does need is numpy below 2.6, which is
-# inside the `^2.4` above; a numpy that moves past it will hold this back,
-# and the fallback is what makes that survivable rather than urgent.
-numba = "^0.68.0"
+say-youll-remember-me = { git = "https://github.com/NathanDeMaria/say-youll-remember-me.git", rev = "bcab6ebeb9a0d7b33ae9c2755ca8d8e1cfe59a5d" }
 # Where the seasons, the odds and the play-by-play live. Only `cassandra.odds`
 # and `cassandra.save_predictions` import it, and neither is on the path a
 # consumer reading a release takes -- so it belongs here with the rest of the
@@ -160,7 +188,7 @@ numba = "^0.68.0"
 #
 # And for the cache buster, which `endgame` above is pinned to: this is the
 # py-endgame-aws rev that resolves it there.
-endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "1b61e1856cf2524f07cc9249f2ac657cf8bff5b1", subdirectory = "py-endgame-aws"}
+endgame-aws = { git = "https://github.com/NathanDeMaria/EndGame.git", rev = "1b61e1856cf2524f07cc9249f2ac657cf8bff5b1", subdirectory = "py-endgame-aws" }
 # In-game win probability, and the `game_control` number cassandra turns into
 # an alternate score line. The fits ship inside the package, so pinning the
 # rev pins the model: which win probability curve a rating was built against
@@ -217,7 +245,7 @@ endgame_aws = {git = "https://github.com/NathanDeMaria/EndGame.git", rev = "1b61
 # scikit-learn that produces a win probability fit, and cassandra produces
 # none -- it reads the one that ships inside the package. The scikit-learn
 # above is cassandra's own, for the prob-to-margin calibration.
-lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "99e79fb9ed68deef0800b53d580677d1036b1dca", extras = ["data"]}
+lucky-ones = { git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "99e79fb9ed68deef0800b53d580677d1036b1dca" }
 # Player ratings for college basketball, from who was on the floor for every
 # possession: what the `player-ratings` sweep runs each morning to file every
 # mens and womens team as of today (`cassandra.player_ratings_build`), which
@@ -227,37 +255,44 @@ lucky-ones = {git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev =
 #
 # Pinned for the reason lucky-ones is: the release files that ship inside it
 # (the box-score, recruit and newcomer priors) are the model.
-ten-minute-version = {git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "2207558aeb9623ca664ae568f7fa5b6a4ac7c82d"}
+ten-minute-version = { git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "2207558aeb9623ca664ae568f7fa5b6a4ac7c82d" }
 
+[tool.uv]
+# Poetry installed every group with no flags, and everything here -- local dev,
+# CI, the Batch image's `--group fit` -- assumes the fitting stack is there.
+default-groups = ["dev", "fit"]
 
-[tool.poetry.group.dev.dependencies]
-black = "^25.12.0"
-pytest = "^9.0.2"
-pylint = "^4.0.4"
-ruff = "^0.14.10"
-types-aiofiles = "^25.1.0.20251011"
-ipykernel = "^7.1.0"
-matplotlib = "^3.10.8"
-pandas-stubs = "^2.3.3.251219"
-scikit-learn-stubs = "^0.0.3"
-ty = "^0.0.65"
+# ten-minute-version, say-youll-remember-me and the other git dependencies
+# declare their own pin of call-it-what-you-want in their [tool.uv.sources],
+# and uv reads those when it resolves them from a git checkout -- so a second
+# rev of the same package is a "conflicting URLs" error. Cassandra's pin is the
+# one the whole install uses (see call-it-what-you-want above), so the
+# dependents' are overridden with the bare name and the source above wins.
+override-dependencies = ["call-it-what-you-want"]
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+# Below here is the template's. `copier update` brings changes to it from
+# mirrorball, so per-repo additions are better made as new keys than as edits.
 
 [tool.ruff]
 line-length = 88
 
 [tool.ruff.lint]
-select = ["I"]
+# Ruff's defaults (E4, E7, E9, F), import sorting, and pyupgrade -- which
+# reads requires-python to decide what's outdated.
+select = ["E4", "E7", "E9", "F", "I", "UP"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["cassandra"]
 
+[tool.ty.terminal]
+# A warning fails `make check` and CI, same as an error. Silence one on purpose
+# with `# ty: ignore[rule]`, which ty itself flags once it's no longer needed.
+error-on-warning = true
+
+[tool.pytest]
+# Unknown markers, bad config keys and xfails that pass are failures.
+strict = true
+
 [tool.ty.src]
 # scratch analysis, not worth keeping type-clean
 exclude = ["reasoning"]
-
-[tool.pylint.messages_control]
-disable = ["missing-module-docstring", "missing-function-docstring"]

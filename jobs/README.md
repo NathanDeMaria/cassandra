@@ -212,8 +212,8 @@ make submit ARGS="--league mens --model elo --skip-evaluate"   # one model, as a
 make submit ARGS="--skip-optimize"             # re-evaluate and re-publish from s3
 make submit ARGS="--skip-anchors"              # optimize, but don't re-check the anchors
 
-poetry run python jobs.py manifest             # the work list, in array-index order
-poetry run python jobs.py anchors --league ncaafb --if-missing=False  # force a refit
+uv run python jobs.py manifest             # the work list, in array-index order
+uv run python jobs.py anchors --league ncaafb --if-missing=False  # force a refit
 ```
 
 When `glicko_full` has been re-searched, the configs that pin its fit --
@@ -222,7 +222,7 @@ their pins are copied forward, which the run report's FROZEN PARAMETERS
 section will keep saying. `sync_pins.py` is that edit:
 
 ```bash
-poetry run python sync_pins.py --league ncaafb,nfl --source glicko_full --download
+uv run python sync_pins.py --league ncaafb,nfl --source glicko_full --download
 ```
 
 Batch is the only way to run the whole thing; there is no local sweep. Each
@@ -230,7 +230,7 @@ stage still runs on one machine for testing — `--download=False
 --upload=False` touches s3 not at all and writes only to `~/.cassandra`:
 
 ```bash
-poetry run python jobs.py optimize --league mens --model elo --download=False --upload=False
+uv run python jobs.py optimize --league mens --model elo --download=False --upload=False
 ```
 
 ## Reading a run
@@ -339,7 +339,7 @@ Batch job an hour later.
 ## Editing the terraform
 
 `jobs/.devcontainer` is a second devcontainer, separate from the repo's Python
-one: terraform and the AWS CLI, no poetry and no model dependencies. Two
+one: terraform and the AWS CLI, no uv and no model dependencies. Two
 containers rather than one because the two jobs share nothing — a terraform
 edit doesn't want scikit-learn, and the Python container has no terraform, so
 `make plan` there fails at the first command.

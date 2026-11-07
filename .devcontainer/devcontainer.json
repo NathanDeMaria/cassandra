@@ -1,4 +1,6 @@
 {
+  // Template-owned (mirrorball). Repo-specific mounts and settings are fine to
+  // add; `copier update` merges around them.
   "name": "cassandra",
   "build": {
     "context": "..",
@@ -12,6 +14,8 @@
           88
         ],
         "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+        // ty is the language server, so Pylance's would only duplicate it
+        "python.languageServer": "None",
         "editor.formatOnSave": true,
         "python.testing.pytestArgs": [
           "."
@@ -30,9 +34,9 @@
       },
       "extensions": [
         "ms-python.python",
-        "ms-python.vscode-pylance",
-        "njpwerner.autodocstring",
+        "astral-sh.ty",
         "charliermarsh.ruff",
+        "njpwerner.autodocstring",
         "anthropic.claude-code"
       ]
     }
@@ -41,23 +45,21 @@
   "shutdownAction": "none",
   "remoteEnv": {
     "GH_TOKEN": "${localEnv:GH_TOKEN}",
-    // Machine-local settings -- AWS_PROFILE, mainly -- read by the
-    // .local-env.sh that the Dockerfile hooks into every bash. Not a mount:
-    // the file lives in the workspace, which is already bind-mounted, so this
-    // only has to say where it landed.
+    // Read by .local-env.sh, which every bash in the container sources
     "DEVCONTAINER_ENV_FILE": "${containerWorkspaceFolder}/.devcontainer/local.env"
   },
-  "postCreateCommand": "sudo chown -R $(id -u):$(id -g) /commandhistory && poetry install",
+  // `uv sync` here rather than in the Dockerfile: this runs in the bind-mounted
+  // workspace, so the .venv it builds is the one the editor and `uv run` use.
+  "postCreateCommand": "sudo chown -R $(id -u):$(id -g) /commandhistory && uv sync",
   "postStartCommand": "nohup flock -n /home/dev/.claude-rc.lock claude rc --name cassandra >>/tmp/claude-rc.log 2>&1 &",
   "mounts": [
     "source=bashhistory-volume,target=/commandhistory,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws,target=/home/dev/.aws,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/home/dev/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.cassandra,target=/home/dev/.cassandra,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/cache,target=/home/dev/.endgame/cache,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/login,target=/home/dev/.aws/login,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/sso,target=/home/dev/.aws/sso,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/credentials,target=/home/dev/.aws/credentials,type=bind,consistency=cached,ro=1",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws/config,target=/home/dev/.aws/config,type=bind,consistency=cached,ro=1",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws-batch/config.json,target=/home/dev/.aws-batch/config.json,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/home/dev/.claude,type=bind,consistency=cached"
+    // The shared stack's outputs: the bucket endgame_aws reads, the queue
+    // jobs.py submits to, and the ECR url `make build` / `make push` tag with
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws-batch/config.json,target=/home/dev/.aws-batch/config.json,type=bind,consistency=cached"
   ]
 }
