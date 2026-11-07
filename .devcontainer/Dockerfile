@@ -1,11 +1,9 @@
 # Template-owned (mirrorball): the devcontainer only. A repo that ships an
 # image keeps its runtime Dockerfile elsewhere and owns it.
 #
-# 3.14-bookworm, as the Batch image has been, for the first of two PRs: moving
-# to uv and ruff changes no interpreter or package version. The second PR moves
-# this to the template's 3.15 image. Pinned by the digest of the multi-platform
-# index, so the same line builds on amd64 and arm64.
-FROM python@sha256:b3c121f5b6b446c964c6ea924d9a099e259b29d7b56df82729e33572a31eadcc
+# 3.15.2-trixie on 2026-10-28. Pinned by the digest of the multi-platform index, so
+# the same line builds on amd64 and arm64.
+FROM python@sha256:a51b0cd81c9c0fc08afc4a823843b459dc71c9386a02ccb150097b41d783f33b
 
 # uv at a pinned version, copied out of its own image rather than pip-installed,
 # so it shares nothing with the project's environment. Bump it on purpose: uv is
