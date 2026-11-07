@@ -8,7 +8,7 @@ the replay, the fit, the assembly, and the bytes on disk.
 import asyncio
 import gzip
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -83,7 +83,7 @@ def _seasons(
     for year, weeks in schedule.items():
         season_weeks = []
         for number, games in enumerate(weeks, start=1):
-            date = datetime(year, 1, number, tzinfo=timezone.utc)
+            date = datetime(year, 1, number, tzinfo=UTC)
             season_weeks.append(
                 Week(
                     number=number,
@@ -121,7 +121,7 @@ def _config(
 
 # The last game in `_SCHEDULE`, which is what publish measures the offseason
 # from.
-_LAST_GAME = datetime(2026, 1, 3, tzinfo=timezone.utc)
+_LAST_GAME = datetime(2026, 1, 3, tzinfo=UTC)
 
 
 def _run(
@@ -1068,7 +1068,7 @@ def test_a_league_without_tiers_publishes_its_success_rates(
         publish._Job(config.league, _MODEL, config),
         seasons,
         OddsDatabase({}),
-        now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        now=datetime(2027, 1, 1, tzinfo=UTC),
         week_observer=history,
     )
     assert predictor.unanchored_prior() != round(predictor.unanchored_prior())

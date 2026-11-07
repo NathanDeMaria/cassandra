@@ -2,7 +2,6 @@
 
 import asyncio
 import pickle
-import sys
 from pathlib import Path
 
 from endgame_aws import Config

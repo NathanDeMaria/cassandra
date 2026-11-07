@@ -109,7 +109,7 @@ class OptimizationConfig(BaseModel):
         return name
 
     @model_validator(mode="after")
-    def _fixed_from_needs_fixed(self) -> "OptimizationConfig":
+    def _fixed_from_needs_fixed(self) -> OptimizationConfig:
         """A source for pins that don't exist is a claim about nothing.
 
         Caught here rather than left to the report, which would silently have
@@ -129,7 +129,7 @@ class OptimizationConfig(BaseModel):
         return name
 
     @model_validator(mode="after")
-    def _frame_is_consistent(self) -> "OptimizationConfig":
+    def _frame_is_consistent(self) -> OptimizationConfig:
         """A framed config names each quantity once, in the frame's terms.
 
         Caught at load for the same reason a bad objective is: the manifest
@@ -153,7 +153,7 @@ class OptimizationConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _seeds_are_in_the_box(self) -> "OptimizationConfig":
+    def _seeds_are_in_the_box(self) -> OptimizationConfig:
         """A seed the search can't probe fails at load, with the others.
 
         `optimize` would refuse it too, but an hour into the array rather
@@ -170,7 +170,7 @@ class OptimizationConfig(BaseModel):
         return frames.searched_params(self.frame, set(self.parameters))
 
     @model_validator(mode="after")
-    def _no_parameter_is_both(self) -> "OptimizationConfig":
+    def _no_parameter_is_both(self) -> OptimizationConfig:
         """A name can be searched or pinned, not both.
 
         Nothing downstream would raise: `optimize.py` merges the two, so the
@@ -244,7 +244,7 @@ class InputFingerprint(BaseModel):
         """
         return bool(self.code)
 
-    def differences(self, other: "InputFingerprint") -> list[str]:
+    def differences(self, other: InputFingerprint) -> list[str]:
         """Which parts moved, for the line that explains a search happening."""
         return [
             name

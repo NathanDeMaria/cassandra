@@ -12,8 +12,9 @@ test suite's problem; whether a week's worth of games ends up in the right
 file with the right header is theirs.
 """
 
-from datetime import datetime, timezone
-from typing import Iterable, NamedTuple, Sequence
+from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
+from typing import NamedTuple
 
 from endgame.types import Game, Season, Week
 
@@ -154,7 +155,7 @@ def game_for(game_id: str, home_score: int = 28, away_score: int = 0) -> Game:
         away_score=away_score,
         neutral_site=False,
         completed=True,
-        date=datetime(2025, 9, 7, tzinfo=timezone.utc),
+        date=datetime(2025, 9, 7, tzinfo=UTC),
         game_id=game_id,
         status="STATUS_FINAL",
     )

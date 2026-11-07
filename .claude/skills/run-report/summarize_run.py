@@ -21,7 +21,7 @@ import csv
 import json
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import fetch_run
@@ -127,7 +127,7 @@ class Child:
     def duration(self):
         if self.started_at is None:
             return None
-        end = self.stopped_at or datetime.now(timezone.utc).timestamp() * 1000
+        end = self.stopped_at or datetime.now(UTC).timestamp() * 1000
         return timedelta(milliseconds=end - self.started_at)
 
     @property

@@ -24,12 +24,11 @@ applies it to `picks.py --league womens` alone, so news about Iowa State's
 quarterback doesn't drop Iowa State's womens games.
 """
 
+import tomllib
 from collections.abc import Iterable, Sequence
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
-
-import tomllib
 
 KINDS = ("qb_out", "exclude")
 

@@ -41,7 +41,6 @@ which is what a caller with an injury report -- or a person who read one --
 passes in.
 """
 
-import json
 from collections.abc import Iterable, Mapping
 from functools import cache
 from pathlib import Path

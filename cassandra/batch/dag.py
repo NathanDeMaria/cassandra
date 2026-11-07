@@ -94,7 +94,7 @@ import asyncio
 import os
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from aiobotocore.session import get_session
 
@@ -121,7 +121,7 @@ class Submitted:
 
 def _job_name(stem: str) -> str:
     """Batch job names have to be unique-ish and match [A-Za-z0-9_-]."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     return f"cassandra-{stem}-{stamp}"
 
 

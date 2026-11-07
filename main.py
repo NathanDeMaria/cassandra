@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import fire
@@ -11,7 +11,7 @@ _PREDICTION_LOG_PATH = Path(__file__).parent / "predictions"
 
 
 async def _main(league: str) -> None:
-    prediction_path = _PREDICTION_LOG_PATH / datetime.now(timezone.utc).isoformat()
+    prediction_path = _PREDICTION_LOG_PATH / datetime.now(UTC).isoformat()
     prediction_path.mkdir(exist_ok=True, parents=True)
 
     predictors: list[Predictor] = [

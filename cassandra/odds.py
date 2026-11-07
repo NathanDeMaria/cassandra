@@ -171,11 +171,11 @@ class OddsDatabase:
         self._history = history or {}
 
     @classmethod
-    async def from_s3(cls, bucket: str) -> "OddsDatabase":
+    async def from_s3(cls, bucket: str) -> OddsDatabase:
         return cls.from_history(await _read_snapshots(bucket))
 
     @classmethod
-    def from_history(cls, history: dict[str, list[OddsSnapshot]]) -> "OddsDatabase":
+    def from_history(cls, history: dict[str, list[OddsSnapshot]]) -> OddsDatabase:
         """Build from per-game series already in read order."""
         odds = {}
         for game_id, series in history.items():

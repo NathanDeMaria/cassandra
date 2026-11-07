@@ -413,7 +413,7 @@ def espn_summary(game_id: str, final: bool) -> dict:
 
 def injury_news(
     picks: pd.DataFrame, games: list[Game], namer: TeamNamer
-) -> dict[str, "News"]:
+) -> dict[str, News]:
     """Injury sentences on each pick's two teams, from their last two games' stories,
     and who threw for each in those games' box scores.
 

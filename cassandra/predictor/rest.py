@@ -43,7 +43,7 @@ done: that changes the artifact format, and this does not.
 """
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Protocol
 
 from endgame.types import Game
@@ -89,7 +89,7 @@ REST_MAX_GAP_DAYS = 20.0
 #: subtracting one kind from the other raises; both sides of any subtraction
 #: here come out of the same league's games, so they always agree.
 _EPOCH = datetime(1970, 1, 1)
-_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _seconds(date: datetime) -> float:

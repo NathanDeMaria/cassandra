@@ -21,7 +21,6 @@ from style import (  # noqa: E402
     INK,
     INK2,
     ORANGE,
-    RAMP,
     SURFACE,
     pct,
     plt,

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from call_it_what_you_want import TeamNamer
 from endgame.types import Game, Season, Week
@@ -21,7 +21,7 @@ def _game(home: str, away: str, game_id: str, day: int, completed: bool = True) 
         away_score=0,
         neutral_site=False,
         completed=completed,
-        date=datetime(2023, 9, day, tzinfo=timezone.utc),
+        date=datetime(2023, 9, day, tzinfo=UTC),
         game_id=game_id,
     )
 

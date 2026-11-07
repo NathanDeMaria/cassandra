@@ -10,7 +10,7 @@ after the fact looks exactly like a real one, only better.
 import subprocess
 import sys
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -54,7 +54,7 @@ def _game(
         away_score=away_score,
         neutral_site=neutral_site,
         completed=True,
-        date=datetime(year, 3, week, tzinfo=timezone.utc),
+        date=datetime(year, 3, week, tzinfo=UTC),
         game_id=f"{year}-{week}-{away}@{home}",
         status="STATUS_FINAL",
     )

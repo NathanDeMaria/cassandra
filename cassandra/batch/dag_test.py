@@ -298,7 +298,7 @@ class _FakeSession:
     def __init__(self, client: _FakeBatchClient) -> None:
         self._client = client
 
-    def create_client(self, service: str) -> "_FakeSession":
+    def create_client(self, service: str) -> _FakeSession:
         assert service == "batch"
         return self
 

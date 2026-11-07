@@ -6,7 +6,7 @@ import pandas as pd
 
 from cassandra.columns import GameDfColumns
 
-_PREDICTOR_KINDS: dict[str, type["BaseProbToMarginPredictor"]] = {}
+_PREDICTOR_KINDS: dict[str, type[BaseProbToMarginPredictor]] = {}
 
 
 class BaseProbToMarginPredictor(ABC):
@@ -45,7 +45,7 @@ class BaseProbToMarginPredictor(ABC):
         """
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BaseProbToMarginPredictor":
+    def from_dict(cls, data: dict[str, Any]) -> BaseProbToMarginPredictor:
         """Rebuild the predictor `data` describes, dispatching on its kind."""
         kind = data["kind"]
         subclass = _PREDICTOR_KINDS.get(kind)

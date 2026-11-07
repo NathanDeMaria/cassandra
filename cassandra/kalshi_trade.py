@@ -230,7 +230,7 @@ class KalshiClient:
     dry_run: bool = False
 
     @classmethod
-    def from_env(cls, demo: bool = False, dry_run: bool = False) -> "KalshiClient":
+    def from_env(cls, demo: bool = False, dry_run: bool = False) -> KalshiClient:
         prefix, stem = ("KALSHI_DEMO_", "demo_") if demo else ("KALSHI_", "")
         key_id = os.environ.get(f"{prefix}KEY_ID")
         id_file = _KEY_DIR / f"{stem}key_id"

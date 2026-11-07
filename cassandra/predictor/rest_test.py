@@ -1,7 +1,7 @@
 """Tests for the rest advantage: the ledger, and what it does to a prediction."""
 
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -209,8 +209,8 @@ def test_a_negative_rest_advantage_is_refused() -> None:
 _GAPS = [
     # Aware, which is what football's season files carry.
     (
-        datetime(2026, 9, 5, 19, 30, tzinfo=timezone.utc),
-        datetime(2026, 9, 12, 15, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 5, 19, 30, tzinfo=UTC),
+        datetime(2026, 9, 12, 15, 0, tzinfo=UTC),
     ),
     # Naive, which is what some of the other leagues' carry.
     (datetime(2026, 9, 5, 19, 30), datetime(2026, 9, 12, 15, 0)),
@@ -222,8 +222,8 @@ _GAPS = [
     # Sub-second, which no feed produces and which the subtraction should
     # survive anyway.
     (
-        datetime(2026, 9, 5, 19, 30, 0, 125_000, tzinfo=timezone.utc),
-        datetime(2026, 9, 12, 15, 0, 0, 875_000, tzinfo=timezone.utc),
+        datetime(2026, 9, 5, 19, 30, 0, 125_000, tzinfo=UTC),
+        datetime(2026, 9, 12, 15, 0, 0, 875_000, tzinfo=UTC),
     ),
 ]
 

@@ -82,7 +82,7 @@ class Params:
         )
 
     @classmethod
-    def from_vector(cls, v: Iterable[float]) -> "Params":
+    def from_vector(cls, v: Iterable[float]) -> Params:
         ko, kd, co, cd, kg, h, do, dd = v
         return cls(
             np.exp(ko),

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from call_it_what_you_want import TeamClassification, TeamNamer
@@ -438,7 +438,7 @@ def _game(
         away_score=away_score,
         neutral_site=False,
         completed=completed,
-        date=datetime(year, 9, 2, tzinfo=timezone.utc),
+        date=datetime(year, 9, 2, tzinfo=UTC),
         game_id=f"{home}-{away}-{year}",
     )
 
