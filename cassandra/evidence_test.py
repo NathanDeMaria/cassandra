@@ -116,7 +116,7 @@ def test_the_joint_fit_separates_two_features_that_travel_together() -> None:
     first = rng.random(len(keys)) < 0.4
     # The second is mostly the first, and carries nothing of its own.
     second = np.where(rng.random(len(keys)) < 0.8, first, ~first)
-    effects = {key: -4.0 * f for key, f in zip(keys, first)}
+    effects = {key: float(-4.0 * f) for key, f in zip(keys, first)}
     frame, _ = league(teams=40, seasons=8, tau=0.0, sigma=10.0, effects=effects, seed=3)
     raw = pd.DataFrame(
         [
