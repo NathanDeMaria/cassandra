@@ -72,8 +72,9 @@ snap. Football only, so a basketball run submits neither.
 `player-ratings` is basketball's: each morning it runs ten-minute-version over
 the season's games so far and adds today's rows to `{league}_player_ratings.csv`,
 the players' team ratings `glicko_players` blends into its predictions
-(`cassandra.player_ratings_build`). Publish waits on it as it waits on the
-football sweeps. The launcher submits it only once terraform has put
+(`cassandra.player_ratings_build`), and rebuilds the returning minutes it reads
+at the rollover, `{league}_turnover.csv` (`cassandra.turnover_build`). Publish
+waits on it as it waits on the football sweeps. The launcher submits it only once terraform has put
 `CASSANDRA_PLAYER_RATINGS_JOB_DEFINITION` in its environment, and a season with
 no ten-minute-version kit in the bucket is left as it was.
 
