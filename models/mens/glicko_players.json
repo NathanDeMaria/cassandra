@@ -35,7 +35,7 @@
             60
         ],
         "season_rd_increase": [
-            100,
+            40,
             600
         ],
         "season_regression": [
@@ -69,6 +69,14 @@
         "roster_change_shift": [
             0,
             60
+        ],
+        "turnover_rating_shift": [
+            0,
+            400
+        ],
+        "turnover_rd_scale": [
+            0,
+            4
         ]
     },
     "fixed": {
@@ -95,7 +103,9 @@
             "coach_change_regression": 0.0,
             "coach_change_rating_rd": 0.0,
             "home_advantage": 99.21892424203115,
-            "roster_change_shift": 0.0
+            "roster_change_shift": 0.0,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
         },
         {
             "glicko_share": 1.44,
@@ -113,7 +123,9 @@
             "coach_change_regression": 0.0,
             "coach_change_rating_rd": 0.0,
             "home_advantage": 99.21892424203115,
-            "roster_change_shift": 0.0
+            "roster_change_shift": 0.0,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
         },
         {
             "glicko_share": 1.44,
@@ -131,7 +143,9 @@
             "coach_change_regression": 0.3,
             "coach_change_rating_rd": 300.0,
             "home_advantage": 99.21892424203115,
-            "roster_change_shift": 0.0
+            "roster_change_shift": 0.0,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
         },
         {
             "glicko_share": 1.44,
@@ -149,7 +163,9 @@
             "coach_change_regression": 0.3,
             "coach_change_rating_rd": 300.0,
             "home_advantage": 99.21892424203115,
-            "roster_change_shift": 0.0
+            "roster_change_shift": 0.0,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
         },
         {
             "glicko_share": 1.4255,
@@ -167,7 +183,9 @@
             "coach_change_regression": 0.14,
             "coach_change_rating_rd": 300.0,
             "home_advantage": 99.21892424203115,
-            "roster_change_shift": 0.0
+            "roster_change_shift": 0.0,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
         },
         {
             "glicko_share": 1.4255,
@@ -185,7 +203,9 @@
             "coach_change_regression": 0.14,
             "coach_change_rating_rd": 300.0,
             "home_advantage": 87.0,
-            "roster_change_shift": 0.0
+            "roster_change_shift": 0.0,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
         },
         {
             "glicko_share": 1.4255,
@@ -203,7 +223,49 @@
             "coach_change_regression": 0.14,
             "coach_change_rating_rd": 300.0,
             "home_advantage": 87.0,
-            "roster_change_shift": 20.0
+            "roster_change_shift": 20.0,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
+        },
+        {
+            "glicko_share": 1.406263,
+            "player_rating_weight": 16.385202,
+            "absence_weight": 18.058996,
+            "luck_share": 0.384023,
+            "player_variance_scale": 0.179415,
+            "player_floor": 10.705308,
+            "weekly_rd_increase": 36.766221,
+            "season_rd_increase": 136.66201,
+            "season_regression": 0.249859,
+            "initial_rd": 270.850254,
+            "home_advantage_slope": 30.341746,
+            "coach_left_rating_shift": -91.572447,
+            "coach_change_regression": 0.209393,
+            "coach_change_rating_rd": 291.631754,
+            "home_advantage": 87.054402,
+            "roster_change_shift": 19.278045,
+            "turnover_rating_shift": 0.0,
+            "turnover_rd_scale": 0.0
+        },
+        {
+            "glicko_share": 1.406263,
+            "player_rating_weight": 16.385202,
+            "absence_weight": 18.058996,
+            "luck_share": 0.384023,
+            "player_variance_scale": 0.179415,
+            "player_floor": 10.705308,
+            "weekly_rd_increase": 36.766221,
+            "season_rd_increase": 88.8,
+            "season_regression": 0.249859,
+            "initial_rd": 270.850254,
+            "home_advantage_slope": 30.341746,
+            "coach_left_rating_shift": -91.572447,
+            "coach_change_regression": 0.209393,
+            "coach_change_rating_rd": 291.631754,
+            "home_advantage": 87.054402,
+            "roster_change_shift": 19.278045,
+            "turnover_rating_shift": 150.0,
+            "turnover_rd_scale": 1.0
         }
     ]
 }

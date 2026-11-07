@@ -3,7 +3,8 @@ reads them: ten-minute-version's `{league}_players_{season}.csv`.
 
 For reading, not predicting: no model loads this, so the files sit under
 their own prefix rather than `predictor/data/`, which every optimize child
-pulls. A morning rewrites the current season (`cassandra.player_ratings_build`);
+pulls; what a model does want of them is `cassandra.turnover_build`'s to derive.
+A morning rewrites the current season (`cassandra.player_ratings_build`);
 finished seasons are a one-off upload. `publish` turns each into
 `models/{league}/players_{season}.json.gz`.
 """

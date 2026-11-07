@@ -221,6 +221,20 @@ class GlickoPredictor(Predictor):
         # rating is that fade for free -- the season's results wash the
         # shift out as they wash out any preseason error. 0 is off.
         roster_change_shift: float = 0.0,
+        # Rating points off each team at the rollover per 1.0 of
+        # `TurnoverIndex.above_average`, its share of last season's minutes
+        # lost beyond the season's average. The player model's preseason
+        # number doesn't take the whole loss in: a team with all its minutes
+        # gone against one with all of them back lost 4-5 points more than
+        # predicted over its first five games, and about 1 by its twentieth,
+        # in every season of both leagues. 0 is off.
+        turnover_rating_shift: float = 0.0,
+        # How much `season_rd_increase` scales with the same share: a team at
+        # 0.3 above average with a scale of 1 widens by 1.3 times the league's
+        # increase, one 0.3 below average by 0.7. New players are less known
+        # than returning ones, so the first games should move the team more.
+        # 0 is every team alike.
+        turnover_rd_scale: float = 0.0,
         # How many times each week's games are rated. 1 is Glicko as a
         # filter: a result is priced once, against what the opponent's
         # rating was that day, and never revisited. Above 1 the season so
@@ -267,6 +281,8 @@ class GlickoPredictor(Predictor):
         self._coach_left_rating_shift = coach_left_rating_shift
         self._coach_facts = offseason
         self._roster_change_shift = roster_change_shift
+        self._turnover_rating_shift = turnover_rating_shift
+        self._turnover_rd_scale = turnover_rd_scale
         self._home_advantage = home_advantage
         self._home_advantage_slope = home_advantage_slope
         self._k = k
@@ -723,13 +739,16 @@ class GlickoPredictor(Predictor):
                 self.regress(team, rating.rating),
                 min(
                     self._initial_rd,
-                    math.sqrt(rating.rating_deviation**2 + self._season_rd_increase**2),
+                    math.sqrt(
+                        rating.rating_deviation**2 + self._offseason_rd(team) ** 2
+                    ),
                 ),
             )
             for team, rating in self._ratings.items()
         }
         self._adjust_for_coaches()
         self._shift_for_rosters()
+        self._shift_for_turnover()
         # The season the smoother replays from starts here: after the
         # regression and the offseason widening, with no games yet.
         self._preseason = dict(self._ratings)
@@ -760,6 +779,35 @@ class GlickoPredictor(Predictor):
                 continue
             self._ratings[team] = _Rating(
                 current.rating + self._roster_change_shift * change,
+                current.rating_deviation,
+            )
+
+    def _offseason_rd(self, team: str) -> float:
+        """How much an offseason widens this team, by how much of it came back.
+
+        Never below 0: a team can't be better known for its offseason. A team
+        the turnover file doesn't have widens like the league.
+        """
+        if not self._turnover_rd_scale or self._season is None:
+            return self._season_rd_increase
+        lost = self._adjustments.sources.turnover.above_average(team, self._season)
+        if lost is None:
+            return self._season_rd_increase
+        return self._season_rd_increase * max(0.0, 1 + self._turnover_rd_scale * lost)
+
+    def _shift_for_turnover(self) -> None:
+        """Move each team down by how much more of last season it lost than its
+        peers, up by how much less. Before the smoother's preseason is taken,
+        like the other offseason moves."""
+        if not self._turnover_rating_shift or self._season is None:
+            return
+        index = self._adjustments.sources.turnover
+        for team, current in list(self._ratings.items()):
+            lost = index.above_average(team, self._season)
+            if lost is None:
+                continue
+            self._ratings[team] = _Rating(
+                current.rating - self._turnover_rating_shift * lost,
                 current.rating_deviation,
             )
 
@@ -864,6 +912,16 @@ class GlickoPredictor(Predictor):
             **(
                 {"roster_change_shift": self._roster_change_shift}
                 if self._roster_change_shift
+                else {}
+            ),
+            **(
+                {"turnover_rating_shift": self._turnover_rating_shift}
+                if self._turnover_rating_shift
+                else {}
+            ),
+            **(
+                {"turnover_rd_scale": self._turnover_rd_scale}
+                if self._turnover_rd_scale
                 else {}
             ),
         }

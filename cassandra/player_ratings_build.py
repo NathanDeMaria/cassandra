@@ -26,7 +26,9 @@ rosters a few minutes until every team has played.
 
 A morning also rewrites the season's players' table (`cassandra.players`),
 for reading only. It and each team's last roster, which `morning` keeps for
-players who haven't played yet, live under their own prefix.
+players who haven't played yet, live under their own prefix. The returning
+minutes a model does read come from those tables (`cassandra.turnover_build`),
+last, so a failure there has already kept the morning's ratings.
 
 A season with no kit -- the summer, before one is built for the next -- is
 skipped, not failed: the file keeps what it has, and the model blends
@@ -50,6 +52,7 @@ from cassandra.predictor.player_ratings import (
     player_ratings_path,
     season_for,
 )
+from cassandra.turnover_build import rebuild as rebuild_turnover
 
 logger = logging.getLogger(__name__)
 
@@ -148,4 +151,5 @@ async def refresh(bucket: str, league: str, today: date | None = None) -> bool:
     logger.info("%s: wrote %s", league, keys)
     if reading:
         logger.info("%s: wrote %s", league, await artifacts.upload(bucket, reading))
+    await rebuild_turnover(bucket, league)
     return True

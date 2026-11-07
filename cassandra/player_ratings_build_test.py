@@ -30,6 +30,7 @@ class _Bucket:
         self.kit = kit
         self.uploaded: list[Path] = []
         self.mornings: list[dict] = []
+        self.turnover_rebuilt: list[str] = []
 
     async def copy_down(self, bucket: str, prefix: str, dest: Path) -> int:
         if prefix.endswith(".pkl") and self.kit:
@@ -44,6 +45,10 @@ class _Bucket:
     async def upload(self, bucket: str, paths) -> list[str]:
         self.uploaded += list(paths)
         return [str(p) for p in paths]
+
+    async def rebuild_turnover(self, bucket: str, league: str) -> list[str]:
+        self.turnover_rebuilt.append(league)
+        return []
 
     def morning(self, league, season, today, **paths) -> None:
         self.mornings.append(
@@ -75,6 +80,9 @@ def _patch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bucket: _Bucket) -> 
         / "players"
         / f"{league}_{season}_roster.parquet",
     )
+    monkeypatch.setattr(
+        player_ratings_build, "rebuild_turnover", bucket.rebuild_turnover
+    )
     monkeypatch.setattr("ten_minute_version.build.morning", bucket.morning)
 
 
@@ -85,6 +93,7 @@ def test_a_season_without_a_kit_is_left_alone(
     _patch(monkeypatch, tmp_path, bucket)
     assert not asyncio.run(refresh("b", "mens", date(2027, 6, 1)))
     assert bucket.mornings == [] and bucket.uploaded == []
+    assert bucket.turnover_rebuilt == []
 
 
 def test_a_morning_runs_on_the_copies_and_uploads_the_file(
@@ -101,6 +110,7 @@ def test_a_morning_runs_on_the_copies_and_uploads_the_file(
     )
     assert run["kit"].endswith("/live") and run["out"] == str(tmp_path)
     assert bucket.uploaded == [tmp_path / "womens_player_ratings.csv"]
+    assert bucket.turnover_rebuilt == ["womens"]
 
 
 def test_a_morning_keeps_its_table_and_roster_for_the_next_one(

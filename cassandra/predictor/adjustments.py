@@ -77,6 +77,7 @@ from .rest import (
     RestSource,
     validated_rest_advantage,
 )
+from .turnover import TurnoverIndex
 from .types import Matchup
 
 #: Rating points per 1,000 km the away side travelled. 0 is off.
@@ -130,6 +131,8 @@ class MatchupSources(NamedTuple):
     player_ratings: PlayerRatingIndex = PlayerRatingIndex()
     # Read by the update alone, to discount a result: see `luck`.
     luck: LuckIndex = LuckIndex()
+    # Read at the rollover alone: see `turnover`.
+    turnover: TurnoverIndex = TurnoverIndex()
 
     @classmethod
     def for_league(cls, league: str) -> Self:
@@ -144,6 +147,7 @@ class MatchupSources(NamedTuple):
             rest=RestLedger(),
             player_ratings=PlayerRatingIndex.for_league(league),
             luck=LuckIndex.for_league(league),
+            turnover=TurnoverIndex.for_league(league),
         )
 
     @classmethod

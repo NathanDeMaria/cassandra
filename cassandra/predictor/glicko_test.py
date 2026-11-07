@@ -158,6 +158,71 @@ def test_the_roster_knob_survives_a_save(tmp_path) -> None:
     assert GlickoPredictor.load_state(path).state_dict()["roster_change_shift"] == 15
 
 
+def _turnover_rolled(**knobs: float) -> GlickoPredictor:
+    """2021: Gutted lost 0.3 more of its minutes than average, Kept 0.3 less,
+    and New isn't on the file."""
+    from .adjustments import MatchupSources
+    from .turnover import TurnoverIndex
+
+    teams = ("Gutted", "Kept", "New")
+    predictor = GlickoPredictor(
+        "test_league",
+        season_regression=0.5,
+        season_rd_increase=100,
+        initial_rd=1000,
+        anchors={team: 1500 for team in teams},
+        ratings={team: _Rating(1700, 100) for team in teams},
+        sources=MatchupSources.for_league("test_league")._replace(
+            turnover=TurnoverIndex({2021: {"Gutted": 0.8, "Kept": 0.2}})
+        ),
+        **knobs,
+    )
+    predictor.pass_season(2021)
+    return predictor
+
+
+def test_turnover_moves_the_rolled_over_rating_against_the_seasons_average() -> None:
+    predictor = _turnover_rolled(turnover_rating_shift=100)
+    # The league's regression takes 1700 to 1600 first.
+    assert predictor.get_rating("Gutted").rating == pytest.approx(1570)
+    assert predictor.get_rating("Kept").rating == pytest.approx(1630)
+    assert predictor.get_rating("New").rating == pytest.approx(1600)
+    assert predictor.get_rating("Gutted").rating_deviation == pytest.approx(
+        predictor.get_rating("New").rating_deviation
+    )
+
+
+def test_turnover_widens_a_team_by_how_much_it_lost() -> None:
+    predictor = _turnover_rolled(turnover_rd_scale=2)
+    rd = {
+        t: predictor.get_rating(t).rating_deviation for t in ("Gutted", "Kept", "New")
+    }
+    # 100 of ending deviation, and 100 of offseason scaled by 1 + 2 * 0.3 or - 0.3
+    assert rd["Gutted"] == pytest.approx(math.hypot(100, 160))
+    assert rd["Kept"] == pytest.approx(math.hypot(100, 40))
+    assert rd["New"] == pytest.approx(math.hypot(100, 100))
+    assert predictor.get_rating("Gutted").rating == pytest.approx(1600)
+
+
+def test_a_big_scale_never_narrows_a_team_over_an_offseason() -> None:
+    predictor = _turnover_rolled(turnover_rd_scale=10)
+    assert predictor.get_rating("Kept").rating_deviation == pytest.approx(100)
+
+
+def test_turnover_is_off_by_default() -> None:
+    predictor = _turnover_rolled()
+    assert predictor.get_rating("Gutted") == predictor.get_rating("New")
+    state = predictor.state_dict()
+    assert "turnover_rating_shift" not in state and "turnover_rd_scale" not in state
+
+
+def test_the_turnover_knobs_survive_a_save(tmp_path) -> None:
+    path = tmp_path / "glicko.json"
+    _turnover_rolled(turnover_rating_shift=150, turnover_rd_scale=1.5).save_state(path)
+    state = GlickoPredictor.load_state(path).state_dict()
+    assert (state["turnover_rating_shift"], state["turnover_rd_scale"]) == (150, 1.5)
+
+
 def test_an_anchored_team_is_no_better_measured_than_any_other(
     game: GameFactory,
 ) -> None:
