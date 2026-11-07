@@ -296,3 +296,7 @@ strict = true
 [tool.ty.src]
 # scratch analysis, not worth keeping type-clean
 exclude = ["reasoning"]
+
+[tool.ruff.lint.per-file-ignores]
+# these re-export names for the public API
+"__init__.py" = ["F401"]
