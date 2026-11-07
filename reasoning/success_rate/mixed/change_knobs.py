@@ -51,23 +51,42 @@ from cassandra.predictor.unit_glicko import (  # noqa: E402
 )
 
 OUT = Path.home() / ".cassandra/success_rate/mixed/out"
-PUBLISHED = json.loads((replay.OUT / "batch_nc_success_cap_p.json").read_text())["knobs"]
-KNOBS = ("new_qb_offense_sd", "new_qb_rd", "new_qb_offense_regression",
-         "coach_change_offense_regression", "coach_change_defense_regression",
-         "coach_change_rating_regression",
-         # The production model's own widenings for a coach change, which the
-         # ncaafb success model leaves at 0.
-         "coach_change_rd", "coach_change_offense_sd", "coach_change_defense_sd")
+PUBLISHED = json.loads((replay.OUT / "batch_nc_success_cap_p.json").read_text())[
+    "knobs"
+]
+KNOBS = (
+    "new_qb_offense_sd",
+    "new_qb_rd",
+    "new_qb_offense_regression",
+    "coach_change_offense_regression",
+    "coach_change_defense_regression",
+    "coach_change_rating_regression",
+    # The production model's own widenings for a coach change, which the
+    # ncaafb success model leaves at 0.
+    "coach_change_rd",
+    "coach_change_offense_sd",
+    "coach_change_defense_sd",
+)
 
 
 class ChangeKnobs(UnitMarginGlickoPredictor):
-    def __init__(self, *args, new_qb_offense_sd: float = 0.0, new_qb_rd: float = 0.0,
-                 new_qb_offense_regression: float = 0.0, coach_change_offense_regression: float = 0.0,
-                 coach_change_defense_regression: float = 0.0, coach_change_rating_regression: float = 0.0,
-                 **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        new_qb_offense_sd: float = 0.0,
+        new_qb_rd: float = 0.0,
+        new_qb_offense_regression: float = 0.0,
+        coach_change_offense_regression: float = 0.0,
+        coach_change_defense_regression: float = 0.0,
+        coach_change_rating_regression: float = 0.0,
+        **kwargs,
+    ) -> None:
         self._new_qb = (new_qb_offense_sd, new_qb_rd, new_qb_offense_regression)
-        self._coach_regression = (coach_change_offense_regression, coach_change_defense_regression,
-                                  coach_change_rating_regression)
+        self._coach_regression = (
+            coach_change_offense_regression,
+            coach_change_defense_regression,
+            coach_change_rating_regression,
+        )
         super().__init__(*args, **kwargs)
 
     def _roll_over(self) -> None:
@@ -85,8 +104,12 @@ class ChangeKnobs(UnitMarginGlickoPredictor):
                 if team in sides:
                     pair = sides[team]
                     sides[team] = _Sides(
-                        pair.offense._replace(rating=(1 - offense) * pair.offense.rating),
-                        pair.defense._replace(rating=(1 - defense) * pair.defense.rating),
+                        pair.offense._replace(
+                            rating=(1 - offense) * pair.offense.rating
+                        ),
+                        pair.defense._replace(
+                            rating=(1 - defense) * pair.defense.rating
+                        ),
                     )
             if record and team in self._ratings:
                 anchor = self.anchor(team)
@@ -94,7 +117,8 @@ class ChangeKnobs(UnitMarginGlickoPredictor):
                     if team in ratings:
                         current = ratings[team]
                         ratings[team] = current._replace(
-                            rating=anchor + (1 - record) * (current.rating - anchor))
+                            rating=anchor + (1 - record) * (current.rating - anchor)
+                        )
 
     def _update_game(self, game: Game) -> Prediction:
         known = []
@@ -115,41 +139,72 @@ class ChangeKnobs(UnitMarginGlickoPredictor):
                 continue
             offense = sides[team].offense
             if regression and carried is not None:
-                offense = offense._replace(rating=offense.rating - regression * carried.offense.rating)
+                offense = offense._replace(
+                    rating=offense.rating - regression * carried.offense.rating
+                )
             if sd:
-                offense = offense._replace(rating_deviation=math.hypot(offense.rating_deviation, sd))
+                offense = offense._replace(
+                    rating_deviation=math.hypot(offense.rating_deviation, sd)
+                )
             sides[team] = sides[team]._replace(offense=offense)
         if rd:
             for ratings in (self._ratings, self._preseason):
                 if team in ratings:
                     current = ratings[team]
                     ratings[team] = current._replace(
-                        rating_deviation=min(self._initial_rd, math.hypot(current.rating_deviation, rd)))
+                        rating_deviation=min(
+                            self._initial_rd, math.hypot(current.rating_deviation, rd)
+                        )
+                    )
 
 
 def run(knobs: dict) -> pd.DataFrame:
     named, _, index = replay._inputs()
     warm, early = replay._warm()
-    predictor = ChangeKnobs.from_state_dict({
-        **warm.state_dict(), **PUBLISHED, **knobs,
-        "opponent_prior_manager": OpponentPriorManager("ncaafb", path=replay.PRIORS),
-        "game_epa": index,
-    })
+    predictor = ChangeKnobs.from_state_dict(
+        {
+            **warm.state_dict(),
+            **PUBLISHED,
+            **knobs,
+            "opponent_prior_manager": OpponentPriorManager(
+                "ncaafb", path=replay.PRIORS
+            ),
+            "game_epa": index,
+        }
+    )
     predictor._season = warm._season
     predictor._qb_pending = set(warm._qb_pending)
     # 2014's rollover ran in the warm-up, on the published knobs.
     predictor.regress_coach_changes()
-    late = replay._replay(predictor, [s for s in named if s.year >= replay.FIRST_READING])
+    late = replay._replay(
+        predictor, [s for s in named if s.year >= replay.FIRST_READING]
+    )
     return pd.concat([early, late], ignore_index=True)
 
 
 def tagged(df: pd.DataFrame) -> pd.DataFrame:
     """FBS v FBS from 2014, with each game's slices."""
     df = df.reset_index(drop=True)
-    sides = pd.concat([
-        pd.DataFrame({"row": df.index, "year": df.year, "team": df.home_team, "date": df.date}),
-        pd.DataFrame({"row": df.index, "year": df.year, "team": df.away_team, "date": df.date}),
-    ]).sort_values(["date", "row"], kind="stable")
+    sides = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "row": df.index,
+                    "year": df.year,
+                    "team": df.home_team,
+                    "date": df.date,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "row": df.index,
+                    "year": df.year,
+                    "team": df.away_team,
+                    "date": df.date,
+                }
+            ),
+        ]
+    ).sort_values(["date", "row"], kind="stable")
     sides["n"] = sides.groupby(["year", "team"]).cumcount() + 1
     df["game_no"] = sides.groupby("row").n.min()
     facts = OffseasonFacts.for_league("ncaafb")
@@ -158,11 +213,15 @@ def tagged(df: pd.DataFrame) -> pd.DataFrame:
         fact = facts.get(team, int(year))
         return fact is not None and test(fact)
 
-    df["new_qb"] = [has(h, y, lambda f: f.new_quarterback) or has(a, y, lambda f: f.new_quarterback)
-                    for h, a, y in zip(df.home_team, df.away_team, df.year)]
-    df["coach"] = [has(h, y, lambda f: f.coach_departure is not None)
-                   or has(a, y, lambda f: f.coach_departure is not None)
-                   for h, a, y in zip(df.home_team, df.away_team, df.year)]
+    df["new_qb"] = [
+        has(h, y, lambda f: f.new_quarterback) or has(a, y, lambda f: f.new_quarterback)
+        for h, a, y in zip(df.home_team, df.away_team, df.year)
+    ]
+    df["coach"] = [
+        has(h, y, lambda f: f.coach_departure is not None)
+        or has(a, y, lambda f: f.coach_departure is not None)
+        for h, a, y in zip(df.home_team, df.away_team, df.year)
+    ]
     df = df[df.fbs & (df.year >= 2014)].copy()
     df["loss"] = (df.team1_win_prob - df.team1_win) ** 2
     return df
@@ -171,9 +230,17 @@ def tagged(df: pd.DataFrame) -> pd.DataFrame:
 def scores(df: pd.DataFrame) -> dict[str, float]:
     t = tagged(df)
     even = t.year % 2 == 0
-    out = {"even": t.loss[even].mean(), "odd": t.loss[~even].mean(), "all": t.loss.mean()}
-    for label, mask in (("games 1-4", t.game_no <= 4), ("games 5+", t.game_no > 4),
-                        ("new QB", t.new_qb), ("coach left", t.coach)):
+    out = {
+        "even": t.loss[even].mean(),
+        "odd": t.loss[~even].mean(),
+        "all": t.loss.mean(),
+    }
+    for label, mask in (
+        ("games 1-4", t.game_no <= 4),
+        ("games 5+", t.game_no > 4),
+        ("new QB", t.new_qb),
+        ("coach left", t.coach),
+    ):
         out[f"{label} even"] = t.loss[mask & even].mean()
         out[f"{label} odd"] = t.loss[mask & ~even].mean()
     return {k: float(v) for k, v in out.items()}
@@ -189,4 +256,9 @@ if __name__ == "__main__":
     df.to_parquet(OUT / f"change_{name}.parquet")
     result = {"knobs": knobs, **scores(df)}
     (OUT / f"change_{name}.json").write_text(json.dumps(result, indent=2))
-    print(name, knobs, f"even {result['even']:.6f} odd {result['odd']:.6f} ({time.time() - began:.0f}s)", flush=True)
+    print(
+        name,
+        knobs,
+        f"even {result['even']:.6f} odd {result['odd']:.6f} ({time.time() - began:.0f}s)",
+        flush=True,
+    )

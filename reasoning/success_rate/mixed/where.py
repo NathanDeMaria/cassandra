@@ -22,18 +22,41 @@ def tagged(name: str) -> pd.DataFrame:
     df = pd.read_parquet(DIR / f"{name}.parquet").reset_index(drop=True)
     df["home_fbs"] = [_in_fbs(t, int(y)) for t, y in zip(df.home_team, df.year)]
     df["away_fbs"] = [_in_fbs(t, int(y)) for t, y in zip(df.away_team, df.year)]
-    sides = pd.concat([
-        pd.DataFrame({"row": df.index, "year": df.year, "team": df.home_team, "date": df.date,
-                      "margin": df.home_score - df.away_score, "opp_lower": df.home_fbs & ~df.away_fbs}),
-        pd.DataFrame({"row": df.index, "year": df.year, "team": df.away_team, "date": df.date,
-                      "margin": df.away_score - df.home_score, "opp_lower": df.away_fbs & ~df.home_fbs}),
-    ]).sort_values(["date", "row"], kind="stable")
+    sides = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "row": df.index,
+                    "year": df.year,
+                    "team": df.home_team,
+                    "date": df.date,
+                    "margin": df.home_score - df.away_score,
+                    "opp_lower": df.home_fbs & ~df.away_fbs,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "row": df.index,
+                    "year": df.year,
+                    "team": df.away_team,
+                    "date": df.date,
+                    "margin": df.away_score - df.home_score,
+                    "opp_lower": df.away_fbs & ~df.home_fbs,
+                }
+            ),
+        ]
+    ).sort_values(["date", "row"], kind="stable")
     by = sides.groupby(["year", "team"])
     sides["n"] = by.cumcount() + 1
     sides["prev_blowout"] = by.margin.shift(1).abs() >= 28
-    sides["prev_lower"] = by.opp_lower.shift(1).astype("boolean").fillna(False).astype(bool)
-    agg = sides.groupby("row").agg(n=("n", "min"), prev_blowout=("prev_blowout", "any"),
-                                   prev_lower=("prev_lower", "any"))
+    sides["prev_lower"] = (
+        by.opp_lower.shift(1).astype("boolean").fillna(False).astype(bool)
+    )
+    agg = sides.groupby("row").agg(
+        n=("n", "min"),
+        prev_blowout=("prev_blowout", "any"),
+        prev_lower=("prev_lower", "any"),
+    )
     df = df.join(agg)
     df = df[df.fbs & (df.year >= 2014)].copy()
     df["loss"] = (df.team1_win_prob - df.team1_win) ** 2

@@ -59,9 +59,9 @@ def test_control_at_temperature_one_is_untouched(game: GameFactory) -> None:
         {"g1": GameControl(home=0.8, seconds=3600)}, play_weight=1.0, epa_share=0.0
     )
 
-    assert predictor._actual(game("Home", "Away", 21, 17, game_id="g1")) == pytest.approx(
-        0.8
-    )
+    assert predictor._actual(
+        game("Home", "Away", 21, 17, game_id="g1")
+    ) == pytest.approx(0.8)
 
 
 def test_epa_goes_through_the_scoring_functions_own_logistic(
@@ -248,12 +248,12 @@ def test_a_small_mov_scale_approaches_binary_scoring(game: GameFactory) -> None:
     loses nothing: a categorical became an end of a continuum."""
     predictor = _predictor(play_weight=0.0, mov_scale=0.01)
 
-    assert predictor._actual(game("Home", "Away", 20, 17, game_id="g1")) == pytest.approx(
-        1.0
-    )
-    assert predictor._actual(game("Home", "Away", 17, 20, game_id="g2")) == pytest.approx(
-        0.0
-    )
+    assert predictor._actual(
+        game("Home", "Away", 20, 17, game_id="g1")
+    ) == pytest.approx(1.0)
+    assert predictor._actual(
+        game("Home", "Away", 17, 20, game_id="g2")
+    ) == pytest.approx(0.0)
 
 
 def test_the_control_temperature_sharpens_and_flattens_around_a_half() -> None:

@@ -75,15 +75,21 @@ def main() -> None:
         start.setdefault(key, 1.0 if key == "anchor_epa_scale" else 0.0)
 
     def encode(knobs: dict) -> np.ndarray:
-        return np.array([
-            np.log(knobs[k] + POSITIVE[k][0]) if k in POSITIVE else knobs[k] for k in names
-        ])
+        return np.array(
+            [
+                np.log(knobs[k] + POSITIVE[k][0]) if k in POSITIVE else knobs[k]
+                for k in names
+            ]
+        )
 
     def decode(z: np.ndarray) -> dict:
         out = dict(start)
         for k, v in zip(names, z):
-            out[k] = (max(0.0, float(np.exp(v) - POSITIVE[k][0])) if k in POSITIVE
-                      else float(np.clip(v, 0.0, 1.0)))
+            out[k] = (
+                max(0.0, float(np.exp(v) - POSITIVE[k][0]))
+                if k in POSITIVE
+                else float(np.clip(v, 0.0, 1.0))
+            )
         return out
 
     x0 = {k: start[k] for k in names}
@@ -103,21 +109,37 @@ def main() -> None:
         loss = scores(run_from_2014(decode(z), through=TRAIN_THROUGH))["train"]
         seen.append(loss)
         if len(seen) % 20 == 0:
-            print(f"{args.name} {len(seen)} {loss:.6f} best {min(seen):.6f} "
-                  f"({(time.time() - began) / len(seen):.0f}s/probe)", flush=True)
+            print(
+                f"{args.name} {len(seen)} {loss:.6f} best {min(seen):.6f} "
+                f"({(time.time() - began) / len(seen):.0f}s/probe)",
+                flush=True,
+            )
         return loss
 
     fit = optimize.minimize(
-        objective, vertices[0], method="Nelder-Mead",
-        options={"maxfev": 50 * len(names), "initial_simplex": np.array(vertices),
-                 "fatol": 2e-7, "xatol": 1e-3},
+        objective,
+        vertices[0],
+        method="Nelder-Mead",
+        options={
+            "maxfev": 50 * len(names),
+            "initial_simplex": np.array(vertices),
+            "fatol": 2e-7,
+            "xatol": 1e-3,
+        },
     )
     knobs = decode(fit.x)
     df = run_from_2014(knobs)
     save(args.name, df, knobs, evals=len(seen), searched=names)
-    print(args.name, "done", {k: round(v, 6) for k, v in scores(df).items()},
-          {k: (round(knobs[k], 4) if isinstance(knobs[k], float) else knobs[k]) for k in names},
-          flush=True)
+    print(
+        args.name,
+        "done",
+        {k: round(v, 6) for k, v in scores(df).items()},
+        {
+            k: (round(knobs[k], 4) if isinstance(knobs[k], float) else knobs[k])
+            for k in names
+        },
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

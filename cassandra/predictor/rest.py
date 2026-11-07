@@ -296,6 +296,7 @@ class RestLedger:
             return -1.0
         return 0.0
 
+
 class StatedRest:
     """Who came off the longer break, by game, because somebody said so.
 

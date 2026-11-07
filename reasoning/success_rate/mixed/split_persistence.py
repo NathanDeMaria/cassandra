@@ -54,9 +54,22 @@ def _per_side(plays: pd.DataFrame) -> pd.DataFrame:
     """Per game and offense: downs, successes and clipped EPA, by kind."""
     plays = plays.assign(epa=plays.epa.clip(-CLIP, CLIP), win=plays.win.astype(float))
     out = []
-    for kind, mask in (("all", slice(None)), ("dropback", plays.dropback), ("run", ~plays.dropback)):
-        g = plays[mask].groupby(["game_id", "offense_is_home"]).agg(
-            **{f"n_{kind}": ("win", "size"), f"w_{kind}": ("win", "sum"), f"e_{kind}": ("epa", "sum")})
+    for kind, mask in (
+        ("all", slice(None)),
+        ("dropback", plays.dropback),
+        ("run", ~plays.dropback),
+    ):
+        g = (
+            plays[mask]
+            .groupby(["game_id", "offense_is_home"])
+            .agg(
+                **{
+                    f"n_{kind}": ("win", "size"),
+                    f"w_{kind}": ("win", "sum"),
+                    f"e_{kind}": ("epa", "sum"),
+                }
+            )
+        )
         out.append(g)
     sides = pd.concat(out, axis=1).fillna(0.0).reset_index()
     for kind in KINDS:
@@ -70,42 +83,69 @@ def _with_games(sides: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     sides = sides.merge(games, left_on="game_id", right_index=True)
     sides["offense"] = np.where(sides.offense_is_home, sides.home_team, sides.away_team)
     sides["defense"] = np.where(sides.offense_is_home, sides.away_team, sides.home_team)
-    sides["home"] = np.where(sides.neutral, 0.0, np.where(sides.offense_is_home, 1.0, -1.0))
+    sides["home"] = np.where(
+        sides.neutral, 0.0, np.where(sides.offense_is_home, 1.0, -1.0)
+    )
     start = sides.groupby("year").date.transform("min")
     sides["week"] = (sides.date - start).dt.days // 7
     return sides
 
 
 def load_nfl() -> pd.DataFrame:
-    plays = pd.read_parquet(HOME / "nfl_plays.parquet", columns=[
-        "game_id", "season", "date", "offense", "defense", "offense_is_home", "neutral_site",
-        "play_type", "text", "epa"])
+    plays = pd.read_parquet(
+        HOME / "nfl_plays.parquet",
+        columns=[
+            "game_id",
+            "season",
+            "date",
+            "offense",
+            "defense",
+            "offense_is_home",
+            "neutral_site",
+            "play_type",
+            "text",
+            "epa",
+        ],
+    )
     plays = plays[(plays.season <= LAST)]
     plays = plays[[is_down(t, x) for t, x in zip(plays.play_type, plays.text)]].copy()
     plays["dropback"] = [is_pass(t, x) for t, x in zip(plays.play_type, plays.text)]
     plays["win"] = plays.epa > 0
     first = plays.drop_duplicates("game_id").set_index("game_id")
-    games = pd.DataFrame({
-        "year": first.season, "date": first.date, "neutral": first.neutral_site,
-        "home_team": np.where(first.offense_is_home, first.offense, first.defense),
-        "away_team": np.where(first.offense_is_home, first.defense, first.offense),
-    })
+    games = pd.DataFrame(
+        {
+            "year": first.season,
+            "date": first.date,
+            "neutral": first.neutral_site,
+            "home_team": np.where(first.offense_is_home, first.offense, first.defense),
+            "away_team": np.where(first.offense_is_home, first.defense, first.offense),
+        }
+    )
     return _with_games(_per_side(plays), games)
 
 
 def load_ncaafb() -> pd.DataFrame:
-    plays = pd.read_parquet(HOME / "mixed/ncaafb_plays.parquet",
-                            columns=["game_id", "offense_is_home", "dropback", "win", "epa", "season"])
+    plays = pd.read_parquet(
+        HOME / "mixed/ncaafb_plays.parquet",
+        columns=["game_id", "offense_is_home", "dropback", "win", "epa", "season"],
+    )
     plays = plays[plays.season <= LAST]
     seasons = pickle.loads((HOME / "units/ncaafb_seasons.pkl").read_bytes())
-    games = pd.DataFrame([
-        (g.game_id, s.year, g.date, bool(g.neutral_site), g.home, g.away)
-        for s in seasons for w in s.weeks for g in w.games
-    ], columns=["game_id", "year", "date", "neutral", "home_team", "away_team"]).drop_duplicates("game_id")
+    games = pd.DataFrame(
+        [
+            (g.game_id, s.year, g.date, bool(g.neutral_site), g.home, g.away)
+            for s in seasons
+            for w in s.weeks
+            for g in w.games
+        ],
+        columns=["game_id", "year", "date", "neutral", "home_team", "away_team"],
+    ).drop_duplicates("game_id")
     return _with_games(_per_side(plays), games.set_index("game_id"))
 
 
-def fit(df: pd.DataFrame, value: str, weight: str, extra: tuple[str, ...] = ()) -> tuple[dict, dict, dict, np.ndarray]:
+def fit(
+    df: pd.DataFrame, value: str, weight: str, extra: tuple[str, ...] = ()
+) -> tuple[dict, dict, dict, np.ndarray]:
     """O and D per team, `IDENTIFY` downs toward 0, and the unpenalized `extra` terms."""
     df = df[df[weight] > 0]
     teams = sorted(set(df.offense) | set(df.defense))
@@ -121,15 +161,21 @@ def fit(df: pd.DataFrame, value: str, weight: str, extra: tuple[str, ...] = ()) 
     design[rows, 2 + e + k + df.defense.map(at).to_numpy()] = -1.0
     weighted = design.T * df[weight].to_numpy()
     normal = weighted @ design
-    normal[2 + e:, 2 + e:] += IDENTIFY * np.eye(2 * k)
-    normal[:2 + e, :2 + e] += 1e-9 * np.eye(2 + e)
+    normal[2 + e :, 2 + e :] += IDENTIFY * np.eye(2 * k)
+    normal[: 2 + e, : 2 + e] += 1e-9 * np.eye(2 + e)
     solved = np.linalg.solve(normal, weighted @ df[value].to_numpy())
     games = df.offense.value_counts().to_dict()
-    return (dict(zip(teams, solved[2 + e:2 + e + k])), dict(zip(teams, solved[2 + e + k:])),
-            games, solved[2:2 + e])
+    return (
+        dict(zip(teams, solved[2 + e : 2 + e + k])),
+        dict(zip(teams, solved[2 + e + k :])),
+        games,
+        solved[2 : 2 + e],
+    )
 
 
-def _split_pairs(frame: pd.DataFrame, minimum: int, rng: np.random.Generator) -> list[tuple]:
+def _split_pairs(
+    frame: pd.DataFrame, minimum: int, rng: np.random.Generator
+) -> list[tuple]:
     """(part, side, a, b) for every team seen `minimum` times in both random halves of `frame`."""
     pairs = []
     ids = frame.game_id.unique()
@@ -163,10 +209,16 @@ def main(league: str) -> None:
     sides = load_nfl() if league == "nfl" else load_ncaafb()
     facts = OffseasonFacts.for_league(league)
     out = load_qb_out(league)
-    sides["qb_out"] = [float(team in out.get(gid, ())) for gid, team in zip(sides.game_id, sides.offense)]
-    print(f"{league}: {len(sides)} offense-games {sides.year.min()}-{sides.year.max()}, "
-          f"dropbacks {sides.n_dropback.sum() / sides.n_all.sum():.3f} of downs, "
-          f"starter out in {int(sides.qb_out.sum())}", flush=True)
+    sides["qb_out"] = [
+        float(team in out.get(gid, ()))
+        for gid, team in zip(sides.game_id, sides.offense)
+    ]
+    print(
+        f"{league}: {len(sides)} offense-games {sides.year.min()}-{sides.year.max()}, "
+        f"dropbacks {sides.n_dropback.sum() / sides.n_all.sum():.3f} of downs, "
+        f"starter out in {int(sides.qb_out.sum())}",
+        flush=True,
+    )
     rng = np.random.default_rng(0)
 
     halves, within, seasons, qb_terms = [], [], {}, []
@@ -184,8 +236,12 @@ def main(league: str) -> None:
             ol, dl, nl, _ = fit(late, col, w)
             for t in oe:
                 if ne.get(t, 0) >= MIN_HALF and nl.get(t, 0) >= MIN_HALF and t in ol:
-                    within.append((year, "across", f"{value} {kind}", "offense", oe[t], ol[t]))
-                    within.append((year, "across", f"{value} {kind}", "defense", de[t], dl[t]))
+                    within.append(
+                        (year, "across", f"{value} {kind}", "offense", oe[t], ol[t])
+                    )
+                    within.append(
+                        (year, "across", f"{value} {kind}", "defense", de[t], dl[t])
+                    )
             if season.qb_out.sum() >= 5:
                 *_, coef = fit(season, col, w, extra=("qb_out",))
                 qb_terms.append((year, f"{value} {kind}", float(coef[0])))
@@ -202,14 +258,30 @@ def main(league: str) -> None:
             o0, d0, n0 = seasons[year, value, kind]
             o1, d1, n1 = seasons[nxt, value, kind]
             for t in o0:
-                if n0.get(t, 0) >= MIN_SEASON and n1.get(t, 0) >= MIN_SEASON and t in o1:
+                if (
+                    n0.get(t, 0) >= MIN_SEASON
+                    and n1.get(t, 0) >= MIN_SEASON
+                    and t in o1
+                ):
                     fact = facts.get(t, nxt)
                     new_qb = None if fact is None else fact.new_quarterback
                     coach = None if fact is None else fact.coach_departure is not None
-                    for side, a, b in (("offense", o0[t], o1[t]), ("defense", d0[t], d1[t])):
-                        pairs.append((year, f"{value} {kind}", side, a, b, new_qb, coach))
-    pairs = pd.DataFrame(pairs, columns=["year", "part", "side", "a", "b", "new_qb", "coach"])
-    for name, frame in (("halves", halves), ("within", within), ("pairs", pairs), ("qb_terms", qb_terms)):
+                    for side, a, b in (
+                        ("offense", o0[t], o1[t]),
+                        ("defense", d0[t], d1[t]),
+                    ):
+                        pairs.append(
+                            (year, f"{value} {kind}", side, a, b, new_qb, coach)
+                        )
+    pairs = pd.DataFrame(
+        pairs, columns=["year", "part", "side", "a", "b", "new_qb", "coach"]
+    )
+    for name, frame in (
+        ("halves", halves),
+        ("within", within),
+        ("pairs", pairs),
+        ("qb_terms", qb_terms),
+    ):
         frame.to_parquet(HOME / f"mixed/persistence_{league}_{name}.parquet")
 
     def rel_of(frame: pd.DataFrame) -> float:
@@ -224,15 +296,23 @@ def main(league: str) -> None:
         rel_e = rel_of(w[w.window == "early"])
         rel_l = rel_of(w[w.window == "late"])
         r_within = _centered_r(w[w.window == "across"])
-        row = {"part": part, "side": side, "season rel": rel, "true sd": np.sqrt(_true_var(h)),
-               "carry": _centered_r(s) / rel, "within": r_within / np.sqrt(rel_e * rel_l)}
+        row = {
+            "part": part,
+            "side": side,
+            "season rel": rel,
+            "true sd": np.sqrt(_true_var(h)),
+            "carry": _centered_r(s) / rel,
+            "within": r_within / np.sqrt(rel_e * rel_l),
+        }
         for flag, label in (("new_qb", "new QB"), ("coach", "new coach")):
             for value, name in ((True, label), (False, f"no {label}")):
                 g = s[s[flag] == value]
                 # Centered on the whole season's mean, as the carry is.
                 a = g.a - s.groupby("year").a.transform("mean").loc[g.index]
                 b = g.b - s.groupby("year").b.transform("mean").loc[g.index]
-                row[f"carry, {name}"] = float(np.corrcoef(a, b)[0, 1]) / rel if len(g) > 10 else np.nan
+                row[f"carry, {name}"] = (
+                    float(np.corrcoef(a, b)[0, 1]) / rel if len(g) > 10 else np.nan
+                )
                 row[f"n, {name}"] = len(g)
         if side == "offense":
             q = qb_terms[qb_terms.part == part].coef
@@ -245,11 +325,25 @@ def main(league: str) -> None:
     print("\nseason to season, and within a season (1 = stays what it was)")
     print(table[["season rel", "true sd", "carry", "within"]].round(3).to_string())
     print("\ncarry by what changed over the summer (pairs in each group)")
-    cols = ["carry, new QB", "carry, no new QB", "carry, new coach", "carry, no new coach",
-            "n, new QB", "n, no new QB", "n, new coach", "n, no new coach"]
+    cols = [
+        "carry, new QB",
+        "carry, no new QB",
+        "carry, new coach",
+        "carry, no new coach",
+        "n, new QB",
+        "n, no new QB",
+        "n, new coach",
+        "n, no new coach",
+    ]
     print(table[cols].round(3).to_string())
-    print("\noffense's reading with its starting quarterback out (per down, and in true spreads)")
-    print(table.xs("offense", level="side")[["qb out", "qb out se", "qb out / sd"]].round(4).to_string())
+    print(
+        "\noffense's reading with its starting quarterback out (per down, and in true spreads)"
+    )
+    print(
+        table.xs("offense", level="side")[["qb out", "qb out se", "qb out / sd"]]
+        .round(4)
+        .to_string()
+    )
 
 
 if __name__ == "__main__":

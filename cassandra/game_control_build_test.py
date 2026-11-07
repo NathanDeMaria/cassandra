@@ -141,9 +141,7 @@ def test_plays_for_a_game_the_schedule_lacks_are_skipped() -> None:
 
 def test_a_week_with_no_plays_is_not_an_error() -> None:
     """Most of an NCAAFB week, and every week of a season not yet played."""
-    control, stats = asyncio.run(
-        sweep(_LEAGUE, [_season(2025, "g1")], _Source({}))
-    )
+    control, stats = asyncio.run(sweep(_LEAGUE, [_season(2025, "g1")], _Source({})))
 
     assert control == {}
     assert stats.played == 1
@@ -158,9 +156,7 @@ def test_plays_that_contradict_the_stored_result_are_counted_and_dropped() -> No
     doesn't get a control number -- flipping it would be guessing.
     """
     source = _Source({(2025, 1): _plays("g1", home_leads=False)})
-    season = Season(
-        year=2025, weeks=[Week(games=[_game("g1", 28, 0)], number=1)]
-    )
+    season = Season(year=2025, weeks=[Week(games=[_game("g1", 28, 0)], number=1)])
 
     control, stats = asyncio.run(sweep(_LEAGUE, [season], source))
 

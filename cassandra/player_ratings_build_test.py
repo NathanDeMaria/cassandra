@@ -76,9 +76,9 @@ def _patch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bucket: _Bucket) -> 
     monkeypatch.setattr(
         player_ratings_build,
         "roster_path",
-        lambda league, season: tmp_path
-        / "players"
-        / f"{league}_{season}_roster.parquet",
+        lambda league, season: (
+            tmp_path / "players" / f"{league}_{season}_roster.parquet"
+        ),
     )
     monkeypatch.setattr(
         player_ratings_build, "rebuild_turnover", bucket.rebuild_turnover

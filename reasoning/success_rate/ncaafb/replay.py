@@ -43,7 +43,9 @@ pin()
 DATA = Path.home() / ".cassandra/success_rate/units"
 SEASONS = DATA / "ncaafb_seasons.pkl"
 PRIORS = DATA / "ncaafb_units_priors.json"
-CACHED_PRIORS = Path.home() / ".cassandra/replays/ncaafb/glicko_margin_units_roster.priors.json"
+CACHED_PRIORS = (
+    Path.home() / ".cassandra/replays/ncaafb/glicko_margin_units_roster.priors.json"
+)
 FITTED = Path.home() / ".cassandra/models/ncaafb/glicko_margin_units_roster_result.json"
 OUT = DATA / "ncaafb_out"
 #: Which swept index to read: `sweep_index.py`'s, or `sweep_weighted.py`'s.
@@ -82,10 +84,17 @@ def _inputs():
         flat_scale, flat_level = SUCCESS_SCALE["ncaafb"]["unweighted"]
 
         def rescaled(rate: float | None) -> float | None:
-            return None if rate is None else (scale * rate + level - flat_level) / flat_scale
+            return (
+                None
+                if rate is None
+                else (scale * rate + level - flat_level) / flat_scale
+            )
 
         games = {
-            g: e._replace(home_success=rescaled(e.home_success), away_success=rescaled(e.away_success))
+            g: e._replace(
+                home_success=rescaled(e.home_success),
+                away_success=rescaled(e.away_success),
+            )
             for g, e in games.items()
         }
     index = EpaIndex(games)
@@ -97,8 +106,14 @@ BASE = PredictorConfig.model_validate_json(FITTED.read_text()).params
 
 def _replay(predictor: UnitMarginGlickoPredictor, seasons: list) -> pd.DataFrame:
     _, namer, _ = _inputs()
-    df = pd.DataFrame([asdict(p) for p in join_with_odds(
-        predictor, seasons, OddsDatabase({}), post_callbacks=False, namer=namer)])
+    df = pd.DataFrame(
+        [
+            asdict(p)
+            for p in join_with_odds(
+                predictor, seasons, OddsDatabase({}), post_callbacks=False, namer=namer
+            )
+        ]
+    )
     df["fbs"] = [
         _in_fbs(h, int(y)) and _in_fbs(a, int(y))
         for h, a, y in zip(df.home_team, df.away_team, df.year)
@@ -152,12 +167,14 @@ def run_from_2014(
     """
     named, _, index = _inputs()
     warm, early = _warm()
-    predictor = predictor_class.from_state_dict({
-        **warm.state_dict(),
-        **knobs,
-        "opponent_prior_manager": OpponentPriorManager("ncaafb", path=PRIORS),
-        "game_epa": index,
-    })
+    predictor = predictor_class.from_state_dict(
+        {
+            **warm.state_dict(),
+            **knobs,
+            "opponent_prior_manager": OpponentPriorManager("ncaafb", path=PRIORS),
+            "game_epa": index,
+        }
+    )
     # What a rollover leaves that a state dict doesn't carry: the clock, and
     # the teams whose quarterback shift waits on their first game.
     predictor._season = warm._season
@@ -180,7 +197,9 @@ def scores(df: pd.DataFrame) -> dict[str, float]:
 def save(name: str, df: pd.DataFrame, knobs: dict, **extra) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     df.to_parquet(OUT / f"{name}.parquet")
-    (OUT / f"{name}.json").write_text(json.dumps({"knobs": knobs, **scores(df), **extra}, indent=2))
+    (OUT / f"{name}.json").write_text(
+        json.dumps({"knobs": knobs, **scores(df), **extra}, indent=2)
+    )
 
 
 if __name__ == "__main__":
@@ -192,6 +211,10 @@ if __name__ == "__main__":
         start = time.time()
         df = run(knobs)
         save(name, df, knobs)
-        print(name, knobs, {k: round(v, 6) for k, v in scores(df).items()},
-              f"({time.time() - start:.0f}s)", flush=True)
-
+        print(
+            name,
+            knobs,
+            {k: round(v, 6) for k, v in scores(df).items()},
+            f"({time.time() - start:.0f}s)",
+            flush=True,
+        )

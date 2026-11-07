@@ -56,7 +56,9 @@ _RESUMED = re.compile(
 )
 # The retry found a save it could not use -- a knob shipped between the
 # attempts -- and started the search over rather than dying on it.
-_RESTARTED = re.compile(r"^\[optimize\] the save is for a different box .*: starting over$")
+_RESTARTED = re.compile(
+    r"^\[optimize\] the save is for a different box .*: starting over$"
+)
 # A point the search was handed before its random start -- the previous fit,
 # or a seed written into the config. They are the first probes in the table,
 # so `gain` and `best@` read against them.
@@ -353,7 +355,7 @@ def _metric(value):
     """Round CSV floats for display, leaving counts and text alone."""
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return value
     return value if number.is_integer() else f"{number:.4f}"
 
@@ -361,7 +363,7 @@ def _metric(value):
 def _optional_float(row, key):
     try:
         value = float(row[key])
-    except (KeyError, TypeError, ValueError):
+    except KeyError, TypeError, ValueError:
         return None
     # A metric a league had no data for is written as nan, which formats as
     # "nan" rather than dropping out of the line.
@@ -378,7 +380,7 @@ def _accuracy_by_league(rows):
     for row in rows:
         try:
             brier = float(row["brier_score"])
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
         league = row.get("league", "?")
         if league not in leagues or brier < leagues[league][0]:
@@ -443,14 +445,18 @@ def _stage_line(stage, entry):
     counts = {}
     for child in children:
         counts[child.status] = counts.get(child.status, 0) + 1
-    breakdown = ", ".join(f"{count} {status.lower()}" for status, count in counts.items())
+    breakdown = ", ".join(
+        f"{count} {status.lower()}" for status, count in counts.items()
+    )
     started = [c.started_at for c in children if c.started_at]
     stopped = [c.stopped_at for c in children if c.stopped_at]
     span = ""
     if started and stopped and len(stopped) == len(children):
         # Wall clock for the stage, not the sum of its children: the array runs
         # in parallel, so the sum is what it would have cost sequentially.
-        span = f"  wall {_duration(timedelta(milliseconds=max(stopped) - min(started)))}"
+        span = (
+            f"  wall {_duration(timedelta(milliseconds=max(stopped) - min(started)))}"
+        )
     return f"  {stage:<9} {entry['record']['status']:<10} {breakdown}{span}"
 
 
@@ -810,7 +816,9 @@ def _report(cache_dir, payload, stages, warnings, evaluated, evaluation):
             ranked = sorted(entries, reverse=True)
             out.append(
                 f"  {league}: "
-                + ", ".join(f"{name.split('/')[-1]} {best:.6f}" for best, name in ranked)
+                + ", ".join(
+                    f"{name.split('/')[-1]} {best:.6f}" for best, name in ranked
+                )
             )
 
     tuning = [
@@ -940,7 +948,9 @@ def main(argv):
         # Delegated rather than reimplemented: the listing is `fetch_run`'s
         # view of the queue, and the only reason it's reachable from here is
         # that `make report` is the one command the skill documents.
-        fetch_run.main([argv[0], "--list"] + (["--profile", profile] if profile else []))
+        fetch_run.main(
+            [argv[0], "--list"] + (["--profile", profile] if profile else [])
+        )
         return
 
     if "--cached" in argv:
@@ -950,13 +960,13 @@ def main(argv):
         cached = sorted(p.parent for p in fetch_run.CACHE_ROOT.glob("*/run.json"))
         if not cached:
             sys.exit("Nothing cached under logs/batch -- run without --cached first.")
-        cache_dir = (
-            fetch_run.CACHE_ROOT / run_id if run_id else sorted(cached)[-1]
-        )
+        cache_dir = fetch_run.CACHE_ROOT / run_id if run_id else sorted(cached)[-1]
         payload = fetch_run.load(cache_dir.name)
         if payload is None:
-            sys.exit(f"No cached run {cache_dir.name}. Have: "
-                     + ", ".join(p.name for p in cached))
+            sys.exit(
+                f"No cached run {cache_dir.name}. Have: "
+                + ", ".join(p.name for p in cached)
+            )
     else:
         try:
             runs, launchers = fetch_run.discover(profile=profile)

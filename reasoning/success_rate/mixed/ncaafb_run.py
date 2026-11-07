@@ -21,4 +21,10 @@ knobs.update({k: float(v) for k, v in (pair.split("=") for pair in sys.argv[3:])
 began = time.time()
 df = run_from_2014(knobs)
 save(name, df, knobs, index=str(INDEX), source=start)
-print(name, INDEX.name, {k: round(v, 6) for k, v in scores(df).items()}, f"({time.time() - began:.0f}s)", flush=True)
+print(
+    name,
+    INDEX.name,
+    {k: round(v, 6) for k, v in scores(df).items()},
+    f"({time.time() - began:.0f}s)",
+    flush=True,
+)

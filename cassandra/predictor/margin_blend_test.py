@@ -217,9 +217,7 @@ def test_the_blend_is_capped_on_the_way_out(game: GameFactory) -> None:
     full play weight.
     """
     epa = {"g1": GameEpa(home=2.0, away=0.0, home_plays=70, away_plays=70)}
-    predictor = _predictor(
-        epa=epa, play_weight=1.0, epa_share=1.0, mov_cap=40.0
-    )
+    predictor = _predictor(epa=epa, play_weight=1.0, epa_share=1.0, mov_cap=40.0)
     played = game("Home", "Away", 24, 10, game_id="g1")
 
     assert predictor._actual_margin(played) == pytest.approx(40.0)
@@ -252,9 +250,7 @@ def test_a_controlled_game_rates_higher_than_a_stolen_one(
 
     assert ratings[0] > ratings[1]
 
-    plain = [
-        MarginEloPredictor("test_league") for _ in range(2)
-    ]
+    plain = [MarginEloPredictor("test_league") for _ in range(2)]
     for predictor, game_id in zip(plain, ("earned", "stolen")):
         predictor.update_game(game("Home", "Away", 17, 14, game_id=game_id))
     assert plain[0].get_rating("Home") == plain[1].get_rating("Home")

@@ -54,14 +54,18 @@ def components(games: pd.DataFrame, plays: pd.DataFrame) -> pd.DataFrame:
     eff = first.eff * first.snaps - second.eff * second.snaps
     design = np.c_[np.ones(len(df)), df.home, epa]
     _, _, k = np.linalg.lstsq(design, df.margin, rcond=None)[0]
-    out = df[["year", "week", "home_team", "away_team", "home", "fbs", "team1_win_prob"]].copy()
+    out = df[
+        ["year", "week", "home_team", "away_team", "home", "fbs", "team1_win_prob"]
+    ].copy()
     out["margin"] = df.margin
     out["eff"] = k * eff
     out["expl"] = k * (epa - eff)
     out["rest"] = df.margin - k * epa
-    print(f"points per point of EPA margin k = {k:.3f};"
-          f" game-level sd, points: margin {out.margin.std():.1f}, efficiency {out.eff.std():.1f},"
-          f" explosiveness {out.expl.std():.1f}, rest {out.rest.std():.1f}")
+    print(
+        f"points per point of EPA margin k = {k:.3f};"
+        f" game-level sd, points: margin {out.margin.std():.1f}, efficiency {out.eff.std():.1f},"
+        f" explosiveness {out.expl.std():.1f}, rest {out.rest.std():.1f}"
+    )
     return out.reset_index()
 
 
@@ -71,25 +75,39 @@ def as_margin(df: pd.DataFrame, part: str) -> pd.DataFrame:
 
 def reliability(df: pd.DataFrame, rng: np.random.Generator) -> dict:
     measured = {}
-    sides = pd.concat([df[["year", "home_team"]].set_axis(["year", "team"], axis=1),
-                       df[["year", "away_team"]].set_axis(["year", "team"], axis=1)])
+    sides = pd.concat(
+        [
+            df[["year", "home_team"]].set_axis(["year", "team"], axis=1),
+            df[["year", "away_team"]].set_axis(["year", "team"], axis=1),
+        ]
+    )
     games_per_half = sides.groupby(["year", "team"]).size().median() / 2
     full = {}
     for year, season in df.groupby("year"):
         for part in PARTS:
             full[year, part] = rate_margins(as_margin(season, part), 0.5)
-    print(f"\n{'part':6s} {'half r':>7s} {'season rel':>10s} {'true sd':>8s} {'noise/game':>10s}"
-          f" {'carryover':>9s} {'r(t,t+1)':>9s} {'prior, games':>12s}")
+    print(
+        f"\n{'part':6s} {'half r':>7s} {'season rel':>10s} {'true sd':>8s} {'noise/game':>10s}"
+        f" {'carryover':>9s} {'r(t,t+1)':>9s} {'prior, games':>12s}"
+    )
     for part in PARTS:
         a_all, b_all, years = [], [], []
         for year, season in df.groupby("year"):
             ids = season.game_id.unique()
             for _ in range(SPLITS):
                 half = set(rng.choice(ids, len(ids) // 2, replace=False))
-                ra, na = rate_margins(as_margin(season[season.game_id.isin(half)], part), 0.5)
-                rb, nb = rate_margins(as_margin(season[~season.game_id.isin(half)], part), 0.5)
+                ra, na = rate_margins(
+                    as_margin(season[season.game_id.isin(half)], part), 0.5
+                )
+                rb, nb = rate_margins(
+                    as_margin(season[~season.game_id.isin(half)], part), 0.5
+                )
                 for t in ra:
-                    if na.get(t, 0) >= MIN_HALF and nb.get(t, 0) >= MIN_HALF and t in rb:
+                    if (
+                        na.get(t, 0) >= MIN_HALF
+                        and nb.get(t, 0) >= MIN_HALF
+                        and t in rb
+                    ):
                         a_all.append(ra[t])
                         b_all.append(rb[t])
                         years.append(year)
@@ -104,16 +122,22 @@ def reliability(df: pd.DataFrame, rng: np.random.Generator) -> dict:
         for y0, y1 in zip(yrs, yrs[1:]):
             (r0, n0), (r1, n1) = full[y0, part], full[y1, part]
             for t in r0:
-                if n0.get(t, 0) >= MIN_SEASON and n1.get(t, 0) >= MIN_SEASON and t in r1:
+                if (
+                    n0.get(t, 0) >= MIN_SEASON
+                    and n1.get(t, 0) >= MIN_SEASON
+                    and t in r1
+                ):
                     pairs.append((y0, r0[t], r1[t]))
         s = pd.DataFrame(pairs, columns=["year", "a", "b"])
         sa = s.a - s.groupby("year").a.transform("mean")
         sb = s.b - s.groupby("year").b.transform("mean")
         carry = float(np.mean(sa * sb)) / true_var
         measured[part] = noise / true_var
-        print(f"{part:6s} {r:7.3f} {2 * r / (1 + r):10.3f} {np.sqrt(true_var):8.2f}"
-              f" {np.sqrt(noise):10.2f} {carry:9.3f} {float(np.corrcoef(sa, sb)[0, 1]):9.3f}"
-              f" {noise / true_var:12.1f}")
+        print(
+            f"{part:6s} {r:7.3f} {2 * r / (1 + r):10.3f} {np.sqrt(true_var):8.2f}"
+            f" {np.sqrt(noise):10.2f} {carry:9.3f} {float(np.corrcoef(sa, sb)[0, 1]):9.3f}"
+            f" {noise / true_var:12.1f}"
+        )
     return measured
 
 
@@ -126,15 +150,24 @@ def features(df: pd.DataFrame, priors: dict) -> pd.DataFrame:
             before = season[season.week < week]
             if before.empty:
                 continue
-            fits = {part: rate_margins(as_margin(before, part), priors[part]) for part in PARTS}
+            fits = {
+                part: rate_margins(as_margin(before, part), priors[part])
+                for part in PARTS
+            }
             seen = fits["margin"][1]
             for g in season[season.week == week].itertuples():
                 h, a = g.home_team, g.away_team
                 if seen.get(h, 0) < 3 or seen.get(a, 0) < 3:
                     continue
-                row = {"year": year, "fbs": g.fbs, "home": g.home, "margin": g.margin,
-                       "win": float(g.margin > 0), "tie": g.margin == 0,
-                       "prob": g.team1_win_prob}
+                row = {
+                    "year": year,
+                    "fbs": g.fbs,
+                    "home": g.home,
+                    "margin": g.margin,
+                    "win": float(g.margin > 0),
+                    "tie": g.margin == 0,
+                    "prob": g.team1_win_prob,
+                }
                 for part, (r, _) in fits.items():
                     row[f"g_{part}"] = r.get(h, 0.0) - r.get(a, 0.0)
                 out.append(row)
@@ -146,8 +179,10 @@ def predict(f: pd.DataFrame) -> None:
     eps = 1e-6
     f["prod"] = np.log((f.prob + eps) / (1 - f.prob + eps))
     train, test = f[f.year <= TRAIN_THROUGH], f[f.year > TRAIN_THROUGH]
-    print(f"\nnext-week margins, week {FIRST_WEEK}+ : {len(train)} games through"
-          f" {TRAIN_THROUGH}, {len(test)} after")
+    print(
+        f"\nnext-week margins, week {FIRST_WEEK}+ : {len(train)} games through"
+        f" {TRAIN_THROUGH}, {len(test)} after"
+    )
     specs = {
         "margin, rated whole": ["home", "g_margin"],
         "parts, each rated apart": ["home", "g_eff", "g_expl", "g_rest"],
@@ -157,25 +192,34 @@ def predict(f: pd.DataFrame) -> None:
         "published": ["prod"],
         "published + parts": ["prod", "g_eff", "g_expl", "g_rest"],
     }
-    print(f"{'features':26s} {'test RMSE':>9s} {'test brier':>10s}   coefficients on the gaps")
+    print(
+        f"{'features':26s} {'test RMSE':>9s} {'test brier':>10s}   coefficients on the gaps"
+    )
     losses = {}
     for name, cols in specs.items():
         ols = LinearRegression().fit(train[cols], train.margin)
         rmse = float(np.sqrt(np.mean((ols.predict(test[cols]) - test.margin) ** 2)))
         decided = train[~train.tie]
         logit = LogisticRegression(C=1e6, max_iter=2000).fit(decided[cols], decided.win)
-        losses[name] = (logit.predict_proba(test[cols])[:, 1] - test.win.to_numpy()) ** 2
+        losses[name] = (
+            logit.predict_proba(test[cols])[:, 1] - test.win.to_numpy()
+        ) ** 2
         brier = float(losses[name].mean())
         design = np.c_[np.ones(len(train)), train[cols]]
         resid = train.margin - ols.predict(train[cols])
         cov = np.linalg.inv(design.T @ design) * resid.var()
-        coefs = "  ".join(f"{c} {b:+.2f} (t {b / np.sqrt(cov[i + 1, i + 1]):+.1f})"
-                          for i, (c, b) in enumerate(zip(cols, ols.coef_)) if c != "home")
+        coefs = "  ".join(
+            f"{c} {b:+.2f} (t {b / np.sqrt(cov[i + 1, i + 1]):+.1f})"
+            for i, (c, b) in enumerate(zip(cols, ols.coef_))
+            if c != "home"
+        )
         print(f"{name:26s} {rmse:9.3f} {brier:10.5f}   {coefs}")
     print("\nheld-out brier, paired:")
-    for a, b in (("parts, each rated apart", "margin, rated whole"),
-                 ("margin whole + parts", "margin, rated whole"),
-                 ("published + parts", "published")):
+    for a, b in (
+        ("parts, each rated apart", "margin, rated whole"),
+        ("margin whole + parts", "margin, rated whole"),
+        ("published + parts", "published"),
+    ):
         diff = losses[a] - losses[b]
         t = diff.mean() / diff.std() * np.sqrt(len(diff))
         print(f"  {a} - {b}: {diff.mean() * 1e4:+.2f}e-4 (t {t:+.2f})")

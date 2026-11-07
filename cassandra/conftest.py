@@ -68,9 +68,7 @@ def plays_for(
     plays: list[Play] = []
     home_score = away_score = 0
     number = 0
-    leader, trailer = (
-        (HOME_ID, AWAY_ID) if home_leads else (AWAY_ID, HOME_ID)
-    )
+    leader, trailer = (HOME_ID, AWAY_ID) if home_leads else (AWAY_ID, HOME_ID)
     for period in periods:
         for clock in range(900, 0, -30):
             number += 1
@@ -131,7 +129,11 @@ class FakeSource:
         self.loaded: list[tuple[int, int]] = []
 
     async def load_game(self, league, season, week, game_id):
-        return [p for p in await self.load_week(league, season, week) if p.game_id == game_id]
+        return [
+            p
+            for p in await self.load_week(league, season, week)
+            if p.game_id == game_id
+        ]
 
     async def load_week(self, league: str, season: int, week: int):
         self.loaded.append((season, week))

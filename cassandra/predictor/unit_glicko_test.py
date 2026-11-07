@@ -140,7 +140,9 @@ def test_the_anchor_scale_sets_how_much_of_the_anchor_gap_a_reading_owes(
     for scale in (0.0, 0.5, 1.0):
         offense = []
         for anchor in (1200, 1800):
-            predictor = _predictor({"g": even}, anchors={"B": anchor}, anchor_epa_scale=scale)
+            predictor = _predictor(
+                {"g": even}, anchors={"B": anchor}, anchor_epa_scale=scale
+            )
             predictor.update_game(game("A", "B", 0, 0, game_id="g"))
             offense.append(predictor.get_sides("A").offense.rating)
         worth[scale] = offense[1] - offense[0]
@@ -599,7 +601,9 @@ def scaled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _both(epa: float, success: float, plays: int = 70) -> GameEpa:
     """A game the home offense read `epa` and `success` in; the away side read par."""
-    return GameEpa(epa, 0.0, plays, plays, None, None, 0.0, 0.0, success, 0.4, plays, plays)
+    return GameEpa(
+        epa, 0.0, plays, plays, None, None, 0.0, 0.0, success, 0.4, plays, plays
+    )
 
 
 @pytest.mark.usefixtures("scaled")
@@ -613,7 +617,9 @@ def test_no_success_weight_is_the_epa_model(game: GameFactory) -> None:
 
 
 @pytest.mark.usefixtures("scaled")
-def test_a_full_weight_reads_the_success_rate_and_not_the_epa(game: GameFactory) -> None:
+def test_a_full_weight_reads_the_success_rate_and_not_the_epa(
+    game: GameFactory,
+) -> None:
     """A game that lost EPA on one long turnover and won most of its downs."""
     predictor = _predictor({"g": _both(-0.2, 0.6)}, success_weight=1.0)
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
@@ -654,7 +660,9 @@ def test_a_success_weight_needs_the_league_scale() -> None:
 @pytest.mark.usefixtures("scaled")
 def test_the_weighted_reading_reads_the_weighted_rate(game: GameFactory) -> None:
     """A rout won on its backups' downs: 60% flat, 30% while the game was live."""
-    rout = _both(0.0, 0.6)._replace(home_success_weighted=0.3, away_success_weighted=0.4)
+    rout = _both(0.0, 0.6)._replace(
+        home_success_weighted=0.3, away_success_weighted=0.4
+    )
     flat = _predictor({"g": rout}, success_weight=1.0)
     weighted = _predictor({"g": rout}, success_weight=1.0, success_reading=WEIGHTED)
     for predictor in (flat, weighted):
@@ -695,13 +703,17 @@ def test_each_side_can_step_on_its_own_blend(game: GameFactory) -> None:
         predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     assert split.get_sides("A").offense == shared.get_sides("A").offense
     assert split.get_sides("A").offense.rating > 0
-    assert split.get_sides("B").defense.rating > 0 > shared.get_sides("B").defense.rating
+    assert (
+        split.get_sides("B").defense.rating > 0 > shared.get_sides("B").defense.rating
+    )
 
 
 @pytest.mark.usefixtures("scaled")
 def test_no_defense_weight_is_the_offense_weight(game: GameFactory) -> None:
     unset = _predictor({"g": _both(-0.2, 0.6)}, success_weight=0.6)
-    same = _predictor({"g": _both(-0.2, 0.6)}, success_weight=0.6, defense_success_weight=0.6)
+    same = _predictor(
+        {"g": _both(-0.2, 0.6)}, success_weight=0.6, defense_success_weight=0.6
+    )
     for predictor in (unset, same):
         predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     assert unset.state_dict() == same.state_dict()
@@ -832,7 +844,9 @@ def _warmed(predictor: UnitMarginGlickoPredictor, game: GameFactory) -> None:
     predictor.update_game(game("D", "C", 14, 14, game_id="w2"))
 
 
-def test_a_league_without_rate_clocks_carries_no_success_rates(game: GameFactory) -> None:
+def test_a_league_without_rate_clocks_carries_no_success_rates(
+    game: GameFactory,
+) -> None:
     predictor = _predictor({**_WARM, "g": _rates(0.6, 0.3)})
     _warmed(predictor, game)
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
@@ -874,7 +888,10 @@ def test_the_same_rate_against_a_better_conference_is_worth_more(
     weak.update_game(game("E", "C", 14, 14, game_id="h"))
     strong.update_game(game("A", "E", 21, 7, game_id="g"))
     strong.update_game(game("B", "C", 14, 14, game_id="h"))
-    against_weak, against_strong = weak.ratings["A"].success, strong.ratings["A"].success
+    against_weak, against_strong = (
+        weak.ratings["A"].success,
+        strong.ratings["A"].success,
+    )
     assert against_weak is not None and against_strong is not None
     assert against_strong.offense.rate > against_weak.offense.rate
 
@@ -906,8 +923,12 @@ def test_success_rates_never_move_a_prediction(game: GameFactory) -> None:
         predictor.pass_week()
     assert shown.ratings["A"].success is not None
     for home, away in (("A", "B"), ("C", "A")):
-        assert shown.predict_game(game(home, away)) == plain.predict_game(game(home, away))
-    assert {t: r._replace(success=None) for t, r in shown.ratings.items()} == plain.ratings
+        assert shown.predict_game(game(home, away)) == plain.predict_game(
+            game(home, away)
+        )
+    assert {
+        t: r._replace(success=None) for t, r in shown.ratings.items()
+    } == plain.ratings
 
 
 @pytest.mark.usefixtures("rated")
@@ -922,7 +943,9 @@ def test_a_summer_keeps_carry_of_each_offset(game: GameFactory) -> None:
     # The center doesn't move over the summer: last season's mean is this
     # season's prior, and nothing has been read yet.
     center = (0.42 * 4 + 0.6 + 0.3) / 6
-    assert after.offense.rate - center == pytest.approx(_CARRY * (before.offense.rate - center))
+    assert after.offense.rate - center == pytest.approx(
+        _CARRY * (before.offense.rate - center)
+    )
     assert after.offense.sd > before.offense.sd
 
 
@@ -933,7 +956,9 @@ def test_the_success_rates_round_trip_through_the_state_dict(game: GameFactory) 
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
 
     state = json.loads(json.dumps(predictor.state_dict()))
-    loaded = UnitMarginGlickoPredictor.from_state_dict({**state, "game_epa": EpaIndex()})
+    loaded = UnitMarginGlickoPredictor.from_state_dict(
+        {**state, "game_epa": EpaIndex()}
+    )
     assert loaded.ratings["A"].success == predictor.ratings["A"].success
     assert loaded.state_dict() == predictor.state_dict()
 
@@ -988,7 +1013,9 @@ def test_the_gap_slope_learns_how_far_a_rate_moves(game: GameFactory) -> None:
     shift = 0.05
     played = game("A", "B", 21, 7)
     for _ in range(400):
-        rates.add_game(played, _rates(0.4 + shift / 2, 0.4 - shift / 2), shift, (1500.0, 1500.0))
+        rates.add_game(
+            played, _rates(0.4 + shift / 2, 0.4 - shift / 2), shift, (1500.0, 1500.0)
+        )
     assert rates.gap_slope == pytest.approx(0.5, abs=0.05)
 
 
@@ -1033,7 +1060,9 @@ def _per_down(rate: float) -> float:
     return 2 * (rate - 0.42)
 
 
-def _kinds(home: tuple[float, float], away: tuple[float, float], downs: int = 30) -> GameEpa:
+def _kinds(
+    home: tuple[float, float], away: tuple[float, float], downs: int = 30
+) -> GameEpa:
     """A game whose offenses won `(passes, runs)` of each kind of down, `downs` of each,
     each kind's EPA per down moving with its rate (`_per_down`)."""
     return _rates((home[0] + home[1]) / 2, (away[0] + away[1]) / 2, 2 * downs)._replace(
@@ -1084,7 +1113,10 @@ def per_down(split: None, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-_WARM_KINDS = {"w1": _kinds((0.46, 0.38), (0.46, 0.38)), "w2": _kinds((0.46, 0.38), (0.46, 0.38))}
+_WARM_KINDS = {
+    "w1": _kinds((0.46, 0.38), (0.46, 0.38)),
+    "w2": _kinds((0.46, 0.38), (0.46, 0.38)),
+}
 
 
 @pytest.mark.usefixtures("split")
@@ -1143,9 +1175,10 @@ def test_the_split_moves_neither_a_prediction_nor_the_every_down_rate(
         success = rating.success
         assert success is not None and rating.epa is not None
         assert plain.ratings[team].epa is None
-        assert rating._replace(
-            success=success._replace(passes=None, runs=None), epa=None
-        ) == plain.ratings[team]
+        assert (
+            rating._replace(success=success._replace(passes=None, runs=None), epa=None)
+            == plain.ratings[team]
+        )
 
 
 @pytest.mark.usefixtures("per_down")
@@ -1166,14 +1199,18 @@ def test_the_split_rolls_over_and_round_trips_through_the_state_dict(
     assert after.epa.runs.offense.sd > before.epa.runs.offense.sd
 
     state = json.loads(json.dumps(predictor.state_dict()))
-    loaded = UnitMarginGlickoPredictor.from_state_dict({**state, "game_epa": EpaIndex()})
+    loaded = UnitMarginGlickoPredictor.from_state_dict(
+        {**state, "game_epa": EpaIndex()}
+    )
     assert loaded.ratings["A"].success == after.success
     assert loaded.ratings["A"].epa == after.epa
     assert loaded.state_dict() == predictor.state_dict()
 
 
 @pytest.mark.usefixtures("per_down")
-def test_epa_per_down_is_rated_on_every_down_and_on_each_kind(game: GameFactory) -> None:
+def test_epa_per_down_is_rated_on_every_down_and_on_each_kind(
+    game: GameFactory,
+) -> None:
     """A gains on its passes and loses on its runs against B, and every
     down sits between the two. In EPA per down, unbounded, not in a share."""
     predictor = _predictor({**_WARM_KINDS, "g": _kinds((0.6, 0.3), (0.42, 0.42))})
@@ -1185,8 +1222,12 @@ def test_epa_per_down_is_rated_on_every_down_and_on_each_kind(game: GameFactory)
     assert a.passes is not None and a.runs is not None
     assert b.passes is not None and b.runs is not None
     # The warm-up's passes read +0.08 and its runs -0.08; every down 0.
-    assert a.passes.offense.epa > _per_down(0.46) and a.runs.offense.epa < _per_down(0.38)
-    assert b.passes.defense.epa > _per_down(0.46) and b.runs.defense.epa < _per_down(0.38)
+    assert a.passes.offense.epa > _per_down(0.46) and a.runs.offense.epa < _per_down(
+        0.38
+    )
+    assert b.passes.defense.epa > _per_down(0.46) and b.runs.defense.epa < _per_down(
+        0.38
+    )
     assert a.passes.offense.epa > a.offense.epa > a.runs.offense.epa
     assert 0 < a.passes.offense.sd < 0.1 and 0 < a.runs.defense.sd < 0.08
 

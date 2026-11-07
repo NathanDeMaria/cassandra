@@ -53,9 +53,14 @@ def ensure_priors(named) -> None:
         return
     config = OptimizationConfig.model_validate_json(SEARCH.read_text())
     weeks = frames.weeks_per_season([len(s.weeks) for s in named])
-    rebuild_priors(UnitMarginGlickoPredictor, "nfl",
-                   frames.to_params(config.frame, config.fixed, weeks),
-                   named, OddsDatabase({}), priors_path=PRIORS)
+    rebuild_priors(
+        UnitMarginGlickoPredictor,
+        "nfl",
+        frames.to_params(config.frame, config.fixed, weeks),
+        named,
+        OddsDatabase({}),
+        priors_path=PRIORS,
+    )
 
 
 def replay(name: str, beta: float, since: int = 2014, **knobs) -> pd.DataFrame:
@@ -69,13 +74,21 @@ def replay(name: str, beta: float, since: int = 2014, **knobs) -> pd.DataFrame:
         opponent_prior_manager=OpponentPriorManager("nfl", path=PRIORS),
         game_epa=build(beta, since),
     )
-    df = pd.DataFrame([asdict(p) for p in join_with_odds(
-        predictor, named, OddsDatabase({}), post_callbacks=False, namer=namer)])
+    df = pd.DataFrame(
+        [
+            asdict(p)
+            for p in join_with_odds(
+                predictor, named, OddsDatabase({}), post_callbacks=False, namer=namer
+            )
+        ]
+    )
     OUT.mkdir(exist_ok=True)
     df.to_parquet(OUT / f"{name}.parquet")
     brier = ((df.team1_win_prob - df.team1_win) ** 2).mean()
-    print(f"{name}: beta={beta} since={since} {knobs} brier {brier:.6f} ({time.time() - start:.0f}s)",
-          flush=True)
+    print(
+        f"{name}: beta={beta} since={since} {knobs} brier {brier:.6f} ({time.time() - start:.0f}s)",
+        flush=True,
+    )
     return df
 
 

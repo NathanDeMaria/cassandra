@@ -69,16 +69,31 @@ class Params:
 
     def to_vector(self) -> np.ndarray:
         return np.array(
-            [np.log(self.kappa_off), np.log(self.kappa_def), logit(self.carry_off),
-             logit(self.carry_def), np.log(self.kappa_game), self.home,
-             np.log(self.drift_off + DRIFT_FLOOR), np.log(self.drift_def + DRIFT_FLOOR)]
+            [
+                np.log(self.kappa_off),
+                np.log(self.kappa_def),
+                logit(self.carry_off),
+                logit(self.carry_def),
+                np.log(self.kappa_game),
+                self.home,
+                np.log(self.drift_off + DRIFT_FLOOR),
+                np.log(self.drift_def + DRIFT_FLOOR),
+            ]
         )
 
     @classmethod
     def from_vector(cls, v: Iterable[float]) -> "Params":
         ko, kd, co, cd, kg, h, do, dd = v
-        return cls(np.exp(ko), np.exp(kd), expit(co), expit(cd), np.exp(kg), h,
-                   max(0.0, np.exp(do) - DRIFT_FLOOR), max(0.0, np.exp(dd) - DRIFT_FLOOR))
+        return cls(
+            np.exp(ko),
+            np.exp(kd),
+            expit(co),
+            expit(cd),
+            np.exp(kg),
+            h,
+            max(0.0, np.exp(do) - DRIFT_FLOOR),
+            max(0.0, np.exp(dd) - DRIFT_FLOOR),
+        )
 
 
 #: Searched as log(drift + floor), so a drift of exactly 0 is in reach.
@@ -104,12 +119,25 @@ def beta_grid(a: np.ndarray, b: np.ndarray, size: int = GRID):
 
 def betabinom_logpmf(k, n, p, kappa):
     if np.isinf(kappa):
-        return (gammaln(n + 1) - gammaln(k + 1) - gammaln(n - k + 1)
-                + k * np.log(p) + (n - k) * np.log1p(-p))
+        return (
+            gammaln(n + 1)
+            - gammaln(k + 1)
+            - gammaln(n - k + 1)
+            + k * np.log(p)
+            + (n - k) * np.log1p(-p)
+        )
     a, b = p * kappa, (1 - p) * kappa
-    return (gammaln(n + 1) - gammaln(k + 1) - gammaln(n - k + 1)
-            + gammaln(k + a) + gammaln(n - k + b) - gammaln(n + kappa)
-            + gammaln(kappa) - gammaln(a) - gammaln(b))
+    return (
+        gammaln(n + 1)
+        - gammaln(k + 1)
+        - gammaln(n - k + 1)
+        + gammaln(k + a)
+        + gammaln(n - k + b)
+        - gammaln(n + kappa)
+        + gammaln(kappa)
+        - gammaln(a)
+        - gammaln(b)
+    )
 
 
 def moments_to_beta(mean: np.ndarray, var: np.ndarray):
@@ -198,7 +226,9 @@ class League:
             ("off", self.params.carry_off, self.params.kappa_off),
             ("def", self.params.carry_def, self.params.kappa_def),
         ):
-            x, k = (self.x_off, self.k_off) if side == "off" else (self.x_def, self.k_def)
+            x, k = (
+                (self.x_off, self.k_off) if side == "off" else (self.x_def, self.k_def)
+            )
             m = expit(self.lam + x)
             v_post = m * (1 - m) / (k + 1)
             x *= carry
@@ -225,12 +255,23 @@ class League:
         di = week.defense.map(self.index).to_numpy()
         off, deff = self.betas("off", oi), self.betas("def", di)
         result = collide(
-            off, deff, self.lam, self.params.home * week.home.to_numpy(),
-            week.n.to_numpy(), week.k.to_numpy(), self.params.kappa_game, size,
+            off,
+            deff,
+            self.lam,
+            self.params.home * week.home.to_numpy(),
+            week.n.to_numpy(),
+            week.k.to_numpy(),
+            self.params.kappa_game,
+            size,
         )
         out = week.assign(
-            p=result.p, loglik=result.loglik, lam=self.lam,
-            off_a=off[0], off_b=off[1], def_a=deff[0], def_b=deff[1],
+            p=result.p,
+            loglik=result.loglik,
+            lam=self.lam,
+            off_a=off[0],
+            off_b=off[1],
+            def_a=deff[0],
+            def_b=deff[1],
         )
         self.store("off", oi, *result.off)
         self.store("def", di, *result.deff)
@@ -239,14 +280,28 @@ class League:
 
     def snapshot(self) -> pd.DataFrame:
         rows = []
-        for side, x, k in (("offense", self.x_off, self.k_off), ("defense", self.x_def, self.k_def)):
+        for side, x, k in (
+            ("offense", self.x_off, self.k_off),
+            ("defense", self.x_def, self.k_def),
+        ):
             m = expit(self.lam + x)
-            rows.append(pd.DataFrame({"team": self.teams, "side": side, "mean": m,
-                                      "a": m * k, "b": (1 - m) * k}))
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "team": self.teams,
+                        "side": side,
+                        "mean": m,
+                        "a": m * k,
+                        "b": (1 - m) * k,
+                    }
+                )
+            )
         return pd.concat(rows, ignore_index=True)
 
 
-def replay(games: pd.DataFrame, params: Params, size: int = GRID, snapshots: bool = False):
+def replay(
+    games: pd.DataFrame, params: Params, size: int = GRID, snapshots: bool = False
+):
     """Walk every season in order; each game is predicted before it updates."""
     teams = set(games.offense) | set(games.defense)
     first = games.season.min()
@@ -257,11 +312,17 @@ def replay(games: pd.DataFrame, params: Params, size: int = GRID, snapshots: boo
         if season != first:
             league.new_season()
         if snapshots:
-            snaps.append(league.snapshot().assign(season=season, week=0, lam=league.lam))
+            snaps.append(
+                league.snapshot().assign(season=season, week=0, lam=league.lam)
+            )
         for week, rows in by_season.groupby("week", sort=True):
             league.age()
             weeks.append(league.play_week(rows, size).assign(season=season, week=week))
             if snapshots:
-                snaps.append(league.snapshot().assign(season=season, week=week, lam=league.lam))
+                snaps.append(
+                    league.snapshot().assign(season=season, week=week, lam=league.lam)
+                )
     history = pd.concat(weeks, ignore_index=True)
-    return (history, pd.concat(snaps, ignore_index=True), league) if snapshots else history
+    return (
+        (history, pd.concat(snaps, ignore_index=True), league) if snapshots else history
+    )

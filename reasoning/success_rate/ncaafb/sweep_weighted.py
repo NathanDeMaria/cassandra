@@ -57,8 +57,12 @@ def _weighted_success(
 async def main(league: str) -> None:
     epa_build._success = _weighted_success
     bucket = Config.init_from_file().bucket
-    seasons = [s async for s in read_all_seasons(league, bucket) if s.year >= epa_build.SINCE]
-    games, stats = await epa_build.sweep(league, seasons, StorePlaySource(get_processed_plays_store()))
+    seasons = [
+        s async for s in read_all_seasons(league, bucket) if s.year >= epa_build.SINCE
+    ]
+    games, stats = await epa_build.sweep(
+        league, seasons, StorePlaySource(get_processed_plays_store())
+    )
     print(stats, flush=True)
     (DATA / f"{league}_index_weighted.pkl").write_bytes(pickle.dumps(games))
 

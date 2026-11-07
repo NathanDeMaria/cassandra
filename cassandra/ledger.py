@@ -999,9 +999,9 @@ def report(ledger: pd.DataFrame, as_of: datetime) -> str:
                 breakdown(
                     settled,
                     settled["avg_price"].map(
-                        lambda p: "favorite (paid ≥ 50¢)"
-                        if p >= 0.5
-                        else "underdog (< 50¢)"
+                        lambda p: (
+                            "favorite (paid ≥ 50¢)" if p >= 0.5 else "underdog (< 50¢)"
+                        )
                     ),
                 ),
                 "side",
@@ -1021,13 +1021,15 @@ def report(ledger: pd.DataFrame, as_of: datetime) -> str:
                 breakdown(
                     settled,
                     (settled["model"] - settled["market"]).map(
-                        lambda e: "?"
-                        if pd.isna(e)
-                        else "edge 5–10"
-                        if e < 0.10
-                        else "edge 10–15"
-                        if e < 0.15
-                        else "edge 15+"
+                        lambda e: (
+                            "?"
+                            if pd.isna(e)
+                            else "edge 5–10"
+                            if e < 0.10
+                            else "edge 10–15"
+                            if e < 0.15
+                            else "edge 15+"
+                        )
                     ),
                 ),
                 "edge at bet time",
@@ -1037,13 +1039,15 @@ def report(ledger: pd.DataFrame, as_of: datetime) -> str:
                 breakdown(
                     settled,
                     (100 * (settled["close"] - settled["avg_price"])).map(
-                        lambda c: "?"
-                        if pd.isna(c)
-                        else "beat the close"
-                        if c > 0.5
-                        else "level"
-                        if c >= -0.5
-                        else "close moved away"
+                        lambda c: (
+                            "?"
+                            if pd.isna(c)
+                            else "beat the close"
+                            if c > 0.5
+                            else "level"
+                            if c >= -0.5
+                            else "close moved away"
+                        )
                     ),
                 ),
                 "closing line",

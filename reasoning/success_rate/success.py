@@ -53,8 +53,16 @@ def team_games(plays: pd.DataFrame) -> pd.DataFrame:
     out = (
         scrimmage(plays)
         .groupby(
-            ["season", "week", "date", "game_id", "offense", "defense",
-             "offense_is_home", "neutral_site"]
+            [
+                "season",
+                "week",
+                "date",
+                "game_id",
+                "offense",
+                "defense",
+                "offense_is_home",
+                "neutral_site",
+            ]
         )
         .success.agg(n="size", k="sum")
         .reset_index()
@@ -81,4 +89,6 @@ def fit_concentration(n: np.ndarray, k: np.ndarray, mean: np.ndarray) -> float:
         kappa = np.exp(log_kappa)
         return -stats.betabinom.logpmf(k, n, mean * kappa, (1 - mean) * kappa).sum()
 
-    return float(np.exp(optimize.minimize_scalar(nll, bounds=(1, 12), method="bounded").x))
+    return float(
+        np.exp(optimize.minimize_scalar(nll, bounds=(1, 12), method="bounded").x)
+    )

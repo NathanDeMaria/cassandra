@@ -76,9 +76,7 @@ class SpreadCoverageDropped(Exception):
     """
 
 
-def spread_coverage_drops(
-    previous: pd.DataFrame, current: pd.DataFrame
-) -> list[str]:
+def spread_coverage_drops(previous: pd.DataFrame, current: pd.DataFrame) -> list[str]:
     """Leagues whose lined-game count collapsed since the last evaluation.
 
     Per league rather than overall: one league losing its odds is invisible

@@ -47,7 +47,9 @@ def _noise(halves: pd.DataFrame) -> tuple[float, float]:
     return true, half_noise / 2
 
 
-def _group(pairs: pd.DataFrame, true: float, noise: float) -> tuple[float, float, float]:
+def _group(
+    pairs: pd.DataFrame, true: float, noise: float
+) -> tuple[float, float, float]:
     """keep, new variance over true variance, and shift in true spreads, for one group."""
     a, b = pairs.a, pairs.b
     cov = float(np.mean((a - a.mean()) * (b - b.mean())))
@@ -75,15 +77,22 @@ def main(league: str) -> None:
     years = sorted(pairs.year.unique())
     rng = np.random.default_rng(0)
     pd.set_option("display.width", 250)
-    for flag, label in (("new_qb", "new week-one quarterback"), ("coach", "head coach left")):
+    for flag, label in (
+        ("new_qb", "new week-one quarterback"),
+        ("coach", "head coach left"),
+    ):
         known = pairs[pairs[flag].notna()].copy()
         known[flag] = known[flag].astype(bool)
         point = _stats(halves, known, flag)
         boots = []
         for _ in range(BOOT):
             pick = rng.choice(years, len(years), replace=True)
-            h = pd.concat([halves[halves.year == y].assign(year=i) for i, y in enumerate(pick)])
-            p = pd.concat([known[known.year == y].assign(year=i) for i, y in enumerate(pick)])
+            h = pd.concat(
+                [halves[halves.year == y].assign(year=i) for i, y in enumerate(pick)]
+            )
+            p = pd.concat(
+                [known[known.year == y].assign(year=i) for i, y in enumerate(pick)]
+            )
             boots.append(_stats(h, p, flag))
         rows = []
         for (part, side, value), (keep, new, shift, n) in point.items():
@@ -92,25 +101,48 @@ def main(league: str) -> None:
             k0, n0, s0, m0 = point[part, side, False]
             dk = [b[part, side, True][0] - b[part, side, False][0] for b in boots]
             dn = [b[part, side, True][1] - b[part, side, False][1] for b in boots]
-            rows.append({
-                "part": part, "side": side, "n": f"{n}/{m0}",
-                "keep": keep, "keep, none": k0, "Δkeep": keep - k0, "se": np.std(dk),
-                "new": new, "new, none": n0, "Δnew": new - n0, "se ": np.std(dn),
-                "shift": shift,
-            })
+            rows.append(
+                {
+                    "part": part,
+                    "side": side,
+                    "n": f"{n}/{m0}",
+                    "keep": keep,
+                    "keep, none": k0,
+                    "Δkeep": keep - k0,
+                    "se": np.std(dk),
+                    "new": new,
+                    "new, none": n0,
+                    "Δnew": new - n0,
+                    "se ": np.std(dn),
+                    "shift": shift,
+                }
+            )
         table = pd.DataFrame(rows).set_index(["part", "side"])
-        print(f"\n{league}: {label} (n = with/without; keep and new net of noise; shift in true spreads)")
+        print(
+            f"\n{league}: {label} (n = with/without; keep and new net of noise; shift in true spreads)"
+        )
         print(table.round(3).to_string())
         print("  dropbacks less runs, offense:")
         for value in ("sr", "epa"):
             for i, name in ((0, "Δkeep"), (1, "Δnew")):
                 diffs = [
-                    (b[f"{value} dropback", "offense", True][i] - b[f"{value} dropback", "offense", False][i])
-                    - (b[f"{value} run", "offense", True][i] - b[f"{value} run", "offense", False][i])
+                    (
+                        b[f"{value} dropback", "offense", True][i]
+                        - b[f"{value} dropback", "offense", False][i]
+                    )
+                    - (
+                        b[f"{value} run", "offense", True][i]
+                        - b[f"{value} run", "offense", False][i]
+                    )
                     for b in boots
                 ]
-                est = ((point[f"{value} dropback", "offense", True][i] - point[f"{value} dropback", "offense", False][i])
-                       - (point[f"{value} run", "offense", True][i] - point[f"{value} run", "offense", False][i]))
+                est = (
+                    point[f"{value} dropback", "offense", True][i]
+                    - point[f"{value} dropback", "offense", False][i]
+                ) - (
+                    point[f"{value} run", "offense", True][i]
+                    - point[f"{value} run", "offense", False][i]
+                )
                 print(f"    {value} {name}: {est:+.3f} (se {np.std(diffs):.3f})")
 
 

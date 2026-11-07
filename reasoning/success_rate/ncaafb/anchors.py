@@ -64,19 +64,35 @@ class Recording(UnitMarginGlickoPredictor):
                 (game.away, game.home, away, -1.0, anchor_away, anchor_home),
             ):
                 o, d = self._offsets(offense).offense, self._offsets(defense).defense
-                expected = center + sign * (edge + anchor_home - anchor_away) * per_play + o.rating - d.rating
-                self.contests.append((
-                    self._season, game.game_id, offense, defense, reading - expected,
-                    (a_off - a_def) * per_play, sign * edge * per_play,
-                ))
+                expected = (
+                    center
+                    + sign * (edge + anchor_home - anchor_away) * per_play
+                    + o.rating
+                    - d.rating
+                )
+                self.contests.append(
+                    (
+                        self._season,
+                        game.game_id,
+                        offense,
+                        defense,
+                        reading - expected,
+                        (a_off - a_def) * per_play,
+                        sign * edge * per_play,
+                    )
+                )
         super()._update_sides(game, edge)
 
     def pass_season(self, year=None):
         for team in self._sides:
-            self.seasons.append((
-                self._season, team,
-                (self.unit_rating(team) - self.anchor(team)) * self.points_per_rating,
-            ))
+            self.seasons.append(
+                (
+                    self._season,
+                    team,
+                    (self.unit_rating(team) - self.anchor(team))
+                    * self.points_per_rating,
+                )
+            )
         super().pass_season(year)
 
 
@@ -88,12 +104,21 @@ def record(name: str, label: str | None = None, **overrides: float) -> None:
     if overrides:
         save(name, df, knobs)
     CONTESTS.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(Recording.contests, columns=[
-        "year", "game_id", "offense", "defense", "surprise", "anchor_term", "edge_term",
-    ]).to_parquet(CONTESTS / f"{name}.parquet")
-    pd.DataFrame(Recording.seasons, columns=["year", "team", "offset_points"]).to_parquet(
-        CONTESTS / f"{name}.seasons.parquet"
-    )
+    pd.DataFrame(
+        Recording.contests,
+        columns=[
+            "year",
+            "game_id",
+            "offense",
+            "defense",
+            "surprise",
+            "anchor_term",
+            "edge_term",
+        ],
+    ).to_parquet(CONTESTS / f"{name}.parquet")
+    pd.DataFrame(
+        Recording.seasons, columns=["year", "team", "offset_points"]
+    ).to_parquet(CONTESTS / f"{name}.seasons.parquet")
 
 
 def _tiers(frame: pd.DataFrame, columns: list[str]) -> dict[str, list[str | None]]:
@@ -117,10 +142,14 @@ def _tiers(frame: pd.DataFrame, columns: list[str]) -> dict[str, list[str | None
 
 
 def report(names: list[str]) -> None:
-    print("cross-conference FBS contests: surprise on the anchor term, and by tier "
-          "(EPA per play, x100)")
-    print(f"{'':>22} {'contests':>8} {'slope':>6} {'t':>6}   {'power off v G5 def':>18} "
-          f"{'G5 off v power def':>18}   {'in-conference sd':>16}")
+    print(
+        "cross-conference FBS contests: surprise on the anchor term, and by tier "
+        "(EPA per play, x100)"
+    )
+    print(
+        f"{'':>22} {'contests':>8} {'slope':>6} {'t':>6}   {'power off v G5 def':>18} "
+        f"{'G5 off v power def':>18}   {'in-conference sd':>16}"
+    )
     for name in names:
         c = pd.read_parquet(CONTESTS / f"{name}.parquet")
         c = c.assign(**_tiers(c, ["offense", "defense"]))
@@ -130,15 +159,23 @@ def report(names: list[str]) -> None:
         slope, intercept = np.polyfit(x, y, 1)
         resid = y - (slope * x + intercept)
         se = np.sqrt((resid**2).sum() / (len(x) - 2) / ((x - x.mean()) ** 2).sum())
-        pg = cross[(cross.offense_group == "power") & (cross.defense_group == "G5")].surprise
-        gp = cross[(cross.offense_group == "G5") & (cross.defense_group == "power")].surprise
+        pg = cross[
+            (cross.offense_group == "power") & (cross.defense_group == "G5")
+        ].surprise
+        gp = cross[
+            (cross.offense_group == "G5") & (cross.defense_group == "power")
+        ].surprise
         inside = c[fbs & (c.offense_conf == c.defense_conf)].surprise
-        print(f"{name:>22} {len(cross):8d} {slope:+6.3f} {slope / se:+6.2f}   "
-              f"{100 * pg.mean():+7.2f} ({100 * pg.std() / np.sqrt(len(pg)):.2f})   "
-              f"{100 * gp.mean():+7.2f} ({100 * gp.std() / np.sqrt(len(gp)):.2f})   "
-              f"{100 * inside.std():16.2f}")
+        print(
+            f"{name:>22} {len(cross):8d} {slope:+6.3f} {slope / se:+6.2f}   "
+            f"{100 * pg.mean():+7.2f} ({100 * pg.std() / np.sqrt(len(pg)):.2f})   "
+            f"{100 * gp.mean():+7.2f} ({100 * gp.std() / np.sqrt(len(gp)):.2f})   "
+            f"{100 * inside.std():16.2f}"
+        )
 
-    print("\nend of season: mean offset from the anchor in points, power minus Group of Five")
+    print(
+        "\nend of season: mean offset from the anchor in points, power minus Group of Five"
+    )
     rows = {}
     for name in names:
         s = pd.read_parquet(CONTESTS / f"{name}.seasons.parquet")

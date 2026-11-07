@@ -61,8 +61,9 @@ class Discounted(UnitMarginGlickoPredictor):
             return 0.0
         s = self.split
         epa = e.home * e.home_plays - e.away * e.away_plays
-        eff = ((s["alpha"] + s["beta"] * e.home_success) * e.home_plays
-               - (s["alpha"] + s["beta"] * e.away_success) * e.away_plays)
+        eff = (s["alpha"] + s["beta"] * e.home_success) * e.home_plays - (
+            s["alpha"] + s["beta"] * e.away_success
+        ) * e.away_plays
         margin = float(game.home_score - game.away_score)
         key = "neutral" if game.neutral_site else "home"
         expl = s["k"] * (epa - eff) - s[f"expl_{key}"]
@@ -109,9 +110,15 @@ def measure_split(league: str) -> dict:
     expl = k * (epa - eff)
     rest = df.margin - k * epa
     home = df.home.to_numpy() > 0
-    split = {"alpha": float(alpha), "beta": float(beta), "k": float(k),
-             "expl_home": float(expl[home].mean()), "expl_neutral": float(expl[~home].mean()),
-             "rest_home": float(rest[home].mean()), "rest_neutral": float(rest[~home].mean())}
+    split = {
+        "alpha": float(alpha),
+        "beta": float(beta),
+        "k": float(k),
+        "expl_home": float(expl[home].mean()),
+        "expl_neutral": float(expl[~home].mean()),
+        "rest_home": float(rest[home].mean()),
+        "rest_neutral": float(rest[~home].mean()),
+    }
     print("split:", {key: round(v, 3) for key, v in split.items()}, flush=True)
     return split
 
@@ -143,13 +150,24 @@ def nfl_runner():
 
     def run(knobs: dict, through: int = 2026) -> pd.DataFrame:
         predictor = Discounted(
-            "nfl", **{**BASE, **knobs},
+            "nfl",
+            **{**BASE, **knobs},
             opponent_prior_manager=OpponentPriorManager("nfl", path=PRIORS),
             game_epa=INDEX,
         )
         seasons = [s for s in NAMED if s.year <= through]
-        return pd.DataFrame([asdict(p) for p in join_with_odds(
-            predictor, seasons, OddsDatabase({}), post_callbacks=False, namer=NAMER)])
+        return pd.DataFrame(
+            [
+                asdict(p)
+                for p in join_with_odds(
+                    predictor,
+                    seasons,
+                    OddsDatabase({}),
+                    post_callbacks=False,
+                    namer=NAMER,
+                )
+            ]
+        )
 
     def window(df: pd.DataFrame, lo: int, hi: int) -> float:
         loss = (df.team1_win_prob - df.team1_win) ** 2
@@ -160,9 +178,14 @@ def nfl_runner():
 
     def store(name: str, df: pd.DataFrame, knobs: dict, extra: dict) -> None:
         df.to_parquet(OUT / f"{name}.parquet")
-        result = {"train": train(df), "held_out": window(df, TRAIN_THROUGH + 1, 2026),
-                  "since_2014": window(df, 2014, 2026)}
-        (OUT / f"{name}.json").write_text(json.dumps({"knobs": knobs, **result, **extra}, indent=2))
+        result = {
+            "train": train(df),
+            "held_out": window(df, TRAIN_THROUGH + 1, 2026),
+            "since_2014": window(df, 2014, 2026),
+        }
+        (OUT / f"{name}.json").write_text(
+            json.dumps({"knobs": knobs, **result, **extra}, indent=2)
+        )
         print(name, {k: round(v, 6) for k, v in result.items()}, flush=True)
 
     return BASE, run, train, store
@@ -177,11 +200,16 @@ def main() -> None:
     parser.add_argument("league")
     parser.add_argument("name")
     parser.add_argument("--knobs", default="lam_expl,lam_rest,obs_sd")
-    parser.add_argument("--from", dest="start_from",
-                        help="a run whose knobs to start from and hold, as `search.py --from`")
+    parser.add_argument(
+        "--from",
+        dest="start_from",
+        help="a run whose knobs to start from and hold, as `search.py --from`",
+    )
     args = parser.parse_args()
     Discounted.split = measure_split(args.league)
-    base, run_knobs, train, store = (ncaafb_runner if args.league == "ncaafb" else nfl_runner)()
+    base, run_knobs, train, store = (
+        ncaafb_runner if args.league == "ncaafb" else nfl_runner
+    )()
     held = {}
     if args.start_from:
         out = DATA / ("ncaafb_out" if args.league == "ncaafb" else "out")
@@ -192,7 +220,11 @@ def main() -> None:
         return run_knobs({**held, **knobs}, through=through)
 
     names = args.knobs.split(",")
-    start = {"lam_expl": 0.0, "lam_rest": 0.0, **{n: base[n] for n in names if n not in LAMBDAS}}
+    start = {
+        "lam_expl": 0.0,
+        "lam_rest": 0.0,
+        **{n: base[n] for n in names if n not in LAMBDAS},
+    }
 
     def decode(z: np.ndarray) -> tuple[dict, dict]:
         lams = {k: 0.0 for k in LAMBDAS}
@@ -208,8 +240,9 @@ def main() -> None:
         Discounted.lam_expl, Discounted.lam_rest = lams["lam_expl"], lams["lam_rest"]
 
     x0 = np.array([start[n] if n in LAMBDAS else np.log(start[n]) for n in names])
-    simplex = [x0] + [x0 + np.eye(len(names))[i] * (LAMBDAS.get(n, 0.15))
-                      for i, n in enumerate(names)]
+    simplex = [x0] + [
+        x0 + np.eye(len(names))[i] * (LAMBDAS.get(n, 0.15)) for i, n in enumerate(names)
+    ]
     seen = []
 
     def objective(z: np.ndarray) -> float:
@@ -218,17 +251,40 @@ def main() -> None:
         loss = train(run(knobs, through=TRAIN_THROUGH))
         seen.append(loss)
         if len(seen) % 10 == 0:
-            print(args.name, len(seen), f"{loss:.6f} best {min(seen):.6f}", lams,
-                  {k: round(v, 3) for k, v in knobs.items()}, flush=True)
+            print(
+                args.name,
+                len(seen),
+                f"{loss:.6f} best {min(seen):.6f}",
+                lams,
+                {k: round(v, 3) for k, v in knobs.items()},
+                flush=True,
+            )
         return loss
 
-    fit = optimize.minimize(objective, x0, method="Nelder-Mead",
-                            options={"maxfev": 40 * len(names), "initial_simplex": np.array(simplex),
-                                     "fatol": 2e-7, "xatol": 1e-3})
+    fit = optimize.minimize(
+        objective,
+        x0,
+        method="Nelder-Mead",
+        options={
+            "maxfev": 40 * len(names),
+            "initial_simplex": np.array(simplex),
+            "fatol": 2e-7,
+            "xatol": 1e-3,
+        },
+    )
     lams, knobs = decode(fit.x)
     apply(lams)
-    store(args.name, run(knobs), {**held, **knobs},
-          {**lams, "evals": len(seen), "split": Discounted.split, "from": args.start_from})
+    store(
+        args.name,
+        run(knobs),
+        {**held, **knobs},
+        {
+            **lams,
+            "evals": len(seen),
+            "split": Discounted.split,
+            "from": args.start_from,
+        },
+    )
     print(args.name, "done", lams, knobs, flush=True)
 
 

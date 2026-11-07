@@ -49,8 +49,16 @@ FITTED = {
 PAIRS = {
     "ncaafb": [
         ("nc_p_off", "published_p", "success model vs published roster"),
-        ("disc_s", "disc_s_obs", "discounted margin on the success model vs its control"),
-        ("disc_nc_ps", "disc_nc_obs_ps", "discounted margin on the roster model vs its control"),
+        (
+            "disc_s",
+            "disc_s_obs",
+            "discounted margin on the success model vs its control",
+        ),
+        (
+            "disc_nc_ps",
+            "disc_nc_obs_ps",
+            "discounted margin on the roster model vs its control",
+        ),
     ],
     "nfl": [
         ("batch_nfl_success_p", "base_p", "success model vs published offseason"),
@@ -67,7 +75,9 @@ def load(name: str) -> pd.DataFrame:
     return df.set_index("game_id")
 
 
-def per_game(kernel, probs: np.ndarray, margins: np.ndarray, scale=None) -> dict[str, np.ndarray]:
+def per_game(
+    kernel, probs: np.ndarray, margins: np.ndarray, scale=None
+) -> dict[str, np.ndarray]:
     """Each game's margin log loss and RPS under `kernel`, its logits scaled if asked."""
     k = kernel.max_margin
     eta = kernel.slope * np.log(probs / (1 - probs))
@@ -90,7 +100,9 @@ def kernel_on(df: pd.DataFrame):
 
 
 def compare() -> None:
-    print(f"\n1. comparisons on the margin, each model's kernel fit through {TRAIN_THROUGH}")
+    print(
+        f"\n1. comparisons on the margin, each model's kernel fit through {TRAIN_THROUGH}"
+    )
     print(f"{'pair':58s} {'slice':9s} {'log loss':>14s} {'RPS':>14s} {'brier':>13s}")
     for name, against, label in PAIRS[LEAGUE]:
         a, b = load(name), load(against)
@@ -99,8 +111,11 @@ def compare() -> None:
         scores = {}
         for tag, df in (("a", a), ("b", b)):
             kernel = kernel_on(df)
-            scored = per_game(kernel, df.team1_win_prob.clip(1e-6, 1 - 1e-6).to_numpy(),
-                              df.team1_mov.to_numpy())
+            scored = per_game(
+                kernel,
+                df.team1_win_prob.clip(1e-6, 1 - 1e-6).to_numpy(),
+                df.team1_mov.to_numpy(),
+            )
             scored["brier"] = ((df.team1_win_prob - (df.team1_mov > 0)) ** 2).to_numpy()
             scores[tag] = scored
         for slice_name, rows in (
@@ -119,7 +134,8 @@ def compare() -> None:
 
 def uncertainty() -> None:
     knobs = PredictorConfig.model_validate_json(
-        (Path.home() / ".cassandra/models" / LEAGUE / FITTED[LEAGUE]).read_text()).params
+        (Path.home() / ".cassandra/models" / LEAGUE / FITTED[LEAGUE]).read_text()
+    ).params
     c, w = knobs["points_per_rating"], knobs["unit_weight"]
     df = pd.read_parquet(COMBINE / f"stack_{LEAGUE}.parquet")
     df = df[df.fbs].copy()
@@ -136,21 +152,33 @@ def uncertainty() -> None:
     test = ~train
     kernel = MarginKernelFitter().fit_df(
         df.loc[train, ["team1_win_prob_published", "team1_mov"]].rename(
-            columns={"team1_win_prob_published": "team1_win_prob"}))
+            columns={"team1_win_prob_published": "team1_win_prob"}
+        )
+    )
     base = per_game(kernel, probs[test], margins[test])
-    print(f"\n2. the ratings' uncertainty in the margin kernel ({LEAGUE}, FBS v FBS for ncaafb)")
-    print(f"   rating sd on the gap, held out: record's median {c * np.sqrt(np.median(parent[test])):.1f}"
-          f" points (10-90% {c * np.sqrt(np.percentile(parent[test], 10)):.1f}-"
-          f"{c * np.sqrt(np.percentile(parent[test], 90)):.1f})")
-    print(f"{'uncertainty':26s} {'gamma':>7s} {'log loss':>14s} {'RPS':>14s}   held out, vs the kernel alone")
+    print(
+        f"\n2. the ratings' uncertainty in the margin kernel ({LEAGUE}, FBS v FBS for ncaafb)"
+    )
+    print(
+        f"   rating sd on the gap, held out: record's median {c * np.sqrt(np.median(parent[test])):.1f}"
+        f" points (10-90% {c * np.sqrt(np.percentile(parent[test], 10)):.1f}-"
+        f"{c * np.sqrt(np.percentile(parent[test], 90)):.1f})"
+    )
+    print(
+        f"{'uncertainty':26s} {'gamma':>7s} {'log loss':>14s} {'RPS':>14s}   held out, vs the kernel alone"
+    )
     for name, var in (("the record's", parent), ("record + units combined", combined)):
         z = 0.5 * np.log(var.to_numpy())
         z = z - np.median(z[train])
 
         def loss(gamma, rows):
-            return per_game(kernel, probs[rows], margins[rows], np.exp(-gamma * z[rows]))["log_loss"].mean()
+            return per_game(
+                kernel, probs[rows], margins[rows], np.exp(-gamma * z[rows])
+            )["log_loss"].mean()
 
-        gamma = optimize.minimize_scalar(lambda g: loss(g, train), bounds=(-3, 3), method="bounded").x
+        gamma = optimize.minimize_scalar(
+            lambda g: loss(g, train), bounds=(-3, 3), method="bounded"
+        ).x
         scored = per_game(kernel, probs[test], margins[test], np.exp(-gamma * z[test]))
         cells = []
         for metric, unit in (("log_loss", 1e3), ("rps", 1e2)):

@@ -165,7 +165,7 @@ def _read_kept(
         if meta.get("key") != key or datetime.now(UTC) - replayed_at > max_age:
             return None
         return pd.read_parquet(frame_path), replayed_at
-    except (OSError, ValueError, KeyError):
+    except OSError, ValueError, KeyError:
         # A half-written or older-format cache is a cache miss, not an error:
         # the replay it stood in for can always be made again.
         return None
@@ -208,7 +208,7 @@ async def load_odds(
         if datetime.now(UTC) - read_at <= max_age:
             try:
                 return _odds_from_frame(pd.read_parquet(path)), read_at
-            except (OSError, ValueError, KeyError):
+            except OSError, ValueError, KeyError:
                 pass
     read_at = datetime.now(UTC)
     odds_db = await OddsDatabase.from_s3(Config.init_from_file().bucket)

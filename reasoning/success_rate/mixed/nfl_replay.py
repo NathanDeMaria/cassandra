@@ -48,8 +48,13 @@ PUBLISHED = json.loads((HOME / "units/out/batch_nfl_success.json").read_text())[
 BASE = {**PredictorConfig.model_validate_json(FITTED.read_text()).params, **PUBLISHED}
 
 #: knob: (shift for the log, first step from 0); the weights search on their own scale.
-POSITIVE = {"points_per_epa": (1.0, 20.0), "play_sd": (0.05, 0.5), "qb_out_penalty": (1.0, 10.0),
-            "offense_weekly_sd_increase": (0.005, 0.01), "offense_initial_sd": (0.01, 0.03)}
+POSITIVE = {
+    "points_per_epa": (1.0, 20.0),
+    "play_sd": (0.05, 0.5),
+    "qb_out_penalty": (1.0, 10.0),
+    "offense_weekly_sd_increase": (0.005, 0.01),
+    "offense_initial_sd": (0.01, 0.03),
+}
 SHARES = {"success_weight", "defense_success_weight"}
 
 NAMED, NAMER = seasons()
@@ -65,22 +70,38 @@ def index(name: str) -> EpaIndex:
     flat_scale, flat_level = SUCCESS_SCALE["nfl"]["unweighted"]
 
     def rescaled(rate):
-        return None if rate is None else (own["scale"] * rate + own["level"] - flat_level) / flat_scale
+        return (
+            None
+            if rate is None
+            else (own["scale"] * rate + own["level"] - flat_level) / flat_scale
+        )
 
-    return EpaIndex({
-        g: e._replace(home_success=rescaled(e.home_success), away_success=rescaled(e.away_success))
-        for g, e in games.items()
-    })
+    return EpaIndex(
+        {
+            g: e._replace(
+                home_success=rescaled(e.home_success),
+                away_success=rescaled(e.away_success),
+            )
+            for g, e in games.items()
+        }
+    )
 
 
 def run(index_name: str, knobs: dict) -> pd.DataFrame:
     predictor = UnitMarginGlickoPredictor(
-        "nfl", **{**BASE, **knobs},
+        "nfl",
+        **{**BASE, **knobs},
         opponent_prior_manager=OpponentPriorManager("nfl", path=PRIORS),
         game_epa=index(index_name),
     )
-    return pd.DataFrame([asdict(p) for p in join_with_odds(
-        predictor, NAMED, OddsDatabase({}), post_callbacks=False, namer=NAMER)])
+    return pd.DataFrame(
+        [
+            asdict(p)
+            for p in join_with_odds(
+                predictor, NAMED, OddsDatabase({}), post_callbacks=False, namer=NAMER
+            )
+        ]
+    )
 
 
 def scores(df: pd.DataFrame) -> dict[str, float]:
@@ -106,7 +127,11 @@ def search(name: str, index_name: str, start: dict, names: list[str]) -> None:
     def decode(z):
         out = dict(start)
         for k, v in zip(names, z):
-            out[k] = max(0.0, float(np.exp(v) - POSITIVE[k][0])) if k in POSITIVE else float(np.clip(v, 0, 1))
+            out[k] = (
+                max(0.0, float(np.exp(v) - POSITIVE[k][0]))
+                if k in POSITIVE
+                else float(np.clip(v, 0, 1))
+            )
         return out
 
     x0 = np.array([encode(k, start[k]) for k in names])
@@ -125,13 +150,24 @@ def search(name: str, index_name: str, start: dict, names: list[str]) -> None:
         loss = scores(run(index_name, decode(z)))["train"]
         seen.append(loss)
         if len(seen) % 20 == 0:
-            print(f"{name} {len(seen)} {loss:.6f} best {min(seen):.6f} "
-                  f"({(time.time() - began) / len(seen):.1f}s/probe)", flush=True)
+            print(
+                f"{name} {len(seen)} {loss:.6f} best {min(seen):.6f} "
+                f"({(time.time() - began) / len(seen):.1f}s/probe)",
+                flush=True,
+            )
         return loss
 
-    fit = optimize.minimize(objective, x0, method="Nelder-Mead",
-                            options={"maxfev": 50 * len(names), "initial_simplex": np.array(simplex),
-                                     "fatol": 2e-7, "xatol": 1e-3})
+    fit = optimize.minimize(
+        objective,
+        x0,
+        method="Nelder-Mead",
+        options={
+            "maxfev": 50 * len(names),
+            "initial_simplex": np.array(simplex),
+            "fatol": 2e-7,
+            "xatol": 1e-3,
+        },
+    )
     knobs = decode(fit.x)
     moved = {k: knobs[k] for k in names}
     save(name, run(index_name, knobs), index=index_name, knobs=moved, evals=len(seen))
