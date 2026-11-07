@@ -158,7 +158,9 @@ def test_the_roster_knob_survives_a_save(tmp_path) -> None:
     assert GlickoPredictor.load_state(path).state_dict()["roster_change_shift"] == 15
 
 
-def _turnover_rolled(**knobs: float) -> GlickoPredictor:
+def _turnover_rolled(
+    turnover_rating_shift: float = 0.0, turnover_rd_scale: float = 0.0
+) -> GlickoPredictor:
     """2021: Gutted lost 0.3 more of its minutes than average, Kept 0.3 less,
     and New isn't on the file."""
     from .adjustments import MatchupSources
@@ -175,7 +177,8 @@ def _turnover_rolled(**knobs: float) -> GlickoPredictor:
         sources=MatchupSources.for_league("test_league")._replace(
             turnover=TurnoverIndex({2021: {"Gutted": 0.8, "Kept": 0.2}})
         ),
-        **knobs,
+        turnover_rating_shift=turnover_rating_shift,
+        turnover_rd_scale=turnover_rd_scale,
     )
     predictor.pass_season(2021)
     return predictor
