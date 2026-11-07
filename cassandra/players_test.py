@@ -51,3 +51,20 @@ def test_a_team_goes_by_the_name_its_team_page_has(tmp_path: Path) -> None:
         + "1,2,3,1,1,1.4,2.5,4,4,100,0.5\n"
     )
     assert read_players_file(path).players[0].team == "Central Arkansas Bears"
+
+
+def test_a_mornings_chance_of_playing_reads_and_a_file_without_one_still_does(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mens_players_2026.csv"
+    path.write_text(
+        _HEADER.strip()
+        + ",play_chance\n"
+        + "mens,2026,2026-11-05,1,Pat,9,Team,false,1,2,3,1,1,1.4,2.5,4,4,100,0.5,0.82\n"
+        + "mens,2026,2026-11-05,2,Sam,9,Team,false,1,2,3,1,1,1.4,2.5,4,4,100,0.5,\n"
+    )
+    first, second = read_players_file(path).players
+    assert first.play_chance == 0.82 and second.play_chance is None
+    older = tmp_path / "mens_players_2013.csv"
+    older.write_text(_HEADER + "mens,2013,,1,Pat,9,Team,false,1,2,3,1,1,1.4,2.5,,,,\n")
+    assert read_players_file(older).players[0].play_chance is None

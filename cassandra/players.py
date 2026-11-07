@@ -44,9 +44,19 @@ class PlayerRow(BaseModel):
     starts: int | None = None
     minutes: float | None = None
     share: float | None = None
+    # of playing the team's next game: an estimate from his missed games and
+    # last game's minutes; none for a finished season
+    play_chance: float | None = None
 
     @field_validator(
-        "player", "team", "games", "starts", "minutes", "share", mode="before"
+        "player",
+        "team",
+        "games",
+        "starts",
+        "minutes",
+        "share",
+        "play_chance",
+        mode="before",
     )
     @classmethod
     def _blank_is_none(cls, value: object) -> object:
