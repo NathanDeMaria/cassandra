@@ -38,7 +38,10 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, LogisticRegression
 
 DATA = Path.home() / ".cassandra/success_rate/units"
-GAMES = {"ncaafb": DATA / "ncaafb_out/published_p.parquet", "nfl": DATA / "out/base_p.parquet"}
+GAMES = {
+    "ncaafb": DATA / "ncaafb_out/published_p.parquet",
+    "nfl": DATA / "out/base_p.parquet",
+}
 INDEX = {"ncaafb": DATA / "ncaafb_index.pkl", "nfl": DATA / "nfl_index.pkl"}
 TRAIN_THROUGH = 2021
 PARTS = ("epa", "eff", "expl")
@@ -69,24 +72,62 @@ def load(league: str) -> tuple[pd.DataFrame, pd.DataFrame]:
             continue
         if e.home_success is None or e.away_success is None:
             continue
-        rows.append((g.game_id, g.year, g.week, g.home_team, g.away_team, g.home,
-                     e.home, e.home_success, e.home_plays))
-        rows.append((g.game_id, g.year, g.week, g.away_team, g.home_team, -g.home,
-                     e.away, e.away_success, e.away_plays))
-    plays = pd.DataFrame(rows, columns=["game_id", "year", "week", "offense", "defense",
-                                        "home", "epa", "success", "snaps"])
+        rows.append(
+            (
+                g.game_id,
+                g.year,
+                g.week,
+                g.home_team,
+                g.away_team,
+                g.home,
+                e.home,
+                e.home_success,
+                e.home_plays,
+            )
+        )
+        rows.append(
+            (
+                g.game_id,
+                g.year,
+                g.week,
+                g.away_team,
+                g.home_team,
+                -g.home,
+                e.away,
+                e.away_success,
+                e.away_plays,
+            )
+        )
+    plays = pd.DataFrame(
+        rows,
+        columns=[
+            "game_id",
+            "year",
+            "week",
+            "offense",
+            "defense",
+            "home",
+            "epa",
+            "success",
+            "snaps",
+        ],
+    )
     w = np.sqrt(plays.snaps.to_numpy())
     design = np.c_[np.ones(len(plays)), plays.success]
     alpha, beta = np.linalg.lstsq(design * w[:, None], plays.epa * w, rcond=None)[0]
     plays["eff"] = alpha + beta * plays.success
     plays["expl"] = plays.epa - plays.eff
-    print(f"{league}: {len(plays)} offense-games, epa = {alpha:.3f} + {beta:.3f} * success"
-          f" + explosiveness; game-level sd eff {plays.eff.std():.3f},"
-          f" expl {plays.expl.std():.3f} EPA/play")
+    print(
+        f"{league}: {len(plays)} offense-games, epa = {alpha:.3f} + {beta:.3f} * success"
+        f" + explosiveness; game-level sd eff {plays.eff.std():.3f},"
+        f" expl {plays.expl.std():.3f} EPA/play"
+    )
     return games, plays
 
 
-def fit(df: pd.DataFrame, value: str, weight: str, prior: float) -> tuple[dict, dict, dict]:
+def fit(
+    df: pd.DataFrame, value: str, weight: str, prior: float
+) -> tuple[dict, dict, dict]:
     """O and D per team by weighted least squares, `prior` units of weight toward 0."""
     teams = sorted(set(df.offense) | set(df.defense))
     at = {t: i for i, t in enumerate(teams)}
@@ -102,7 +143,7 @@ def fit(df: pd.DataFrame, value: str, weight: str, prior: float) -> tuple[dict, 
     normal[2:, 2:] += prior * np.eye(2 * k)
     solved = np.linalg.solve(normal, weighted @ df[value].to_numpy())
     games = df.offense.value_counts().to_dict()
-    return dict(zip(teams, solved[2:2 + k])), dict(zip(teams, solved[2 + k:])), games
+    return dict(zip(teams, solved[2 : 2 + k])), dict(zip(teams, solved[2 + k :])), games
 
 
 def rate_margins(games: pd.DataFrame, prior: float) -> tuple[dict, dict]:
@@ -134,8 +175,11 @@ def reliability(plays: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
             for part in PARTS:
                 oa, da, na = fit(a, part, "snaps", IDENTIFY)
                 ob, db, nb = fit(b, part, "snaps", IDENTIFY)
-                both = [t for t in oa if na.get(t, 0) >= MIN_HALF and nb.get(t, 0) >= MIN_HALF
-                        and t in ob]
+                both = [
+                    t
+                    for t in oa
+                    if na.get(t, 0) >= MIN_HALF and nb.get(t, 0) >= MIN_HALF and t in ob
+                ]
                 for t in both:
                     pairs.append((year, part, "offense", oa[t], ob[t]))
                     pairs.append((year, part, "defense", da[t], db[t]))
@@ -155,7 +199,11 @@ def carryover(plays: pd.DataFrame) -> pd.DataFrame:
             o0, d0, n0 = fits[year, part]
             o1, d1, n1 = fits[nxt, part]
             for t in o0:
-                if n0.get(t, 0) >= MIN_SEASON and n1.get(t, 0) >= MIN_SEASON and t in o1:
+                if (
+                    n0.get(t, 0) >= MIN_SEASON
+                    and n1.get(t, 0) >= MIN_SEASON
+                    and t in o1
+                ):
                     pairs.append((year, part, "offense", o0[t], o1[t]))
                     pairs.append((year, part, "defense", d0[t], d1[t]))
     return pd.DataFrame(pairs, columns=["year", "part", "side", "a", "b"])
@@ -165,8 +213,10 @@ def summarize(halves: pd.DataFrame, seasons: pd.DataFrame, plays: pd.DataFrame) 
     """Per part and side: reliability, true sd, noise per play, carryover."""
     snaps_per_half = plays.groupby(["year", "offense"]).snaps.sum().median() / 2
     out = {}
-    print(f"\n{'part':5s} {'side':8s} {'half r':>7s} {'season rel':>10s} {'true sd':>8s}"
-          f" {'noise/play':>10s} {'carryover':>9s} {'r(t,t+1)':>9s}")
+    print(
+        f"\n{'part':5s} {'side':8s} {'half r':>7s} {'season rel':>10s} {'true sd':>8s}"
+        f" {'noise/play':>10s} {'carryover':>9s} {'r(t,t+1)':>9s}"
+    )
     for (part, side), h in halves.groupby(["part", "side"]):
         # Centered within season: a season's level is the league's, not a team's.
         a = h.a - h.groupby("year").a.transform("mean")
@@ -179,9 +229,11 @@ def summarize(halves: pd.DataFrame, seasons: pd.DataFrame, plays: pd.DataFrame) 
         sb = s.b - s.groupby("year").b.transform("mean")
         carry = float(np.mean(sa * sb)) / true_var
         out[part, side] = {"true_var": true_var, "per_play": noise_var * snaps_per_half}
-        print(f"{part:5s} {side:8s} {r:7.3f} {2 * r / (1 + r):10.3f} {np.sqrt(true_var):8.4f}"
-              f" {np.sqrt(noise_var * snaps_per_half):10.3f} {carry:9.3f}"
-              f" {float(np.corrcoef(sa, sb)[0, 1]):9.3f}")
+        print(
+            f"{part:5s} {side:8s} {r:7.3f} {2 * r / (1 + r):10.3f} {np.sqrt(true_var):8.4f}"
+            f" {np.sqrt(noise_var * snaps_per_half):10.3f} {carry:9.3f}"
+            f" {float(np.corrcoef(sa, sb)[0, 1]):9.3f}"
+        )
     return out
 
 
@@ -201,13 +253,19 @@ def margin_prior(games: pd.DataFrame, rng: np.random.Generator) -> float:
     a, b = np.array(a_all), np.array(b_all)
     true_var = float(np.mean((a - a.mean()) * (b - b.mean())))
     noise = float(np.var(a) + np.var(b)) / 2 - true_var
-    sides = pd.concat([games[["year", "home_team"]].set_axis(["year", "team"], axis=1),
-                       games[["year", "away_team"]].set_axis(["year", "team"], axis=1)])
+    sides = pd.concat(
+        [
+            games[["year", "home_team"]].set_axis(["year", "team"], axis=1),
+            games[["year", "away_team"]].set_axis(["year", "team"], axis=1),
+        ]
+    )
     games_per_half = sides.groupby(["year", "team"]).size().median() / 2
     return noise * games_per_half / true_var
 
 
-def features(games: pd.DataFrame, plays: pd.DataFrame, priors: dict, m_prior: float) -> pd.DataFrame:
+def features(
+    games: pd.DataFrame, plays: pd.DataFrame, priors: dict, m_prior: float
+) -> pd.DataFrame:
     """Season-to-date fits before each week, as gaps for that week's games."""
     out = []
     for year, season in games.groupby("year"):
@@ -229,9 +287,18 @@ def features(games: pd.DataFrame, plays: pd.DataFrame, priors: dict, m_prior: fl
                 h, a = g.home_team, g.away_team
                 if seen.get(h, 0) < 3 or seen.get(a, 0) < 3 or h not in r or a not in r:
                     continue
-                row = {"game_id": g.game_id, "year": year, "week": week, "fbs": g.fbs,
-                       "home": g.home, "margin": g.margin, "win": float(g.margin > 0),
-                       "tie": g.margin == 0, "prob": g.team1_win_prob, "rating": r[h] - r[a]}
+                row = {
+                    "game_id": g.game_id,
+                    "year": year,
+                    "week": week,
+                    "fbs": g.fbs,
+                    "home": g.home,
+                    "margin": g.margin,
+                    "win": float(g.margin > 0),
+                    "tie": g.margin == 0,
+                    "prob": g.team1_win_prob,
+                    "rating": r[h] - r[a],
+                }
                 for part, (o, d) in fits.items():
                     row[part] = (o[h] - d[a]) - (o[a] - d[h])
                 out.append(row)
@@ -243,8 +310,10 @@ def predict(df: pd.DataFrame) -> None:
     eps = 1e-6
     df["prod"] = np.log((df.prob + eps) / (1 - df.prob + eps))
     train, test = df[df.year <= TRAIN_THROUGH], df[df.year > TRAIN_THROUGH]
-    print(f"\nnext-week margins, week {FIRST_WEEK}+ : {len(train)} games through"
-          f" {TRAIN_THROUGH}, {len(test)} after")
+    print(
+        f"\nnext-week margins, week {FIRST_WEEK}+ : {len(train)} games through"
+        f" {TRAIN_THROUGH}, {len(test)} after"
+    )
     specs = {
         "margins": ["home", "rating"],
         "margins + EPA": ["home", "rating", "epa"],
@@ -255,7 +324,9 @@ def predict(df: pd.DataFrame) -> None:
         "published + EPA": ["prod", "epa"],
         "published + eff + expl": ["prod", "eff", "expl"],
     }
-    print(f"{'features':24s} {'test RMSE':>9s} {'test brier':>10s}   coefficients (points per unit)")
+    print(
+        f"{'features':24s} {'test RMSE':>9s} {'test brier':>10s}   coefficients (points per unit)"
+    )
     for name, cols in specs.items():
         ols = LinearRegression().fit(train[cols], train.margin)
         rmse = float(np.sqrt(np.mean((ols.predict(test[cols]) - test.margin) ** 2)))
@@ -266,8 +337,10 @@ def predict(df: pd.DataFrame) -> None:
         design = np.c_[np.ones(len(train)), train[cols]]
         resid = train.margin - ols.predict(train[cols])
         cov = np.linalg.inv(design.T @ design) * resid.var()
-        coefs = "  ".join(f"{c} {b:+.2f} (t {b / np.sqrt(cov[i + 1, i + 1]):+.1f})"
-                          for i, (c, b) in enumerate(zip(cols, ols.coef_)))
+        coefs = "  ".join(
+            f"{c} {b:+.2f} (t {b / np.sqrt(cov[i + 1, i + 1]):+.1f})"
+            for i, (c, b) in enumerate(zip(cols, ols.coef_))
+        )
         print(f"{name:24s} {rmse:9.3f} {brier:10.5f}   {coefs}")
 
 
@@ -280,11 +353,21 @@ def main() -> None:
     measured = summarize(halves, seasons, plays)
     # Each part's own prior, in plays: its noise per play over its true
     # variance, offense and defense averaged.
-    priors = {part: np.mean([measured[part, s]["per_play"] / measured[part, s]["true_var"]
-                             for s in ("offense", "defense")]) for part in PARTS}
+    priors = {
+        part: np.mean(
+            [
+                measured[part, s]["per_play"] / measured[part, s]["true_var"]
+                for s in ("offense", "defense")
+            ]
+        )
+        for part in PARTS
+    }
     m_prior = margin_prior(games, rng)
-    print("\nshrinkage, plays of prior weight:", {k: round(v) for k, v in priors.items()},
-          f"margins {m_prior:.1f} games")
+    print(
+        "\nshrinkage, plays of prior weight:",
+        {k: round(v) for k, v in priors.items()},
+        f"margins {m_prior:.1f} games",
+    )
     predict(features(games, plays, priors, m_prior))
 
 

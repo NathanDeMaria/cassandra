@@ -21,9 +21,25 @@ from cassandra.epa_build import is_down  # noqa: E402
 
 PLAYS = "/home/dev/.cassandra/success_rate/nfl_plays.parquet"
 COLS = [
-    "game_id", "season", "week", "date", "offense", "defense", "offense_is_home", "neutral_site",
-    "home_score", "away_score", "play_type", "text", "epa", "down", "distance", "yardline",
-    "period", "clock_seconds", "home_wp",
+    "game_id",
+    "season",
+    "week",
+    "date",
+    "offense",
+    "defense",
+    "offense_is_home",
+    "neutral_site",
+    "home_score",
+    "away_score",
+    "play_type",
+    "text",
+    "epa",
+    "down",
+    "distance",
+    "yardline",
+    "period",
+    "clock_seconds",
+    "home_wp",
 ]
 
 
@@ -35,8 +51,12 @@ def load(last=2025):
     df["win"] = (df.epa > 0).astype(float)
     owp = np.where(df.offense_is_home, df.home_wp, 1 - df.home_wp)
     late = df.period == 4
-    short = ((df.down >= 3) & (df.distance <= 2)) | ((df.down == 2) & (df.distance <= 1))
-    long = ((df.down >= 3) & (df.distance >= 7)) | ((df.down == 2) & (df.distance >= 12))
+    short = ((df.down >= 3) & (df.distance <= 2)) | (
+        (df.down == 2) & (df.distance <= 1)
+    )
+    long = ((df.down >= 3) & (df.distance >= 7)) | (
+        (df.down == 2) & (df.distance >= 12)
+    )
     two_min = (df.period == 2) & (df.clock_seconds <= 120)
     df["situation"] = np.select(
         [late & (owp > 0.8), late & (owp < 0.2), two_min, short, long],

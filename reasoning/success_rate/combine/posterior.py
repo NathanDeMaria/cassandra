@@ -88,12 +88,23 @@ def _seasons() -> list:
 
 
 def frame() -> pd.DataFrame:
-    job = publish._job(CASSANDRA_HOME / "models" / LEAGUE / f"{MODEL}_result.json", LEAGUE)
+    job = publish._job(
+        CASSANDRA_HOME / "models" / LEAGUE / f"{MODEL}_result.json", LEAGUE
+    )
     Recorder.rows = []
     predictor = Recorder(LEAGUE, **job.config.params)
-    df = pd.DataFrame([asdict(p) for p in join_with_odds(
-        predictor, _seasons(), OddsDatabase({}), post_callbacks=False,
-        roll_over_final_season=False)])
+    df = pd.DataFrame(
+        [
+            asdict(p)
+            for p in join_with_odds(
+                predictor,
+                _seasons(),
+                OddsDatabase({}),
+                post_callbacks=False,
+                roll_over_final_season=False,
+            )
+        ]
+    )
     df["fbs"] = [
         LEAGUE != "ncaafb" or (_in_fbs(h, int(y)) and _in_fbs(a, int(y)))
         for h, a, y in zip(df.home_team, df.away_team, df.year)
@@ -108,9 +119,15 @@ def features(df: pd.DataFrame) -> pd.DataFrame:
     opponent; the gap is the two teams' nets apart, and `net_var` the sum of
     the four deviations squared.
     """
-    f = pd.DataFrame({"year": df.year, "week": df.week_number, "fbs": df.fbs,
-                      "win": df.team1_win.astype(float),
-                      "tie": df.home_score == df.away_score})
+    f = pd.DataFrame(
+        {
+            "year": df.year,
+            "week": df.week_number,
+            "fbs": df.fbs,
+            "win": df.team1_win.astype(float),
+            "tie": df.home_score == df.away_score,
+        }
+    )
     f["prob"] = df.team1_win_prob
     eps = 1e-6
     f["prod"] = np.log((f.prob + eps) / (1 - f.prob + eps))
@@ -136,13 +153,19 @@ def report(f: pd.DataFrame) -> None:
     train, test = f[f.year <= TRAIN_THROUGH], f[f.year > TRAIN_THROUGH]
     early = (test.week <= 4).to_numpy()
     base = ((test.prob - test.win) ** 2).to_numpy()
-    print(f"\n{LEAGUE}: {len(train)} games through {TRAIN_THROUGH}, {len(test)} after"
-          f" ({early.sum()} in weeks 1-4); published brier on those {base.mean():.6f}")
-    print(f"{'combination':36s} {'held out':>9s} {'vs published':>13s} {'t':>6s}"
-          f" {'weeks 1-4':>10s} {'t':>6s}   coefficients")
+    print(
+        f"\n{LEAGUE}: {len(train)} games through {TRAIN_THROUGH}, {len(test)} after"
+        f" ({early.sum()} in weeks 1-4); published brier on those {base.mean():.6f}"
+    )
+    print(
+        f"{'combination':36s} {'held out':>9s} {'vs published':>13s} {'t':>6s}"
+        f" {'weeks 1-4':>10s} {'t':>6s}   coefficients"
+    )
     for name, cols in SPECS.items():
         scale = train[cols].std()
-        model = LogisticRegression(C=1e6, max_iter=5000).fit(train[cols] / scale, train.win)
+        model = LogisticRegression(C=1e6, max_iter=5000).fit(
+            train[cols] / scale, train.win
+        )
         p = model.predict_proba(test[cols] / scale)[:, 1]
         diff = (p - test.win.to_numpy()) ** 2 - base
 
@@ -150,17 +173,23 @@ def report(f: pd.DataFrame) -> None:
             return d.mean() / d.std() * np.sqrt(len(d))
 
         coefs = " ".join(f"{c} {b:+.2f}" for c, b in zip(cols, model.coef_[0]))
-        print(f"{name:36s} {base.mean() + diff.mean():9.6f} {diff.mean() * 1e4:+12.2f}e-4"
-              f" {t(diff):+6.2f} {diff[early].mean() * 1e4:+8.2f}e-4 {t(diff[early]):+6.2f}"
-              f"   {coefs}")
+        print(
+            f"{name:36s} {base.mean() + diff.mean():9.6f} {diff.mean() * 1e4:+12.2f}e-4"
+            f" {t(diff):+6.2f} {diff[early].mean() * 1e4:+8.2f}e-4 {t(diff[early]):+6.2f}"
+            f"   {coefs}"
+        )
     for season in sorted(test.year.unique()):
         cols = SPECS["published + rates' gap"]
         scale = train[cols].std()
-        model = LogisticRegression(C=1e6, max_iter=5000).fit(train[cols] / scale, train.win)
+        model = LogisticRegression(C=1e6, max_iter=5000).fit(
+            train[cols] / scale, train.win
+        )
         mask = (test.year == season).to_numpy()
         p = model.predict_proba(test[cols][mask] / scale)[:, 1]
         d = (p - test.win.to_numpy()[mask]) ** 2 - base[mask]
-        print(f"  {season}: rates' gap {d.mean() * 1e4:+.2f}e-4 over {mask.sum()} games")
+        print(
+            f"  {season}: rates' gap {d.mean() * 1e4:+.2f}e-4 over {mask.sum()} games"
+        )
 
 
 def honesty(df: pd.DataFrame) -> None:
@@ -188,24 +217,43 @@ def honesty(df: pd.DataFrame) -> None:
         ):
             if rate is None or not downs:
                 continue
-            expected = getattr(row, f"off_{offense}") + getattr(row, f"def_{defense}") - row.center
-            claimed = getattr(row, f"off_sd_{offense}") ** 2 + getattr(row, f"def_sd_{defense}") ** 2
+            expected = (
+                getattr(row, f"off_{offense}")
+                + getattr(row, f"def_{defense}")
+                - row.center
+            )
+            claimed = (
+                getattr(row, f"off_sd_{offense}") ** 2
+                + getattr(row, f"def_sd_{defense}") ** 2
+            )
             noise = expected * (1 - expected) / downs
-            rows.append({"year": row.year, "week": row.week_number, "fbs": row.fbs,
-                         "resid": rate - expected, "claimed": claimed, "noise": noise})
+            rows.append(
+                {
+                    "year": row.year,
+                    "week": row.week_number,
+                    "fbs": row.fbs,
+                    "resid": rate - expected,
+                    "claimed": claimed,
+                    "noise": noise,
+                }
+            )
     z = pd.DataFrame(rows)
     z = z[z.fbs & (z.year > TRAIN_THROUGH)]
     print(f"\nhonesty, {len(z)} offenses since {TRAIN_THROUGH + 1}:")
-    print(f"{'weeks':>8s} {'n':>6s} {'mean resid':>11s} {'sd resid':>9s} {'claimed':>8s}"
-          f" {'noise':>7s} {'excess':>7s} {'z sd':>6s} {'within 1':>9s} {'within 2':>9s}")
+    print(
+        f"{'weeks':>8s} {'n':>6s} {'mean resid':>11s} {'sd resid':>9s} {'claimed':>8s}"
+        f" {'noise':>7s} {'excess':>7s} {'z sd':>6s} {'within 1':>9s} {'within 2':>9s}"
+    )
     for label, mask in (("all", z.week > 0), ("1-4", z.week <= 4), ("5+", z.week > 4)):
         part = z[mask]
         scaled = part.resid / np.sqrt(part.claimed + part.noise)
         excess = np.sqrt(max(part.resid.var() - part.noise.mean(), 0.0))
-        print(f"{label:>8s} {len(part):6d} {part.resid.mean():+11.4f} {part.resid.std():9.4f}"
-              f" {np.sqrt(part.claimed.mean()):8.4f} {np.sqrt(part.noise.mean()):7.4f}"
-              f" {excess:7.4f}"
-              f" {scaled.std():6.3f} {(scaled.abs() < 1).mean():9.3f} {(scaled.abs() < 2).mean():9.3f}")
+        print(
+            f"{label:>8s} {len(part):6d} {part.resid.mean():+11.4f} {part.resid.std():9.4f}"
+            f" {np.sqrt(part.claimed.mean()):8.4f} {np.sqrt(part.noise.mean()):7.4f}"
+            f" {excess:7.4f}"
+            f" {scaled.std():6.3f} {(scaled.abs() < 1).mean():9.3f} {(scaled.abs() < 2).mean():9.3f}"
+        )
 
 
 def main() -> None:

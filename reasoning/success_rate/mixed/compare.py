@@ -22,10 +22,26 @@ DIRS = {"nfl": HOME / "mixed/out", "ncaafb": HOME / "units/ncaafb_out"}
 def load(league: str, name: str) -> pd.DataFrame:
     df = pd.read_parquet(DIRS[league] / f"{name}.parquet").reset_index(drop=True)
     # A side's game of the season, over every game it played, in date order.
-    sides = pd.concat([
-        pd.DataFrame({"row": df.index, "year": df.year, "team": df.home_team, "date": df.date}),
-        pd.DataFrame({"row": df.index, "year": df.year, "team": df.away_team, "date": df.date}),
-    ]).sort_values(["date", "row"], kind="stable")
+    sides = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "row": df.index,
+                    "year": df.year,
+                    "team": df.home_team,
+                    "date": df.date,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "row": df.index,
+                    "year": df.year,
+                    "team": df.away_team,
+                    "date": df.date,
+                }
+            ),
+        ]
+    ).sort_values(["date", "row"], kind="stable")
     sides["n"] = sides.groupby(["year", "team"]).cumcount() + 1
     df["game_no"] = sides.groupby("row").n.min()
     if league == "ncaafb":
@@ -40,8 +56,10 @@ def line(label: str, d: pd.Series, years: pd.Series) -> str:
         return f"  {label:12s} -"
     t = d.mean() / (d.std() / np.sqrt(len(d))) if d.std() else 0.0
     by = d.groupby(years).mean()
-    return (f"  {label:12s} {d.mean() * 1e4:+6.2f}  t {t:+5.2f}  "
-            f"{(by < 0).sum()}/{len(by)} seasons  n {len(d)}")
+    return (
+        f"  {label:12s} {d.mean() * 1e4:+6.2f}  t {t:+5.2f}  "
+        f"{(by < 0).sum()}/{len(by)} seasons  n {len(d)}"
+    )
 
 
 def main(league: str, base: str, runs: list[str]) -> None:

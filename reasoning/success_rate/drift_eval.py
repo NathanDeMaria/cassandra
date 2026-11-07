@@ -34,8 +34,13 @@ def with_flags(history: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> None:
     games = load_games()
-    fits = {name: Params(**json.loads((DATA / f).read_text()))
-            for name, f in (("constant", "collide_params.json"), ("drift", "collide_params_drift.json"))}
+    fits = {
+        name: Params(**json.loads((DATA / f).read_text()))
+        for name, f in (
+            ("constant", "collide_params.json"),
+            ("drift", "collide_params_drift.json"),
+        )
+    }
     for name, p in fits.items():
         print(name, {k: round(float(v), 4) for k, v in p.__dict__.items()})
     runs = {name: with_flags(replay(games, p, size=48)) for name, p in fits.items()}
@@ -55,14 +60,19 @@ def main() -> None:
     for cut, mask in cuts.items():
         b, d = base[mask], drift[mask]
         rate = b.k / b.n
-        rows.append({
-            "slice": cut, "meetings": int(mask.sum()),
-            "Δ loglik/meeting": (d.loglik - b.loglik).mean(),
-            "rmse const (pts)": 100 * np.sqrt(np.average((rate - b.p) ** 2, weights=b.n)),
-            "rmse drift (pts)": 100 * np.sqrt(np.average((rate - d.p) ** 2, weights=b.n)),
-            "bias const (pts)": 100 * np.average(rate - b.p, weights=b.n),
-            "bias drift (pts)": 100 * np.average(rate - d.p, weights=b.n),
-        })
+        rows.append(
+            {
+                "slice": cut,
+                "meetings": int(mask.sum()),
+                "Δ loglik/meeting": (d.loglik - b.loglik).mean(),
+                "rmse const (pts)": 100
+                * np.sqrt(np.average((rate - b.p) ** 2, weights=b.n)),
+                "rmse drift (pts)": 100
+                * np.sqrt(np.average((rate - d.p) ** 2, weights=b.n)),
+                "bias const (pts)": 100 * np.average(rate - b.p, weights=b.n),
+                "bias drift (pts)": 100 * np.average(rate - d.p, weights=b.n),
+            }
+        )
     print(pd.DataFrame(rows).round(4).to_string(index=False))
 
 

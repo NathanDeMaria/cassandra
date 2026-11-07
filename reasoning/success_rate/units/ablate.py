@@ -33,28 +33,48 @@ def loss(df: pd.DataFrame) -> pd.Series:
 
 
 def paired(a: str, b: str) -> None:
-    da, db = pd.read_parquet(OUT / f"{a}.parquet"), pd.read_parquet(OUT / f"{b}.parquet")
+    da, db = (
+        pd.read_parquet(OUT / f"{a}.parquet"),
+        pd.read_parquet(OUT / f"{b}.parquet"),
+    )
     d = loss(da) - loss(db)
     for label, mask in (("2014+", da.year >= 2014), ("2022+", da.year >= 2022)):
         x = d[mask]
         by_season = x.groupby(da.year[mask]).mean()
         se_game = x.std() / np.sqrt(len(x))
-        se_season = by_season.std() / np.sqrt(len(by_season)) if len(by_season) > 2 else np.nan
-        print(f"  {a} - {b} {label}: {1e4 * x.mean():+.2f}e-4  se(game) {1e4 * se_game:.2f}  "
-              f"se(season) {1e4 * se_season:.2f}  t {x.mean() / se_game:+.2f}  "
-              f"seasons better {int((by_season < 0).sum())}/{len(by_season)}")
+        se_season = (
+            by_season.std() / np.sqrt(len(by_season)) if len(by_season) > 2 else np.nan
+        )
+        print(
+            f"  {a} - {b} {label}: {1e4 * x.mean():+.2f}e-4  se(game) {1e4 * se_game:.2f}  "
+            f"se(season) {1e4 * se_season:.2f}  t {x.mean() / se_game:+.2f}  "
+            f"seasons better {int((by_season < 0).sum())}/{len(by_season)}"
+        )
 
 
 if __name__ == "__main__":
     for name in ("fit_sr", "fit_b75", "fit_b50"):
         beta, since, k = knobs(name)
-        replay(f"{name}_noweekly", beta, since, **{**k, "offense_weekly_sd_increase": 0.0})
+        replay(
+            f"{name}_noweekly", beta, since, **{**k, "offense_weekly_sd_increase": 0.0}
+        )
     beta, since, k = knobs("fit_epa")
     for weekly in (0.01, 0.02):
-        replay(f"fit_epa_weekly{weekly}", beta, since, **{**k, "offense_weekly_sd_increase": weekly})
+        replay(
+            f"fit_epa_weekly{weekly}",
+            beta,
+            since,
+            **{**k, "offense_weekly_sd_increase": weekly},
+        )
     print("paired, negative is the first better:")
-    for a, b in (("fit_sr", "fit_epa"), ("fit_b75", "fit_epa"), ("fit_b50", "fit_epa"),
-                 ("fit_sr", "base"), ("fit_b75", "fit_sr"),
-                 ("fit_sr", "fit_sr_noweekly"), ("fit_b75", "fit_b75_noweekly"),
-                 ("fit_epa_weekly0.02", "fit_epa")):
+    for a, b in (
+        ("fit_sr", "fit_epa"),
+        ("fit_b75", "fit_epa"),
+        ("fit_b50", "fit_epa"),
+        ("fit_sr", "base"),
+        ("fit_b75", "fit_sr"),
+        ("fit_sr", "fit_sr_noweekly"),
+        ("fit_b75", "fit_b75_noweekly"),
+        ("fit_epa_weekly0.02", "fit_epa"),
+    ):
         paired(a, b)

@@ -58,12 +58,8 @@ async def main() -> None:
     seasons = [s async for s in read_all_seasons("nfl", bucket) if s.year >= FIRST]
     print("seasons", sorted(s.year for s in seasons))
     played = completed_games(seasons)
-    year_of = {
-        g.game_id: s.year for s in seasons for w in s.weeks for g in w.games
-    }
-    week_of = {
-        g.game_id: w.number for s in seasons for w in s.weeks for g in w.games
-    }
+    year_of = {g.game_id: s.year for s in seasons for w in s.weeks for g in w.games}
+    week_of = {g.game_id: w.number for s in seasons for w in s.weeks for g in w.games}
     source = StorePlaySource(get_processed_plays_store())
     scored, stats = await sweep("nfl", seasons, source, score)
     print(stats)
@@ -77,8 +73,12 @@ async def main() -> None:
         frame["week"] = week_of[game_id]
         frame["date"] = game.date
         frame["neutral_site"] = game.neutral_site
-        frame["offense"] = frame.offense_is_home.map({True: game.home, False: game.away})
-        frame["defense"] = frame.offense_is_home.map({True: game.away, False: game.home})
+        frame["offense"] = frame.offense_is_home.map(
+            {True: game.home, False: game.away}
+        )
+        frame["defense"] = frame.offense_is_home.map(
+            {True: game.away, False: game.home}
+        )
         frame["home_score"] = game.home_score
         frame["away_score"] = game.away_score
         frames.append(frame)

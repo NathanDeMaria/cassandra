@@ -52,7 +52,9 @@ class Recorder(UnitMarginGlickoPredictor):
             sides = self._offsets(team)
             row[f"r_{side}"] = parent.rating
             row[f"d_{side}"] = parent.rating_deviation
-            row[f"u_{side}"] = self._rating_per_epa * (sides.offense.rating + sides.defense.rating)
+            row[f"u_{side}"] = self._rating_per_epa * (
+                sides.offense.rating + sides.defense.rating
+            )
             row[f"anchor_{side}"] = self.anchor(team)
             row[f"info_{side}"] = self.unit_information(team)
         self.rows.append(row)
@@ -78,12 +80,19 @@ def replay_nfl(knobs: dict) -> pd.DataFrame:
 
     Recorder.rows = []
     predictor = Recorder(
-        "nfl", **{**BASE, **knobs},
+        "nfl",
+        **{**BASE, **knobs},
         opponent_prior_manager=OpponentPriorManager("nfl", path=PRIORS),
         game_epa=INDEX,
     )
-    df = pd.DataFrame([asdict(p) for p in join_with_odds(
-        predictor, NAMED, OddsDatabase({}), post_callbacks=False, namer=NAMER)])
+    df = pd.DataFrame(
+        [
+            asdict(p)
+            for p in join_with_odds(
+                predictor, NAMED, OddsDatabase({}), post_callbacks=False, namer=NAMER
+            )
+        ]
+    )
     df["fbs"] = True
     return df.merge(pd.DataFrame(Recorder.rows), on="game_id")
 
@@ -96,7 +105,9 @@ RUNS = {
 
 
 def knobs_of(path: str) -> dict:
-    meta = json.loads((Path.home() / ".cassandra/success_rate/units" / path).read_text())
+    meta = json.loads(
+        (Path.home() / ".cassandra/success_rate/units" / path).read_text()
+    )
     knobs = dict(meta["knobs"])
     if "beta" in meta:
         knobs["success_weight"] = meta["beta"]
@@ -106,21 +117,31 @@ def knobs_of(path: str) -> dict:
 def frame() -> pd.DataFrame:
     replay = replay_ncaafb if LEAGUE == "ncaafb" else replay_nfl
     epa_path, success_path = RUNS[LEAGUE]
-    runs = {"published": {}, "epa": knobs_of(epa_path), "success": knobs_of(success_path)}
+    runs = {
+        "published": {},
+        "epa": knobs_of(epa_path),
+        "success": knobs_of(success_path),
+    }
     out = None
     for name, knobs in runs.items():
         df = replay(knobs)
         df = df[df.year >= (2014 if LEAGUE == "ncaafb" else 2006)]
         keep = ["u_h", "u_a", "info_h", "info_a"]
         if out is None:
-            out = df.rename(columns={c: f"{c}_{name}" for c in keep + ["team1_win_prob"]})
+            out = df.rename(
+                columns={c: f"{c}_{name}" for c in keep + ["team1_win_prob"]}
+            )
         else:
             # The record is the units' parent, untouched by them: check it.
-            joined = out.merge(df[["game_id", "r_h"] + keep + ["team1_win_prob"]], on="game_id",
-                               suffixes=("", "_new"))
+            joined = out.merge(
+                df[["game_id", "r_h"] + keep + ["team1_win_prob"]],
+                on="game_id",
+                suffixes=("", "_new"),
+            )
             assert np.allclose(joined.r_h, joined.r_h_new), f"{name}: the record moved"
             out = joined.drop(columns="r_h_new").rename(
-                columns={c: f"{c}_{name}" for c in keep + ["team1_win_prob"]})
+                columns={c: f"{c}_{name}" for c in keep + ["team1_win_prob"]}
+            )
         print(name, "replayed", flush=True)
     return out
 
@@ -135,8 +156,14 @@ def features(df: pd.DataFrame) -> pd.DataFrame:
     record reproduces it nearly, and `<units>_gap` -- the disagreement at a
     constant weight -- is the blend that ignores how much either has learned.
     """
-    f = pd.DataFrame({"year": df.year, "fbs": df.fbs, "win": df.team1_win.astype(float),
-                      "tie": df.home_score == df.away_score})
+    f = pd.DataFrame(
+        {
+            "year": df.year,
+            "fbs": df.fbs,
+            "win": df.team1_win.astype(float),
+            "tie": df.home_score == df.away_score,
+        }
+    )
     f["record"] = df.r_h - df.r_a + df.edge
     for name in ("published", "epa", "success"):
         blend = 0.0
@@ -151,7 +178,9 @@ def features(df: pd.DataFrame) -> pd.DataFrame:
     f["explosive_gap"] = f.epa_gap - f.success_gap
     f["explosive_blend"] = f.epa_blend - f.success_blend
     eps = 1e-6
-    f["prod"] = np.log((df.team1_win_prob_published + eps) / (1 - df.team1_win_prob_published + eps))
+    f["prod"] = np.log(
+        (df.team1_win_prob_published + eps) / (1 - df.team1_win_prob_published + eps)
+    )
     f["prob"] = df.team1_win_prob_published
     return f
 
@@ -162,10 +191,20 @@ SPECS = {
     "  + a constant-weight term": ["record", "published_blend", "published_gap"],
     "record + EPA units (refit)": ["record", "epa_blend", "epa_gap"],
     "record + success units (refit)": ["record", "success_blend", "success_gap"],
-    "record + success + explosive": ["record", "success_blend", "success_gap",
-                                     "explosive_blend", "explosive_gap"],
-    "published + success + explosive": ["prod", "success_blend", "success_gap",
-                                        "explosive_blend", "explosive_gap"],
+    "record + success + explosive": [
+        "record",
+        "success_blend",
+        "success_gap",
+        "explosive_blend",
+        "explosive_gap",
+    ],
+    "published + success + explosive": [
+        "prod",
+        "success_blend",
+        "success_gap",
+        "explosive_blend",
+        "explosive_gap",
+    ],
 }
 
 
@@ -173,18 +212,26 @@ def report(f: pd.DataFrame) -> None:
     f = f[f.fbs & ~f.tie]
     train, test = f[f.year <= TRAIN_THROUGH], f[f.year > TRAIN_THROUGH]
     base = (test.prob - test.win) ** 2
-    print(f"\n{LEAGUE}: {len(train)} games through {TRAIN_THROUGH}, {len(test)} after;"
-          f" published brier on those {base.mean():.6f}")
-    print(f"{'combination':42s} {'held out':>9s} {'vs published':>13s} {'t':>6s}   coefficients")
+    print(
+        f"\n{LEAGUE}: {len(train)} games through {TRAIN_THROUGH}, {len(test)} after;"
+        f" published brier on those {base.mean():.6f}"
+    )
+    print(
+        f"{'combination':42s} {'held out':>9s} {'vs published':>13s} {'t':>6s}   coefficients"
+    )
     for name, cols in SPECS.items():
         scale = train[cols].std()
-        model = LogisticRegression(C=1e6, max_iter=5000).fit(train[cols] / scale, train.win)
+        model = LogisticRegression(C=1e6, max_iter=5000).fit(
+            train[cols] / scale, train.win
+        )
         p = model.predict_proba(test[cols] / scale)[:, 1]
         loss = (p - test.win) ** 2
         diff = loss.to_numpy() - base.to_numpy()
         t = diff.mean() / diff.std() * np.sqrt(len(diff))
         coefs = " ".join(f"{c} {b:+.2f}" for c, b in zip(cols, model.coef_[0]))
-        print(f"{name:42s} {loss.mean():9.6f} {diff.mean() * 1e4:+12.2f}e-4 {t:+6.2f}   {coefs}")
+        print(
+            f"{name:42s} {loss.mean():9.6f} {diff.mean() * 1e4:+12.2f}e-4 {t:+6.2f}   {coefs}"
+        )
 
 
 def main() -> None:

@@ -40,7 +40,9 @@ def _labels(df: pd.DataFrame) -> pd.DataFrame:
     home = [group(t, y) for t, y in zip(df.home_team, df.year)]
     away = [group(t, y) for t, y in zip(df.away_team, df.year)]
     pairs = ["v".join(sorted(p)) for p in zip(home, away)]
-    published = pd.read_parquet(OUT / "published.parquet").set_index("game_id").team1_win_prob
+    published = (
+        pd.read_parquet(OUT / "published.parquet").set_index("game_id").team1_win_prob
+    )
     favorite = df.game_id.map(published)
     favorite = np.maximum(favorite, 1 - favorite)
     order = df.sort_values("date").index
@@ -53,7 +55,9 @@ def _labels(df: pd.DataFrame) -> pd.DataFrame:
             count[(team, row.year)] = count.get((team, row.year), 0) + 1
             flags.append(count[(team, row.year)] <= 4)
         early[i] = any(flags)
-    return pd.DataFrame({"pair": pairs, "favorite": favorite, "early": early}, index=df.index)
+    return pd.DataFrame(
+        {"pair": pairs, "favorite": favorite, "early": early}, index=df.index
+    )
 
 
 def paired(a: str, b: str, labels: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -64,15 +68,22 @@ def paired(a: str, b: str, labels: pd.DataFrame | None = None) -> pd.DataFrame:
     db = db.loc[da.index]
     if labels is None:
         labels = _labels(da.reset_index()).set_index(da.index)
-    d = ((da.team1_win_prob - da.team1_win) ** 2) - ((db.team1_win_prob - db.team1_win) ** 2)
+    d = ((da.team1_win_prob - da.team1_win) ** 2) - (
+        (db.team1_win_prob - db.team1_win) ** 2
+    )
     fbs = da.fbs
     rows = [
         ("FBS v FBS", fbs),
         ("  held out", fbs & (da.year >= 2022)),
         ("  games 1-4", fbs & labels.early),
         ("  later", fbs & ~labels.early),
-        *[(f"  favorite {lo:.2f}-{hi:.2f}", fbs & (labels.favorite > lo) & (labels.favorite <= hi))
-          for lo, hi in zip(FAVORITE_BINS, FAVORITE_BINS[1:])],
+        *[
+            (
+                f"  favorite {lo:.2f}-{hi:.2f}",
+                fbs & (labels.favorite > lo) & (labels.favorite <= hi),
+            )
+            for lo, hi in zip(FAVORITE_BINS, FAVORITE_BINS[1:])
+        ],
         ("  power v power", labels.pair == "powervpower"),
         ("  G5 v power", labels.pair == "G5vpower"),
         ("  G5 v G5", labels.pair == "G5vG5"),
@@ -83,8 +94,10 @@ def paired(a: str, b: str, labels: pd.DataFrame | None = None) -> pd.DataFrame:
         x = d[mask]
         by = x.groupby(da.year[mask]).mean()
         t = x.mean() / (x.std() / np.sqrt(len(x)))
-        print(f"  {label:>22}: {1e4 * x.mean():+6.2f}e-4 over {len(x):5d}  t {t:+5.2f}  "
-              f"seasons better {int((by < 0).sum())}/{len(by)}")
+        print(
+            f"  {label:>22}: {1e4 * x.mean():+6.2f}e-4 over {len(x):5d}  t {t:+5.2f}  "
+            f"seasons better {int((by < 0).sum())}/{len(by)}"
+        )
     return labels
 
 

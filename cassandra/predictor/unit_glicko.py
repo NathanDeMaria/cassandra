@@ -1106,10 +1106,14 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 pair = sides[team]
                 sides[team] = _Sides(
                     pair.offense._replace(
-                        rating_deviation=math.hypot(pair.offense.rating_deviation, offense)
+                        rating_deviation=math.hypot(
+                            pair.offense.rating_deviation, offense
+                        )
                     ),
                     pair.defense._replace(
-                        rating_deviation=math.hypot(pair.defense.rating_deviation, defense)
+                        rating_deviation=math.hypot(
+                            pair.defense.rating_deviation, defense
+                        )
                     ),
                 )
 
@@ -1139,11 +1143,17 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             home_against = away_against = None
             self._center_sum += home_reading + away_reading
         else:
-            home_against, away_against = self._reading(epa, self._defense_success_weight)
-            self._center_sum += (home_reading + away_reading + home_against + away_against) / 2
+            home_against, away_against = self._reading(
+                epa, self._defense_success_weight
+            )
+            self._center_sum += (
+                home_reading + away_reading + home_against + away_against
+            ) / 2
         self._center_count += 2
         per_play = self.points_per_rating / (2 * self._points_per_epa)
-        gap = edge + self._anchor_epa_scale * (self.anchor(game.home) - self.anchor(game.away))
+        gap = edge + self._anchor_epa_scale * (
+            self.anchor(game.home) - self.anchor(game.away)
+        )
         for offense, defense, reading, against, snaps, sign in (
             (game.home, game.away, home_reading, home_against, epa.home_plays, 1.0),
             (game.away, game.home, away_reading, away_against, epa.away_plays, -1.0),
@@ -1535,7 +1545,9 @@ def _contest_step(
     total = p2 + q2 + contest.noise
     expected = contest.base + offense.rating - defense.rating
     innovation = contest.epa - expected
-    against = innovation if contest.defense_epa is None else contest.defense_epa - expected
+    against = (
+        innovation if contest.defense_epa is None else contest.defense_epa - expected
+    )
     return (
         _Rating(
             offense.rating + p2 / total * innovation,
@@ -1581,11 +1593,14 @@ class _Shown(NamedTuple):
     defense_sd: float
 
     def as_rates(self) -> KindRates:
-        return KindRates(Rate(self.offense, self.offense_sd), Rate(self.defense, self.defense_sd))
+        return KindRates(
+            Rate(self.offense, self.offense_sd), Rate(self.defense, self.defense_sd)
+        )
 
     def as_epa(self) -> KindEpa:
         return KindEpa(
-            PerDown(self.offense, self.offense_sd), PerDown(self.defense, self.defense_sd)
+            PerDown(self.offense, self.offense_sd),
+            PerDown(self.defense, self.defense_sd),
         )
 
 
@@ -1640,7 +1655,9 @@ class _DisplayedRates:
             self._play_sd = None
         else:
             clocks = EPA_RATE_CLOCKS[ALL_DOWNS if kind is None else kind]
-            self._play_sd = EPA_PLAY_SD.get(league, {}).get(ALL_DOWNS if kind is None else kind)
+            self._play_sd = EPA_PLAY_SD.get(league, {}).get(
+                ALL_DOWNS if kind is None else kind
+            )
         self._clocks = clocks.get(league)
         state = state or {}
         self._sides: dict[str, _Sides] = {
@@ -1664,7 +1681,9 @@ class _DisplayedRates:
     @property
     def enabled(self) -> bool:
         """Whether this league has clocks to keep the readings on, and an EPA reading its noise."""
-        return self._clocks is not None and (self._measure == SUCCESS or self._play_sd is not None)
+        return self._clocks is not None and (
+            self._measure == SUCCESS or self._play_sd is not None
+        )
 
     @property
     def center(self) -> float | None:
@@ -1795,7 +1814,9 @@ class _DisplayedRates:
         assert self._clocks is not None
         offense, defense = self._clocks
         self._sides = {
-            team: _Sides(_carried(pair.offense, offense), _carried(pair.defense, defense))
+            team: _Sides(
+                _carried(pair.offense, offense), _carried(pair.defense, defense)
+            )
             for team, pair in self._sides.items()
         }
         if self._count:
@@ -1865,7 +1886,9 @@ def _together(*kinds: tuple[float | None, int]) -> tuple[float | None, int]:
     downs = sum(n for _, n in kinds)
     if not downs:
         return None, 0
-    return sum(value * n for value, n in kinds if value is not None and n) / downs, downs
+    return sum(
+        value * n for value, n in kinds if value is not None and n
+    ) / downs, downs
 
 
 def _non_negative(name: str, value: float) -> float:

@@ -54,7 +54,12 @@ games = team_games(plays)
 counts = games.groupby(["season", "offense"]).size()
 franchises = set(counts[counts >= 8].index.get_level_values("offense"))
 games = games[games.offense.isin(franchises) & games.defense.isin(franchises)]
-print("franchises:", len(franchises), "dropped:", sorted(set(counts.index.get_level_values("offense")) - franchises))
+print(
+    "franchises:",
+    len(franchises),
+    "dropped:",
+    sorted(set(counts.index.get_level_values("offense")) - franchises),
+)
 
 league = games.groupby("season")[["n", "k"]].sum()
 league["rate"] = league.k / league.n
@@ -107,8 +112,14 @@ def path(team: str, season: int, side: str = "offense") -> pd.DataFrame:
     out["lo"] = stats.beta.ppf(0.10, out.a, out.b)
     out["hi"] = stats.beta.ppf(0.90, out.a, out.b)
     head = pd.DataFrame(
-        {"game": [0], "a": [a0], "b": [b0], "mean": [a0 / (a0 + b0)],
-         "lo": [stats.beta.ppf(0.10, a0, b0)], "hi": [stats.beta.ppf(0.90, a0, b0)]}
+        {
+            "game": [0],
+            "a": [a0],
+            "b": [b0],
+            "mean": [a0 / (a0 + b0)],
+            "lo": [stats.beta.ppf(0.10, a0, b0)],
+            "hi": [stats.beta.ppf(0.90, a0, b0)],
+        }
     )
     return pd.concat([head, out], ignore_index=True)
 
@@ -119,19 +130,41 @@ mu = league.rate.reindex(ts.season).to_numpy()
 resid = (ts.k / ts.n - mu).to_numpy()
 fig, ax = plt.subplots(figsize=(8, 4.2))
 bins = np.arange(-0.12, 0.121, 0.01)
-ax.hist(resid, bins=bins, density=True, color="#b7d3f6", edgecolor=SURFACE, linewidth=2,
-        label="observed team-seasons, 2006–2025")
+ax.hist(
+    resid,
+    bins=bins,
+    density=True,
+    color="#b7d3f6",
+    edgecolor=SURFACE,
+    linewidth=2,
+    label="observed team-seasons, 2006–2025",
+)
 x = np.linspace(-0.12, 0.12, 400)
 m = float(np.mean(mu))
 n_med = float(np.median(ts.n))
 talent_sd = np.sqrt(m * (1 - m) / (KAPPA + 1))
 noise_sd = np.sqrt(m * (1 - m) / n_med)
-ax.plot(x, stats.norm.pdf(x, 0, noise_sd), color=ORANGE, label=f"luck alone ({n_med:.0f} plays, every team average)")
-ax.plot(x, stats.beta.pdf(x + m, m * KAPPA, (1 - m) * KAPPA), color=BLUE,
-        label=f"talent alone: Beta fit, κ = {KAPPA:.0f} plays")
-ax.plot(x, stats.norm.pdf(x, 0, np.hypot(talent_sd, noise_sd)), color=INK, linewidth=1.2,
-        linestyle=(0, (4, 2)), label="talent + luck (what the beta-binomial predicts)")
-ax.xaxis.set_major_formatter(lambda v, _: f"{v*100:+.0f} pts")
+ax.plot(
+    x,
+    stats.norm.pdf(x, 0, noise_sd),
+    color=ORANGE,
+    label=f"luck alone ({n_med:.0f} plays, every team average)",
+)
+ax.plot(
+    x,
+    stats.beta.pdf(x + m, m * KAPPA, (1 - m) * KAPPA),
+    color=BLUE,
+    label=f"talent alone: Beta fit, κ = {KAPPA:.0f} plays",
+)
+ax.plot(
+    x,
+    stats.norm.pdf(x, 0, np.hypot(talent_sd, noise_sd)),
+    color=INK,
+    linewidth=1.2,
+    linestyle=(0, (4, 2)),
+    label="talent + luck (what the beta-binomial predicts)",
+)
+ax.xaxis.set_major_formatter(lambda v, _: f"{v * 100:+.0f} pts")
 ax.set_xlabel("offensive success rate minus that season's league rate")
 ax.set_yticks([])
 share = talent_sd**2 / resid.var()
@@ -158,11 +191,26 @@ for team, color in ((best, BLUE), (worst, ORANGE)):
     ax.fill_between(p.game, p.lo, p.hi, color=color, alpha=0.15, linewidth=0)
     ax.plot(p.game, p["mean"], color=color)
     ax.scatter(p.game[1:], p.game_rate[1:], s=18, color=color, alpha=0.55, linewidths=0)
-    ax.annotate(team.title(), (p.game.iloc[-1], p["mean"].iloc[-1]), xytext=(6, 0),
-                textcoords="offset points", va="center", color=INK, fontsize=9)
+    ax.annotate(
+        team.title(),
+        (p.game.iloc[-1], p["mean"].iloc[-1]),
+        xytext=(6, 0),
+        textcoords="offset points",
+        va="center",
+        color=INK,
+        fontsize=9,
+    )
 ax.axhline(league.rate[2025], color=INK2, linewidth=1, linestyle=(0, (3, 3)))
-ax.annotate("2025 league", (23, league.rate[2025]), xytext=(0, 3), textcoords="offset points",
-            color=INK2, fontsize=8, va="bottom", ha="right")
+ax.annotate(
+    "2025 league",
+    (23, league.rate[2025]),
+    xytext=(0, 3),
+    textcoords="offset points",
+    color=INK2,
+    fontsize=8,
+    va="bottom",
+    ha="right",
+)
 ax.yaxis.set_major_formatter(pct)
 ax.set_xlabel("games played (0 = preseason prior: Beta at 2024's league rate, κ plays)")
 ax.set_ylabel("offensive success rate")
@@ -184,13 +232,22 @@ for color, g in zip(["#86b6ef", "#3987e5", "#1c5cab", "#0d366b"], marks):
     plays_seen = row.a + row.b - (p.a.iloc[0] + p.b.iloc[0])
     label = "prior" if g == 0 else f"after {g} games ({plays_seen:.0f} plays)"
     ax.plot(x, y, color=color, label=label)
-    ax.annotate(label.split(" (")[0], (x[np.argmax(y)], y.max()), xytext=(0, 4),
-                textcoords="offset points", ha="center", color=INK2, fontsize=8)
+    ax.annotate(
+        label.split(" (")[0],
+        (x[np.argmax(y)], y.max()),
+        xytext=(0, 4),
+        textcoords="offset points",
+        ha="center",
+        color=INK2,
+        fontsize=8,
+    )
 ax.legend(frameon=False, fontsize=8, loc="upper left", labelcolor=INK2)
 ax.xaxis.set_major_formatter(pct)
 ax.set_yticks([])
 ax.set_xlabel("offensive success rate")
-ax.set_title(f"{best.title()} offense, 2025: Beta(α + successes, β + failures) after n games")
+ax.set_title(
+    f"{best.title()} offense, 2025: Beta(α + successes, β + failures) after n games"
+)
 fig.tight_layout()
 fig.savefig(OUT / "3_densities.png", dpi=160)
 plt.close(fig)
@@ -218,12 +275,19 @@ def forest(season: int, fname: str, title: str) -> None:
         ax.xaxis.set_major_formatter(pct)
         ax.grid(axis="y", visible=False)
         ax.set_title(
-            "offense (higher is better)" if side == "offense" else "defense, allowed (lower is better)",
+            "offense (higher is better)"
+            if side == "offense"
+            else "defense, allowed (lower is better)",
             fontsize=10,
         )
     fig.suptitle(title, x=0.01, ha="left", fontweight="bold", color=INK)
-    fig.text(0.01, 0.005, "dot: posterior mean · bar: 90% interval · tick: raw rate · dashed: prior mean",
-             color=INK2, fontsize=8)
+    fig.text(
+        0.01,
+        0.005,
+        "dot: posterior mean · bar: 90% interval · tick: raw rate · dashed: prior mean",
+        color=INK2,
+        fontsize=8,
+    )
     fig.tight_layout()
     fig.savefig(OUT / fname, dpi=160)
     plt.close(fig)
@@ -232,12 +296,21 @@ def forest(season: int, fname: str, title: str) -> None:
 forest(2025, "4_forest_2025.png", "End of 2025: every team's success-rate posterior")
 latest = int(games.season.max())
 n_games = games[games.season == latest].groupby("offense").size().median()
-forest(latest, f"5_forest_{latest}.png",
-       f"{latest} so far (~{n_games:.0f} games each): same prior, far less data")
+forest(
+    latest,
+    f"5_forest_{latest}.png",
+    f"{latest} so far (~{n_games:.0f} games each): same prior, far less data",
+)
 
 # A few numbers worth quoting.
 g = games[games.season <= 2025]
 rate = g.k / g.n
-print(f"per game: median plays {g.n.median():.0f}, sd of game rate {rate.std():.3f}, "
-      f"binomial sd at median n {np.sqrt(m*(1-m)/g.n.median()):.3f}")
-print(path(best, 2025)[["game", "opp", "n", "k", "game_rate", "raw", "mean", "lo", "hi"]].round(3).to_string())
+print(
+    f"per game: median plays {g.n.median():.0f}, sd of game rate {rate.std():.3f}, "
+    f"binomial sd at median n {np.sqrt(m * (1 - m) / g.n.median()):.3f}"
+)
+print(
+    path(best, 2025)[["game", "opp", "n", "k", "game_rate", "raw", "mean", "lo", "hi"]]
+    .round(3)
+    .to_string()
+)

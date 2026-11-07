@@ -112,7 +112,9 @@ SUCCESS = (
 # Kneels and spikes, off the play text: both are filed as an ordinary run or
 # incompletion. Never a bare "spike" -- Takeo and Brandon Spikes made a lot
 # of tackles between them.
-_CLOCK_PLAY = re.compile(r"\bkneels?\b|\bkneel down\b|\btook a knee\b|\bspiked?\s+the\s+ball\b")
+_CLOCK_PLAY = re.compile(
+    r"\bkneels?\b|\bkneel down\b|\btook a knee\b|\bspiked?\s+the\s+ball\b"
+)
 
 # The play types a pass or a run is filed under, as substrings of the
 # lowered type: "Pass Reception", "Rushing Touchdown", "Sack", "Pass
@@ -180,7 +182,9 @@ def is_pass(play_type: str | None, text: str | None) -> bool:
     words = (text or "").lower()
     if _PASS_TYPES.search(lowered) or _SCRAMBLE.search(words):
         return True
-    return ("fumble" in lowered or "safety" in lowered) and bool(_PASS_TEXT.search(words))
+    return ("fumble" in lowered or "safety" in lowered) and bool(
+        _PASS_TEXT.search(words)
+    )
 
 
 class _Kind(NamedTuple):
@@ -216,7 +220,9 @@ def _success(game: GamePlays, plays: Sequence[PlayEPA]) -> _Success:
     won_weight = {True: 0.0, False: 0.0}
     weight = {True: 0.0, False: 0.0}
     # By side, then pass or not.
-    kind_won = {(side, passing): 0 for side in (True, False) for passing in (True, False)}
+    kind_won = {
+        (side, passing): 0 for side in (True, False) for passing in (True, False)
+    }
     kind_downs = dict(kind_won)
     kind_epa = {kind: 0.0 for kind in kind_won}
     for snap in plays:

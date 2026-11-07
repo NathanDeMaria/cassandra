@@ -308,5 +308,8 @@ def distance_km(away: str, home: str, season: int | None = None) -> float | None
     lat1, lon1 = math.radians(start[0]), math.radians(start[1])
     lat2, lon2 = math.radians(end[0]), math.radians(end[1])
     dlat, dlon = lat2 - lat1, lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    )
     return 2 * _EARTH_RADIUS_KM * math.asin(math.sqrt(a))

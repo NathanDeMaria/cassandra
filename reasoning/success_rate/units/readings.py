@@ -27,11 +27,17 @@ def success_by_game() -> pd.DataFrame:
     """Per game: each offense's success rate, its pass + rush plays, and the margin."""
     plays = load_plays()
     margin = plays.groupby("game_id").apply(
-        lambda g: g.home_score.iloc[0] - g.away_score.iloc[0], include_groups=False)
+        lambda g: g.home_score.iloc[0] - g.away_score.iloc[0], include_groups=False
+    )
     p = scrimmage(plays)
-    g = (p.groupby(["game_id", "season", "offense_is_home"]).success
-         .agg(n="size", k="sum").reset_index())
-    wide = g.pivot_table(index=["game_id", "season"], columns="offense_is_home", values=["n", "k"])
+    g = (
+        p.groupby(["game_id", "season", "offense_is_home"])
+        .success.agg(n="size", k="sum")
+        .reset_index()
+    )
+    wide = g.pivot_table(
+        index=["game_id", "season"], columns="offense_is_home", values=["n", "k"]
+    )
     wide.columns = [f"{v}_{'home' if h else 'away'}" for v, h in wide.columns]
     wide = wide.dropna().reset_index()
     wide["sr_home"] = wide.k_home / wide.n_home
@@ -56,11 +62,16 @@ def mapping() -> tuple[float, float]:
     s_epa = np.polyfit(e_home - e_away, both.margin, 1)[0]
     s_sr = np.polyfit(both.sr_home - both.sr_away, both.margin, 1)[0]
     b = s_sr / s_epa
-    a = np.concatenate([e_home, e_away]).mean() - b * np.concatenate([both.sr_home, both.sr_away]).mean()
-    print(f"margin slopes: {s_epa:.1f} pts per EPA/play, {s_sr:.1f} per unit SR -> b={b:.3f}, a={a:.3f}; "
-          f"same-game r: epa {np.corrcoef(e_home - e_away, both.margin)[0, 1]:.3f}, "
-          f"sr {np.corrcoef(both.sr_home - both.sr_away, both.margin)[0, 1]:.3f}; "
-          f"epa~sr r {np.corrcoef(np.r_[e_home, e_away], np.r_[both.sr_home, both.sr_away])[0, 1]:.3f}")
+    a = (
+        np.concatenate([e_home, e_away]).mean()
+        - b * np.concatenate([both.sr_home, both.sr_away]).mean()
+    )
+    print(
+        f"margin slopes: {s_epa:.1f} pts per EPA/play, {s_sr:.1f} per unit SR -> b={b:.3f}, a={a:.3f}; "
+        f"same-game r: epa {np.corrcoef(e_home - e_away, both.margin)[0, 1]:.3f}, "
+        f"sr {np.corrcoef(both.sr_home - both.sr_away, both.margin)[0, 1]:.3f}; "
+        f"epa~sr r {np.corrcoef(np.r_[e_home, e_away], np.r_[both.sr_home, both.sr_away])[0, 1]:.3f}"
+    )
     return float(a), float(b)
 
 
@@ -83,7 +94,9 @@ def build(beta: float, since: int = 2014) -> EpaIndex:
         if e is None or beta == 1:
             if e is None and row.season >= 2014:
                 continue  # EPA's sweep dropped it; keep the coverage the same
-            out[row.game_id] = GameEpa(home_eq, away_eq, int(row.n_home), int(row.n_away))
+            out[row.game_id] = GameEpa(
+                home_eq, away_eq, int(row.n_home), int(row.n_away)
+            )
         else:
             out[row.game_id] = GameEpa(
                 (1 - beta) * e.home + beta * home_eq,

@@ -67,7 +67,9 @@ def test_a_missing_signal_renormalizes_over_the_rest() -> None:
     """
     blend = PlayBlend(play_weight=0.5, epa_share=0.5)
 
-    assert blend.combine(1.0, 0.5, None) == pytest.approx((0.5 * 1.0 + 0.25 * 0.5) / 0.75)
+    assert blend.combine(1.0, 0.5, None) == pytest.approx(
+        (0.5 * 1.0 + 0.25 * 0.5) / 0.75
+    )
 
 
 def test_a_game_with_neither_signal_is_its_scoreboard() -> None:

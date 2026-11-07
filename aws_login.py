@@ -79,7 +79,7 @@ def until(now: datetime | None = None) -> str:
     "" when it hasn't, or the session it started is over."""
     try:
         at = datetime.fromisoformat((STATE / "logged_in_at").read_text().strip())
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError, ValueError:
         return ""
     left = at + SESSION - (now or datetime.now(CENTRAL))
     if left <= timedelta(0):
@@ -96,7 +96,7 @@ def _owner() -> int | None:
     try:
         pid = int((STATE / "owner").read_text())
         cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError, ValueError:
         return None
     return pid if pid != os.getpid() and b"aws_login" in cmdline else None
 

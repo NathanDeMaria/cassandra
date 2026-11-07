@@ -37,8 +37,11 @@ cells = {
 }
 
 games = df.groupby("game_id").agg(
-    season=("season", "first"), date=("date", "first"), hs=("home_score", "first"),
-    as_=("away_score", "first"), neutral=("neutral_site", "first"),
+    season=("season", "first"),
+    date=("date", "first"),
+    hs=("home_score", "first"),
+    as_=("away_score", "first"),
+    neutral=("neutral_site", "first"),
 )
 home = df[df.offense_is_home].groupby("game_id").offense.first()
 away = df[~df.offense_is_home].groupby("game_id").offense.first()
@@ -53,11 +56,15 @@ def to_date(side):
         g = df[mask].groupby(["season", "game_id", side]).win.agg(["sum", "count"])
         g.columns = [f"w_{name}", f"k_{name}"]
         parts.append(g)
-    per = pd.concat(parts, axis=1).fillna(0).reset_index().rename(columns={side: "team"})
-    per = per.merge(games[["date"]], left_on="game_id", right_index=True).sort_values("date")
-    cum = per.groupby(["season", "team"])[[c for c in per if c[:2] in ("w_", "k_")]].transform(
-        lambda s: s.cumsum().shift(1, fill_value=0)
+    per = (
+        pd.concat(parts, axis=1).fillna(0).reset_index().rename(columns={side: "team"})
     )
+    per = per.merge(games[["date"]], left_on="game_id", right_index=True).sort_values(
+        "date"
+    )
+    cum = per.groupby(["season", "team"])[
+        [c for c in per if c[:2] in ("w_", "k_")]
+    ].transform(lambda s: s.cumsum().shift(1, fill_value=0))
     cum["games"] = per.groupby(["season", "team"]).cumcount()
     out = pd.concat([per[["season", "game_id", "team"]], cum], axis=1)
     for name in cells:
@@ -75,7 +82,12 @@ def side(frame, team_col):
     return frame.reindex(keys).set_axis(games.index)
 
 
-ho, ao, hd, ad = side(off, "home"), side(off, "away"), side(dfn, "home"), side(dfn, "away")
+ho, ao, hd, ad = (
+    side(off, "home"),
+    side(off, "away"),
+    side(dfn, "home"),
+    side(dfn, "away"),
+)
 X = pd.DataFrame(index=games.index)
 for name in cells:
     X[f"o_{name}"] = ho[name] - ao[name]  # home offense better
@@ -101,10 +113,18 @@ models = {
     "split pass/run": both(["pass", "run"]),
     "neutral only, split": both(["n_pass", "n_run"]),
     "neutral mix 0.65": both(["nmix"]),
-    "neutral split + 3rd&long pass + short run": both(["n_pass", "n_run", "op_pass", "or_run"]),
-    "  + contrarian calls": both(["n_pass", "n_run", "op_pass", "or_run", "op_run", "or_pass"]),
-    "  + clock runs, hurry passes": both(["n_pass", "n_run", "op_pass", "or_run", "clock_run", "hurry_pass"]),
-    "split pass/run + 3rd&long pass + short run": both(["pass", "run", "op_pass", "or_run"]),
+    "neutral split + 3rd&long pass + short run": both(
+        ["n_pass", "n_run", "op_pass", "or_run"]
+    ),
+    "  + contrarian calls": both(
+        ["n_pass", "n_run", "op_pass", "or_run", "op_run", "or_pass"]
+    ),
+    "  + clock runs, hurry passes": both(
+        ["n_pass", "n_run", "op_pass", "or_run", "clock_run", "hurry_pass"]
+    ),
+    "split pass/run + 3rd&long pass + short run": both(
+        ["pass", "run", "op_pass", "or_run"]
+    ),
 }
 
 
@@ -116,17 +136,25 @@ def ols(cols):
 
 
 _, ref = ols(models["pooled SR (today)"])
-print(f"\nmargin, out of sample: MSE (pts^2) and change vs pooled, t on per-game differences")
+print(
+    f"\nmargin, out of sample: MSE (pts^2) and change vs pooled, t on per-game differences"
+)
 for name, cols in models.items():
     beta, r = ols(cols)
     d = r**2 - ref**2
     t = d.mean() / (d.std() / np.sqrt(len(d))) if d.std() else 0.0
     print(f"  {name:45s} {np.mean(r**2):7.2f}  {d.mean():+6.2f}  t {t:+.2f}")
     if name.startswith(("neutral split +", "  +", "split pass/run +")):
-        print("      ", " ".join(f"{c}={b:+.0f}" for c, b in zip(["c"] + cols, beta) if c != "hfa"))
+        print(
+            "      ",
+            " ".join(f"{c}={b:+.0f}" for c, b in zip(["c"] + cols, beta) if c != "hfa"),
+        )
 
 # --- beside the published success model ----------------------------------
-stack = pd.read_parquet("/home/dev/.cassandra/success_rate/combine/stack_nfl.parquet", columns=["game_id", "team1_win", "team1_win_prob_success"])
+stack = pd.read_parquet(
+    "/home/dev/.cassandra/success_rate/combine/stack_nfl.parquet",
+    columns=["game_id", "team1_win", "team1_win_prob_success"],
+)
 s = data.join(stack.set_index("game_id"), how="inner")
 s = s[s.margin != 0]
 s["lp"] = np.log(s.team1_win_prob_success / (1 - s.team1_win_prob_success))
@@ -147,42 +175,79 @@ def logit_fit(cols, ridge=1e-6):
     return beta, (p - ste.y).to_numpy() ** 2
 
 
-print(f"\nbeside the success model's win prob: games train {len(str_)}, test {len(ste)}; brier change x1e-4 vs recalibrated model alone")
+print(
+    f"\nbeside the success model's win prob: games train {len(str_)}, test {len(ste)}; brier change x1e-4 vs recalibrated model alone"
+)
 _, base = logit_fit(["lp"])
 print(f"  model alone, brier {base.mean():.5f}")
 extra = {
     "pooled SR": ["o_all", "d_all"],
     "fixed mix 0.65": ["o_mix", "d_mix"],
     "split pass/run": ["o_pass", "o_run", "d_pass", "d_run"],
-    "split + 3rd&long pass + short run": ["o_pass", "o_run", "d_pass", "d_run", "o_op_pass", "d_op_pass", "o_or_run", "d_or_run"],
+    "split + 3rd&long pass + short run": [
+        "o_pass",
+        "o_run",
+        "d_pass",
+        "d_run",
+        "o_op_pass",
+        "d_op_pass",
+        "o_or_run",
+        "d_or_run",
+    ],
     "neutral mix": ["o_nmix", "d_nmix"],
     "neutral split": ["o_n_pass", "o_n_run", "d_n_pass", "d_n_run"],
     "3rd&long pass + short run": ["o_op_pass", "d_op_pass", "o_or_run", "d_or_run"],
-    "clock runs + hurry passes": ["o_clock_run", "d_clock_run", "o_hurry_pass", "d_hurry_pass"],
+    "clock runs + hurry passes": [
+        "o_clock_run",
+        "d_clock_run",
+        "o_hurry_pass",
+        "d_hurry_pass",
+    ],
 }
 for name, cols in extra.items():
     beta, b = logit_fit(["lp"] + cols)
     d = b - base
     t = d.mean() / (d.std() / np.sqrt(len(d)))
-    print(f"  + {name:28s} {d.mean() * 1e4:+6.1f}  t {t:+.2f}   " + " ".join(f"{c}={v:+.1f}" for c, v in zip(cols, beta[2:])))
+    print(
+        f"  + {name:28s} {d.mean() * 1e4:+6.1f}  t {t:+.2f}   "
+        + " ".join(f"{c}={v:+.1f}" for c, v in zip(cols, beta[2:]))
+    )
+
 
 # --- is it the team's own pass share? -------------------------------------
 def share_frame(side):
     """Each team's season-to-date dropback share, over every down and over neutral downs."""
     parts = []
     for name in ("pass", "all", "n_pass", "n_run"):
-        g = df[cells[name]].groupby(["season", "game_id", side]).win.count().rename(name)
+        g = (
+            df[cells[name]]
+            .groupby(["season", "game_id", side])
+            .win.count()
+            .rename(name)
+        )
         parts.append(g)
-    per = pd.concat(parts, axis=1).fillna(0).reset_index().rename(columns={side: "team"})
-    per = per.merge(games[["date"]], left_on="game_id", right_index=True).sort_values("date")
-    cum = per.groupby(["season", "team"])[["pass", "all", "n_pass", "n_run"]].transform(lambda x: x.cumsum().shift(1, fill_value=0))
+    per = (
+        pd.concat(parts, axis=1).fillna(0).reset_index().rename(columns={side: "team"})
+    )
+    per = per.merge(games[["date"]], left_on="game_id", right_index=True).sort_values(
+        "date"
+    )
+    cum = per.groupby(["season", "team"])[["pass", "all", "n_pass", "n_run"]].transform(
+        lambda x: x.cumsum().shift(1, fill_value=0)
+    )
     out = per[["game_id", "team"]].copy()
     out["share"] = cum["pass"] / cum["all"]
     out["nshare"] = cum["n_pass"] / (cum["n_pass"] + cum["n_run"])
     return out.set_index(["game_id", "team"])
 
+
 so, sd_ = share_frame("offense"), share_frame("defense")
-hs_o, as_o, hs_d, as_d = side(so, "home"), side(so, "away"), side(sd_, "home"), side(sd_, "away")
+hs_o, as_o, hs_d, as_d = (
+    side(so, "home"),
+    side(so, "away"),
+    side(sd_, "home"),
+    side(sd_, "away"),
+)
 for c in ("share", "nshare"):
     data[f"o_{c}"] = (hs_o[c] - as_o[c]).reindex(data.index)
     data[f"d_{c}"] = (as_d[c] - hs_d[c]).reindex(data.index)
@@ -200,4 +265,9 @@ for name, cols in more.items():
     beta, r = ols(cols)
     d = r**2 - ref**2
     t = d.mean() / (d.std() / np.sqrt(len(d))) if d.std() else 0.0
-    print(f"  {name:45s} {np.mean(r**2):7.2f}  {d.mean():+6.2f}  t {t:+.2f}   " + " ".join(f"{c}={b:+.0f}" for c, b in zip(["c"] + cols, beta) if c not in ("c", "hfa")))
+    print(
+        f"  {name:45s} {np.mean(r**2):7.2f}  {d.mean():+6.2f}  t {t:+.2f}   "
+        + " ".join(
+            f"{c}={b:+.0f}" for c, b in zip(["c"] + cols, beta) if c not in ("c", "hfa")
+        )
+    )

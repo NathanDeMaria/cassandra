@@ -58,7 +58,9 @@ class Counts(NamedTuple):
         return (self.pass_wins + self.run_wins) / self.downs if self.downs else None
 
 
-def mixed_rate(counts: Counts, w: float, pass_gap: float, run_gap: float, prior: float) -> float | None:
+def mixed_rate(
+    counts: Counts, w: float, pass_gap: float, run_gap: float, prior: float
+) -> float | None:
     """The side's rate at `w` dropbacks, each kind shrunk by `prior` downs.
 
     `pass_gap` and `run_gap` are the league's kind rates less its pooled

@@ -80,9 +80,7 @@ async def sweep(
     league: str, seasons: Sequence[Season], source: PlaySource
 ) -> tuple[dict[str, GameControl], SweepStats]:
     """Control for every game of `seasons` whose play-by-play covers it."""
-    return await sweep_plays(
-        league, seasons, source, lambda game: _score(league, game)
-    )
+    return await sweep_plays(league, seasons, source, lambda game: _score(league, game))
 
 
 def write(league: str, fit: ControlFit, games: Mapping[str, GameControl]) -> None:

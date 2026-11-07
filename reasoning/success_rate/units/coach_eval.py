@@ -21,7 +21,12 @@ def loss(df):
 
 def coach_games(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     facts = OffseasonFacts.for_league("nfl")
-    changed = {(t, y) for y in range(2006, 2027) for t, f in facts.seasons(y) if f.coach_departure}
+    changed = {
+        (t, y)
+        for y in range(2006, 2027)
+        for t, f in facts.seasons(y)
+        if f.coach_departure
+    }
     d = df.sort_values("date")
     n = {}
     any_new = []
@@ -34,23 +39,37 @@ def coach_games(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
                 hits.append(n[(team, row.year)])
         any_new.append(bool(hits))
         early.append(any(h <= 4 for h in hits))
-    return (pd.Series(any_new, index=d.index).reindex(df.index),
-            pd.Series(early, index=d.index).reindex(df.index))
+    return (
+        pd.Series(any_new, index=d.index).reindex(df.index),
+        pd.Series(early, index=d.index).reindex(df.index),
+    )
 
 
 def paired(a: str, b: str) -> None:
-    da, db = pd.read_parquet(OUT / f"{a}.parquet"), pd.read_parquet(OUT / f"{b}.parquet")
+    da, db = (
+        pd.read_parquet(OUT / f"{a}.parquet"),
+        pd.read_parquet(OUT / f"{b}.parquet"),
+    )
     d = loss(da) - loss(db)
     new, early = coach_games(da)
-    for label, mask in (("2006+", da.year >= 2006), ("2022+", da.year >= 2022),
-                        ("new coach", (da.year >= 2006) & new), ("  games 1-4", (da.year >= 2006) & early)):
+    for label, mask in (
+        ("2006+", da.year >= 2006),
+        ("2022+", da.year >= 2022),
+        ("new coach", (da.year >= 2006) & new),
+        ("  games 1-4", (da.year >= 2006) & early),
+    ):
         x = d[mask]
         by = x.groupby(da.year[mask]).mean()
-        print(f"  {a} - {b} {label:>11}: {1e4 * x.mean():+6.2f}e-4 over {mask.sum():4d}  "
-              f"t {x.mean() / (x.std() / np.sqrt(len(x))):+.2f}  seasons better {int((by < 0).sum())}/{len(by)}")
+        print(
+            f"  {a} - {b} {label:>11}: {1e4 * x.mean():+6.2f}e-4 over {mask.sum():4d}  "
+            f"t {x.mean() / (x.std() / np.sqrt(len(x))):+.2f}  seasons better {int((by < 0).sum())}/{len(by)}"
+        )
 
 
 if __name__ == "__main__":
-    pairs = [arg.split(":") for arg in sys.argv[1:]] or [("coach_b75", "fit_b75"), ("coach_epa", "fit_epa_weekly")]
+    pairs = [arg.split(":") for arg in sys.argv[1:]] or [
+        ("coach_b75", "fit_b75"),
+        ("coach_epa", "fit_epa_weekly"),
+    ]
     for a, b in pairs:
         paired(a, b)

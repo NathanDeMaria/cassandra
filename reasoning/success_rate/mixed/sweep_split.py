@@ -27,7 +27,9 @@ async def main(league: str) -> None:
     print("cassandra from", cassandra.__file__, flush=True)
     bucket = Config.init_from_file().bucket
     seasons = [s async for s in read_all_seasons(league, bucket) if s.year >= SINCE]
-    games, stats = await sweep(league, seasons, StorePlaySource(get_processed_plays_store()))
+    games, stats = await sweep(
+        league, seasons, StorePlaySource(get_processed_plays_store())
+    )
     print(stats, flush=True)
     (HOME / f"mixed/{league}_index_split.pkl").write_bytes(pickle.dumps(games))
     before = pickle.loads((HOME / f"units/{league}_index.pkl").read_bytes())
@@ -41,9 +43,12 @@ async def main(league: str) -> None:
     )
     downs = sum(e.home_success_plays + e.away_success_plays for e in games.values())
     passes = sum(e.home_pass_plays + e.away_pass_plays for e in games.values())
-    print(f"{league}: {len(games)} games, {len(shared)} in the harness index, {same} with every "
-          f"earlier reading unchanged; {len(split)} split, {adds_up} adding back up; passes "
-          f"{passes / downs:.3f} of {downs} downs", flush=True)
+    print(
+        f"{league}: {len(games)} games, {len(shared)} in the harness index, {same} with every "
+        f"earlier reading unchanged; {len(split)} split, {adds_up} adding back up; passes "
+        f"{passes / downs:.3f} of {downs} downs",
+        flush=True,
+    )
 
 
 asyncio.run(main(sys.argv[1]))

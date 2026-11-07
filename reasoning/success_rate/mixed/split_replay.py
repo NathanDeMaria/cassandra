@@ -35,12 +35,19 @@ def _nfl(index_path: Path):
     from cassandra.save_predictions import join_with_odds
 
     predictor = UnitMarginGlickoPredictor(
-        "nfl", **BASE,
+        "nfl",
+        **BASE,
         opponent_prior_manager=OpponentPriorManager("nfl", path=PRIORS),
         game_epa=EpaIndex(pickle.loads(index_path.read_bytes())),
     )
-    df = pd.DataFrame([asdict(p) for p in join_with_odds(
-        predictor, NAMED, OddsDatabase({}), post_callbacks=False, namer=NAMER)])
+    df = pd.DataFrame(
+        [
+            asdict(p)
+            for p in join_with_odds(
+                predictor, NAMED, OddsDatabase({}), post_callbacks=False, namer=NAMER
+            )
+        ]
+    )
     return predictor, df
 
 
@@ -52,35 +59,56 @@ def _ncaafb(index_path: Path):
     from cassandra.predictor.opponent_prior import OpponentPriorManager
     from cassandra.predictor.unit_glicko import UnitMarginGlickoPredictor
 
-    knobs = json.loads((replay.OUT / "batch_nc_success_cap_p.json").read_text())["knobs"]
+    knobs = json.loads((replay.OUT / "batch_nc_success_cap_p.json").read_text())[
+        "knobs"
+    ]
     named, _, index = replay._inputs()
     warm, early = replay._warm()
-    predictor = UnitMarginGlickoPredictor.from_state_dict({
-        **warm.state_dict(), **knobs,
-        "opponent_prior_manager": OpponentPriorManager("ncaafb", path=replay.PRIORS),
-        "game_epa": index,
-    })
+    predictor = UnitMarginGlickoPredictor.from_state_dict(
+        {
+            **warm.state_dict(),
+            **knobs,
+            "opponent_prior_manager": OpponentPriorManager(
+                "ncaafb", path=replay.PRIORS
+            ),
+            "game_epa": index,
+        }
+    )
     predictor._season = warm._season
     predictor._qb_pending = set(warm._qb_pending)
-    late = replay._replay(predictor, [s for s in named if s.year >= replay.FIRST_READING])
+    late = replay._replay(
+        predictor, [s for s in named if s.year >= replay.FIRST_READING]
+    )
     return predictor, pd.concat([early, late], ignore_index=True)
 
 
 def run(league: str, index_path: Path, name: str) -> None:
     predictor, df = (_nfl if league == "nfl" else _ncaafb)(index_path)
-    for kind, rates in (("every down", predictor._success_rates), *predictor._kind_rates.items()):
+    for kind, rates in (
+        ("every down", predictor._success_rates),
+        *predictor._kind_rates.items(),
+    ):
         if rates.enabled and rates.center is not None:
-            print(f"  {kind}: center {rates.center:.3f}, gap slope {rates.gap_slope:.3f}", flush=True)
+            print(
+                f"  {kind}: center {rates.center:.3f}, gap slope {rates.gap_slope:.3f}",
+                flush=True,
+            )
     OUT.mkdir(parents=True, exist_ok=True)
     df.to_parquet(OUT / f"{name}.parquet")
     shown = {
-        team: {"success": r.success._asdict() if r.success else None,
-               "epa": r.epa._asdict() if r.epa else None}
+        team: {
+            "success": r.success._asdict() if r.success else None,
+            "epa": r.epa._asdict() if r.epa else None,
+        }
         for team, r in predictor.ratings.items()
     }
     (OUT / f"{name}.json").write_text(json.dumps(shown, default=lambda t: t._asdict()))
-    print(name, f"{len(df)} games, {sum(v['success'] is not None for v in shown.values())} teams with "
-          f"rates, {sum(v['epa'] is not None for v in shown.values())} with EPA", flush=True)
+    print(
+        name,
+        f"{len(df)} games, {sum(v['success'] is not None for v in shown.values())} teams with "
+        f"rates, {sum(v['epa'] is not None for v in shown.values())} with EPA",
+        flush=True,
+    )
 
 
 def _block(entry: dict | None, which: str) -> dict | None:
@@ -108,27 +136,49 @@ def _table(shown: dict, which: str) -> pd.DataFrame:
         if not s or not s.get("passes") or not s.get("runs"):
             continue
         (db_off, db_def), (run_off, run_def) = s["passes"], s["runs"]
-        rows.append({
-            "team": team,
-            "off": s["offense"][0], "def": s["defense"][0],
-            "off_db": db_off[0], "off_run": run_off[0], "def_db": db_def[0], "def_run": run_def[0],
-            "off_db_sd": db_off[1], "off_run_sd": run_off[1],
-        })
+        rows.append(
+            {
+                "team": team,
+                "off": s["offense"][0],
+                "def": s["defense"][0],
+                "off_db": db_off[0],
+                "off_run": run_off[0],
+                "def_db": db_def[0],
+                "def_run": run_def[0],
+                "off_db_sd": db_off[1],
+                "off_run_sd": run_off[1],
+            }
+        )
     return pd.DataFrame(rows).set_index("team")
 
 
 def compare(league: str, a: str, b: str) -> None:
-    da, db = pd.read_parquet(OUT / f"{a}.parquet"), pd.read_parquet(OUT / f"{b}.parquet")
+    da, db = (
+        pd.read_parquet(OUT / f"{a}.parquet"),
+        pd.read_parquet(OUT / f"{b}.parquet"),
+    )
     diff = np.abs(da.team1_win_prob.to_numpy() - db.team1_win_prob.to_numpy())
-    print(f"{league}: {len(da)} games; predictions identical: {bool((diff == 0).all())} (max diff {diff.max():.2e})")
-    ra, rb = json.loads((OUT / f"{a}.json").read_text()), json.loads((OUT / f"{b}.json").read_text())
+    print(
+        f"{league}: {len(da)} games; predictions identical: {bool((diff == 0).all())} (max diff {diff.max():.2e})"
+    )
+    ra, rb = (
+        json.loads((OUT / f"{a}.json").read_text()),
+        json.loads((OUT / f"{b}.json").read_text()),
+    )
     for which in ("success", "epa"):
         pairs = [(_block(ra[t], which), _block(rb[t], which)) for t in ra]
         both = [(x, y) for x, y in pairs if x is not None and y is not None]
-        same = all(x["offense"] == y["offense"] and x["defense"] == y["defense"] for x, y in both)
-        kinds = all(x.get("passes") == y.get("passes") and x.get("runs") == y.get("runs")
-                    for x, y in both)
-        print(f"{which}: {len(both)} teams in both; every-down identical: {same}; split identical: {kinds}")
+        same = all(
+            x["offense"] == y["offense"] and x["defense"] == y["defense"]
+            for x, y in both
+        )
+        kinds = all(
+            x.get("passes") == y.get("passes") and x.get("runs") == y.get("runs")
+            for x, y in both
+        )
+        print(
+            f"{which}: {len(both)} teams in both; every-down identical: {same}; split identical: {kinds}"
+        )
     year = int(db.year.max())
     for which, scale, unit in (("success", 100, "%"), ("epa", 1, " EPA/down")):
         t = _table(rb, which)
@@ -138,16 +188,41 @@ def compare(league: str, a: str, b: str) -> None:
             from cassandra.objective import _in_fbs
 
             t = t[[_in_fbs(team, year) for team in t.index]]
-        print(f"\n{which}{' (FBS ' + str(year) + ')' if league == 'ncaafb' else ''}, {len(t)} teams, in{unit}:")
-        print("  means:", (t[["off", "def", "off_db", "off_run", "def_db", "def_run"]].mean() * scale).round(3).to_dict())
-        print("  sd across teams:", (t[["off_db", "off_run", "def_db", "def_run"]].std() * scale).round(3).to_dict())
-        print("  typical sd of a side:", (t[["off_db_sd", "off_run_sd"]].median() * scale).round(3).to_dict())
-        print("  corr pass vs run, offense:", round(t.off_db.corr(t.off_run), 2),
-              "defense:", round(t.def_db.corr(t.def_run), 2))
+        print(
+            f"\n{which}{' (FBS ' + str(year) + ')' if league == 'ncaafb' else ''}, {len(t)} teams, in{unit}:"
+        )
+        print(
+            "  means:",
+            (t[["off", "def", "off_db", "off_run", "def_db", "def_run"]].mean() * scale)
+            .round(3)
+            .to_dict(),
+        )
+        print(
+            "  sd across teams:",
+            (t[["off_db", "off_run", "def_db", "def_run"]].std() * scale)
+            .round(3)
+            .to_dict(),
+        )
+        print(
+            "  typical sd of a side:",
+            (t[["off_db_sd", "off_run_sd"]].median() * scale).round(3).to_dict(),
+        )
+        print(
+            "  corr pass vs run, offense:",
+            round(t.off_db.corr(t.off_run), 2),
+            "defense:",
+            round(t.def_db.corr(t.def_run), 2),
+        )
         cols = ["off", "off_db", "off_run", "def", "def_db", "def_run"]
-        for col, asc, label in (("off_db", False, "best pass offenses"), ("off_run", False, "best run offenses"),
-                                ("def_db", True, "best pass defenses"), ("def_run", True, "best run defenses")):
-            print(f"  {label}:\n{(t.sort_values(col, ascending=asc).head(5)[cols] * scale).round(3).to_string()}")
+        for col, asc, label in (
+            ("off_db", False, "best pass offenses"),
+            ("off_run", False, "best run offenses"),
+            ("def_db", True, "best pass defenses"),
+            ("def_run", True, "best run defenses"),
+        ):
+            print(
+                f"  {label}:\n{(t.sort_values(col, ascending=asc).head(5)[cols] * scale).round(3).to_string()}"
+            )
 
 
 if __name__ == "__main__":

@@ -147,9 +147,7 @@ def test_the_three_terms_add() -> None:
     total = adj.points(matchup)
 
     assert total == pytest.approx(
-        adj.rest_points(matchup)
-        + adj.travel_points(matchup)
-        + adj.qb_points(matchup)
+        adj.rest_points(matchup) + adj.travel_points(matchup) + adj.qb_points(matchup)
     )
     assert adj.rest_points(matchup) > 0
     assert total > adj.qb_points(matchup)

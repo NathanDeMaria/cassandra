@@ -71,12 +71,22 @@ def main(mode: str) -> None:
         return -ll
 
     simplex = np.vstack([start, start + steps])
-    fit = optimize.minimize(objective, start, method="Nelder-Mead",
-                            options={"xatol": 1e-3, "fatol": 0.05, "maxfev": 800,
-                                     "initial_simplex": simplex})
+    fit = optimize.minimize(
+        objective,
+        start,
+        method="Nelder-Mead",
+        options={
+            "xatol": 1e-3,
+            "fatol": 0.05,
+            "maxfev": 800,
+            "initial_simplex": simplex,
+        },
+    )
     params = full(fit.x)
     print("fit", params, -fit.fun, fit.message, flush=True)
-    (OUT / name).write_text(json.dumps({k: float(v) for k, v in params.__dict__.items()}, indent=2))
+    (OUT / name).write_text(
+        json.dumps({k: float(v) for k, v in params.__dict__.items()}, indent=2)
+    )
 
 
 if __name__ == "__main__":

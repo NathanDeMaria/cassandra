@@ -44,12 +44,23 @@ def score(game: GamePlays) -> list[tuple] | None:
             continue
         kind = kind_of(play.play_type, play.text)
         rush_type = "rush" in (play.play_type or "").lower()
-        rows.append((
-            snap.offense_is_home, kind == PASS, snap.epa > 0, snap.weight, snap.epa,
-            play.down, play.distance, play.yardline, play.period, play.clock_seconds,
-            snap.win_probability, rush_type and bool(_SCRAMBLE.search((play.text or "").lower())),
-            rush_type,
-        ))
+        rows.append(
+            (
+                snap.offense_is_home,
+                kind == PASS,
+                snap.epa > 0,
+                snap.weight,
+                snap.epa,
+                play.down,
+                play.distance,
+                play.yardline,
+                play.period,
+                play.clock_seconds,
+                snap.win_probability,
+                rush_type and bool(_SCRAMBLE.search((play.text or "").lower())),
+                rush_type,
+            )
+        )
     return rows or None
 
 
@@ -62,8 +73,21 @@ async def main() -> None:
     source = StorePlaySource(get_processed_plays_store())
     scored, stats = await sweep("ncaafb", seasons, source, score)
     print(stats, flush=True)
-    columns = ["offense_is_home", "dropback", "win", "weight", "epa", "down", "distance", "yardline",
-               "period", "clock_seconds", "home_wp", "scramble_text", "rush_type"]
+    columns = [
+        "offense_is_home",
+        "dropback",
+        "win",
+        "weight",
+        "epa",
+        "down",
+        "distance",
+        "yardline",
+        "period",
+        "clock_seconds",
+        "home_wp",
+        "scramble_text",
+        "rush_type",
+    ]
     frames = []
     for game_id, rows in scored.items():
         frame = pd.DataFrame(rows, columns=columns)
@@ -78,17 +102,38 @@ async def main() -> None:
     plays["pass_win"] = plays.dropback & plays.win
     plays["w_pass"] = plays.weight * plays.dropback
     plays["w_pass_win"] = plays.weight * plays.pass_win
-    counts = plays.groupby(["game_id", "season", "offense_is_home"]).agg(
-        downs=("win", "size"), wins=("win", "sum"), pass_downs=("dropback", "sum"),
-        pass_wins=("pass_win", "sum"), weight=("weight", "sum"), w_wins=("w_win", "sum"),
-        w_pass=("w_pass", "sum"), w_pass_wins=("w_pass_win", "sum"),
-    ).reset_index()
+    counts = (
+        plays.groupby(["game_id", "season", "offense_is_home"])
+        .agg(
+            downs=("win", "size"),
+            wins=("win", "sum"),
+            pass_downs=("dropback", "sum"),
+            pass_wins=("pass_win", "sum"),
+            weight=("weight", "sum"),
+            w_wins=("w_win", "sum"),
+            w_pass=("w_pass", "sum"),
+            w_pass_wins=("w_pass_win", "sum"),
+        )
+        .reset_index()
+    )
     counts.to_parquet(OUT / "ncaafb_counts.parquet")
     rush = plays[plays.rush_type]
-    print(f"{len(plays)} downs in {plays.game_id.nunique()} games; dropback share {plays.dropback.mean():.3f}; "
-          f"runs the text calls scrambles {rush.scramble_text.mean():.3%}", flush=True)
-    print(plays.groupby("season").agg(downs=("win", "size"), dropback=("dropback", "mean"),
-                                      scramble=("scramble_text", "mean")).round(4).to_string(), flush=True)
+    print(
+        f"{len(plays)} downs in {plays.game_id.nunique()} games; dropback share {plays.dropback.mean():.3f}; "
+        f"runs the text calls scrambles {rush.scramble_text.mean():.3%}",
+        flush=True,
+    )
+    print(
+        plays.groupby("season")
+        .agg(
+            downs=("win", "size"),
+            dropback=("dropback", "mean"),
+            scramble=("scramble_text", "mean"),
+        )
+        .round(4)
+        .to_string(),
+        flush=True,
+    )
 
 
 asyncio.run(main())

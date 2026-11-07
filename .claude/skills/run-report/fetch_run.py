@@ -186,7 +186,10 @@ async def _list_jobs(batch, queue):
 
     pages = await asyncio.gather(*(one(status) for status in _STATUSES))
     return [
-        job for group in pages for job in group if job["jobName"].startswith("cassandra-")
+        job
+        for group in pages
+        for job in group
+        if job["jobName"].startswith("cassandra-")
     ]
 
 
@@ -392,7 +395,9 @@ async def _fetch_stage(batch, logs, stage, parent, cache_dir, gate):
     names = _child_names(stage, container, size)
 
     if size:
-        children = await _array_children(batch, parent["jobId"], array.get("statusSummary") or {})
+        children = await _array_children(
+            batch, parent["jobId"], array.get("statusSummary") or {}
+        )
         described = await _describe(batch, [child["jobId"] for child in children])
         described.sort(key=_index_of)
         records = await asyncio.gather(
@@ -410,9 +415,7 @@ async def _fetch_stage(batch, logs, stage, parent, cache_dir, gate):
             )
         )
     else:
-        records = [
-            await _job_record(logs, stage, None, stage, parent, cache_dir, gate)
-        ]
+        records = [await _job_record(logs, stage, None, stage, parent, cache_dir, gate)]
 
     return stage, {
         "job_id": parent["jobId"],
@@ -483,9 +486,7 @@ async def _fetch(run, profile, cache_root, bucket):
         logs = await stack.enter_async_context(session.create_client("logs"))
         s3 = await stack.enter_async_context(session.create_client("s3"))
 
-        parents = await _describe(
-            batch, [job["jobId"] for job in run.stages.values()]
-        )
+        parents = await _describe(batch, [job["jobId"] for job in run.stages.values()])
         by_id = {job["jobId"]: job for job in parents}
 
         ordered = [stage for stage in STAGES if stage in run.stages]
@@ -520,7 +521,9 @@ async def _fetch(run, profile, cache_root, bucket):
     manifest = None
     if "optimize" in run.stages:
         parent = by_id[run.stages["optimize"]["jobId"]]
-        raw = _environment(parent.get("container") or {}).get("CASSANDRA_BATCH_MANIFEST")
+        raw = _environment(parent.get("container") or {}).get(
+            "CASSANDRA_BATCH_MANIFEST"
+        )
         manifest = json.loads(raw) if raw else None
 
     payload = {

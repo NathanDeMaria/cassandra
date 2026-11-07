@@ -172,7 +172,6 @@ class MarginKernelFitter(BaseProbToMarginFitter):
         return MarginKernel(slope=float(result.x[-1]), log_gaps=result.x[:-1])
 
 
-
 def _start(cells: np.ndarray, k: int) -> np.ndarray:
     """The pooled margin's own cutpoints, at a slope of 1.
 
