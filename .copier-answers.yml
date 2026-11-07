@@ -1,5 +1,9 @@
 # Changes here will be overwritten by Copier
-_commit: 3b8f4c4
+_commit: v1.1.0
 _src_path: gh:NathanDeMaria/mirrorball
-package_name: cassandra
-
+aws: true
+ci_workflow: true
+description: Team ratings and win probabilities
+kind: library
+module_name: cassandra
+project_name: cassandra

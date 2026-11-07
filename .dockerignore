@@ -1,3 +1,10 @@
+.git
+.venv
+__pycache__
+dist
+.devcontainer/local.env
+
+# This repo's own (the rules above are mirrorball's)
 __pycache__/
 *.py[cod]
 .pytest_cache/

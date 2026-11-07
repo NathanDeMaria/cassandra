@@ -12,7 +12,7 @@ join against the same residuals, not a new replay.
 A kept replay is reused only while it is still the replay the model would
 produce. `replay_key` fingerprints everything that decides that -- the
 config, the search config whose priors the replay warms up under, the code
-that replays it, and the pinned dependencies (`poetry.lock`) that supply its
+that replays it, and the pinned dependencies (`uv.lock`) that supply its
 team names and play-by-play indexes -- and a replay whose key differs is
 replayed again. What the key can't see is new data: a Saturday's games
 arrive in s3 without anything in the repo changing. So a replay also expires
@@ -114,7 +114,7 @@ def replay_key(league: str, model: str) -> str:
     for path in _replay_sources():
         digest.update(str(path.relative_to(_PACKAGE)).encode())
         digest.update(path.read_bytes())
-    lock = _REPO / "poetry.lock"
+    lock = _REPO / "uv.lock"
     if lock.exists():
         digest.update(lock.read_bytes())
     return digest.hexdigest()[:16]

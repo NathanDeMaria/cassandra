@@ -1,3 +1,5 @@
+# Template-owned (mirrorball). One job named `ci`, because that is the check
+# the branch ruleset requires: a red `ci` blocks the merge.
 name: CI
 
 on:
@@ -17,35 +19,22 @@ jobs:
       # Inline annotations on the PR diff instead of plain console output
       RUFF_OUTPUT_FORMAT: github
       TY_OUTPUT_FORMAT: github
-      # poetry.toml turns venvs off, which suits the devcontainer (poetry and
-      # the project share one interpreter). Here poetry runs from pipx on the
-      # runner's Debian python, so with venvs off it installs there instead of
-      # into the python below, and dies trying to update distro-owned packages.
-      POETRY_VIRTUALENVS_CREATE: "true"
-      POETRY_VIRTUALENVS_IN_PROJECT: "true"
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
-        id: setup-python
+      # Installs uv, restores its cache keyed on uv.lock, and provisions the
+      # interpreter from .python-version -- the same pins as the devcontainer.
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.14"
+          version: "0.13.6"
+          python-version: "3.14"  # the next PR moves to the template's 3.15
+          enable-cache: true
 
-      - name: Install poetry
-        run: pipx install poetry==2.2.1
-
-      # Keyed on the exact patch version: a venv is not portable across
-      # interpreter upgrades, and the hosted 3.14.x moves without warning
-      - name: Cache the virtualenv
-        uses: actions/cache@v6
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('poetry.lock') }}
-
+      # --locked: a uv.lock that doesn't match pyproject.toml fails here rather
+      # than being quietly re-resolved. Its own step so a resolution failure
+      # isn't reported as a lint failure.
       - name: Install dependencies
-        run: |
-          poetry env use "$(which python)"
-          poetry install --no-root
+        run: uv sync --locked
 
       - name: Lint
         run: make check

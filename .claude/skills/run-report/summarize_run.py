@@ -7,9 +7,9 @@ printed afterwards. This pulls out the parts a reviewer acts on: per-model
 status, convergence, bound diagnostics, grouped failures, and the evaluation
 table.
 
-    poetry run python summarize_run.py                # newest run
-    poetry run python summarize_run.py 20260829-022910
-    poetry run python summarize_run.py --cached       # don't call AWS
+    uv run python summarize_run.py                # newest run
+    uv run python summarize_run.py 20260829-022910
+    uv run python summarize_run.py --cached       # don't call AWS
 
 Status and timing come from Batch itself (`run.json`), not from scraping the
 logs: a job's own `startedAt`/`stoppedAt` and `status` are authoritative, and

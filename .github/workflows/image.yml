@@ -70,8 +70,8 @@ jobs:
   # Both are deployable: the compute environment's instance types include
   # Graviton, and which one a job lands on is Batch's choice at scale-up time,
   # so ECR has to hold an image for either. The alternative -- one job building
-  # both platforms through QEMU -- works, but emulating an arm64 `poetry
-  # install` of numpy, scipy, pyarrow and numba costs far more than the second
+  # both platforms through QEMU -- works, but emulating an arm64 `uv sync`
+  # of numpy, scipy, pyarrow and numba costs far more than the second
   # runner does. arm64 hosted runners are free for public repositories.
   #
   # Neither job writes the tag anything pulls. Each pushes its own

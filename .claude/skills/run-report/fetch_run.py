@@ -21,11 +21,11 @@ evaluate container's stdout is a list of model names and nothing else.
 Only terminal jobs are cached; a RUNNING job's stream is re-fetched every time,
 because the interesting question about one is what it has printed since.
 
-    poetry run python fetch_run.py                # newest run, print the path
-    poetry run python fetch_run.py --list         # recent runs, newest first
-    poetry run python fetch_run.py 20260829-022910
+    uv run python fetch_run.py                # newest run, print the path
+    uv run python fetch_run.py --list         # recent runs, newest first
+    uv run python fetch_run.py 20260829-022910
 
-Needs the poetry env (aiobotocore) and AWS credentials: set AWS_PROFILE to an
+Needs the project env (aiobotocore) and AWS credentials: set AWS_PROFILE to an
 SSO profile from ~/.aws/config, or pass --profile.
 """
 

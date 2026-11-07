@@ -1,3 +1,14 @@
+__pycache__/
+.venv/
+dist/
+.pytest_cache/
+.ruff_cache/
+.env
+
+# Machine-local devcontainer settings; local.env.example is the tracked copy
+.devcontainer/local.env
+
+# From before the template
 __pycache__
 .venv
 *.csv

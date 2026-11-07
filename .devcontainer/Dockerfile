@@ -1,221 +1,78 @@
-# 3.14-bookworm.
+# Template-owned (mirrorball): the devcontainer only. A repo that ships an
+# image keeps its runtime Dockerfile elsewhere and owns it.
 #
-# The digest of the *index*, not of one platform's manifest inside it. The
-# previous pin was the latter, which is why it only ever built amd64: a
-# single-platform digest has nothing for `--platform linux/arm64` to resolve
-# to, so the build either ignores the request or fails outright. This is the
-# one line that makes a multi-architecture build possible at all.
-#
-#   docker buildx imagetools inspect python:3.14-bookworm
-FROM python@sha256:b3c121f5b6b446c964c6ea924d9a099e259b29d7b56df82729e33572a31eadcc AS base
+# 3.14-bookworm, as the Batch image has been, for the first of two PRs: moving
+# to uv and ruff changes no interpreter or package version. The second PR moves
+# this to the template's 3.15 image. Pinned by the digest of the multi-platform
+# index, so the same line builds on amd64 and arm64.
+FROM python@sha256:b3c121f5b6b446c964c6ea924d9a099e259b29d7b56df82729e33572a31eadcc
+
+# uv at a pinned version, copied out of its own image rather than pip-installed,
+# so it shares nothing with the project's environment. Bump it on purpose: uv is
+# what reads uv.lock.
+COPY --from=ghcr.io/astral-sh/uv@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 /uv /uvx /usr/local/bin/
+
+# The interpreter is this image's, not one uv downloads to satisfy
+# requires-python.
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON=/usr/local/bin/python3
+# The workspace is a bind mount, so uv's cache and .venv are on different
+# filesystems and hardlinking between them fails.
+ENV UV_LINK_MODE=copy
 
 # Non-root, uid/gid 1000 to match the host user whose files get bind-mounted in
-# (~/.aws, ~/.claude, ~/.cassandra). Running as root here meant every SSO
-# token refresh clobbered the host's cache with root-owned files. The Batch
-# stage inherits the user rather than switching back: it has nothing to do as
-# root, and one user across every stage means ~/.cassandra and
-# ~/.aws-batch/config.json resolve to the same paths in a job as on a laptop.
-#
-# The chown is for the runtime stage, which installs with no virtualenv and so
-# treats /usr/local as the environment. Three paths under it have to be
-# writable by dev:
-#   site-packages  installed packages
-#   bin            console scripts
-#   src            git checkouts. Poetry clones VCS deps (endgame_aws) into
-#                  `env.path / "src"`, NOT into the cache dir -- so with no
-#                  virtualenv that resolves to /usr/local/src, and a root-owned
-#                  one fails the install with EPERM.
-# The rest of the stdlib stays root-owned; chowning it would copy 53M into
-# this layer for nothing. Here rather than in `runtime` so the chown walks an
-# empty site-packages: after the install it would copy every installed package
-# into the layer.
+# (~/.aws, ~/.claude). As root, every token refresh would leave root-owned files
+# in the host's directories.
 RUN apt-get update && apt-get install -y --no-install-recommends sudo \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 dev \
     && useradd --uid 1000 --gid 1000 -m -s /bin/bash dev \
     && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
-    && chmod 0440 /etc/sudoers.d/dev \
-    && mkdir -p /usr/local/src \
-    && chown -R dev:dev /usr/local/lib/python3.14/site-packages /usr/local/bin /usr/local/src
+    && chmod 0440 /etc/sudoers.d/dev
 
 USER dev
 WORKDIR /home/dev
-
-# Parents of the bind mounts in devcontainer.json. Docker creates a missing
-# mount point as root, and chowning on the host can't fix these because the
-# parents themselves aren't mounted -- so `aws configure` and anything else
-# writing a new file straight into ~/.aws would hit EPERM. Pre-creating them
-# as dev means docker finds them already there and leaves ownership alone.
-# ~/.aws-batch is also where the runtime stage lands its config.json.
-RUN mkdir -p /home/dev/.aws /home/dev/.aws-batch /home/dev/.endgame
-
-# Poetry
-RUN curl -sSL https://install.python-poetry.org | python3 - --version 2.2.1
 ENV PATH=/home/dev/.local/bin:${PATH}
 
-COPY --chown=dev:dev poetry.* ./
-COPY --chown=dev:dev pyproject.toml ./
+# No `uv sync` here: the .venv belongs in the bind-mounted workspace, which
+# doesn't exist at build time. devcontainer.json's postCreateCommand does it.
 
-# Deliberately no `poetry install` here. The two stages below want opposite
-# things from poetry -- runtime needs the packages where a bare `python` finds
-# them, the devcontainer wants the in-project venv poetry.toml asks for -- and
-# a shared install layer can only be one of those. Each stage installs for
-# itself; nobody builds both in one go, so the "shared" layer was never shared.
-
-
-# What actually gets deployed to Batch. Kept free of the dev tooling below so
-# the pushed image stays small and CI never builds the interactive extras.
-FROM base AS runtime
-
-# No venv, unlike the devcontainer: the entrypoint is `python`, not
-# `poetry run`, so the packages have to be somewhere the interpreter looks
-# without being activated. An env var rather than editing poetry.toml, which
-# is free to keep asking for the venv a laptop wants.
-ENV POETRY_VIRTUALENVS_CREATE=false
-
-# `fit` carries scikit-learn, bayes_opt, numba, fire and endgame_aws --
-# optimize and publish are both fitting paths, and both read the bucket, so
-# the deployed image needs the group the webapp deliberately doesn't. See the
-# comment on the group in pyproject.toml.
-#
-# numba is the one of those that changes what a job *costs* rather than what
-# it can do: without it every Glicko search still runs, three times slower
-# per probe, and the 6h `optimize_timeout_seconds` is what notices. There is
-# no compiler in this stage and none needed -- it installs from a wheel.
-#
-# `--only main,fit`, NOT `--only main --with fit`: poetry ignores `--with`
-# whenever `--only` is given, and says so in a line that scrolls past in a
-# green build. That spelling installed neither scikit-learn nor
-# bayesian-optimization, and the image looked fine -- `fire` comes in
-# transitively through endgame, so the one name you'd think to check was
-# there. Every optimize job would have died importing bayes_opt.
-RUN poetry install --no-root --only main,fit
-
-# `Config.init_from_file` looks here second, and it's the only one of its two
-# candidates worth using: the first is the *package* root, which for an
-# installed endgame_aws is site-packages. Required at build time, so a missing
-# bucket is a build failure rather than every job failing at import. CI writes
-# it from a secret first; see .github/workflows/image.yml.
-COPY --chown=dev:dev config.json /home/dev/.aws-batch/config.json
-
-# models/ has to come along: the manifest is derived from the checked-in
-# configs at runtime, so the image is what defines the work list.
-ADD --chown=dev:dev . /home/dev/runtime
-WORKDIR /home/dev/runtime
-
-# What this image was built from, which is how an optimize child decides
-# whether the code behind a fit has changed (`cassandra.fingerprint`). The
-# whole commit, deliberately: working out which modules feed one search is
-# the kind of cleverness whose failure mode is serving a stale fit forever.
-#
-# Last, and after the ADD, because a build arg invalidates every layer below
-# it and this one changes on every commit -- the ADD already does, so putting
-# it here costs nothing and putting it higher would cost the poetry install.
-#
-# Empty by default. `cassandra.fingerprint.code_version` reads an empty value
-# as "unknown", which never matches a recorded fingerprint, so an image built
-# without this searches everything rather than skipping on a false match.
-ARG GIT_SHA=""
-ENV CASSANDRA_GIT_SHA=$GIT_SHA
-
-ENTRYPOINT ["python", "/home/dev/runtime/jobs.py"]
-CMD ["manifest"]
-
-
-# The devcontainer target. Branches off `base` so editing source doesn't
-# invalidate the awscli layer on a local rebuild.
-FROM base AS dev
-
-# The two installers that write outside $HOME. `sudo` rather than a `USER root`
-# / `USER dev` sandwich so the layer's files land owned by whoever should own
-# them without a follow-up chown.
-#
-# GitHub CLI, for PR and issue work from a Claude session. Debian ships no
-# usable gh package and the upstream apt repo would be an unpinned external
-# source, so this takes the release .deb at a pinned version instead. dpkg
-# rather than apt-get because the package lists are deleted above; gh's only
-# dependency is git, which the base image already has.
+# The GitHub CLI, from the release .deb at a pinned version (Debian's is too
+# old, and the upstream apt repo is unpinned).
 ARG GH_VERSION=2.97.0
 RUN arch="$(dpkg --print-architecture)" \
     && curl -fsSL -o /tmp/gh.deb "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.deb" \
     && sudo dpkg -i /tmp/gh.deb \
     && rm /tmp/gh.deb
 
-# Only needed interactively (`aws sso login`, `make push`) -- nothing in
-# cassandra shells out to the CLI, it goes through aiobotocore.
-#
-# `uname -m` rather than the x86_64 this used to hardcode: the runtime stage
-# is built for both architectures now, and a `dev` stage that can only build
-# on one of them is a trap for whoever next opens the devcontainer on an arm
-# machine. The two names the CLI publishes are exactly uname's.
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip" &&\
-    unzip awscliv2.zip &&\
-    sudo ./aws/install &&\
-    rm awscliv2.zip &&\
-    rm -r ./aws
+# For `aws sso login` and poking at buckets by hand. ~/.aws is pre-created so
+# the bind mount's parent is dev's, not root's.
+RUN mkdir -p /home/dev/.aws \
+    && arch="$(uname -m)" \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o awscliv2.zip \
+    && unzip -q awscliv2.zip \
+    && sudo ./aws/install \
+    && rm -r awscliv2.zip ./aws
 
-# jq, for the Makefile's IMAGE_URL: `make build` and `make push` read the ECR
-# repo url out of ~/.aws-batch/config.json with it, and without jq make prints
-# "jq: No such file or directory" on *every* invocation -- including targets
-# like `make test` that never look at IMAGE_URL, because that line is a
-# `$(shell ...)` make expands up front.
-#
-# apt-get, unlike the gh install above, because jq is in Debian and pinning a
-# release binary by hand buys nothing here. `base` deletes the package lists,
-# so this refreshes them and drops them again rather than leaving the index in
-# the layer. Interactive-only, like the awscli: the runtime stage builds
-# images, it doesn't build them.
-RUN sudo apt-get update \
-    && sudo apt-get install -y --no-install-recommends jq \
-    && sudo rm -rf /var/lib/apt/lists/*
-
-# No `poetry install` here either, and this one is worth spelling out:
-# poetry.toml asks for an in-project venv, and "in project" at build time
-# means /home/dev/.venv -- but VS Code opens the bind-mounted workspace at
-# /workspaces/cassandra, so that venv would be built into the image and then
-# never used. devcontainer.json's postCreateCommand runs the install in the
-# workspace instead, where the .venv it makes is the one the editor and
-# `poetry run` both pick up.
-
-# Claude Code, pinned like poetry above. Installs the native build to
-# ~/.local/share/claude/versions/<v> and symlinks a launcher into
-# ~/.local/bin, which the PATH above already covers. The installer's scratch
-# dir (~/.claude/downloads) is emptied before the layer closes, so nothing
-# here collides with the ~/.claude bind mount at runtime. Auto-updates still
-# run inside a live container; this only pins what a fresh build starts from.
+# Claude Code, pinned. Auto-updates still run in a live container; this only
+# pins what a fresh build starts from.
 RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.235
 
-# Claude's top-level config lives at $HOME/.claude.json, which is *outside* the
-# ~/.claude bind mount -- so a rebuild loses it and the first `claude` run
-# replays the onboarding prompts. Seeding these two keys skips that; Claude
-# fills in the rest of the file on first run.
+# $HOME/.claude.json is outside the ~/.claude bind mount, so a rebuild loses it
+# and replays onboarding. Seeding these two keys skips that.
 RUN printf '%s' '{"hasCompletedOnboarding":true,"theme":"dark"}' \
     > /home/dev/.claude.json
 
 # For persisting bash history
 RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" && echo $SNIPPET >> "/home/dev/.bashrc"
 
-# Machine-local environment -- the AWS_PROFILE to use, mainly. It has to be
-# settable without committing it, so it lives in .devcontainer/local.env,
-# which .gitignore and .dockerignore both drop; devcontainer.json passes its
-# path down as DEVCONTAINER_ENV_FILE (from ${containerWorkspaceFolder}, since
-# where the workspace lands depends on which folder you opened).
-#
-# Sourced from two places on purpose, because bash reads different files
-# depending on how it was started and both cases matter here:
-#   .bashrc    interactive shells -- a VS Code terminal
-#   BASH_ENV   non-interactive ones -- `bash -c`, which is how Claude Code and
-#              anything scripted runs commands
-# Between them every bash in the container ends up with the profile set,
-# rather than just the ones a human typed into.
-#
-# Keep this script silent: BASH_ENV is read before *every* non-interactive
-# bash, so anything it prints lands in the output of every `$(...)` capture.
+# Machine-local environment (AWS_PROFILE, mainly) from the untracked
+# .devcontainer/local.env. Sourced by interactive shells (.bashrc) and by
+# non-interactive ones (BASH_ENV), which is how Claude Code runs commands. Keep
+# it silent: anything it prints lands in every `$(...)` capture.
 COPY --chown=dev:dev .devcontainer/local-env.sh /home/dev/.local-env.sh
 ENV BASH_ENV=/home/dev/.local-env.sh
 RUN echo '. /home/dev/.local-env.sh' >> "/home/dev/.bashrc"
 
-# Is this a good way to add stuff on load?
-# Not sure, but it's working
-COPY --chown=dev:dev profile.sh /home/dev/profile.sh
+COPY --chown=dev:dev .devcontainer/profile.sh /home/dev/profile.sh
 RUN echo ". profile.sh" >> "/home/dev/.bashrc"
