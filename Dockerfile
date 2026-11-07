@@ -1,19 +1,20 @@
 # What runs on Batch: `python jobs.py <command>`, and nothing else. The
 # devcontainer is .devcontainer/Dockerfile, and is the template's.
 #
-# 3.14-bookworm.
+# 3.15.2-trixie -- the same image mirrorball's devcontainer uses, so a job and a
+# laptop run one interpreter.
 #
 # The digest of the *index*, not of one platform's manifest inside it. A
 # single-platform digest has nothing for `--platform linux/arm64` to resolve
 # to, so the build either ignores the request or fails outright. This is the
 # one line that makes a multi-architecture build possible at all.
 #
-#   docker buildx imagetools inspect python:3.14-bookworm
+#   docker buildx imagetools inspect python:3.15-trixie
 #
 # The full image rather than -slim because it already has git, which uv needs to
 # clone the git dependencies (endgame, call-it-what-you-want, ...) at their
 # pinned revs -- so there is no apt step.
-FROM python@sha256:b3c121f5b6b446c964c6ea924d9a099e259b29d7b56df82729e33572a31eadcc
+FROM python@sha256:a51b0cd81c9c0fc08afc4a823843b459dc71c9386a02ccb150097b41d783f33b
 
 # uv at the version mirrorball pins, copied out of its own image (by index
 # digest, ghcr.io/astral-sh/uv:0.13.6) rather than pip-installed into the
