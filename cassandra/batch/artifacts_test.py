@@ -8,6 +8,8 @@ first month -- see the comment in `download_predictor_data`.
 """
 
 import asyncio
+import importlib
+import pkgutil
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from cassandra.predictor.game_control import load_game_control
 from cassandra.predictor.luck import load_luck
 from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import load_qb_out
+from cassandra.predictor.turnover import load_turnover
 from cassandra.roster import TALENT, load_roster
 
 from . import artifacts
@@ -25,8 +28,9 @@ from . import artifacts
 _LEAGUE = "nfl"
 
 #: Every cached reader of a file under `predictor/data`. A new loader goes
-#: here as well as in `download_predictor_data`, and the test below is what
-#: notices if it only made it into one of the two.
+#: here as well as in `download_predictor_data`, and the tests below are what
+#: notice if it only made it into one of the two -- or into neither, which a
+#: list kept by hand can't see: the turnover file's was in neither.
 _LOADERS = (
     load_anchors,
     load_game_control,
@@ -35,6 +39,7 @@ _LOADERS = (
     load_roster,
     load_player_ratings,
     load_luck,
+    load_turnover,
 )
 
 
@@ -66,6 +71,22 @@ def test_the_download_drops_every_cached_read(monkeypatch: pytest.MonkeyPatch) -
     asyncio.run(artifacts.download_predictor_data("bucket"))
 
     assert [loader.cache_info().currsize for loader in _LOADERS] == [0] * len(_LOADERS)
+
+
+def test_every_cached_predictor_loader_is_listed() -> None:
+    """A cached `load_*` anywhere under `cassandra.predictor` is a file
+    reader this has to drop."""
+    import cassandra.predictor as package
+
+    found = set()
+    for module in pkgutil.iter_modules(package.__path__):
+        if module.name.endswith("_test"):
+            continue
+        loaded = importlib.import_module(f"{package.__name__}.{module.name}")
+        for name, value in vars(loaded).items():
+            if name.startswith("load_") and hasattr(value, "cache_clear"):
+                found.add(value)
+    assert found <= set(_LOADERS)
 
 
 def test_the_index_written_by_the_download_is_what_the_next_read_returns(

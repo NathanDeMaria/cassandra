@@ -31,6 +31,7 @@ from cassandra.predictor import (
 from cassandra.predictor.luck import load_luck
 from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import load_qb_out, qb_out_path
+from cassandra.predictor.turnover import load_turnover
 from cassandra.qb_starts import qb_starts_path
 from cassandra.roster import load_roster
 
@@ -138,8 +139,8 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     `BlendedMarginEloPredictor` reads alongside it, the quarterback
     availability index every matchup-adjusted predictor prices, the
     roster measures -- talent and returning production -- a
-    `UnitMarginGlickoPredictor` reads, and the players' team ratings the
-    basketball models price.
+    `UnitMarginGlickoPredictor` reads, and the players' team ratings, luck
+    and returning minutes the basketball models read.
 
     Dropping the caches is the whole reason this isn't just
     `download(bucket, PREDICTOR_DATA_PREFIX)`. `load_anchors`,
@@ -173,6 +174,10 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     load_roster.cache_clear()
     load_player_ratings.cache_clear()
     load_luck.cache_clear()
+    # Missing for the first Batch search of the turnover knobs (2026-11-07):
+    # both basketball fits came back with them at 0 and their seeds scoring
+    # like a replay with no file.
+    load_turnover.cache_clear()
     return paths
 
 
