@@ -41,7 +41,6 @@ from cassandra.predictor.game_control import (
     read_game_control_file,
 )
 
-_LEAGUE = "nfl"
 _HOME_ID, _AWAY_ID = "100", "200"
 
 

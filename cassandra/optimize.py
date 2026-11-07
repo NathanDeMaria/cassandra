@@ -4,7 +4,7 @@ import signal
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -472,7 +472,7 @@ def _saving_on_sigterm(
     optimizer: BayesianOptimization,
     checkpoint: Checkpoint | None,
     param_bounds: Mapping[str, _ParameterBound],
-) -> Iterator[None]:
+) -> Generator[None]:
     """Save the search when the container is told to stop.
 
     ECS delivers SIGTERM ahead of the kill when a spot instance is reclaimed,

@@ -201,7 +201,8 @@ def _aggregate(games: Iterable[TierGame]) -> _Aggregated:
     home_wins: Counter[tuple[Tier, Tier, bool]] = Counter()
     for home, away, home_won, neutral in games:
         played[(home, away, neutral)] += 1
-        home_wins[(home, away, neutral)] += home_won
+        # a tie counts half a win, which Counter holds fine; its stub says int
+        home_wins[(home, away, neutral)] += home_won  # ty: ignore[invalid-assignment]
     return _Aggregated(played, home_wins)
 
 

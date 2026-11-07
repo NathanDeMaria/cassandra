@@ -300,3 +300,5 @@ exclude = ["reasoning"]
 [tool.ruff.lint.per-file-ignores]
 # these re-export names for the public API
 "__init__.py" = ["F401"]
+# scratch analysis, like the ty exclude above: short names and throwaway lambdas
+"reasoning/**" = ["E731", "E741", "F841"]
