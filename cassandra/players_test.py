@@ -41,3 +41,13 @@ def test_a_file_named_for_something_else_is_refused(tmp_path: Path) -> None:
     path.write_text(_HEADER)
     with pytest.raises(ValueError):
         read_players_file(path)
+
+
+def test_a_team_goes_by_the_name_its_team_page_has(tmp_path: Path) -> None:
+    path = tmp_path / "womens_players_2026.csv"
+    path.write_text(
+        _HEADER
+        + "womens,2026,2026-11-05,1,Pat,9,Central Arkansas Sugar Bears,false,"
+        + "1,2,3,1,1,1.4,2.5,4,4,100,0.5\n"
+    )
+    assert read_players_file(path).players[0].team == "Central Arkansas Bears"
