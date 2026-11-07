@@ -25,6 +25,7 @@ from .save_predictions import (
     generate_predictions,
     predictions_frame,
     prepared_for_replay,
+    without_repeats,
 )
 
 _HOME = "Team A"
@@ -487,3 +488,20 @@ def test_the_replay_records_the_game_as_it_was_played() -> None:
 
     assert (result.game.home_score, result.game.away_score) == (20, 17)
     assert predictor.get_rating(_HOME) < predictor.get_rating(_AWAY)
+
+
+def test_a_game_listed_twice_is_kept_once() -> None:
+    repeat, other = _game("repeat", 3), _game("other", 4)
+    season = Season(
+        year=2023,
+        weeks=[
+            Week(games=[repeat, other, repeat], number=1),
+            Week(games=[repeat, _game("later", 11)], number=2),
+        ],
+    )
+    weeks = without_repeats(season).weeks
+    assert [[g.game_id for g in w.games] for w in weeks] == [
+        ["repeat", "other"],
+        ["later"],
+    ]
+    assert [w.number for w in weeks] == [1, 2]

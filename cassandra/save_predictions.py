@@ -21,6 +21,32 @@ from .serving.history import WeekObserver, WeekSnapshot, tally
 _SEASON_KEY_RE = re.compile(r"^seasons/(\d+)/([^/]+)\.pkl$")
 
 
+def without_repeats(season: Season) -> Season:
+    """`season` with each game once.
+
+    ESPN lists a basketball postseason game under Division I and again under
+    its tournament, and the mens and womens pickles from 2010-11 to 2024-25
+    keep both, about 100 games a season. `iter_weeks` only pools by game id for
+    a season with a `season_start`, so a replay of those seasons learned from
+    each of those games twice. The copies are identical, and fixing it is worth
+    -0.00003 on Brier at the fits made with them.
+    """
+    seen: set[str] = set()
+
+    def first_time(game_id: str) -> bool:
+        if game_id in seen:
+            return False
+        seen.add(game_id)
+        return True
+
+    return season._replace(
+        weeks=[
+            week._replace(games=[g for g in week.games if first_time(g.game_id)])
+            for week in season.weeks
+        ]
+    )
+
+
 async def read_all_seasons(league: str, bucket: str) -> AsyncIterator[Season]:
     async for key in list_all_keys(bucket, "seasons/"):
         match = _SEASON_KEY_RE.match(key)
@@ -28,7 +54,7 @@ async def read_all_seasons(league: str, bucket: str) -> AsyncIterator[Season]:
             continue
         seasons = await read_seasons(bucket, key)
         for season in seasons:
-            yield season
+            yield without_repeats(season)
 
 
 def _rates_teams(predictor: Predictor) -> bool:
