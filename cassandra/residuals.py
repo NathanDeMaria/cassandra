@@ -628,7 +628,11 @@ def home_field_table(
     away = away.assign(**{MARGIN_RESIDUAL: -away[MARGIN_RESIDUAL]})
     home_means = home.groupby("team")[MARGIN_RESIDUAL].agg(["mean", "size"])
     away_means = away.groupby("team")[MARGIN_RESIDUAL].agg(["mean", "size"])
-    joined = home_means.join(away_means, how="inner", lsuffix="_home", rsuffix="_away")
+    # Suffixed up front: the join's own lsuffix/rsuffix are deprecated in
+    # pandas 3.1, and its replacement isn't in pandas-stubs yet.
+    joined = home_means.add_suffix("_home").join(
+        away_means.add_suffix("_away"), how="inner"
+    )
     joined = joined[
         (joined["size_home"] >= min_games) & (joined["size_away"] >= min_games)
     ]
