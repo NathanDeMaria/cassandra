@@ -212,7 +212,7 @@ def test_clv_by_edge_buckets_by_disagreement() -> None:
     assert table.loc["0-2", "record_entry"] == "1-0-0"
     assert table.loc["4-7", "clv_negative"] == 1.0
     assert table.loc["7+", "record_entry"] == "0-0-1"
-    assert pd.isna(table.loc["7+", "cover_rate_entry"])
+    assert pd.isna(table.loc["7+", "cover_rate_entry"])  # ty: ignore[no-matching-overload]  # pandas-stubs 3 types a cell as maybe-NA
 
 
 def _priced(*rows):
@@ -271,7 +271,7 @@ def test_flat_strategy_bets_the_model_side_past_the_threshold() -> None:
     assert five["n"] == 2
     assert five["hit_rate"] == 0.5
     assert table.loc["flat, edge > 0.15", "n"] == 0
-    assert pd.isna(table.loc["flat, edge > 0.15", "roi"])
+    assert pd.isna(table.loc["flat, edge > 0.15", "roi"])  # ty: ignore[no-matching-overload]  # pandas-stubs 3 types a cell as maybe-NA
 
 
 def test_kelly_stakes_the_fraction_of_the_edge_and_skips_no_edge() -> None:

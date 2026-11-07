@@ -179,7 +179,7 @@ def test_the_book_s_number_rides_along_when_there_is_one() -> None:
     )
 
     assert frame.loc[lined, "spread"] == -6.5
-    assert pd.isna(frame.loc["2026-2-Team B@Team A", "spread"])
+    assert pd.isna(frame.loc["2026-2-Team B@Team A", "spread"])  # ty: ignore[no-matching-overload]  # pandas-stubs 3 types a cell as maybe-NA
 
 
 def test_rows_are_sorted_by_date(tmp_path: Path) -> None:

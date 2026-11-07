@@ -486,9 +486,13 @@ def null_counts(
     restricts which team-seasons are counted (filter it first to count FBS
     only).
     """
-    years = scored["year"].astype(str).to_numpy()
-    home = scored["home_team"].astype(str).to_numpy() + "\x00" + years
-    away = scored["away_team"].astype(str).to_numpy() + "\x00" + years
+    # Joined as pandas strings, then turned into an array. Joining the arrays
+    # themselves is not the same on pandas 3, where `.to_numpy()` of a string
+    # column can be a fixed-width numpy string that drops a trailing NUL, so
+    # the separator vanished and nothing matched `table`'s keys below.
+    years = scored["year"].astype(str)
+    home = (scored["home_team"].astype(str) + "\x00" + years).to_numpy()
+    away = (scored["away_team"].astype(str) + "\x00" + years).to_numpy()
     codes, uniques = pd.factorize(np.concatenate([home, away]))
     home_codes, away_codes = codes[: len(scored)], codes[len(scored) :]
     wanted = pd.Index(uniques).isin(

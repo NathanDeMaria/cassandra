@@ -280,7 +280,7 @@ def main() -> None:
         return
     as_of = ledger.now_utc()
     out = frame.drop(columns=["order_ids"]).copy()
-    out["tags"] = out["tags"].map(lambda ts: ";".join(ts))
+    out["tags"] = out["tags"].map(lambda ts: ";".join(ts))  # ty: ignore[no-matching-overload]
     out.sort_values(["week", "kickoff"]).to_csv(
         ledger.LEDGER_DIR / "ledger.csv", index=False
     )

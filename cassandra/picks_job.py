@@ -754,7 +754,7 @@ def _by_league(
 
     if frame.empty:
         return []
-    leagues = frame["event"].map(lambda e: league_of(e) or "other")
+    leagues = frame["event"].map(lambda e: league_of(str(e)) or "other")
     if leagues.nunique() < 2:
         return [(None, frame)]
     order = [*PICK_LEAGUES, "other"]

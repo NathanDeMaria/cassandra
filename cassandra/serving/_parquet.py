@@ -218,5 +218,9 @@ def upserted(
     refresh over a week it already covered a no-op.
     """
     incoming = normalized(rows, dtypes)
-    combined = pd.concat([existing, incoming], ignore_index=True)
+    # Normalized again after the concat, not trusted to keep the dtypes: with
+    # an empty `existing` (a first write) pandas 3 hands back a timezone
+    # column whose parquet metadata says `object` where a round trip says
+    # `datetime64[us]`, so a no-op re-upsert changed the file's bytes.
+    combined = normalized(pd.concat([existing, incoming], ignore_index=True), dtypes)
     return ordered(combined.drop_duplicates(subset=list(key), keep="last"), sort_by)
