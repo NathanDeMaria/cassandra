@@ -99,7 +99,7 @@ class Scale:
         return [self.low, self.high, LOG] if self.log else [self.low, self.high]
 
     @staticmethod
-    def from_saved(saved: Sequence[float | str]) -> "Scale":
+    def from_saved(saved: Sequence[float | str]) -> Scale:
         return Scale(float(saved[0]), float(saved[1]), len(saved) == 3)
 
 

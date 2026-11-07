@@ -137,7 +137,7 @@ def ols(cols):
 
 _, ref = ols(models["pooled SR (today)"])
 print(
-    f"\nmargin, out of sample: MSE (pts^2) and change vs pooled, t on per-game differences"
+    "\nmargin, out of sample: MSE (pts^2) and change vs pooled, t on per-game differences"
 )
 for name, cols in models.items():
     beta, r = ols(cols)

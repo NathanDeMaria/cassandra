@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Self
 
 import pandas as pd
@@ -116,7 +116,7 @@ def _game(game_id: str, day: int, month: int = 11, year: int = 2023) -> Game:
         away_score=0,
         neutral_site=False,
         completed=True,
-        date=datetime(year, month, day, tzinfo=timezone.utc),
+        date=datetime(year, month, day, tzinfo=UTC),
         game_id=game_id,
     )
 
@@ -189,7 +189,7 @@ def _renamed_game(home: str, away: str, year: int) -> Game:
         away_score=0,
         neutral_site=False,
         completed=True,
-        date=datetime(year, 11, 6, tzinfo=timezone.utc),
+        date=datetime(year, 11, 6, tzinfo=UTC),
         game_id=f"{year}",
     )
 
@@ -308,7 +308,7 @@ def _two_predictions() -> list[_Prediction]:
             home_team=_HOME,
             away_team=_AWAY,
             game_id=str(week),
-            date=datetime(2023, 1, week, tzinfo=timezone.utc),
+            date=datetime(2023, 1, week, tzinfo=UTC),
             neutral_site=False,
         )
         for week in (1, 2)
@@ -470,7 +470,7 @@ def test_the_replay_records_the_game_as_it_was_played() -> None:
         away_score=17,
         neutral_site=False,
         completed=True,
-        date=datetime(2023, 1, 1, tzinfo=timezone.utc),
+        date=datetime(2023, 1, 1, tzinfo=UTC),
         game_id="1",
     )
     season = Season(year=2023, weeks=[Week(games=[played], number=1)])

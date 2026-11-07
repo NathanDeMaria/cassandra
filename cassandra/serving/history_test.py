@@ -6,7 +6,7 @@ taken relative to the rollovers, and that is a property of the walk rather
 than of any predictor.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -59,7 +59,7 @@ def _game(
         completed=completed,
         # A day per week, because `iter_weeks` refuses a season whose weeks
         # overlap in time.
-        date=datetime(year, 3, week, tzinfo=timezone.utc),
+        date=datetime(year, 3, week, tzinfo=UTC),
         game_id=f"{year}-{week}-{away}@{home}",
         status="STATUS_FINAL" if completed else "STATUS_SCHEDULED",
     )
@@ -490,7 +490,7 @@ def test_a_row_carries_the_rating_the_model_predicts_from() -> None:
             league=_LEAGUE,
             year=2025,
             week=1,
-            date=datetime(2025, 9, 1, tzinfo=timezone.utc),
+            date=datetime(2025, 9, 1, tzinfo=UTC),
             ratings={
                 "Team A": Rating(1500.0, 80.0, blended=1530.0),
                 "Team B": Rating(1490.0, 80.0),

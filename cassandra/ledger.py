@@ -26,13 +26,13 @@ bet team's points less its opponent's.
 
 import math
 import re
+import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
 import pandas as pd
-import tomllib
 
 from . import injuries
 from .constants import CASSANDRA_HOME

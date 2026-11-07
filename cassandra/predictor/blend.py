@@ -102,7 +102,7 @@ class PlayBlend(NamedTuple):
     epa_share: float
 
     @classmethod
-    def validated(cls, play_weight: float, epa_share: float) -> "PlayBlend":
+    def validated(cls, play_weight: float, epa_share: float) -> PlayBlend:
         """The pair, checked. What a constructor calls."""
         return cls(
             validated_fraction("play_weight", play_weight),

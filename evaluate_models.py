@@ -1,10 +1,9 @@
 import argparse
 import asyncio
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
 
 import pandas as pd
 

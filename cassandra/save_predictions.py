@@ -1,11 +1,12 @@
 import csv
 import io
 import re
+from collections.abc import AsyncIterable, AsyncIterator, Collection, Iterable, Iterator
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, AsyncIterable, AsyncIterator, Collection, Iterable, Iterator
+from typing import Any
 
 import aiofiles
 import pandas as pd

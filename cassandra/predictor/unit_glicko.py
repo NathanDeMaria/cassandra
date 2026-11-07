@@ -1182,7 +1182,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 rates.add_game(game, epa, rates.from_epa(shift), anchors)
 
     @property
-    def _displayed(self) -> list["_DisplayedRates"]:
+    def _displayed(self) -> list[_DisplayedRates]:
         """The displayed readings this league keeps: success rates and EPA, every down's and each kind's."""
         return [
             rates
@@ -1228,7 +1228,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         super().pass_week()
 
     def _aged_sides(
-        self, sides: Mapping[str, _Sides], increase: "_Pair"
+        self, sides: Mapping[str, _Sides], increase: _Pair
     ) -> dict[str, _Sides]:
         """Each side's deviation widened by its own increase, capped at its own initial.
 
@@ -1482,8 +1482,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         )
 
     def _shown(
-        self, rates: "_DisplayedRates", team: str, per_rating: float
-    ) -> "_Shown | None":
+        self, rates: _DisplayedRates, team: str, per_rating: float
+    ) -> _Shown | None:
         if not rates.enabled:
             return None
         return rates.rates(team, self.anchor, rates.from_epa(per_rating))

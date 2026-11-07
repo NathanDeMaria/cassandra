@@ -259,7 +259,7 @@ class LeagueRules:
     paused: bool = False
 
     @classmethod
-    def from_json(cls, value: dict) -> "LeagueRules":
+    def from_json(cls, value: dict) -> LeagueRules:
         missing = [name for name in REQUIRED if value.get(name) is None]
         if missing:
             raise ValueError(f"league rules without {', '.join(missing)}: {value}")
@@ -321,7 +321,7 @@ class Autobet:
     leagues: dict[str, LeagueRules] = field(default_factory=dict)
 
     @classmethod
-    def from_json(cls, value: dict) -> "Autobet":
+    def from_json(cls, value: dict) -> Autobet:
         if "leagues" not in value:
             if value.get("kelly_fraction") is None and value.get("max_bet") is None:
                 return cls(paused=bool(value.get("paused", False)))

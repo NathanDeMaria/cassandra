@@ -234,7 +234,7 @@ async def _run_optimization(
     config_file: str, rebuild: bool = False, deadline: float | None = None
 ) -> None:
     config_path = Path(config_file)
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         config_model = OptimizationConfig.model_validate_json(f.read())
 
     predictor_class = load_predictor_class(config_model.predictor_class)

@@ -124,7 +124,7 @@ class MarginKernel(BaseProbToMarginPredictor):
         below_half = self.cdfs(win_probs) < 0.5
         return below_half.sum(axis=1).astype(float) - self.max_margin
 
-    def distribution(self, win_prob: float) -> "DiscreteMargin":
+    def distribution(self, win_prob: float) -> DiscreteMargin:
         """One game's margin, as a distribution to read lines against."""
         # Here rather than at the top: the predictor package imports the
         # objectives, which import this package, so a module-level import
