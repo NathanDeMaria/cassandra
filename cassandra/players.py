@@ -13,6 +13,7 @@ import re
 from datetime import date
 from pathlib import Path
 
+from call_it_what_you_want import TeamNamer
 from pydantic import BaseModel, field_validator
 
 from cassandra.constants import CASSANDRA_HOME
@@ -77,12 +78,19 @@ def roster_path(league: str, season: int) -> Path:
 
 
 def read_players_file(path: Path) -> PlayersFile:
-    """A `{league}_players_{season}.csv`."""
+    """A `{league}_players_{season}.csv`, its teams by canonical name, as the
+    releases and their team pages have them: the file has ESPN's name for a
+    team, and some differ (Central Arkansas' Sugar Bears, Hawai'i's Rainbow
+    Wahine)."""
     match = _PLAYERS_FILE.match(path.name)
     if match is None:
         raise ValueError(f"not a players' file: {path.name}")
     with path.open(newline="") as file:
         rows = list(csv.DictReader(file))
+    namer = TeamNamer.for_league(match["league"])
+    for row in rows:
+        if row["team"]:
+            row["team"] = namer.canonical(row["team"])
     days = {r["as_of"] for r in rows if r["as_of"]}
     return PlayersFile(
         league=match["league"],
