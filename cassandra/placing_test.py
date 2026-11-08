@@ -215,6 +215,16 @@ def test_a_pick_whose_side_has_its_starter_in_doubt_is_held_too():
     assert placing.qb_news(picks, news) == {"g0": doubt, "g2": doubt}
 
 
+def test_a_pick_says_its_edge_if_its_starter_sits():
+    row = pd.Series({"bet": "Tulane Green Wave", "edge_qb_out": 0.0231})
+    assert (
+        placing.if_out_line(row) == "if Tulane Green Wave's starter is out: edge +0.023"
+    )
+    # A league whose model doesn't read quarterbacks has no such edge.
+    assert placing.if_out_line(row.drop("edge_qb_out")) is None
+    assert placing.if_out_line(pd.Series({"bet": "X", "edge_qb_out": None})) is None
+
+
 def test_a_rung_goes_when_its_side_has_its_starter_in_doubt():
     frame, matched = _priced()
     frame["qb_doubt"] = "Home Team: A.Ace (5 starts) didn't play Oct 31"

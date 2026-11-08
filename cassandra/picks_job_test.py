@@ -213,6 +213,41 @@ def test_a_hold_email_says_why_and_how_to_place_each():
     assert 'All of them: make bet ARGS="--only 2 --only 1"' in text
     one, _ = picks_job.hold_email(held.iloc[:1], at, 0.01)
     assert one.startswith("1 Kalshi pick needs your OK")
+    assert "starter is out" not in text
+
+
+def test_a_hold_email_says_the_edge_if_the_starter_sits():
+    held = _picks(("1", "Toledo Rockets", 0.09)).assign(
+        qb_news="Toledo Rockets: A.Ace (6 starts) didn't play Oct 24.",
+        edge_qb_out=0.031,
+    )
+    at = NOW.astimezone(ZoneInfo("America/Chicago"))
+    _, text = picks_job.hold_email(held, at, 0.01)
+    assert "   if Toledo Rockets's starter is out: edge +0.031" in text
+
+
+def test_status_says_what_deciding_on_a_held_pick_takes():
+    held = _picks(("1", "Toledo Rockets", 0.09)).assign(
+        qb_news="Toledo Rockets: A.Ace (6 starts) didn't play Oct 24.",
+        edge_qb_out=0.031,
+    )
+    sent = picks_job.record({}, _picks(("2", "Ohio Bobcats", 0.06)), NOW, "picks")
+    sent = picks_job.record(sent, held, NOW, "held")
+    assert json.loads(json.dumps(sent))
+    assert picks_job.status_lines(sent) == [
+        "",
+        "Tue 22:30 CT  picks",
+        "  1. Ohio Bobcats  --only 2",
+        "",
+        "Tue 22:30 CT  held",
+        "  1. Toledo Rockets  --only 1",
+        "     Toledo Rockets @ Somebody, Tue 18:00 CT; edge +0.090, "
+        "+0.031 if its starter is out",
+        "     QB: Toledo Rockets: A.Ace (6 starts) didn't play Oct 24.",
+    ]
+    # Held before the edge with him out was priced: none to say.
+    sent["emails"][-1]["picks"][0]["edge_qb_out"] = None
+    assert picks_job.status_lines(sent)[-2].endswith("edge +0.090")
 
 
 def _fill(order_id, ticker, side, action, count, yes, fee=0.05):
