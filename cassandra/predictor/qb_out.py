@@ -41,7 +41,7 @@ which is what a caller with an injury report -- or a person who read one --
 passes in.
 """
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
@@ -149,7 +149,7 @@ class QbOutIndex:
         return team in self._games.get(game_id, frozenset())
 
     @contextmanager
-    def assuming(self, game_id: str, team: str) -> Iterator[None]:
+    def assuming(self, game_id: str, team: str) -> Generator[None]:
         """`team` missing its starter in `game_id` for the length of the block.
 
         What a fixture prices at if the news says he sits, asked of a
