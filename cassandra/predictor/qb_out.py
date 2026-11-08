@@ -41,7 +41,8 @@ which is what a caller with an injury report -- or a person who read one --
 passes in.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 from typing import Self
@@ -146,6 +147,24 @@ class QbOutIndex:
         quarterbacks are fine.
         """
         return team in self._games.get(game_id, frozenset())
+
+    @contextmanager
+    def assuming(self, game_id: str, team: str) -> Iterator[None]:
+        """`team` missing its starter in `game_id` for the length of the block.
+
+        What a fixture prices at if the news says he sits, asked of a
+        predictor that has already replayed: a prediction reads the index
+        when it's made, so the answer needs no second replay.
+        """
+        before = self._games.get(game_id)
+        self._games[game_id] = (before or frozenset()) | {team}
+        try:
+            yield
+        finally:
+            if before is None:
+                del self._games[game_id]
+            else:
+                self._games[game_id] = before
 
     def differential(self, matchup: Matchup) -> float:
         """+1 if only the away side is missing its quarterback, -1 if only the home.

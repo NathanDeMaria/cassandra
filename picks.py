@@ -42,9 +42,12 @@ A fixture assumes both starting quarterbacks play unless told otherwise:
 `--qb-out TEAM` says a team's starter misses its next game, and the fit's
 quarterback penalty (about 2 points in college) applies. That is the only
 injury the model reads, so check the news on any pick you're about to
-make. When one of the last 18 hours' games has no plays on ESPN yet,
-whether its teams' starters played is unknown, and their next games wait
-for a later run ("QB check incomplete"). `--exclude TEAM` drops a game.
+make. Each game is also priced once more with the side bet on missing its
+starter (`edge_qb_out`, the edge `--qb-out` would give it), shown under a
+pick with QB news or doubt. When one of the last 18 hours' games has no
+plays on ESPN yet, whether its teams' starters played is unknown, and their
+next games wait for a later run ("QB check incomplete"). `--exclude TEAM`
+drops a game.
 News that lasts -- a starter out for the season -- goes in
 `~/.cassandra/betting/overrides.toml` instead, with the date it ends
 (`cassandra.overrides`), and every run applies it until then.
@@ -1068,6 +1071,14 @@ def run(args: argparse.Namespace) -> Outcome:
         if priced is None:
             continue
         side, other = (game.home, game.away) if priced.home else (game.away, game.home)
+        market_side = priced.home_market if priced.home else 1 - priced.home_market
+        # The same game with the side bet on missing its starter: what a pick
+        # held on a QB check is worth if the news says he sits.
+        edge_qb_out = None
+        if spec.plays:
+            with sources.qb_out.assuming(game.game_id, side):
+                out_home = predictor.predict_game(game).team1_win_prob
+            edge_qb_out = (out_home if priced.home else 1 - out_home) - market_side
         last = {team: previous(team, game.date) for team in (game.home, game.away)}
         waiting = [t for t, p in last.items() if p is not None and not p.completed]
         listed = [b.opened for b in (found.home, found.away) if b.opened is not None]
@@ -1110,7 +1121,7 @@ def run(args: argparse.Namespace) -> Outcome:
                 "bet_home": priced.home,
                 "divisions": f"{division(side) or '?'} v {division(other) or '?'}",
                 "model": model_side,
-                "market": priced.home_market if priced.home else 1 - priced.home_market,
+                "market": market_side,
                 "edge": priced.edge,
                 "overround": priced.overround,
                 "buy": None
@@ -1127,6 +1138,7 @@ def run(args: argparse.Namespace) -> Outcome:
                 # Only the side bet on: a pick against a team whose starter
                 # may be out is no worse for it (`cassandra.qb_starts`).
                 "qb_doubt": doubted[side].sentence if side in doubted else None,
+                "edge_qb_out": edge_qb_out,
                 "hours_since_entry": None
                 if since_entry is None
                 else since_entry.total_seconds() / 3600,

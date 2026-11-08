@@ -477,7 +477,19 @@ def record(sent: dict, picks: pd.DataFrame, at: datetime, subject: str) -> dict:
             # A held pick carries its QB sentence; see `unsent(held=True)`.
             "held": isinstance(row.get("qb_news"), str),
         }
-        listed.append({"game_id": row["game_id"], "bet": row["bet"]})
+        pick = {"game_id": row["game_id"], "bet": row["bet"]}
+        # A held pick keeps what deciding on it takes, so `make picks-status`
+        # can say it without a run (`status_lines`).
+        if isinstance(row.get("qb_news"), str):
+            out = row.get("edge_qb_out")
+            pick |= {
+                "game": row["game"],
+                "kickoff": row["kickoff"].isoformat(),
+                "edge": round(float(row["edge"]), 4),
+                "edge_qb_out": None if pd.isna(out) else round(float(out), 4),
+                "qb": row["qb_news"],
+            }
+        listed.append(pick)
     emails = [
         *sent.get("emails", []),
         {"at": at.isoformat(), "subject": subject, "picks": listed},
@@ -507,12 +519,14 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
         f"Held: {count} that may be priced on a quarterback who won't play: the "
         "side bet on had its starter miss, leave or come off the bench in its "
         "last game, or the injury news names a quarterback. The model reads "
-        "neither. Check the starter; to place one, run its line or say "
-        'which in a Claude session ("place 1 from the hold email") -- it '
-        "re-prices first. Unplaced, it's left alone; the morning summary lists "
-        "it until then.",
+        "neither. Check the starter; to place one, run its line, or run "
+        "/qb-check in a Claude session to have it read the news and ask -- "
+        "either re-prices first. Unplaced, it's left alone; the morning "
+        "summary lists it until then.",
         "",
     ]
+    from cassandra.placing import if_out_line
+
     for number, (_, row) in enumerate(ordered(held).iterrows(), start=1):
         lines.append(
             f"{number}. {row['bet']} -- {row['game']}, {row['kickoff']:%a %H:%M} CT"
@@ -529,6 +543,8 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
             f"{round(slippage * 100)}c"
             + ("" if since is None or pd.isna(since) else f"; {since:.0f}h since entry")
         )
+        if line := if_out_line(row):
+            lines.append(f"   {line}")
         if row.get("no_plays"):
             lines.append(f"   last game's play-by-play not in yet: {row['no_plays']}")
         lines.append(f'   place: make bet ARGS="--only {row["game_id"]}"')
@@ -908,11 +924,32 @@ def main(argv: list[str] | None = None) -> None:
             at = datetime.fromisoformat(last["at"]).astimezone(CENTRAL)
             print(f"last morning summary: {at:%a %H:%M} CT")
         sent, _ = read_json(s3, bucket, SENT_KEY)
-        for email in (sent or {}).get("emails", [])[-5:]:
-            at = datetime.fromisoformat(email["at"]).astimezone(CENTRAL)
-            print(f"\n{at:%a %H:%M} CT  {email['subject']}")
-            for number, pick in enumerate(email["picks"], start=1):
-                print(f"  {number}. {pick['bet']}  --only {pick['game_id']}")
+        print("\n".join(status_lines(sent or {})))
+
+
+def status_lines(sent: dict, last: int = 5) -> list[str]:
+    """The `last` emails `sent.json` keeps, each pick numbered as the email
+    numbered it, with the line that places it. A held pick also says its
+    game, edge, edge if its starter is out, and why it was held: what
+    deciding on it takes, without a run."""
+    from cassandra.placing import CENTRAL
+
+    lines = []
+    for email in sent.get("emails", [])[-last:]:
+        at = datetime.fromisoformat(email["at"]).astimezone(CENTRAL)
+        lines += ["", f"{at:%a %H:%M} CT  {email['subject']}"]
+        for number, pick in enumerate(email["picks"], start=1):
+            lines.append(f"  {number}. {pick['bet']}  --only {pick['game_id']}")
+            if "qb" not in pick:
+                continue
+            kickoff = datetime.fromisoformat(pick["kickoff"]).astimezone(CENTRAL)
+            out = pick["edge_qb_out"]
+            lines.append(
+                f"     {pick['game']}, {kickoff:%a %H:%M} CT; edge {pick['edge']:+.3f}"
+                + ("" if out is None else f", {out:+.3f} if its starter is out")
+            )
+            lines.append(f"     QB: {pick['qb'][:240]}")
+    return lines
 
 
 if __name__ == "__main__":

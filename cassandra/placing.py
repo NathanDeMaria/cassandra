@@ -540,6 +540,8 @@ def print_orders(
             print(f"         {rung_line(row['rungs'])}")
         if doubt:
             print(f"         QB doubt {doubt}")
+        if (qb or doubt) and (line := if_out_line(row)):
+            print(f"         {line}")
         for line in passers:
             print(f"         passing  {line}")
         for note in sorted(notes, key=lambda n: not n.qb)[: args.news_lines]:
@@ -557,8 +559,18 @@ def print_orders(
     if flagged:
         print(
             f"QB news or doubt on {', '.join(map(str, flagged))}: if a starter is out "
-            "of the next game, quit and rerun with --qb-out TEAM so the model prices it."
+            "of the next game, his 'starter is out' line is the edge; to size at that "
+            "price, quit and rerun with --qb-out TEAM."
         )
+
+
+def if_out_line(row: pd.Series) -> str | None:
+    """The pick's edge with its side's starter out (`edge_qb_out`), or None
+    for a league whose model doesn't read quarterbacks."""
+    out = row.get("edge_qb_out")
+    if out is None or pd.isna(out):
+        return None
+    return f"if {row['bet']}'s starter is out: edge {out:+.3f}"
 
 
 def rung_line(found: list[tuple[float, int]]) -> str:

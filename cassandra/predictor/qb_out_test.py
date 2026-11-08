@@ -44,6 +44,20 @@ def test_an_index_can_be_built_in_memory_for_a_fixture() -> None:
     assert len(index) == 1
 
 
+def test_a_team_can_be_assumed_out_for_a_block() -> None:
+    """What `picks.py` asks after the replay: the price if his starter sits."""
+    index = QbOutIndex({"g1": ["B"]})
+
+    with index.assuming("g1", "A"):
+        assert index.differential(_Matchup("A", "B")) == 0.0
+    with index.assuming("g2", "A"):
+        assert index.is_out("g2", "A")
+
+    assert index.differential(_Matchup("A", "B")) == 1.0
+    assert not index.is_out("g2", "A")
+    assert len(index) == 1
+
+
 def test_a_league_with_no_saved_index_gets_an_empty_one() -> None:
     """Four of the six leagues aren't football."""
     assert len(QbOutIndex.for_league("no-such-league")) == 0
