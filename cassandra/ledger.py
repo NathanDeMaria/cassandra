@@ -301,7 +301,8 @@ def _row_side(row: pd.Series, codes: Sequence[str]) -> str | None:
 
 
 def _home_away(game: str) -> tuple[str, str]:
-    away, home = game.split(" @ ", 1)
+    # `placing.fmt_game` joins a neutral-site game with "vs", still away first.
+    away, home = re.split(r" (?:@|vs) ", game, maxsplit=1)
     return home, away
 
 

@@ -70,6 +70,8 @@ def settled_bets(weeks: list[str]) -> pd.DataFrame:
     if not path.exists():
         raise SystemExit(f"{path} doesn't exist yet: run `make ledger`")
     frame = pd.read_csv(path, dtype={"game_id": str})
+    # The ledger holds every league's bets; the replay is football's model.
+    frame = frame[frame["event"].str.split("-").str[0].isin(picks.FOOTBALL.series)]
     frame["first_fill"] = pd.to_datetime(frame["first_fill"], utc=True)
     done = frame.groupby("week")["settled"].all()
     over = [str(w) for w, ok in done.items() if ok and (not weeks or w in weeks)]
