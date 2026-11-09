@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from endgame.types import Game
 
-from cassandra.qb_starts import AVAILABILITY_OUT, GameQb
+from cassandra.qb_starts import AVAILABILITY_OUT, GameQb, QbStartsFile
 from picks import QB_UNREAD_WINDOW, apply_rules, parse, qb_out_index, qb_reads
 
 NOW = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)  # Tue 22:00 CT
@@ -106,8 +106,9 @@ def test_a_live_index_prices_a_doubted_starter_unless_the_news_names_him() -> No
     starts[played[-1].game_id] = {"Ohio": _qbs("backup"), "Kent": _qbs("kent")}
     args = ("ncaafb", played + [fixture], [fixture], {})
 
-    priced = qb_out_index(*args, {}, starts)
-    named = qb_out_index(*args, {fixture.game_id: {"Ohio"}}, starts)
+    quarterbacks = QbStartsFile(league="ncaafb", season=2026, games=starts)
+    priced = qb_out_index(*args, {}, quarterbacks)
+    named = qb_out_index(*args, {fixture.game_id: {"Ohio"}}, quarterbacks)
 
     assert not priced.is_out(fixture.game_id, "Ohio")
     assert 0 < priced.weight(fixture.game_id, "Ohio") < AVAILABILITY_OUT["missed"]

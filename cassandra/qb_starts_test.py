@@ -147,6 +147,14 @@ def test_a_preseason_starter_back_from_injury_is_not_the_backup() -> None:
     assert doubt("Home", played) is None
 
 
+def test_last_seasons_starter_back_from_missing_the_opener_is_no_doubt() -> None:
+    played = [(_game(n), _qb(BACKUP)) for n in range(2)]
+    played += [(_game(n), _qb()) for n in range(2, 4)]
+
+    assert doubt("Home", played) is not None
+    assert doubt("Home", played, last_season={ACE: 12, BACKUP: 0}) is None
+
+
 def test_the_doubt_is_priced_by_how_the_last_game_went() -> None:
     assert availability("Home", _season(_qb())) == 0.0
     assert availability("Home", _season(_qb(BACKUP))) == pytest.approx(

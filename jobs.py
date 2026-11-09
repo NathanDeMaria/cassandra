@@ -244,9 +244,22 @@ async def _qb_out(
         # other seasons would be lost, so that rebuilds whole.
         if latest and read_qb_out_file(league) is not None:
             season = max(seasons, key=lambda s: s.year)
-            built = await build_all(league, [season], _Weeks())
-            missing = with_season(load_qb_out(league), season, built.missing)
-            runs = with_season(load_qb_out_runs(league), season, built.runs)
+            # The season before too, for its starts (`qb_starts.CARRY`); only
+            # this season's flags are kept, so it's built exactly as a whole
+            # rebuild builds it.
+            before = [s for s in seasons if s.year == season.year - 1]
+            built = await build_all(league, [*before, season], _Weeks())
+            ids = {g.game_id for week in season.weeks for g in week.games}
+            missing = with_season(
+                load_qb_out(league),
+                season,
+                {g: t for g, t in built.missing.items() if g in ids},
+            )
+            runs = with_season(
+                load_qb_out_runs(league),
+                season,
+                {g: t for g, t in built.runs.items() if g in ids},
+            )
         else:
             built = await build_all(league, seasons, _Weeks())
             missing, runs = built.missing, built.runs
@@ -260,7 +273,9 @@ async def _qb_out(
             upcoming = [
                 g for g in games if not g.completed and g.status not in NOT_HAPPENING
             ]
-            fixtures = availabilities(games, built.starts.games, upcoming, league)
+            fixtures = availabilities(
+                games, built.starts.games, upcoming, league, built.starts.previous
+            )
         write(league, missing, runs, fixtures)
         flagged = sum(len(teams) for teams in missing.values())
         print(f"  {len(missing):,} games with somebody out, {flagged:,} team-games")

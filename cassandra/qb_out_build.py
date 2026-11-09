@@ -93,6 +93,18 @@ Dropping the out-starting limit was no better.
 68% started again that season, against 56% of the unseen ones -- the plays
 know who played, not why -- so the rule leans on the decay, not the call.
 
+## Across seasons
+
+Each season's walk starts over: its first game names the starter. So a
+starter who missed the opener -- hurt in camp, suspended a game -- came back
+to a team whose starter was the man who covered it, with more starts this
+season than him, and read as that man's absence for as long as it took him
+to out-start him: 276 flags since 2015 hit a team while last season's
+starter was the one playing. So the man who started most last season, if
+`CARRY[league]` or more, brings those starts into this season's standing,
+and nobody else does: a capped carry for everyone with starts took longer
+to clear those and hid real absences of last year's backups.
+
 Read `cassandra.predictor.qb_out` on the lookahead before reading any number
 this produces. Whether a quarterback played is taken from the plays of the
 game itself, which nobody has at kickoff.
@@ -119,6 +131,7 @@ from say_youll_remember_me.qb import (
 
 from cassandra.predictor.qb_out import QbOutFile, qb_out_path
 from cassandra.qb_starts import (
+    CARRY,
     HANDOVER,
     KEEP_UNSEEN,
     GameQb,
@@ -217,6 +230,8 @@ def out_teams(
     parsed: Mapping[tuple[str, str], TeamGameQb],
     handover: int,
     keep_unseen: bool = False,
+    last_season: Mapping[str, Mapping[str, int]] | None = None,
+    carry: int | None = None,
 ) -> dict[str, dict[str, int]]:
     """Which teams were missing their starter, by game id, and which game of
     his absence each was (1 for the first).
@@ -226,6 +241,9 @@ def out_teams(
     schedule and this has only the plays. `handover` is how many straight
     starts by one other man make him the starter instead; with `keep_unseen`
     they count only once the starter has been seen since (`KEEP_UNSEEN`).
+    `last_season` is each team's starts by man the season before; the man
+    with the most, if `carry` or more, counts them toward his standing
+    (`CARRY`).
     """
     missing: dict[str, dict[str, int]] = {}
     walks: dict[str, StarterWalk] = {}
@@ -236,7 +254,11 @@ def out_teams(
             # tells us nothing about who was available, and calling that
             # "out" would flag every wildcat afternoon as an injury.
             continue
-        walk = walks.setdefault(team, StarterWalk(handover, keep_unseen))
+        walk = walks.get(team)
+        if walk is None:
+            walk = walks[team] = StarterWalk(
+                handover, keep_unseen, (last_season or {}).get(team), carry
+            )
         run = walk.step(current.starter_key, current.snap_keys)
         if run is not None:
             missing.setdefault(game_id, {})[team] = run
@@ -320,8 +342,14 @@ async def build_all(
     seasons: Sequence[Season],
     source: PlayWeeks,
     namer: TeamNamer | None = None,
+    previous: Mapping[str, Mapping[str, int]] | None = None,
 ) -> Built:
     """Walk every season's plays and work out who was missing.
+
+    Each season's walk counts the starts each man made the season before
+    (`CARRY`): from the season before it in `seasons`, or `previous` for the
+    first of them -- what a build of the latest season alone passes, off the
+    stored `QbStartsFile`.
 
     Rebuilt whole rather than topped up. Unlike the control index there is no
     fit behind this to key idempotency on, and the parse is cheap next to the
@@ -339,6 +367,10 @@ async def build_all(
     missing: dict[str, set[str]] = {}
     runs: dict[str, dict[str, int]] = {}
     latest = max((s.year for s in seasons), default=None)
+    # Per season, each team's starts by man, for the next season's walk.
+    counted: dict[int, dict[str, Counter[str]]] = {}
+    first = min((s.year for s in seasons), default=None)
+    latest_previous: dict[str, dict[str, int]] = {}
     starts: dict[str, dict[str, GameQb]] = {}
     for season in sorted(seasons, key=lambda s: s.year):
         # `namer.apply` first, exactly as `generate_predictions` does before
@@ -426,20 +458,41 @@ async def build_all(
                     continue
                 for team in (game.home, game.away):
                     ordered.setdefault(team, []).append((game.game_id, team))
-        for team_games_in_order in ordered.values():
+        before = counted.get(season.year - 1)
+        last_season: Mapping[str, Mapping[str, int]] = (
+            before
+            if before is not None
+            else (previous or {})
+            if season.year == first
+            else {}
+        )
+        tally: dict[str, Counter[str]] = {}
+        for team, team_games_in_order in ordered.items():
+            for game_id, _ in team_games_in_order:
+                if (qb := parsed.get((game_id, team))) is not None:
+                    tally.setdefault(team, Counter())[qb.starter_key] += 1
             for game_id, teams in out_teams(
                 team_games_in_order,
                 parsed,
                 HANDOVER[league],
                 keep_unseen=league in KEEP_UNSEEN,
+                last_season=last_season,
+                carry=CARRY.get(league),
             ).items():
                 missing.setdefault(game_id, set()).update(teams)
                 runs.setdefault(game_id, {}).update(teams)
+        counted[season.year] = tally
+        if season.year == latest:
+            latest_previous = {
+                team: dict(counts) for team, counts in last_season.items()
+            }
     return Built(
         missing,
         None
         if latest is None
-        else QbStartsFile(league=league, season=latest, games=starts),
+        else QbStartsFile(
+            league=league, season=latest, games=starts, previous=latest_previous
+        ),
         runs,
     )
 

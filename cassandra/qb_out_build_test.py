@@ -158,6 +158,39 @@ def test_a_cover_who_out_starts_him_takes_the_job_anyway() -> None:
     }
 
 
+def test_last_seasons_starter_back_from_missing_the_opener_has_the_job() -> None:
+    """The cover named the starter by the opener isn't out the day the man
+    who started all last season comes back."""
+    parsed = {
+        ("g1", "A"): _qb("backup", ("backup",)),
+        ("g2", "A"): _qb("backup", ("backup",)),
+        ("g3", "A"): _qb("ace", ("ace",)),
+        ("g4", "A"): _qb("ace", ("ace",)),
+    }
+    ordered = [(f"g{n}", "A") for n in range(1, 5)]
+    last = {"A": {"ace": 11, "backup": 1}}
+
+    assert _flagged(ordered, parsed, 1, keep_unseen=True) == {
+        "g3": {"A"},
+        "g4": {"A"},
+    }
+    assert out_teams(ordered, parsed, 1, True, last, 6) == {}
+
+
+def test_only_last_seasons_starter_carries_his_starts() -> None:
+    """A backup with a few starts last year covers for this year's starter;
+    that's still this year's starter's absence."""
+    parsed = {
+        ("g1", "A"): _qb("new", ("new",)),
+        ("g2", "A"): _qb("new", ("new",)),
+        ("g3", "A"): _qb("old", ("old",)),
+    }
+    ordered = [(f"g{n}", "A") for n in range(1, 4)]
+    last = {"A": {"gone": 12, "old": 3}}
+
+    assert out_teams(ordered, parsed, 1, True, last, 6) == {"g3": {"A": 1}}
+
+
 def test_the_starter_coming_back_is_not_the_backup_being_out() -> None:
     """The week after an absence, the man who covered sits back down.
 

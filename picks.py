@@ -233,6 +233,7 @@ from cassandra.qb_out_build import build_all as build_qb_out
 from cassandra.qb_starts import (
     Doubt,
     GameQb,
+    QbStartsFile,
     availabilities,
     doubts,
     read_qb_starts,
@@ -373,7 +374,9 @@ async def _qb_out_tonight(
         transform_game_to_table(d, g, league, season.year, 1)
         for g, d in zip(wanted, drives)
     )
-    built = await build_qb_out(league, [season], _OneWeek(table))
+    # Last season's starts, as the sweep counted them (`qb_starts.CARRY`).
+    previous = stored_quarterbacks(league, season).previous
+    built = await build_qb_out(league, [season], _OneWeek(table), previous=previous)
     flags = {
         g: {team: run for team, run in built.runs[g].items() if team in needy}
         for g, out in built.missing.items()
@@ -874,21 +877,24 @@ class Quarterbacks(NamedTuple):
     blind: dict[str, set[str]]
 
 
+def stored_quarterbacks(league: str, latest: Season) -> QbStartsFile:
+    """The sweep's copy of the season's quarterbacks, or an empty one if it's
+    missing or for another season."""
+    stored = read_qb_starts(league)
+    if stored is not None and stored.season == latest.year:
+        return stored
+    return QbStartsFile(league=league, season=latest.year, games={})
+
+
 def season_quarterbacks(
     league: str, latest: Season, tonight_qbs: Mapping[str, Mapping[str, GameQb]]
-) -> dict[str, Mapping[str, GameQb]]:
+) -> QbStartsFile:
     """The season's quarterbacks game by game: the sweep's copy, and tonight's
     games on top (`cassandra.qb_starts`)."""
-    stored_qbs = read_qb_starts(league)
-    season_qbs: dict[str, Mapping[str, GameQb]] = (
-        dict(stored_qbs.games)
-        if stored_qbs is not None and stored_qbs.season == latest.year
-        else {}
-    )
-    if not season_qbs:
+    stored = stored_quarterbacks(league, latest)
+    if not stored.games:
         print(f"!! no {latest.year} quarterbacks stored: no team reads as in doubt")
-    season_qbs.update(tonight_qbs)
-    return season_qbs
+    return stored.model_copy(update={"games": {**stored.games, **tonight_qbs}})
 
 
 def qb_out_index(
@@ -897,7 +903,7 @@ def qb_out_index(
     upcoming: list[Game],
     tonight: Mapping[str, Mapping[str, int]],
     named: Mapping[str, set[str]],
-    season_qbs: Mapping[str, Mapping[str, GameQb]],
+    quarterbacks: QbStartsFile,
 ) -> QbOutIndex:
     """The availability index a live run prices with: the stored one,
     tonight's games read off ESPN, `named` news for fixtures, and every
@@ -909,7 +915,9 @@ def qb_out_index(
             flags.setdefault(game, set()).update(out)
     weights = run_weights(load_qb_out_runs(league))
     weights.update(run_weights(tonight))
-    priced = availabilities(games, season_qbs, upcoming, league)
+    priced = availabilities(
+        games, quarterbacks.games, upcoming, league, quarterbacks.previous
+    )
     for game, out in named.items():
         for team in out:
             priced.get(game, {}).pop(team, None)
@@ -931,8 +939,8 @@ def _quarterbacks(
         _qb_out_tonight(league, latest, games, upcoming)
     )
     # Whose starter's last game says he may not start the next.
-    season_qbs = season_quarterbacks(league, latest, tonight_qbs)
-    doubted = doubts(games, season_qbs, league)
+    quarterbacks = season_quarterbacks(league, latest, tonight_qbs)
+    doubted = doubts(games, quarterbacks.games, league, quarterbacks.previous)
     named = _qb_out_named(args.qb_out, upcoming)
     # A lasting QB out for a team with no game in the window (a bye) has
     # nothing to apply to this run.
@@ -940,7 +948,7 @@ def _quarterbacks(
         overrides.teams(lasting, "qb_out"), upcoming, strict=False
     ).items():
         named.setdefault(game, set()).update(out)
-    index = qb_out_index(league, games, upcoming, tonight, named, season_qbs)
+    index = qb_out_index(league, games, upcoming, tonight, named, quarterbacks)
     by_id = {g.game_id: g for g in games}
     for label, extra in (("QB out tonight", tonight), ("QB out next game", named)):
         for game, out in sorted(extra.items(), key=lambda item: by_id[item[0]].date):

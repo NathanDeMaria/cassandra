@@ -91,6 +91,19 @@ HANDOVER: Mapping[str, int] = {"nfl": 3, "ncaafb": 1}
 #: three-game handover was measured on its own and left alone.
 KEEP_UNSEEN: frozenset[str] = frozenset({"ncaafb"})
 
+#: Per league, the starts that make a man last season's starter: he carries
+#: them all into this season's standing, so if he misses the opener he
+#: outranks the man who covered it the day he's back, rather than reading
+#: as that man's absence. Nobody else carries anything. Absent where it
+#: wasn't measured.
+#:
+#: ncaafb 2014-2026: holds firing on a team whose last-season starter was
+#: the one playing, 228 with no carry -> 2; a capped carry for every man
+#: with starts last season left 134 (2 each) to 71 (4 each), and hid real
+#: absences of last year's backups. The model can't tell any of them apart
+#: (brier within +/-1e-5 of none, live and with every flag known).
+CARRY: Mapping[str, int] = {"ncaafb": 6}
+
 
 class StarterWalk:
     """One team's season, a game at a time, by the availability index's rule
@@ -102,8 +115,20 @@ class StarterWalk:
     picks the week he returned.
     """
 
-    def __init__(self, handover: int, keep_unseen: bool) -> None:
+    def __init__(
+        self,
+        handover: int,
+        keep_unseen: bool,
+        last_season: Mapping[str, int] | None = None,
+        carry: int | None = None,
+    ) -> None:
         self.handover, self.keep_unseen = handover, keep_unseen
+        #: Last season's starter's starts, if he made `carry` of them.
+        self._carried: dict[str, int] = {}
+        if carry is not None and last_season:
+            key = max(last_season, key=lambda k: last_season[k])
+            if last_season[key] >= carry:
+                self._carried[key] = last_season[key]
         #: The starter, None before the team's first game with passing.
         self.expected: str | None = None
         #: Games he has missed running, 0 when he's playing.
@@ -119,7 +144,10 @@ class StarterWalk:
         return self._starts[key]
 
     def _standing(self, key: str) -> tuple[int, int]:
-        return (self._starts[key], -self._first.get(key, len(self._first)))
+        return (
+            self._starts[key] + self._carried.get(key, 0),
+            -self._first.get(key, len(self._first)),
+        )
 
     def _hand_to(self, key: str) -> None:
         self.expected, self.absent, self.seen = key, 0, False
@@ -194,6 +222,8 @@ class QbStartsFile(BaseModel):
     season: int
     #: game id -> team (the canonical name) -> its quarterbacks.
     games: dict[str, dict[str, GameQb]]
+    #: team -> man -> his starts the season before (`CARRY`).
+    previous: dict[str, dict[str, int]] = {}
 
 
 def read_qb_starts(league: str) -> QbStartsFile | None:
@@ -228,17 +258,27 @@ def _period(period: int | None) -> str:
     return {1: "1st", 2: "2nd", 3: "3rd"}.get(period, f"{period}th") + " quarter"
 
 
-def walk(played: Sequence[tuple[Game, GameQb]], league: str = "ncaafb") -> StarterWalk:
+def walk(
+    played: Sequence[tuple[Game, GameQb]],
+    league: str = "ncaafb",
+    last_season: Mapping[str, int] | None = None,
+) -> StarterWalk:
     """The availability index's walk over a team's games with passing, in
-    order: who its starter is after the last, and how long he's been out."""
-    found = StarterWalk(HANDOVER[league], league in KEEP_UNSEEN)
+    order: who its starter is after the last, and how long he's been out.
+    `last_season` is the team's starts by man the season before."""
+    found = StarterWalk(
+        HANDOVER[league], league in KEEP_UNSEEN, last_season, CARRY.get(league)
+    )
     for _, qb in played:
         found.step(qb.starter, qb.snaps)
     return found
 
 
 def doubt(
-    team: str, played: Sequence[tuple[Game, GameQb]], league: str = "ncaafb"
+    team: str,
+    played: Sequence[tuple[Game, GameQb]],
+    league: str = "ncaafb",
+    last_season: Mapping[str, int] | None = None,
 ) -> Doubt | None:
     """Whether the team's starter, by the availability index's rule
     (`walk`), is in doubt after the last of `played` (its games with
@@ -252,7 +292,7 @@ def doubt(
     names: dict[str, str] = {}
     for _, qb in played:
         names.update(qb.names)
-    walked = walk(played, league)
+    walked = walk(played, league, last_season)
     game, last = played[-1]
     est = walked.going_in(last.starter)
     if est is None:
@@ -310,6 +350,7 @@ def doubts(
     games: Iterable[Game],
     starts: Mapping[str, Mapping[str, GameQb]],
     league: str = "ncaafb",
+    previous: Mapping[str, Mapping[str, int]] | None = None,
 ) -> dict[str, Doubt]:
     """Every team in doubt going into its next game, by name.
 
@@ -319,22 +360,26 @@ def doubts(
     """
     found = {}
     for team, history in _played(games, starts).items():
-        if (d := doubt(team, history, league)) is not None:
+        if (d := doubt(team, history, league, (previous or {}).get(team))) is not None:
             found[team] = d
     return found
 
 
 def availability(
-    team: str, played: Sequence[tuple[Game, GameQb]], league: str = "ncaafb"
+    team: str,
+    played: Sequence[tuple[Game, GameQb]],
+    league: str = "ncaafb",
+    last_season: Mapping[str, int] | None = None,
 ) -> float:
     """What the team's next game weighs in the availability index before
     anybody has played it: the chance its starter sits, by how his last game
     went, times what the flag would weigh if he does -- less for each game
     of an absence already behind him (`QB_OUT_DECAY`). 0 with no doubt."""
-    found = doubt(team, played, league)
+    found = doubt(team, played, league, last_season)
     if found is None:
         return 0.0
-    return AVAILABILITY_OUT[found.kind] * QB_OUT_DECAY ** walk(played, league).absent
+    absent = walk(played, league, last_season).absent
+    return AVAILABILITY_OUT[found.kind] * QB_OUT_DECAY**absent
 
 
 def availabilities(
@@ -342,6 +387,7 @@ def availabilities(
     starts: Mapping[str, Mapping[str, GameQb]],
     upcoming: Iterable[Game],
     league: str = "ncaafb",
+    previous: Mapping[str, Mapping[str, int]] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Each team's next game in `upcoming`, weighed by `availability`, by
     game id and team; teams with no doubt are left out, as an index leaves
@@ -360,7 +406,9 @@ def availabilities(
             if team in seen:
                 continue
             seen.add(team)
-            weight = availability(team, played.get(team, []), league)
+            weight = availability(
+                team, played.get(team, []), league, (previous or {}).get(team)
+            )
             if weight:
                 found.setdefault(game.game_id, {})[team] = weight
     return found
