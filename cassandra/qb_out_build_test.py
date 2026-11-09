@@ -28,13 +28,26 @@ def _qb(starter: str, snaps: tuple[str, ...]) -> TeamGameQb:
     )
 
 
+def _flagged(
+    ordered: list[tuple[str, str]],
+    parsed: dict[tuple[str, str], TeamGameQb],
+    handover: int,
+    keep_unseen: bool = False,
+) -> dict[str, set[str]]:
+    """`out_teams` read as who was out, without which game of it each was."""
+    return {
+        game: set(teams)
+        for game, teams in out_teams(ordered, parsed, handover, keep_unseen).items()
+    }
+
+
 def test_a_starter_who_took_no_snap_is_out() -> None:
     parsed = {
         ("g1", "A"): _qb("ace", ("ace", "rb")),
         ("g2", "A"): _qb("backup", ("backup", "rb")),
     }
 
-    assert out_teams([("g1", "A"), ("g2", "A")], parsed, 3) == {"g2": {"A"}}
+    assert _flagged([("g1", "A"), ("g2", "A")], parsed, 3) == {"g2": {"A"}}
 
 
 def test_a_starter_who_played_but_lost_the_job_is_not_out() -> None:
@@ -49,21 +62,21 @@ def test_a_starter_who_played_but_lost_the_job_is_not_out() -> None:
         ("g2", "A"): _qb("backup", ("backup", "ace")),
     }
 
-    assert out_teams([("g1", "A"), ("g2", "A")], parsed, 3) == {}
+    assert _flagged([("g1", "A"), ("g2", "A")], parsed, 3) == {}
 
 
 def test_the_first_game_of_a_season_has_no_expected_starter() -> None:
     """ "Is he missing?" needs somebody to be missing."""
     parsed = {("g1", "A"): _qb("ace", ("ace",))}
 
-    assert out_teams([("g1", "A")], parsed, 3) == {}
+    assert _flagged([("g1", "A")], parsed, 3) == {}
 
 
 def test_a_game_with_no_passing_at_all_is_not_an_absence() -> None:
     """Otherwise every wildcat afternoon reads as an injury."""
     parsed = {("g1", "A"): _qb("ace", ("ace",))}
 
-    assert out_teams([("g1", "A"), ("g2", "A")], parsed, 3) == {}
+    assert _flagged([("g1", "A"), ("g2", "A")], parsed, 3) == {}
 
 
 def test_every_game_of_an_absence_is_an_absence() -> None:
@@ -74,9 +87,74 @@ def test_every_game_of_an_absence_is_an_absence() -> None:
         ("g3", "A"): _qb("backup", ("backup",)),  # still out
     }
 
-    assert out_teams([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed, 3) == {
+    assert _flagged([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed, 3) == {
         "g2": {"A"},
         "g3": {"A"},
+    }
+
+
+def test_each_flag_says_which_game_of_the_absence_it_was() -> None:
+    parsed = {
+        ("g1", "A"): _qb("ace", ("ace",)),
+        ("g2", "A"): _qb("backup", ("backup",)),
+        ("g3", "A"): _qb("backup", ("backup",)),
+        ("g4", "A"): _qb("ace", ("ace",)),
+        ("g5", "A"): _qb("backup", ("backup",)),
+    }
+    ordered = [(f"g{n}", "A") for n in range(1, 6)]
+
+    assert out_teams(ordered, parsed, 3) == {
+        "g2": {"A": 1},
+        "g3": {"A": 2},
+        "g5": {"A": 1},
+    }
+
+
+def test_an_unseen_starter_keeps_the_job_through_his_absence() -> None:
+    """Hurt, not benched: with `keep_unseen` a one-game handover waits for
+    him to be seen, so every game he misses is flagged."""
+    parsed = _settled()
+    parsed.update({(f"g{n}", "A"): _qb("backup", ("backup",)) for n in (5, 6, 7)})
+    ordered = [(f"g{n}", "A") for n in range(1, 8)]
+
+    assert _flagged(ordered, parsed, 1) == {"g5": {"A"}}
+    assert out_teams(ordered, parsed, 1, keep_unseen=True) == {
+        "g5": {"A": 1},
+        "g6": {"A": 2},
+        "g7": {"A": 3},
+    }
+
+
+def test_a_starter_seen_on_the_bench_hands_the_job_over() -> None:
+    """In relief one week and gone the next reads as a benching: the cover
+    has the job, and the game after is nobody's absence."""
+    parsed = _settled()
+    parsed.update(
+        {
+            ("g5", "A"): _qb("backup", ("backup", "ace")),  # ace in relief
+            ("g6", "A"): _qb("backup", ("backup",)),  # ace gone: benched
+            ("g7", "A"): _qb("backup", ("backup",)),
+        }
+    )
+    ordered = [(f"g{n}", "A") for n in range(1, 8)]
+
+    assert out_teams(ordered, parsed, 1, keep_unseen=True) == {"g6": {"A": 1}}
+
+
+def test_a_cover_who_out_starts_him_takes_the_job_anyway() -> None:
+    """Out for the season: once the man covering has started more games than
+    the starter did, the team is his. A tie goes to the earlier start."""
+    parsed = {
+        ("g1", "A"): _qb("ace", ("ace",)),
+        ("g2", "A"): _qb("backup", ("backup",)),
+        ("g3", "A"): _qb("backup", ("backup",)),
+        ("g4", "A"): _qb("backup", ("backup",)),
+    }
+    ordered = [(f"g{n}", "A") for n in range(1, 5)]
+
+    assert out_teams(ordered, parsed, 1, keep_unseen=True) == {
+        "g2": {"A": 1},
+        "g3": {"A": 2},
     }
 
 
@@ -93,9 +171,7 @@ def test_the_starter_coming_back_is_not_the_backup_being_out() -> None:
         ("g3", "A"): _qb("ace", ("ace",)),  # ace back, backup sits
     }
 
-    assert out_teams([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed, 3) == {
-        "g2": {"A"}
-    }
+    assert _flagged([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed, 3) == {"g2": {"A"}}
 
 
 def _settled(starter: str = "ace", weeks: int = 4) -> dict[tuple[str, str], TeamGameQb]:
@@ -111,7 +187,7 @@ def test_the_job_is_handed_over_after_three_straight_starts() -> None:
     parsed.update({(f"g{n}", "A"): _qb("backup", ("backup",)) for n in range(5, 10)})
     ordered = [(f"g{n}", "A") for n in range(1, 10)]
 
-    assert out_teams(ordered, parsed, 3) == {f"g{n}": {"A"} for n in (5, 6, 7)}
+    assert _flagged(ordered, parsed, 3) == {f"g{n}": {"A"} for n in (5, 6, 7)}
 
 
 def test_the_handover_needs_one_man_in_a_row() -> None:
@@ -127,7 +203,7 @@ def test_the_handover_needs_one_man_in_a_row() -> None:
     )
     ordered = [(f"g{n}", "A") for n in range(1, 9)]
 
-    assert out_teams(ordered, parsed, 3) == {f"g{n}": {"A"} for n in range(5, 9)}
+    assert _flagged(ordered, parsed, 3) == {f"g{n}": {"A"} for n in range(5, 9)}
 
 
 def test_a_snap_by_the_starter_restarts_the_count() -> None:
@@ -143,7 +219,7 @@ def test_a_snap_by_the_starter_restarts_the_count() -> None:
     )
     ordered = [(f"g{n}", "A") for n in range(1, 10)]
 
-    assert out_teams(ordered, parsed, 3) == {f"g{n}": {"A"} for n in (5, 6, 8, 9)}
+    assert _flagged(ordered, parsed, 3) == {f"g{n}": {"A"} for n in (5, 6, 8, 9)}
 
 
 def test_a_second_absence_is_an_absence() -> None:
@@ -158,7 +234,7 @@ def test_a_second_absence_is_an_absence() -> None:
     )
     ordered = [(f"g{n}", "A") for n in range(1, 8)]
 
-    assert out_teams(ordered, parsed, 3) == {"g5": {"A"}, "g7": {"A"}}
+    assert _flagged(ordered, parsed, 3) == {"g5": {"A"}, "g7": {"A"}}
 
 
 def test_the_backup_can_be_missing_too() -> None:
@@ -170,7 +246,7 @@ def test_the_backup_can_be_missing_too() -> None:
     parsed[("g9", "A")] = _qb("backup", ("backup",))  # backup back
     ordered = [(f"g{n}", "A") for n in range(1, 10)]
 
-    assert out_teams(ordered, parsed, 3) == {f"g{n}": {"A"} for n in (5, 6, 7, 8)}
+    assert _flagged(ordered, parsed, 3) == {f"g{n}": {"A"} for n in (5, 6, 7, 8)}
 
 
 def test_an_early_absence_hands_over_sooner() -> None:
@@ -181,7 +257,7 @@ def test_an_early_absence_hands_over_sooner() -> None:
     parsed.update({(f"g{n}", "A"): _qb("backup", ("backup",)) for n in range(2, 6)})
     ordered = [(f"g{n}", "A") for n in range(1, 6)]
 
-    assert out_teams(ordered, parsed, 3) == {"g2": {"A"}, "g3": {"A"}}
+    assert _flagged(ordered, parsed, 3) == {"g2": {"A"}, "g3": {"A"}}
 
 
 def test_two_teams_are_tracked_apart() -> None:
@@ -193,8 +269,8 @@ def test_two_teams_are_tracked_apart() -> None:
     }
     ordered = [("g1", "A"), ("g2", "A")]
 
-    assert out_teams(ordered, parsed, 3) == {"g2": {"A"}}
-    assert out_teams([("g1", "B"), ("g2", "B")], parsed, 3) == {}
+    assert _flagged(ordered, parsed, 3) == {"g2": {"A"}}
+    assert _flagged([("g1", "B"), ("g2", "B")], parsed, 3) == {}
 
 
 def test_the_established_man_starting_again_is_not_an_absence() -> None:
@@ -207,9 +283,7 @@ def test_the_established_man_starting_again_is_not_an_absence() -> None:
         ("g3", "A"): _qb("ace", ("ace",)),  # ace back, sub sits
     }
 
-    assert out_teams([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed, 1) == {
-        "g2": {"A"}
-    }
+    assert _flagged([("g1", "A"), ("g2", "A"), ("g3", "A")], parsed, 1) == {"g2": {"A"}}
 
 
 def test_a_college_change_of_starter_is_one_flag() -> None:
@@ -223,7 +297,7 @@ def test_a_college_change_of_starter_is_one_flag() -> None:
     }
     ordered = [(g, "A") for g in ("g1", "g2", "g3", "g4")]
 
-    assert out_teams(ordered, parsed, 1) == {"g3": {"A"}}
+    assert _flagged(ordered, parsed, 1) == {"g3": {"A"}}
 
 
 def test_a_more_established_man_taking_over_is_not_an_absence() -> None:
@@ -239,7 +313,7 @@ def test_a_more_established_man_taking_over_is_not_an_absence() -> None:
     }
     ordered = [(f"g{n}", "A") for n in range(1, 7)]
 
-    assert out_teams(ordered, parsed, 1) == {"g4": {"A"}}
+    assert _flagged(ordered, parsed, 1) == {"g4": {"A"}}
 
 
 # ------------------------------------------------------ reading the sides
@@ -297,10 +371,15 @@ def test_a_fresh_season_replaces_only_its_own_games() -> None:
         )
 
     season = Season([Week([game("new1"), game("new2")], 1)], 2026)
-    stored = {"old": ["Kent"], "new1": ["Ohio"], "new2": ["Kent"]}
+    stored = {"old": {"Kent"}, "new1": {"Ohio"}, "new2": {"Kent"}}
     # The fresh build re-read new1 as nobody out, and flags new2 for Ohio.
     merged = with_season(stored, season, {"new2": {"Ohio"}})
     assert merged == {"old": {"Kent"}, "new2": {"Ohio"}}
+    # The runs merge the same way.
+    runs = with_season(
+        {"old": {"Kent": 2}, "new1": {"Ohio": 1}}, season, {"new2": {"Ohio": 3}}
+    )
+    assert runs == {"old": {"Kent": 2}, "new2": {"Ohio": 3}}
 
 
 def test_game_qbs_counts_passes_and_the_last_snap_per_man() -> None:

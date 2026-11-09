@@ -2,9 +2,18 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from endgame.types import Game
 
-from cassandra.qb_starts import GameQb, doubt, doubts
+from cassandra.predictor.qb_out import QB_OUT_DECAY
+from cassandra.qb_starts import (
+    AVAILABILITY_OUT,
+    GameQb,
+    availabilities,
+    availability,
+    doubt,
+    doubts,
+)
 
 ACE, BACKUP = "ace a", "backup b"
 NAMES = {ACE: "A.Ace", BACKUP: "B.Backup"}
@@ -124,6 +133,51 @@ def test_a_cover_with_more_starts_is_the_starter() -> None:
 
 def test_a_starter_back_from_an_absence_is_not_in_doubt() -> None:
     assert doubt("Home", _season(_qb(BACKUP), _qb())) is None
+
+
+def test_a_preseason_starter_back_from_injury_is_not_the_backup() -> None:
+    """Hurt in week two, back in week nine: the cover has more starts this
+    season, but the job was never his, so the starter's return is no doubt.
+    Read by most starts, it was -- Utah State's Hillstead, Nov 8 2026."""
+    played = [(_game(0), _qb()), (_game(1), _qb())]
+    played += [(_game(n), _qb(BACKUP)) for n in range(2, 4)]
+    # the cover ties him, then ace is back for two games
+    played += [(_game(n), _qb()) for n in range(4, 6)]
+
+    assert doubt("Home", played) is None
+
+
+def test_the_doubt_is_priced_by_how_the_last_game_went() -> None:
+    assert availability("Home", _season(_qb())) == 0.0
+    assert availability("Home", _season(_qb(BACKUP))) == pytest.approx(
+        AVAILABILITY_OUT["missed"] * QB_OUT_DECAY
+    )
+    left = _qb(attempts={ACE: 8, BACKUP: 20}, last={ACE: (2, 0), BACKUP: (4, 3)})
+    assert availability("Home", _season(left)) == pytest.approx(
+        AVAILABILITY_OUT["left early"]
+    )
+
+
+def test_a_long_absence_weighs_less_each_game() -> None:
+    """The flag would decay if he sits again, and so does the price."""
+    one = availability("Home", _season(_qb(BACKUP)))
+    three = availability("Home", _season(_qb(BACKUP), _qb(BACKUP), _qb(BACKUP)))
+
+    assert three == pytest.approx(one * QB_OUT_DECAY**2)
+
+
+def test_availabilities_price_each_teams_next_game_only() -> None:
+    season = [_game(n) for n in range(4)]
+    later = [_game(8, completed=False), _game(9, completed=False)]
+    starts = {g.game_id: {"Home": _qb(), "Away": _qb()} for g in season[:3]}
+    starts["g3"] = {"Home": _qb(BACKUP), "Away": _qb()}
+
+    found = availabilities(season + later, starts, later)
+
+    # One game missed already: if he sits again it's the second of it.
+    assert found == {
+        "g8": {"Home": pytest.approx(AVAILABILITY_OUT["missed"] * QB_OUT_DECAY)}
+    }
 
 
 def test_doubts_reads_each_team_after_its_last_game() -> None:

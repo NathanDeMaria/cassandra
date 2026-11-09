@@ -211,11 +211,17 @@ async def _qb_out(
     # Late, like the sweeps above: this pulls pyarrow, and `jobs.py submit`
     # runs on a laptop to send a SubmitJob and has no reason to import a
     # fitting stack.
+    from call_it_what_you_want import TeamNamer
     from endgame_aws.pbp_parquet import get_processed_plays_store
 
-    from cassandra.predictor.qb_out import load_qb_out, read_qb_out_file
+    from cassandra.picks import NOT_HAPPENING
+    from cassandra.predictor.qb_out import (
+        load_qb_out,
+        load_qb_out_runs,
+        read_qb_out_file,
+    )
     from cassandra.qb_out_build import build_all, with_season, write
-    from cassandra.qb_starts import write_qb_starts
+    from cassandra.qb_starts import availabilities, write_qb_starts
     from cassandra.save_predictions import read_all_seasons
 
     if leagues is None:
@@ -240,12 +246,26 @@ async def _qb_out(
             season = max(seasons, key=lambda s: s.year)
             built = await build_all(league, [season], _Weeks())
             missing = with_season(load_qb_out(league), season, built.missing)
+            runs = with_season(load_qb_out_runs(league), season, built.runs)
         else:
             built = await build_all(league, seasons, _Weeks())
-            missing = built.missing
-        write(league, missing)
+            missing, runs = built.missing, built.runs
+        # Each team's next game, weighed by the chance its starter sits, for
+        # a consumer pricing a fixture off the bucket (`QbOutFile.fixtures`).
+        fixtures = {}
+        if built.starts is not None:
+            namer = TeamNamer.for_league(league)
+            current = max(seasons, key=lambda s: s.year)
+            games = [namer.apply(g) for week in current.weeks for g in week.games]
+            upcoming = [
+                g for g in games if not g.completed and g.status not in NOT_HAPPENING
+            ]
+            fixtures = availabilities(games, built.starts.games, upcoming, league)
+        write(league, missing, runs, fixtures)
         flagged = sum(len(teams) for teams in missing.values())
         print(f"  {len(missing):,} games with somebody out, {flagged:,} team-games")
+        priced = sum(map(len, fixtures.values()))
+        print(f"  {priced} fixtures priced for a doubtful starter")
         # The season being played, game by game, for `picks.py` to read
         # whose starter is in doubt for the next one (`cassandra.qb_starts`).
         if built.starts is not None:

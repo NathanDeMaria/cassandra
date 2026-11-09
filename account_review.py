@@ -42,7 +42,12 @@ from cassandra import ledger
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
 from cassandra.predictor.adjustments import MatchupSources
-from cassandra.predictor.qb_out import QbOutIndex, load_qb_out
+from cassandra.predictor.qb_out import (
+    QbOutIndex,
+    load_qb_out,
+    load_qb_out_runs,
+    run_weights,
+)
 
 #: The warm start for these replays, apart from `picks.py`'s own.
 PRIORS = CASSANDRA_HOME / "picks" / "review_priors.json"
@@ -120,8 +125,15 @@ def replayed(bets: pd.DataFrame, seasons, namer, model: str) -> pd.Series:
             for game, out in load_qb_out(picks.FOOTBALL.name).items()
             if game in over
         }
+        weights = run_weights(
+            {
+                game: runs
+                for game, runs in load_qb_out_runs(picks.FOOTBALL.name).items()
+                if game in over
+            }
+        )
         sources = MatchupSources.for_league(picks.FOOTBALL.name)._replace(
-            qb_out=QbOutIndex(flags)
+            qb_out=QbOutIndex(flags, weights)
         )
         state_seasons = [cut if s is latest else s for s in seasons]
         predictor, _ = picks._replay(

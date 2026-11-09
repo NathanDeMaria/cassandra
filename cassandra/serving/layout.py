@@ -27,7 +27,9 @@ is here so a consumer can say of a played game what the model priced,
 from the bucket it already reads, rather than from a file that only
 exists on a machine that ran the sweep -- `QbOutIndex.for_league` reads
 `~/.cassandra`, and an app that called it read an empty index for a
-month and told every page both quarterbacks had started.
+month and told every page both quarterbacks had started. Its `fixtures` are
+each team's next game, weighed by the chance its starter sits; an app
+pricing an unplayed game builds its index with `QbOutIndex.from_file`.
 
 `player_ratings.json` is there for the same reason: each mens and womens
 team's newest row of the players' file (`PlayerRatingsFile`), which a model

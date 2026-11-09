@@ -160,7 +160,7 @@ import json
 import logging
 import pickle
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -223,9 +223,20 @@ from cassandra.predictor.player_ratings import (
     player_ratings_path,
     season_for,
 )
-from cassandra.predictor.qb_out import QbOutIndex, load_qb_out
+from cassandra.predictor.qb_out import (
+    QbOutIndex,
+    load_qb_out,
+    load_qb_out_runs,
+    run_weights,
+)
 from cassandra.qb_out_build import build_all as build_qb_out
-from cassandra.qb_starts import Doubt, GameQb, doubts, read_qb_starts
+from cassandra.qb_starts import (
+    Doubt,
+    GameQb,
+    availabilities,
+    doubts,
+    read_qb_starts,
+)
 from cassandra.replay_cache import AUTHORED_DIR, GENERATED_DIR
 from cassandra.residuals import team_tiers
 from cassandra.save_predictions import join_with_odds, read_all_seasons
@@ -322,10 +333,13 @@ def qb_reads(
 
 async def _qb_out_tonight(
     league: str, season: Season, games: list[Game], upcoming: list[Game]
-) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, dict[str, GameQb]]]:
-    """Who was missing their starter in the games the stored index hasn't read,
-    the recent games that couldn't be read (no plays from ESPN yet), and those
-    games' quarterbacks for `cassandra.qb_starts`.
+) -> tuple[
+    dict[str, dict[str, int]], dict[str, set[str]], dict[str, dict[str, GameQb]]
+]:
+    """Who was missing their starter in the games the stored index hasn't read
+    (and which game of his absence it was), the recent games that couldn't be
+    read (no plays from ESPN yet), and those games' quarterbacks for
+    `cassandra.qb_starts`.
 
     That index is the sweep's, over the plays endgame has stored, and
     tonight's games aren't in it until the morning. They're read here the
@@ -361,7 +375,7 @@ async def _qb_out_tonight(
     )
     built = await build_qb_out(league, [season], _OneWeek(table))
     flags = {
-        g: out & needy
+        g: {team: run for team, run in built.runs[g].items() if team in needy}
         for g, out in built.missing.items()
         if g in unread and out & needy
     }
@@ -860,6 +874,48 @@ class Quarterbacks(NamedTuple):
     blind: dict[str, set[str]]
 
 
+def season_quarterbacks(
+    league: str, latest: Season, tonight_qbs: Mapping[str, Mapping[str, GameQb]]
+) -> dict[str, Mapping[str, GameQb]]:
+    """The season's quarterbacks game by game: the sweep's copy, and tonight's
+    games on top (`cassandra.qb_starts`)."""
+    stored_qbs = read_qb_starts(league)
+    season_qbs: dict[str, Mapping[str, GameQb]] = (
+        dict(stored_qbs.games)
+        if stored_qbs is not None and stored_qbs.season == latest.year
+        else {}
+    )
+    if not season_qbs:
+        print(f"!! no {latest.year} quarterbacks stored: no team reads as in doubt")
+    season_qbs.update(tonight_qbs)
+    return season_qbs
+
+
+def qb_out_index(
+    league: str,
+    games: list[Game],
+    upcoming: list[Game],
+    tonight: Mapping[str, Mapping[str, int]],
+    named: Mapping[str, set[str]],
+    season_qbs: Mapping[str, Mapping[str, GameQb]],
+) -> QbOutIndex:
+    """The availability index a live run prices with: the stored one,
+    tonight's games read off ESPN, `named` news for fixtures, and every
+    other fixture's chance of its starter sitting (`qb_starts.availability`).
+    A team the news names is out, whatever its chance."""
+    flags = {game: set(out) for game, out in load_qb_out(league).items()}
+    for extra in (tonight, named):
+        for game, out in extra.items():
+            flags.setdefault(game, set()).update(out)
+    weights = run_weights(load_qb_out_runs(league))
+    weights.update(run_weights(tonight))
+    priced = availabilities(games, season_qbs, upcoming, league)
+    for game, out in named.items():
+        for team in out:
+            priced.get(game, {}).pop(team, None)
+    return QbOutIndex(flags, weights).with_weights(priced)
+
+
 def _quarterbacks(
     args: argparse.Namespace,
     league: str,
@@ -869,22 +925,14 @@ def _quarterbacks(
     lasting: list[overrides.Override],
 ) -> Quarterbacks:
     """The stored index, tonight's games read off ESPN's plays as the sweep
-    will read them, and `--qb-out` news for fixtures, lasting or not."""
+    will read them, `--qb-out` news for fixtures, lasting or not, and each
+    fixture's chance of its starter sitting."""
     tonight, blind, tonight_qbs = asyncio.run(
         _qb_out_tonight(league, latest, games, upcoming)
     )
-    # Whose starter's last game says he may not start the next: the sweep's
-    # copy of the season, and tonight's games on top (`cassandra.qb_starts`).
-    stored_qbs = read_qb_starts(league)
-    season_qbs = (
-        dict(stored_qbs.games)
-        if stored_qbs is not None and stored_qbs.season == latest.year
-        else {}
-    )
-    if not season_qbs:
-        print(f"!! no {latest.year} quarterbacks stored: no team reads as in doubt")
-    season_qbs.update(tonight_qbs)
-    doubted = doubts(games, season_qbs)
+    # Whose starter's last game says he may not start the next.
+    season_qbs = season_quarterbacks(league, latest, tonight_qbs)
+    doubted = doubts(games, season_qbs, league)
     named = _qb_out_named(args.qb_out, upcoming)
     # A lasting QB out for a team with no game in the window (a bye) has
     # nothing to apply to this run.
@@ -892,17 +940,21 @@ def _quarterbacks(
         overrides.teams(lasting, "qb_out"), upcoming, strict=False
     ).items():
         named.setdefault(game, set()).update(out)
-    flags = {game: set(out) for game, out in load_qb_out(league).items()}
-    for extra in (tonight, named):
-        for game, out in extra.items():
-            flags.setdefault(game, set()).update(out)
+    index = qb_out_index(league, games, upcoming, tonight, named, season_qbs)
     by_id = {g.game_id: g for g in games}
     for label, extra in (("QB out tonight", tonight), ("QB out next game", named)):
         for game, out in sorted(extra.items(), key=lambda item: by_id[item[0]].date):
             print(
                 f"{label + ':':<16}{', '.join(sorted(out))}  ({placing.fmt_game(by_id[game])})"
             )
-    sources = MatchupSources.for_league(league)._replace(qb_out=QbOutIndex(flags))
+    priced = sum(
+        1
+        for game in upcoming
+        for team in (game.home, game.away)
+        if not index.is_out(game.game_id, team) and index.weight(game.game_id, team)
+    )
+    print(f"QB priced:      {priced} teams' starters may sit (cassandra.qb_starts)")
+    sources = MatchupSources.for_league(league)._replace(qb_out=index)
     return Quarterbacks(sources, doubted, blind)
 
 

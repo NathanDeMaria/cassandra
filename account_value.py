@@ -40,7 +40,6 @@ from cassandra.picks import (
 )
 from cassandra.placing import CENTRAL
 from cassandra.predictor.adjustments import MatchupSources
-from cassandra.predictor.qb_out import QbOutIndex, load_qb_out
 
 #: How far back a game still counts as a fixture: Kalshi pays a few hours
 #: to a day after the final, and ESPN keeps the result.
@@ -104,17 +103,20 @@ def model_home_probabilities(args, seasons, namer, fixtures):
         for g in games
         if not g.completed and g.status not in NOT_HAPPENING and g.date > now
     ]
-    tonight, _, _ = asyncio.run(
-        picks._qb_out_tonight(picks.FOOTBALL.name, latest, games, upcoming)
+    league = picks.FOOTBALL.name
+    tonight, _, tonight_qbs = asyncio.run(
+        picks._qb_out_tonight(league, latest, games, upcoming)
     )
     named = picks._qb_out_named(args.qb_out, upcoming)
-    flags = {game: set(out) for game, out in load_qb_out(picks.FOOTBALL.name).items()}
-    for extra in (tonight, named):
-        for game, out in extra.items():
-            flags.setdefault(game, set()).update(out)
-    sources = MatchupSources.for_league(picks.FOOTBALL.name)._replace(
-        qb_out=QbOutIndex(flags)
+    index = picks.qb_out_index(
+        league,
+        games,
+        upcoming,
+        tonight,
+        named,
+        picks.season_quarterbacks(league, latest, tonight_qbs),
     )
+    sources = MatchupSources.for_league(league)._replace(qb_out=index)
     predictor, _ = picks._replay(picks.FOOTBALL.name, args.model, seasons, sources)
     return {
         f.game.game_id: predictor.predict_game(f.game).team1_win_prob for f in fixtures

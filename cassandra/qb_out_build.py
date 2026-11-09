@@ -9,12 +9,16 @@ The rule, per team per game:
 
     starter = the first man to start for the team this season, until
               either a more established man starts in his place or a cover
-              has started `HANDOVER[league]` games in a row without him
+              has started `HANDOVER[league]` games in a row without him --
+              in a `KEEP_UNSEEN` league, only once the starter has been seen
+              since, taking a snap in a game he didn't start
     out     = the starter took no pass, rush or sack
 
 Established is more starts this season, or the same number and the earlier
 first one. A team's first game of a season is what names the starter and is
 never flagged -- the question "is he missing?" needs somebody to be missing.
+Each flag carries which game of the absence it is (`runs`), which the index
+weighs down game by game (`cassandra.predictor.qb_out.QB_OUT_DECAY`).
 
 ## Why the whole absence, and why the handover is per league
 
@@ -70,6 +74,25 @@ behind him reads as an absence until the handover -- the plays cannot tell
 a benching from an injury -- which on the NFL is three weeks. Rare there,
 and on ncaafb, where it is common, the handover is one game.
 
+## A starter nobody has seen since
+
+A one-game handover ends a college absence as soon as it starts, injury or
+not, and an injured starter's team then plays on unflagged with a rating
+still mostly his: replayed at the published `glicko_margin_units_success`
+fit, ncaafb 2014-2026, the second and third games of an absence ran 2.6
+points of win probability above the result (t ~3). So on ncaafb the cover
+takes the job only once the starter has been seen healthy -- in relief, or
+on the field in a game he didn't start, which is what a benching looks like
+-- or by out-starting him. Until then the starter is out, every game, the
+flag weighing less each one. Brier x1e-5 against handover 1, every flag
+known: -4.9 +/- 2.9; priced as a live run would
+(`cassandra.qb_starts.availability`): -8.2 +/- 2.5, FBS v FBS -17.1 +/- 8.8.
+Dropping the out-starting limit was no better.
+
+"Seen" is a rough stand-in for healthy. Of the starters it reads as benched,
+68% started again that season, against 56% of the unseen ones -- the plays
+know who played, not why -- so the rule leans on the decay, not the call.
+
 Read `cassandra.predictor.qb_out` on the lookahead before reading any number
 this produces. Whether a quarterback played is taken from the plays of the
 game itself, which nobody has at kickoff.
@@ -95,16 +118,17 @@ from say_youll_remember_me.qb import (
 )
 
 from cassandra.predictor.qb_out import QbOutFile, qb_out_path
-from cassandra.qb_starts import GameQb, QbStartsFile
+from cassandra.qb_starts import (
+    HANDOVER,
+    KEEP_UNSEEN,
+    GameQb,
+    QbStartsFile,
+    StarterWalk,
+)
 
 #: Past any real season. NCAAFB runs to about 17 source weeks plus bowls,
 #: the NFL to 22; this is the loop bound for "ask for everything".
 _MAX_WEEK = 30
-
-#: Consecutive starts by one man, without the starter, that make him the
-#: starter -- per league, because a college quarterback change is usually
-#: not an injury. See the module docstring for the measurements.
-HANDOVER: Mapping[str, int] = {"nfl": 3, "ncaafb": 1}
 
 
 class PlayWeeks(Protocol):
@@ -192,23 +216,19 @@ def out_teams(
     ordered_games: Sequence[tuple[str, str]],
     parsed: Mapping[tuple[str, str], TeamGameQb],
     handover: int,
-) -> dict[str, set[str]]:
-    """Which teams were missing their starter, by game id.
+    keep_unseen: bool = False,
+) -> dict[str, dict[str, int]]:
+    """Which teams were missing their starter, by game id, and which game of
+    his absence each was (1 for the first).
 
     `ordered_games` is (game_id, team) in the order that team played them,
     within one season. The caller does the ordering because it has the
     schedule and this has only the plays. `handover` is how many straight
-    starts by one other man make him the starter instead.
+    starts by one other man make him the starter instead; with `keep_unseen`
+    they count only once the starter has been seen since (`KEEP_UNSEEN`).
     """
-    missing: dict[str, set[str]] = {}
-    starter: dict[str, str] = {}
-    # Per team, who has been starting in the starter's absence and for how
-    # many games running. Cleared the moment the starter takes a snap.
-    covering: dict[str, tuple[str, int]] = {}
-    # Per team, starts this season by man and the order they first started
-    # in, for "more established". Both count only games already played.
-    starts: dict[str, Counter[str]] = {}
-    first_start: dict[str, dict[str, int]] = {}
+    missing: dict[str, dict[str, int]] = {}
+    walks: dict[str, StarterWalk] = {}
     for game_id, team in ordered_games:
         current = parsed.get((game_id, team))
         if current is None:
@@ -216,32 +236,10 @@ def out_teams(
             # tells us nothing about who was available, and calling that
             # "out" would flag every wildcat afternoon as an injury.
             continue
-        today = current.starter_key
-        tally = starts.setdefault(team, Counter())
-        order = first_start.setdefault(team, {})
-        expected = starter.get(team)
-
-        def standing(key: str) -> tuple[int, int]:
-            return (tally[key], -order.get(key, len(order)))
-
-        if expected is None or standing(today) > standing(expected):
-            # First game, or the established man starting in place of a
-            # cover: he has the job, and nobody is missing.
-            starter[team] = today
-            covering.pop(team, None)
-        elif expected in current.snap_keys:
-            covering.pop(team, None)
-        else:
-            missing.setdefault(game_id, set()).add(team)
-            cover, streak = covering.get(team, (None, 0))
-            streak = streak + 1 if cover == today else 1
-            if streak >= handover:
-                starter[team] = today
-                covering.pop(team, None)
-            else:
-                covering[team] = (today, streak)
-        tally[today] += 1
-        order.setdefault(today, len(order))
+        walk = walks.setdefault(team, StarterWalk(handover, keep_unseen))
+        run = walk.step(current.starter_key, current.snap_keys)
+        if run is not None:
+            missing.setdefault(game_id, {})[team] = run
     return missing
 
 
@@ -303,6 +301,8 @@ class Built(NamedTuple):
     #: The latest season's quarterbacks, game by game (`cassandra.qb_starts`);
     #: None with no seasons.
     starts: QbStartsFile | None
+    #: game id -> team -> which game of his absence each flag was.
+    runs: dict[str, dict[str, int]] = {}
 
 
 async def build(
@@ -337,6 +337,7 @@ async def build_all(
     """
     namer = namer if namer is not None else TeamNamer.for_league(league)
     missing: dict[str, set[str]] = {}
+    runs: dict[str, dict[str, int]] = {}
     latest = max((s.year for s in seasons), default=None)
     starts: dict[str, dict[str, GameQb]] = {}
     for season in sorted(seasons, key=lambda s: s.year):
@@ -427,24 +428,29 @@ async def build_all(
                     ordered.setdefault(team, []).append((game.game_id, team))
         for team_games_in_order in ordered.values():
             for game_id, teams in out_teams(
-                team_games_in_order, parsed, HANDOVER[league]
+                team_games_in_order,
+                parsed,
+                HANDOVER[league],
+                keep_unseen=league in KEEP_UNSEEN,
             ).items():
                 missing.setdefault(game_id, set()).update(teams)
+                runs.setdefault(game_id, {}).update(teams)
     return Built(
         missing,
         None
         if latest is None
         else QbStartsFile(league=league, season=latest, games=starts),
+        runs,
     )
 
 
-def with_season(
-    stored: Mapping[str, Iterable[str]],
+def with_season[V](
+    stored: Mapping[str, V],
     season: Season,
-    fresh: Mapping[str, set[str]],
-) -> dict[str, set[str]]:
+    fresh: Mapping[str, V],
+) -> dict[str, V]:
     """The stored index with one season's games replaced by a fresh build of
-    that season alone.
+    that season alone: its flags, or its runs.
 
     Exact, not an approximation: the rule never looks past a season's own
     games (a team's first game names its starter), so building one season
@@ -459,16 +465,24 @@ def with_season(
     puts the file back on one parser either way.
     """
     ids = {game.game_id for week in season.weeks for game in week.games}
-    merged = {game: set(teams) for game, teams in stored.items() if game not in ids}
-    merged.update({game: set(teams) for game, teams in fresh.items()})
+    merged = {game: teams for game, teams in stored.items() if game not in ids}
+    merged.update(fresh)
     return merged
 
 
-def write(league: str, games: Mapping[str, set[str]]) -> None:
+def write(
+    league: str,
+    games: Mapping[str, Iterable[str]],
+    runs: Mapping[str, Mapping[str, int]] | None = None,
+    fixtures: Mapping[str, Mapping[str, float]] | None = None,
+) -> None:
     """Save the index. Key-sorted, and team lists sorted, so a rebuild diffs."""
     path = qb_out_path(league)
     path.parent.mkdir(parents=True, exist_ok=True)
     document = QbOutFile(
-        league=league, games={game: sorted(teams) for game, teams in games.items()}
+        league=league,
+        games={game: sorted(teams) for game, teams in games.items()},
+        runs={game: dict(teams) for game, teams in (runs or {}).items()},
+        fixtures={game: dict(teams) for game, teams in (fixtures or {}).items()},
     )
     path.write_text(json.dumps(document.model_dump(mode="json"), sort_keys=True))

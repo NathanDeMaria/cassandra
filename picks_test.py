@@ -2,7 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 from endgame.types import Game
 
-from picks import QB_UNREAD_WINDOW, apply_rules, parse, qb_reads
+from cassandra.qb_starts import AVAILABILITY_OUT, GameQb
+from picks import QB_UNREAD_WINDOW, apply_rules, parse, qb_out_index, qb_reads
 
 NOW = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)  # Tue 22:00 CT
 
@@ -82,3 +83,34 @@ def test_a_run_takes_its_leagues_rules_unless_told_otherwise() -> None:
     assert apply_rules(parse(["--place", "--no-rungs"]), rules) is None
     with pytest.raises(SystemExit, match="no ncaafb rule for --min-edge"):
         apply_rules(parse([]), None)
+
+
+def _qbs(starter: str) -> GameQb:
+    return GameQb(
+        starter=starter,
+        attempts={starter: 30},
+        names={starter: starter},
+        snaps=[starter],
+        last_snap={starter: (4, 3)},
+    )
+
+
+def test_a_live_index_prices_a_doubted_starter_unless_the_news_names_him() -> None:
+    week = timedelta(days=7)
+    played = [
+        _game("Kent", "Ohio", n * week)._replace(game_id=f"g{n}") for n in (4, 3, 2)
+    ]
+    fixture = _game("Kent", "Ohio", -week, completed=False)._replace(game_id="next")
+    starts = {g.game_id: {"Ohio": _qbs("ace"), "Kent": _qbs("kent")} for g in played}
+    # Ohio's starter missed the last game
+    starts[played[-1].game_id] = {"Ohio": _qbs("backup"), "Kent": _qbs("kent")}
+    args = ("ncaafb", played + [fixture], [fixture], {})
+
+    priced = qb_out_index(*args, {}, starts)
+    named = qb_out_index(*args, {fixture.game_id: {"Ohio"}}, starts)
+
+    assert not priced.is_out(fixture.game_id, "Ohio")
+    assert 0 < priced.weight(fixture.game_id, "Ohio") < AVAILABILITY_OUT["missed"]
+    assert priced.weight(fixture.game_id, "Kent") == 0.0
+    assert named.is_out(fixture.game_id, "Ohio")
+    assert named.weight(fixture.game_id, "Ohio") == 1.0
