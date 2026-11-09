@@ -8,6 +8,8 @@ from .qb_out import (
     QB_OUT_DECAY,
     QbOutFile,
     QbOutIndex,
+    load_qb_out,
+    load_qb_out_runs,
     run_weights,
     validated_qb_out_penalty,
 )
@@ -106,6 +108,29 @@ def test_a_release_file_reads_as_the_whole_index() -> None:
     assert index.differential(_Matchup("A", "B", "g2")) == pytest.approx(QB_OUT_DECAY)
     assert index.differential(_Matchup("A", "B", "next")) == pytest.approx(-0.5)
     assert not index.is_out("next", "A")
+
+
+def test_a_replay_never_reads_a_fixtures_chance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A game finished since the sweep wrote its chance must update on what
+    happened, so the league's index leaves the fixtures out."""
+    path = tmp_path / "ncaafb_qb_out.json"
+    path.write_text(
+        QbOutFile(
+            league="ncaafb", games={"g1": ["B"]}, fixtures={"next": {"A": 0.5}}
+        ).model_dump_json()
+    )
+    monkeypatch.setattr("cassandra.predictor.qb_out.qb_out_path", lambda league: path)
+    load_qb_out.cache_clear()
+    load_qb_out_runs.cache_clear()
+
+    index = QbOutIndex.for_league("ncaafb")
+
+    assert index.differential(_Matchup("A", "B", "next")) == 0.0
+    assert index.differential(_Matchup("A", "B", "g1")) == 1.0
+    load_qb_out.cache_clear()
+    load_qb_out_runs.cache_clear()
 
 
 def test_an_older_file_has_no_runs_or_fixtures() -> None:

@@ -21,7 +21,6 @@ from cassandra.predictor.luck import load_luck
 from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import (
     load_qb_out,
-    load_qb_out_fixtures,
     load_qb_out_runs,
 )
 from cassandra.predictor.turnover import load_turnover
@@ -41,7 +40,6 @@ _LOADERS = (
     load_epa,
     load_qb_out,
     load_qb_out_runs,
-    load_qb_out_fixtures,
     load_roster,
     load_player_ratings,
     load_luck,

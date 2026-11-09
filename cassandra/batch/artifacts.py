@@ -32,7 +32,6 @@ from cassandra.predictor.luck import load_luck
 from cassandra.predictor.player_ratings import load_player_ratings
 from cassandra.predictor.qb_out import (
     load_qb_out,
-    load_qb_out_fixtures,
     load_qb_out_runs,
     qb_out_path,
 )
@@ -177,7 +176,6 @@ async def download_predictor_data(bucket: str) -> list[Path]:
     # decimals -- so those fits were a coordinate the objective couldn't see.
     load_qb_out.cache_clear()
     load_qb_out_runs.cache_clear()
-    load_qb_out_fixtures.cache_clear()
     load_roster.cache_clear()
     load_player_ratings.cache_clear()
     load_luck.cache_clear()

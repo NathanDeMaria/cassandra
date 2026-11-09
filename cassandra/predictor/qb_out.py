@@ -132,13 +132,6 @@ def load_qb_out_runs(league: str) -> Mapping[str, Mapping[str, int]]:
     return {} if stored is None else stored.runs
 
 
-@cache
-def load_qb_out_fixtures(league: str) -> Mapping[str, Mapping[str, float]]:
-    """The saved index's fixtures, weighed; empty without an index."""
-    stored = read_qb_out_file(league)
-    return {} if stored is None else stored.fixtures
-
-
 def run_weights(
     runs: Mapping[str, Mapping[str, int]],
 ) -> dict[str, dict[str, float]]:
@@ -189,16 +182,20 @@ class QbOutIndex:
 
     @classmethod
     def for_league(cls, league: str) -> Self:
-        """The league's saved index, or an empty one if the sweep hasn't run."""
-        return cls(
-            load_qb_out(league), run_weights(load_qb_out_runs(league))
-        ).with_weights(load_qb_out_fixtures(league))
+        """The league's saved index, or an empty one if the sweep hasn't run.
+
+        Its flags and their runs, not its `fixtures`: this is what a replay
+        reads, and a fixture's chance must never stand in for a played game's
+        result -- a file a sweep behind would do that for every game finished
+        since. A live run lays its own on (`picks.qb_out_index`).
+        """
+        return cls(load_qb_out(league), run_weights(load_qb_out_runs(league)))
 
     @classmethod
     def from_file(cls, stored: QbOutFile) -> Self:
         """An index as a `QbOutFile` reads -- the release's `qb_out.json`, for
-        a consumer with no `~/.cassandra`: its flags, their runs, and its
-        fixtures."""
+        a consumer with no `~/.cassandra` pricing an unplayed game: its flags,
+        their runs, and its fixtures. Not for a replay (`for_league`)."""
         return cls(stored.games, run_weights(stored.runs)).with_weights(stored.fixtures)
 
     def with_weights(self, weights: Mapping[str, Mapping[str, float]]) -> Self:
