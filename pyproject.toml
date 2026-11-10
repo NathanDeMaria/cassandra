@@ -121,7 +121,11 @@ packages = ["cassandra"]
 # Then to the ESPN cache buster: `site.api.espn.com` serves a URL read on an
 # interval its own previous read's copy, so `picks.py`'s top-up of tonight's
 # scores could miss the games that just went final. EndGame #110.
-endgame = { git = "https://github.com/NathanDeMaria/EndGame.git", rev = "8d19c73a4cce561663c2c2be06f18f3fe7312e02", subdirectory = "py-endgame" }
+#
+# Then to the 403 retry: ESPN answers a fine request with a 403 now and then
+# (2026-11-04, 2026-11-10) and the odds run died on it. A 403 now waits 30s up
+# to 450s and tries again, up to four times. EndGame #130.
+endgame = { git = "https://github.com/NathanDeMaria/EndGame.git", rev = "d320d7113257e54b39636e53b8973dd6786171c7", subdirectory = "py-endgame" }
 # Team knowledge: which names are the same team, and what division and
 # conference each played in. Pure python apart from its extras, so it costs a
 # serving install one dependency it already has.
@@ -188,7 +192,10 @@ say-youll-remember-me = { git = "https://github.com/NathanDeMaria/say-youll-reme
 #
 # And for the cache buster, which `endgame` above is pinned to: this is the
 # py-endgame-aws rev that resolves it there.
-endgame-aws = { git = "https://github.com/NathanDeMaria/EndGame.git", rev = "c89ecd79c85796239f07d0cdae9572fd97438eeb", subdirectory = "py-endgame-aws" }
+#
+# And for the 403 retry: #131 moves py-endgame-aws's own `endgame` pin to it,
+# which is what the odds job runs.
+endgame-aws = { git = "https://github.com/NathanDeMaria/EndGame.git", rev = "7573ab1b9c1000814bc650714b802a4db7851233", subdirectory = "py-endgame-aws" }
 # In-game win probability, and the `game_control` number cassandra turns into
 # an alternate score line. The fits ship inside the package, so pinning the
 # rev pins the model: which win probability curve a rating was built against
