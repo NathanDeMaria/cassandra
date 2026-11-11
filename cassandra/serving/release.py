@@ -21,6 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from cassandra.predictor import (
     EpaRates,
+    GroundGame,
+    GroundSide,
     KindEpa,
     KindRates,
     PerDown,
@@ -109,6 +111,21 @@ class EpaRating(BaseModel):
     runs: KindEpaRating | None = None
 
 
+class GroundSideRating(BaseModel):
+    """One side of a team's ground game: points of margin and its deviation."""
+
+    points: float
+    sd: float
+
+
+class GroundRating(BaseModel):
+    """A team's ground game, from a units model that rates one; see `GroundGame`."""
+
+    offense: GroundSideRating
+    defense: GroundSideRating
+    games: int = 0
+
+
 class PlayersRating(BaseModel):
     """A team as its players rate it, from ten-minute-version.
 
@@ -170,6 +187,9 @@ class TeamRating(BaseModel):
     success: SuccessRating | None = None
     epa: EpaRating | None = None
     players: PlayersRating | None = None
+    # A units model's ground game, where it rates one (`ground_points`):
+    # state, like the sides, which `rating_predictor` reads back.
+    ground: GroundRating | None = None
 
 
 def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
@@ -190,6 +210,7 @@ def ratings_from_predictor(predictor: Predictor) -> dict[str, TeamRating]:
             success=_success(rating.success),
             epa=_epa(rating.epa),
             players=_players(rating.players),
+            ground=_ground(rating.ground),
         )
         for team, rating in predictor.ratings.items()
     }
@@ -234,6 +255,16 @@ def _rate(rate: Rate) -> RateRating:
     return RateRating(rate=rate.rate, sd=rate.sd)
 
 
+def _ground(ground: GroundGame | None) -> GroundRating | None:
+    if ground is None:
+        return None
+    return GroundRating(
+        offense=GroundSideRating(points=ground.offense.points, sd=ground.offense.sd),
+        defense=GroundSideRating(points=ground.defense.points, sd=ground.defense.sd),
+        games=ground.games,
+    )
+
+
 def _players(row: PlayerRates | None) -> PlayersRating | None:
     if row is None:
         return None
@@ -275,7 +306,22 @@ def _state(rating: TeamRating) -> Rating:
     written before `results` existed.
     """
     stepped = rating.results or rating
-    return Rating(rating=stepped.rating, rd=stepped.rd, units=_units(rating))
+    return Rating(
+        rating=stepped.rating,
+        rd=stepped.rd,
+        units=_units(rating),
+        ground=_ground_state(rating.ground),
+    )
+
+
+def _ground_state(ground: GroundRating | None) -> GroundGame | None:
+    if ground is None:
+        return None
+    return GroundGame(
+        GroundSide(ground.offense.points, ground.offense.sd),
+        GroundSide(ground.defense.points, ground.defense.sd),
+        ground.games,
+    )
 
 
 def _units(rating: TeamRating) -> Units | None:

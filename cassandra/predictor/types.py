@@ -104,6 +104,30 @@ class EpaRates(NamedTuple):
     runs: KindEpa | None = None
 
 
+class GroundSide(NamedTuple):
+    """One side of a team's ground game: points of margin, and its deviation."""
+
+    points: float
+    sd: float
+
+
+class GroundGame(NamedTuple):
+    """A team's ground game, as a units model with `ground_points` rates it.
+
+    Each side in points of margin against an average opponent of its own
+    conference -- what the offense's runs add and what the defense's stops
+    do, beyond what the rating and the units already say -- and `games`,
+    how many of this season's games have been read into it, which is what
+    the model's early-season discount counts. Part of the model's state: a
+    predictor rebuilt from a release reads it back
+    (`UnitMarginGlickoPredictor.from_ratings`).
+    """
+
+    offense: GroundSide
+    defense: GroundSide
+    games: int = 0
+
+
 class PlayerRates(NamedTuple):
     """A team as its players rate it: net per 100 possessions, and the pace.
 
@@ -159,6 +183,7 @@ class Rating(NamedTuple):
     success: SuccessRates | None = None
     epa: EpaRates | None = None
     players: PlayerRates | None = None
+    ground: GroundGame | None = None
 
     @property
     def overall(self) -> float:

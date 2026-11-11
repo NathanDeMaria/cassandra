@@ -45,6 +45,8 @@ from .types import (
     GameControl,
     GameEpa,
     GameResult,
+    GroundGame,
+    GroundSide,
     KindEpa,
     KindRates,
     Matchup,

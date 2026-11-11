@@ -358,6 +358,61 @@ what an ncaafb prototype found in 2026-09, before these knobs existed: a
 little from the record's deviation, and a side's widening costing games
 1-4. They default to 0; the NFL's success-rate config searches them.
 
+The ground game
+---------------
+
+A second pair of sides per team, stepped on its run downs alone and spoken
+in points. It is there because of what the blend leaves on the table: on
+ncaafb's published success model, a team's season-to-date yards per carry
+(each carry capped, sacks counted as passes), offense and defense alike,
+still predicts the model's misses -- 0.19 of a logit per standard
+deviation of the gap between two teams, t 5.7 over 6,396 FBS games with
+three earlier games a side -- where the same reading of its passes
+predicts nothing beside it. The units can't hold it. Fit, the defense's
+deviation ends near 0.02 against a start of 0.2, a program's standing
+level more than this season's defense, and the offense widens back to its
+cap every week; giving either a slower clock or a reading that leans on
+the run (searched, with the defenses' own blend) won through 2021 and lost
+on 2022-2026, by 13.7 with the clocks free.
+
+So the ground game is its own state, `_GroundGame`. Each game is the
+units' contest on a narrower reading: an offense's runs -- EPA per down
+and success rate at `success_weight` -- against the defense across from
+it, expected at the league's center for a run, the anchors and the edge,
+with `ground_play_sd` of noise a down. A side starts at
+`ground_initial_sd`, narrows as it is seen and is never widened inside a
+season, so it is a season's average where the units' offense is the last
+few weeks; a summer keeps `ground_season_carry` of an offset. The
+smoother re-walks it with the units.
+
+It speaks through the edge, not the blend: a team leans `ground_points`
+points of margin per unit of its two offsets, times `games / (games +
+ground_quiet_games)` over the season's games read so far, and the gap
+between two teams' leans joins home advantage and the matchup terms. The
+record therefore steps against it, as it steps against a quarterback out,
+and learns only what the ground game didn't expect. `ground_points` 0, the
+default, keeps no ground game at all, and every model fit before it is
+unchanged to the last bit.
+
+Replayed on ncaafb 2014-2026 from the published success model, FBS v FBS
+brier in units of 1e-4, at 40 points, 0.05, 1.2, a carry of 0.25 and 3
+quiet games: -4.4 (t -2.8 on the per-game differences, better in 10
+seasons of 13), -4.8 through 2021 and -3.9 on 2022-2026. It costs 3.7 in
+weeks 1-3 and earns 5.7 in weeks 10-13 and 13.8 after them. The same pair
+stepped on pass downs loses 2.7 and on every down gains 1.0, so it is the
+run. The gain is a ridge: `ground_points` trades against the deviation and
+the noise, which set how fast a side moves, and two refits of all five
+through 2021 from different starts ended far apart (58 points at 0.066 and
+0.99; 18 at 3.9 and 31) within 0.5 of each other and of the defaults held
+out. `models/ncaafb/glicko_margin_units_ground.json` holds the deviation
+and the noise and searches the other three. What is left of the screen
+after it is 0.12 (t 3.6).
+
+Two things tried and left out. The record stepping without the ground
+game in its expectation, so the two never share credit, loses the gain
+(+1.4 at 40 points). Handing the forgotten part of an offset back to the
+rating at the rollover fixes weeks 1-3 (-1.6) and costs weeks 4-6 (+5.6).
+
 What a release carries
 ----------------------
 
@@ -492,6 +547,8 @@ from .rest import DEFAULT_REST_ADVANTAGE
 from .types import (
     EpaRates,
     GameEpa,
+    GroundGame,
+    GroundSide,
     KindEpa,
     KindRates,
     Matchup,
@@ -657,6 +714,13 @@ EPA_PLAY_SD: Mapping[str, Mapping[str, float]] = {
     "nfl": {ALL_DOWNS: 1.27, PASSES: 1.48, RUNS: 0.93},
 }
 
+#: The ground game's clocks, where a config doesn't search them: each side's
+#: starting deviation in the run reading's units, the noise of one run down,
+#: and the share of an offset a summer keeps. See "The ground game".
+DEFAULT_GROUND_INITIAL_SD = 0.05
+DEFAULT_GROUND_PLAY_SD = 1.2
+DEFAULT_GROUND_SEASON_CARRY = 0.25
+
 #: A rate the binomial reading is priced at, kept off the ends.
 _RATE_FLOOR = 0.05
 
@@ -748,6 +812,18 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # share of what `points_per_epa` converts it to; see "Across
         # conferences".
         anchor_epa_scale: float = 1.0,
+        # A second pair of sides per team, stepped on its run downs alone
+        # and added to the edge: points of margin per unit of a team's
+        # ground offsets (0 keeps none), each side's starting deviation,
+        # the noise of one run down, the share of an offset kept over a
+        # summer, and the games it takes to speak at half strength. See
+        # "The ground game".
+        ground_points: float = 0.0,
+        ground_initial_sd: float = DEFAULT_GROUND_INITIAL_SD,
+        ground_play_sd: float = DEFAULT_GROUND_PLAY_SD,
+        ground_season_carry: float = DEFAULT_GROUND_SEASON_CARRY,
+        ground_quiet_games: float = 0.0,
+        ground_state: Mapping[str, Any] | None = None,
         # Offseason deviation for a team whose head coach changed; see
         # "A new head coach". Rating points for the record, EPA per play for
         # the units, all 0 by default.
@@ -901,6 +977,14 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._success_weight = success_weight
         self._defense_success_weight = defense_success_weight
         self._success_reading = success_reading
+        self._ground = _GroundGame(
+            points=_non_negative("ground_points", ground_points),
+            initial_sd=validated_scale("ground_initial_sd", ground_initial_sd),
+            play_sd=validated_scale("ground_play_sd", ground_play_sd),
+            season_carry=ground_season_carry,
+            quiet_games=_non_negative("ground_quiet_games", ground_quiet_games),
+            state=ground_state,
+        )
         self._anchor_epa_scale = _non_negative("anchor_epa_scale", anchor_epa_scale)
         self._coach_change_rd = _non_negative("coach_change_rd", coach_change_rd)
         self._coach_change_sd = _Pair(
@@ -1002,6 +1086,10 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         is unrated -- below FBS, an academy, a season before 2015.
         """
         points = super().matchup_adjustment(matchup)
+        if self._ground.enabled:
+            points += (
+                self._ground.lean(matchup.home) - self._ground.lean(matchup.away)
+            ) / self.points_per_rating
         if not self._talent_edge:
             return points
         home = self._talent.get(matchup.home, self._season)
@@ -1173,6 +1261,12 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             )
             self._sides[offense] = attack._replace(offense=new_offense)
             self._sides[defense] = self._offsets(defense)._replace(defense=new_defense)
+        if self._ground.enabled:
+            home_runs, away_runs = self._run_readings(epa)
+            if home_runs is not None and away_runs is not None:
+                self._ground.add_game(
+                    game.home, game.away, home_runs, away_runs, gap * per_play
+                )
         displayed = self._displayed
         if displayed:
             # The gap in EPA per play; each displayed reading takes it to its own.
@@ -1218,10 +1312,39 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             (1 - weight) * epa.away + weight * (scale * away + level),
         )
 
+    def _run_readings(
+        self, epa: GameEpa
+    ) -> tuple[tuple[float, int] | None, tuple[float, int] | None]:
+        """What each offense's runs read and how many there were, home then away.
+
+        The blend the offenses step on -- EPA per down and success rate at
+        `success_weight` -- over the run downs alone. None for a side with
+        no runs, or with no success rate where the blend wants one.
+        """
+        weight = self._success_weight
+
+        def one(
+            run_epa: float | None, success: float | None, downs: int
+        ) -> tuple[float, int] | None:
+            if not downs or run_epa is None:
+                return None
+            if not weight:
+                return run_epa, downs
+            if success is None:
+                return None
+            scale, level = SUCCESS_SCALE[self._league][UNWEIGHTED]
+            return (1 - weight) * run_epa + weight * (scale * success + level), downs
+
+        return (
+            one(epa.home_run_epa, epa.home_run_success, epa.home_run_plays),
+            one(epa.away_run_epa, epa.away_run_success, epa.away_run_plays),
+        )
+
     def pass_week(self) -> None:
         """The units' week, then the parent's, whose smoother re-walks both."""
         self._contest_weeks.append(self._contests_this_week)
         self._contests_this_week = []
+        self._ground.pass_week()
         self._sides = self._aged_sides(self._sides, self._weekly_sd_increase)
         for rates in self._displayed:
             rates.pass_week()
@@ -1276,26 +1399,13 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             _Rating(0.0, self._initial_sd.offense),
             _Rating(0.0, self._initial_sd.defense),
         )
-        replay = {team: self._sides_preseason.get(team, unseen) for team in played}
-
-        for week in self._contest_weeks:
-            for contest in week:
-                attack, guard = replay[contest.offense], replay[contest.defense]
-                held_defense = _Rating(
-                    settled[contest.defense].defense.rating,
-                    guard.defense.rating_deviation,
-                )
-                held_offense = _Rating(
-                    settled[contest.offense].offense.rating,
-                    attack.offense.rating_deviation,
-                )
-                new_offense, _ = _contest_step(attack.offense, held_defense, contest)
-                _, new_defense = _contest_step(held_offense, guard.defense, contest)
-                replay[contest.offense] = attack._replace(offense=new_offense)
-                replay[contest.defense] = replay[contest.defense]._replace(
-                    defense=new_defense
-                )
-            replay = self._aged_sides(replay, self._weekly_sd_increase)
+        replay = _resweep(
+            settled,
+            {team: self._sides_preseason.get(team, unseen) for team in played},
+            self._contest_weeks,
+            lambda sides: self._aged_sides(sides, self._weekly_sd_increase),
+        )
+        self._ground.smooth()
 
         smoothed = dict(self._sides)
         for team in played:
@@ -1332,6 +1442,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._center_sum, self._center_count = 0.0, 0
         for rates in self._displayed:
             rates.roll_over()
+        self._ground.roll_over()
         self._sides_preseason = dict(self._sides)
         self._contest_weeks = []
         self._contests_this_week = []
@@ -1390,6 +1501,12 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "defense_success_weight": self._defense_success_weight,
             "success_reading": self._success_reading,
             "anchor_epa_scale": self._anchor_epa_scale,
+            "ground_points": self._ground.points,
+            "ground_initial_sd": self._ground.initial_sd,
+            "ground_play_sd": self._ground.play_sd,
+            "ground_season_carry": self._ground.season_carry,
+            "ground_quiet_games": self._ground.quiet_games,
+            "ground_state": self._ground.state(),
             "coach_change_rd": self._coach_change_rd,
             "coach_change_offense_sd": self._coach_change_sd.offense,
             "coach_change_defense_sd": self._coach_change_sd.defense,
@@ -1449,6 +1566,7 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 blended=self._blended(team).rating,
                 success=self._success(team, per_rating),
                 epa=self._epa(team, per_rating),
+                ground=self._ground.rating(team),
             )
             for team, rating in super().ratings.items()
         }
@@ -1519,6 +1637,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 _Rating((offense.rating - anchor) / scale, offense.rd / scale),
                 _Rating((defense.rating - anchor) / scale, defense.rd / scale),
             )
+        for team, rating in ratings.items():
+            if rating.ground is not None:
+                predictor._ground.restore(team, rating.ground)
         return predictor
 
 
@@ -1558,6 +1679,256 @@ def _contest_step(
             math.sqrt(q2 * (1 - q2 / total)),
         ),
     )
+
+
+def _resweep(
+    settled: Mapping[str, _Sides],
+    replay: dict[str, _Sides],
+    weeks: Sequence[Sequence[_Contest]],
+    aged: Callable[[dict[str, _Sides]], dict[str, _Sides]],
+) -> dict[str, _Sides]:
+    """A season's contests re-walked from `replay`, each unit against a held opponent.
+
+    The unit across from the one stepping is held at the mean `settled`
+    has for it and its replayed deviation; `aged` is the week's widening.
+    The smoother's sweep, shared by the units and the ground game.
+    """
+    for week in weeks:
+        for contest in week:
+            attack, guard = replay[contest.offense], replay[contest.defense]
+            held_defense = _Rating(
+                settled[contest.defense].defense.rating,
+                guard.defense.rating_deviation,
+            )
+            held_offense = _Rating(
+                settled[contest.offense].offense.rating,
+                attack.offense.rating_deviation,
+            )
+            new_offense, _ = _contest_step(attack.offense, held_defense, contest)
+            _, new_defense = _contest_step(held_offense, guard.defense, contest)
+            replay[contest.offense] = attack._replace(offense=new_offense)
+            replay[contest.defense] = replay[contest.defense]._replace(
+                defense=new_defense
+            )
+        replay = aged(replay)
+    return replay
+
+
+class _GroundGame:
+    """A second pair of sides per team, stepped on run downs and spoken in points.
+
+    The units' contest on a narrower reading: each offense's runs against
+    the defense across from it, expected at the league's center for a run,
+    the anchors and the edge. Each side starts at `initial_sd` and only
+    narrows within a season; a summer keeps `season_carry` of an offset and
+    lets its deviation back out toward `initial_sd` by the rest. A team
+    leans `points * (offense + defense)` points of margin, less early in a
+    season: `games / (games + quiet_games)` of it. See "The ground game".
+    """
+
+    def __init__(
+        self,
+        *,
+        points: float,
+        initial_sd: float,
+        play_sd: float,
+        season_carry: float,
+        quiet_games: float,
+        state: Mapping[str, Any] | None,
+    ) -> None:
+        if not 0.0 <= season_carry <= 1.0:
+            raise ValueError(
+                f"ground_season_carry must be in [0, 1], got {season_carry}"
+            )
+        self.points = points
+        self.initial_sd = initial_sd
+        self.play_sd = play_sd
+        self.season_carry = season_carry
+        self.quiet_games = quiet_games
+        state = state or {}
+        self._sides: dict[str, _Sides] = {
+            team: _Sides(_Rating(s[0], s[1]), _Rating(s[2], s[3]))
+            for team, s in state.get("sides", {}).items()
+        }
+        self._games: dict[str, int] = dict(state.get("games", {}))
+        previous, total, count = state.get("center", (None, 0.0, 0))
+        self._center_previous = None if previous is None else float(previous)
+        self._center_sum = float(total or 0.0)
+        self._center_count = int(count or 0)
+        # The smoother's ledger, as the units keep one.
+        self._preseason = dict(self._sides)
+        self._weeks: list[list[_Contest]] = []
+        self._this_week: list[_Contest] = []
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.points)
+
+    @property
+    def center(self) -> float:
+        """The league's average run reading, as `epa_center` is every down's."""
+        if self._center_previous is None:
+            if not self._center_count:
+                return 0.0
+            return self._center_sum / self._center_count
+        return (self._center_previous * CENTER_PRIOR_SIDES + self._center_sum) / (
+            CENTER_PRIOR_SIDES + self._center_count
+        )
+
+    def _unseen(self) -> _Sides:
+        return _Sides(_Rating(0.0, self.initial_sd), _Rating(0.0, self.initial_sd))
+
+    def lean(self, team: str) -> float:
+        """What `team`'s ground game adds to its side of a margin, in points."""
+        pair = self._sides.get(team)
+        if pair is None:
+            return 0.0
+        spoken = self.points * (pair.offense.rating + pair.defense.rating)
+        if not self.quiet_games:
+            return spoken
+        games = self._games.get(team, 0)
+        return spoken * games / (games + self.quiet_games)
+
+    def add_game(
+        self,
+        home: str,
+        away: str,
+        home_runs: tuple[float, int],
+        away_runs: tuple[float, int],
+        shift: float,
+    ) -> None:
+        """Both contests, against the center as it stood before the game.
+
+        `shift` is what the anchors and the edge are expected to move the
+        home offense's reading by, as the units' contests take it.
+        """
+        center = self.center
+        self._center_sum += home_runs[0] + away_runs[0]
+        self._center_count += 2
+        for offense, defense, (reading, downs), sign in (
+            (home, away, home_runs, 1.0),
+            (away, home, away_runs, -1.0),
+        ):
+            contest = _Contest(
+                offense=offense,
+                defense=defense,
+                epa=reading,
+                noise=self.play_sd**2 / downs,
+                base=center + sign * shift,
+            )
+            self._this_week.append(contest)
+            attack = self._sides.get(offense) or self._unseen()
+            guard = self._sides.get(defense) or self._unseen()
+            new_offense, new_defense = _contest_step(
+                attack.offense, guard.defense, contest
+            )
+            self._sides[offense] = attack._replace(offense=new_offense)
+            self._sides[defense] = (
+                self._sides.get(defense) or self._unseen()
+            )._replace(defense=new_defense)
+        for team in (home, away):
+            self._games[team] = self._games.get(team, 0) + 1
+
+    def pass_week(self) -> None:
+        if self.enabled:
+            self._weeks.append(self._this_week)
+            self._this_week = []
+
+    def smooth(self) -> None:
+        """The units' sweep over this season's run contests; only the means move."""
+        played = {
+            team
+            for week in self._weeks
+            for contest in week
+            for team in (contest.offense, contest.defense)
+        }
+        if not played:
+            return
+        unseen = self._unseen()
+        replay = _resweep(
+            self._sides,
+            {team: self._preseason.get(team, unseen) for team in played},
+            self._weeks,
+            lambda sides: sides,
+        )
+        for team in played:
+            pair = self._sides[team]
+            self._sides[team] = _Sides(
+                pair.offense._replace(rating=replay[team].offense.rating),
+                pair.defense._replace(rating=replay[team].defense.rating),
+            )
+
+    def roll_over(self) -> None:
+        """A summer: `season_carry` of each offset, the rest of its deviation back."""
+        if not self.enabled:
+            return
+        keep = self.season_carry
+        fresh = (1 - keep**2) * self.initial_sd**2
+
+        def carried(side: _Rating) -> _Rating:
+            return _Rating(
+                keep * side.rating,
+                math.sqrt(keep**2 * side.rating_deviation**2 + fresh),
+            )
+
+        self._sides = {
+            team: _Sides(carried(pair.offense), carried(pair.defense))
+            for team, pair in self._sides.items()
+        }
+        if self._center_count:
+            self._center_previous = self._center_sum / self._center_count
+        self._center_sum, self._center_count = 0.0, 0
+        self._games = {}
+        self._preseason = dict(self._sides)
+        self._weeks = []
+        self._this_week = []
+
+    def rating(self, team: str) -> GroundGame | None:
+        """`team`'s two sides in points of margin, or None where it has none."""
+        pair = self._sides.get(team) if self.enabled else None
+        if pair is None:
+            return None
+        return GroundGame(
+            GroundSide(
+                self.points * pair.offense.rating,
+                self.points * pair.offense.rating_deviation,
+            ),
+            GroundSide(
+                self.points * pair.defense.rating,
+                self.points * pair.defense.rating_deviation,
+            ),
+            self._games.get(team, 0),
+        )
+
+    def restore(self, team: str, ground: GroundGame) -> None:
+        """Put back what `rating` gave out."""
+        if not self.enabled:
+            return
+        self._sides[team] = _Sides(
+            _Rating(
+                ground.offense.points / self.points, ground.offense.sd / self.points
+            ),
+            _Rating(
+                ground.defense.points / self.points, ground.defense.sd / self.points
+            ),
+        )
+        self._games[team] = ground.games
+        self._preseason = dict(self._sides)
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "sides": {
+                team: [
+                    pair.offense.rating,
+                    pair.offense.rating_deviation,
+                    pair.defense.rating,
+                    pair.defense.rating_deviation,
+                ]
+                for team, pair in self._sides.items()
+            },
+            "games": dict(self._games),
+            "center": [self._center_previous, self._center_sum, self._center_count],
+        }
 
 
 def _widened(unit: _Rating, increase: float, cap: float) -> _Rating:
