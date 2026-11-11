@@ -1296,7 +1296,6 @@ def test_a_ground_game_credits_the_runner_and_charges_the_defense_it_ran_on(
     ground_a, ground_b = predictor.ratings["A"].ground, predictor.ratings["B"].ground
     assert ground_a is not None and ground_b is not None
     assert ground_a.offense.points > 0 > ground_b.defense.points
-    assert ground_a.games == ground_b.games == 1
     # The units read the same game either way; only the edge moved.
     assert predictor.get_sides("A") == without.get_sides("A")
     rematch = game("A", "B")._replace(neutral_site=True)
@@ -1316,24 +1315,15 @@ def test_a_ground_game_reads_only_the_run_downs(game: GameFactory) -> None:
     assert _lean(level, "A") == pytest.approx(0.0)
 
 
-def test_quiet_games_hold_a_ground_game_back_early(game: GameFactory) -> None:
-    loud = _predictor({"g": _ran(0.4)}, ground_points=40.0)
-    quiet = _predictor({"g": _ran(0.4)}, ground_points=40.0, ground_quiet_games=3.0)
-    for predictor in (loud, quiet):
-        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
-    rematch = game("A", "B")._replace(neutral_site=True)
-    spoken = loud.matchup_adjustment(rematch)
-    assert spoken > 0
-    # One game of three plus one: a quarter of it.
-    assert quiet.matchup_adjustment(rematch) == pytest.approx(spoken / 4)
-
-
-def test_a_summer_keeps_the_ground_games_carry(game: GameFactory) -> None:
+def test_a_summer_keeps_the_ground_games_carry_and_widens_it(
+    game: GameFactory,
+) -> None:
     predictor = _predictor(
         {"g": _ran(0.4)},
         ground_points=40.0,
         ground_initial_sd=0.1,
         ground_season_carry=0.5,
+        ground_season_sd_increase=0.01,
     )
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     before = predictor.ratings["A"].ground
@@ -1341,12 +1331,24 @@ def test_a_summer_keeps_the_ground_games_carry(game: GameFactory) -> None:
     after = predictor.ratings["A"].ground
     assert before is not None and after is not None
     assert after.offense.points == pytest.approx(0.5 * before.offense.points)
-    assert before.offense.sd < after.offense.sd < 40.0 * 0.1
-    assert after.games == 0
+    assert after.offense.sd == pytest.approx(math.hypot(before.offense.sd, 40.0 * 0.01))
+
+
+def test_a_summer_never_widens_a_ground_game_past_its_start(
+    game: GameFactory,
+) -> None:
+    predictor = _predictor({"g": _ran(0.4)}, ground_points=40.0, ground_initial_sd=0.1)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    predictor.pass_season()
+    after = predictor.ratings["A"].ground
+    assert after is not None
+    assert after.offense.sd == pytest.approx(40.0 * 0.1)
 
 
 def test_the_state_dict_carries_the_ground_game(game: GameFactory) -> None:
-    predictor = _predictor({"g": _ran(0.4)}, ground_points=40.0, ground_quiet_games=2.0)
+    predictor = _predictor(
+        {"g": _ran(0.4)}, ground_points=40.0, ground_season_carry=0.5
+    )
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     state = json.loads(json.dumps(predictor.state_dict()))
     loaded = UnitMarginGlickoPredictor.from_state_dict(
@@ -1357,7 +1359,9 @@ def test_the_state_dict_carries_the_ground_game(game: GameFactory) -> None:
 
 
 def test_a_ground_game_survives_its_ratings(game: GameFactory) -> None:
-    predictor = _predictor({"g": _ran(0.4)}, ground_points=40.0, ground_quiet_games=2.0)
+    predictor = _predictor(
+        {"g": _ran(0.4)}, ground_points=40.0, ground_season_carry=0.5
+    )
     predictor.update_game(game("A", "B", 21, 7, game_id="g"))
     rebuilt = UnitMarginGlickoPredictor.from_ratings(
         "test_league",
@@ -1365,7 +1369,6 @@ def test_a_ground_game_survives_its_ratings(game: GameFactory) -> None:
         anchors={},
         game_epa=EpaIndex(),
         ground_points=40.0,
-        ground_quiet_games=2.0,
     )
     matchup = game("B", "A")
     assert rebuilt.predict_game(matchup).team1_win_prob == pytest.approx(

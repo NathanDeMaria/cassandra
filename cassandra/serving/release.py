@@ -123,7 +123,6 @@ class GroundRating(BaseModel):
 
     offense: GroundSideRating
     defense: GroundSideRating
-    games: int = 0
 
 
 class PlayersRating(BaseModel):
@@ -261,7 +260,6 @@ def _ground(ground: GroundGame | None) -> GroundRating | None:
     return GroundRating(
         offense=GroundSideRating(points=ground.offense.points, sd=ground.offense.sd),
         defense=GroundSideRating(points=ground.defense.points, sd=ground.defense.sd),
-        games=ground.games,
     )
 
 
@@ -320,7 +318,6 @@ def _ground_state(ground: GroundRating | None) -> GroundGame | None:
     return GroundGame(
         GroundSide(ground.offense.points, ground.offense.sd),
         GroundSide(ground.defense.points, ground.defense.sd),
-        ground.games,
     )
 
 

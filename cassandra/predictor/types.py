@@ -116,16 +116,13 @@ class GroundGame(NamedTuple):
 
     Each side in points of margin against an average opponent of its own
     conference -- what the offense's runs add and what the defense's stops
-    do, beyond what the rating and the units already say -- and `games`,
-    how many of this season's games have been read into it, which is what
-    the model's early-season discount counts. Part of the model's state: a
-    predictor rebuilt from a release reads it back
+    do, beyond what the rating and the units already say. Part of the
+    model's state: a predictor rebuilt from a release reads it back
     (`UnitMarginGlickoPredictor.from_ratings`).
     """
 
     offense: GroundSide
     defense: GroundSide
-    games: int = 0
 
 
 class PlayerRates(NamedTuple):

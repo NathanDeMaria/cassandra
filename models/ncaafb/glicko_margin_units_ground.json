@@ -10,9 +10,9 @@
             0,
             1
         ],
-        "ground_quiet_games": [
-            0,
-            12
+        "ground_season_sd_increase": [
+            0.005,
+            0.05
         ]
     },
     "fixed": {
@@ -57,12 +57,17 @@
         {
             "ground_points": 40.0,
             "ground_season_carry": 0.25,
-            "ground_quiet_games": 3.0
+            "ground_season_sd_increase": 0.05
+        },
+        {
+            "ground_points": 40.0,
+            "ground_season_carry": 0.5,
+            "ground_season_sd_increase": 0.05
         },
         {
             "ground_points": 0.0,
             "ground_season_carry": 0.25,
-            "ground_quiet_games": 3.0
+            "ground_season_sd_increase": 0.05
         }
     ],
     "objective": "brier_fbs"
