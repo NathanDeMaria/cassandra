@@ -744,6 +744,11 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         success_reading: str = UNWEIGHTED,
         # The defenses' own blend; None reads `success_weight` for both.
         defense_success_weight: float | None = None,
+        # How much more a run down counts in the reading than a pass down;
+        # 1 is every down alike. The defenses' own; None reads the
+        # offenses'. See "Runs against passes".
+        run_emphasis: float = 1.0,
+        defense_run_emphasis: float | None = None,
         # How far a reading is expected to move across an anchor gap, as a
         # share of what `points_per_epa` converts it to; see "Across
         # conferences".
@@ -898,8 +903,25 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             raise ValueError(
                 f"success_reading must be {UNWEIGHTED!r} or {WEIGHTED!r}, got {success_reading!r}"
             )
+        if defense_run_emphasis is None:
+            defense_run_emphasis = run_emphasis
+        for name, emphasis in (
+            ("run_emphasis", run_emphasis),
+            ("defense_run_emphasis", defense_run_emphasis),
+        ):
+            if not emphasis > 0.0:
+                raise ValueError(f"{name} must be positive, got {emphasis}")
+        if (
+            (run_emphasis != 1.0 and success_weight)
+            or (defense_run_emphasis != 1.0 and defense_success_weight)
+        ) and success_reading == WEIGHTED:
+            # The index splits the flat success rate by kind of down, and
+            # not the weighted one.
+            raise ValueError("a run emphasis needs the unweighted success rate")
         self._success_weight = success_weight
         self._defense_success_weight = defense_success_weight
+        self._run_emphasis = run_emphasis
+        self._defense_run_emphasis = defense_run_emphasis
         self._success_reading = success_reading
         self._anchor_epa_scale = _non_negative("anchor_epa_scale", anchor_epa_scale)
         self._coach_change_rd = _non_negative("coach_change_rd", coach_change_rd)
@@ -1135,16 +1157,21 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         epa = self._game_epa.get(game.game_id)
         if epa is None or not epa.home_plays or not epa.away_plays:
             return
-        home_reading, away_reading = self._reading(epa, self._success_weight)
+        home_reading, away_reading = self._reading(
+            epa, self._success_weight, self._run_emphasis
+        )
         # Read before this game joins it: a contest is measured against the
         # league as it stood, not partly against itself.
         center = self.epa_center
-        if self._defense_success_weight == self._success_weight:
+        if (
+            self._defense_success_weight == self._success_weight
+            and self._defense_run_emphasis == self._run_emphasis
+        ):
             home_against = away_against = None
             self._center_sum += home_reading + away_reading
         else:
             home_against, away_against = self._reading(
-                epa, self._defense_success_weight
+                epa, self._defense_success_weight, self._defense_run_emphasis
             )
             self._center_sum += (
                 home_reading + away_reading + home_against + away_against
@@ -1194,8 +1221,70 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             if rates.enabled
         ]
 
-    def _reading(self, epa: GameEpa, weight: float) -> tuple[float, float]:
+    def _reading(
+        self, epa: GameEpa, weight: float, run_emphasis: float = 1.0
+    ) -> tuple[float, float]:
         """What each offense read in this game, home then away, on EPA's scale.
+
+        The every-down reading, moved by `run_emphasis` toward what the
+        offense's runs read and away from its passes; see "Runs against
+        passes". A side missing either kind keeps the every-down reading.
+        """
+        home, away = self._every_down_reading(epa, weight)
+        if run_emphasis == 1.0:
+            return home, away
+        return (
+            home
+            + self._run_tilt(
+                weight,
+                run_emphasis,
+                (epa.home_run_epa, epa.home_run_success, epa.home_run_plays),
+                (epa.home_pass_epa, epa.home_pass_success, epa.home_pass_plays),
+            ),
+            away
+            + self._run_tilt(
+                weight,
+                run_emphasis,
+                (epa.away_run_epa, epa.away_run_success, epa.away_run_plays),
+                (epa.away_pass_epa, epa.away_pass_success, epa.away_pass_plays),
+            ),
+        )
+
+    def _run_tilt(
+        self,
+        weight: float,
+        run_emphasis: float,
+        runs: tuple[float | None, float | None, int],
+        passes: tuple[float | None, float | None, int],
+    ) -> float:
+        """What weighing a run down `run_emphasis` times a pass down adds to one side's reading.
+
+        The runs' share of the downs goes from `r` to `k r / (k r + 1 - r)`,
+        and the reading moves by that change times the gap between what the
+        runs read and what the passes did, each the same blend of EPA per
+        down and success rate the every-down reading is. Added to the
+        every-down reading rather than replacing it, so an emphasis of 1 is
+        that reading exactly and one near 1 is near it: the kinds' EPA is
+        per down, where the every-down EPA counts every snap.
+        """
+        (run_epa, run_success, run_plays), (pass_epa, pass_success, pass_plays) = (
+            runs,
+            passes,
+        )
+        if not run_plays or not pass_plays or run_epa is None or pass_epa is None:
+            return 0.0
+        gap = (1 - weight) * (run_epa - pass_epa)
+        if weight:
+            if run_success is None or pass_success is None:
+                return 0.0
+            scale, _ = SUCCESS_SCALE[self._league][self._success_reading]
+            gap += weight * scale * (run_success - pass_success)
+        share = run_plays / (run_plays + pass_plays)
+        tilted = run_emphasis * share / (run_emphasis * share + 1 - share)
+        return (tilted - share) * gap
+
+    def _every_down_reading(self, epa: GameEpa, weight: float) -> tuple[float, float]:
+        """Each offense's reading with every down counted alike, home then away.
 
         EPA per play at `weight` 0, success rate on EPA's scale at 1, and
         the blend between: `success_weight` for what the offenses step on,
@@ -1388,6 +1477,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "defense_returning_shift": self._defense_returning_shift,
             "success_weight": self._success_weight,
             "defense_success_weight": self._defense_success_weight,
+            "run_emphasis": self._run_emphasis,
+            "defense_run_emphasis": self._defense_run_emphasis,
             "success_reading": self._success_reading,
             "anchor_epa_scale": self._anchor_epa_scale,
             "coach_change_rd": self._coach_change_rd,

@@ -725,6 +725,102 @@ def test_a_defense_weight_outside_the_blend_is_refused(weight: float) -> None:
         _predictor(defense_success_weight=weight)
 
 
+def _by_kind(
+    run_epa: float, pass_epa: float, runs: int = 40, passes: int = 30
+) -> GameEpa:
+    """A game the home offense ran for `run_epa` a down and threw for `pass_epa`; the away side read par."""
+    downs = runs + passes
+    every_down = (runs * run_epa + passes * pass_epa) / downs
+    return GameEpa(every_down, 0.0, downs, downs)._replace(
+        home_success=0.4,
+        away_success=0.4,
+        home_success_plays=downs,
+        away_success_plays=downs,
+        home_run_success=0.6,
+        away_run_success=0.4,
+        home_pass_success=0.4 * downs / passes - 0.6 * runs / passes,
+        away_pass_success=0.4,
+        home_run_plays=runs,
+        away_run_plays=runs,
+        home_pass_plays=passes,
+        away_pass_plays=passes,
+        home_run_epa=run_epa,
+        away_run_epa=0.0,
+        home_pass_epa=pass_epa,
+        away_pass_epa=0.0,
+    )
+
+
+def _offense_after(game: GameFactory, epa: GameEpa, **params: Any) -> float:
+    predictor = _predictor({"g": epa}, **params)
+    predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    return predictor.get_sides("A").offense.rating
+
+
+def test_a_run_emphasis_reads_the_ground_game_louder(game: GameFactory) -> None:
+    """An offense that ran well and threw badly, level over every down."""
+    day = _by_kind(run_epa=0.3, pass_epa=-0.4)
+    level = _offense_after(game, day)
+    assert _offense_after(game, day, run_emphasis=2.0) > level
+    assert _offense_after(game, day, run_emphasis=0.5) < level
+
+
+def test_a_run_emphasis_weighs_a_run_down_that_many_pass_downs(
+    game: GameFactory,
+) -> None:
+    """Twice the weight on 40 runs beside 30 passes is the same game with 80 runs."""
+    emphasised = _offense_after(
+        game, _by_kind(run_epa=0.3, pass_epa=-0.4), run_emphasis=2.0
+    )
+    counted = _by_kind(run_epa=0.3, pass_epa=-0.4, runs=80)._replace(
+        home_plays=70, away_plays=70
+    )
+    assert emphasised == pytest.approx(_offense_after(game, counted))
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_run_emphasis_tilts_the_success_rate_too(game: GameFactory) -> None:
+    day = _by_kind(run_epa=0.0, pass_epa=0.0)
+    level = _offense_after(game, day, success_weight=1.0)
+    assert _offense_after(game, day, success_weight=1.0, run_emphasis=2.0) > level
+
+
+def test_the_defenses_can_have_a_run_emphasis_of_their_own(game: GameFactory) -> None:
+    day = _by_kind(run_epa=0.3, pass_epa=-0.4)
+    split = _predictor({"g": day}, defense_run_emphasis=2.0)
+    plain = _predictor({"g": day})
+    both = _predictor({"g": day}, run_emphasis=2.0)
+    for predictor in (split, plain, both):
+        predictor.update_game(game("A", "B", 21, 7, game_id="g"))
+    assert split.get_sides("A").offense == plain.get_sides("A").offense
+    assert split.get_sides("B").defense.rating < plain.get_sides("B").defense.rating
+    assert both.state_dict()["defense_run_emphasis"] == 2.0
+
+
+def test_a_run_emphasis_leaves_a_game_without_kinds_alone(game: GameFactory) -> None:
+    assert _offense_after(game, LOPSIDED, run_emphasis=3.0) == _offense_after(
+        game, LOPSIDED
+    )
+
+
+def test_a_run_emphasis_survives_the_state_dict(game: GameFactory) -> None:
+    predictor = _predictor(run_emphasis=1.5, defense_run_emphasis=2.5)
+    state = predictor.state_dict()
+    assert (state["run_emphasis"], state["defense_run_emphasis"]) == (1.5, 2.5)
+
+
+@pytest.mark.parametrize("name", ["run_emphasis", "defense_run_emphasis"])
+def test_a_run_emphasis_that_is_not_positive_is_refused(name: str) -> None:
+    with pytest.raises(ValueError, match=name):
+        _predictor(**{name: 0.0})
+
+
+@pytest.mark.usefixtures("scaled")
+def test_a_run_emphasis_on_the_weighted_success_rate_is_refused() -> None:
+    with pytest.raises(ValueError, match="unweighted"):
+        _predictor(success_weight=0.5, success_reading="weighted", run_emphasis=2.0)
+
+
 def test_a_contest_is_measured_against_the_center_before_its_game(
     game: GameFactory,
 ) -> None:
