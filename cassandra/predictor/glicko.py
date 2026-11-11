@@ -25,7 +25,7 @@ from .base_predictor import (
 )
 from .blend import validated_scale
 from .distribution import LogisticMargin, MarginDistribution, decimal_logistic
-from .luck import validated_luck_share
+from .luck import validated_luck_share, validated_share
 from .opponent_prior import OpponentPriorManager
 from .player_ratings import (
     DEFAULT_PLAYER_RATING_WEIGHT,
@@ -190,6 +190,15 @@ class GlickoPredictor(Predictor):
         # the prediction is of the game as it'll be played. 0 is off; on,
         # it needs `scoring_method` "sigmoid", the one that reads a margin.
         luck_share: float = 0.0,
+        # The shares of a game's flow readings (`luck`'s `jumpers`,
+        # `over_lead` and `closing`, mens and womens) taken off its margin
+        # the same way, each its own: two-point jumpers that fell beyond the
+        # league's rate, how far the final margin outran the game's average
+        # lead, and what the last five minutes added. 0 is off, and a game
+        # the file has no reading for keeps that much of its margin.
+        jumper_share: float = 0.0,
+        lead_share: float = 0.0,
+        closing_share: float = 0.0,
         season_regression: float = 0.0,
         # A team whose head coach is gone since last season opened
         # (`cassandra.offseason`'s departures; college basketball and
@@ -307,10 +316,14 @@ class GlickoPredictor(Predictor):
                 "a blend weighed by uncertainty needs player_rating_weight > 0"
             )
         self._luck_share = validated_luck_share(luck_share)
-        if self._luck_share and scoring_method != "sigmoid":
-            raise ValueError(
-                f"luck_share needs scoring_method 'sigmoid', got {scoring_method!r}"
-            )
+        self._jumper_share = validated_share("jumper_share", jumper_share)
+        self._lead_share = validated_share("lead_share", lead_share)
+        self._closing_share = validated_share("closing_share", closing_share)
+        for name, share in self._margin_shares.items():
+            if share and scoring_method != "sigmoid":
+                raise ValueError(
+                    f"{name} needs scoring_method 'sigmoid', got {scoring_method!r}"
+                )
         self._adjustments = MatchupAdjustments(
             rest_advantage=rest_advantage,
             travel_advantage=travel_advantage,
@@ -488,16 +501,35 @@ class GlickoPredictor(Predictor):
         blends in how much of the game each team spent winning it -- replaces
         this and inherits the rest.
         """
-        luck = (
-            self._adjustments.sources.luck.home_luck(game) if self._luck_share else None
+        found = (
+            self._adjustments.sources.luck.toward_home(game)
+            if any(self._margin_shares.values())
+            else None
         )
-        if luck is None:
+        if found is None:
             return self._score(game)
-        # `luck_share` of the game's shooting luck off its home margin
-        return sigmoid_of_margin(
-            game.home_score - game.away_score - self._luck_share * luck,
-            self._sigmoid_scale,
+        # Each reading's share of it off the game's home margin; a reading
+        # the file doesn't have takes nothing.
+        off = (
+            self._luck_share * found.luck
+            + self._jumper_share * (found.jumpers or 0.0)
+            + self._lead_share * (found.over_lead or 0.0)
+            + self._closing_share * (found.closing or 0.0)
         )
+        return sigmoid_of_margin(
+            game.home_score - game.away_score - off, self._sigmoid_scale
+        )
+
+    @property
+    def _margin_shares(self) -> dict[str, float]:
+        """What the update takes off a margin before scoring it, by the
+        parameter that says how much: only the ones on are kept in a state."""
+        return {
+            "luck_share": self._luck_share,
+            "jumper_share": self._jumper_share,
+            "lead_share": self._lead_share,
+            "closing_share": self._closing_share,
+        }
 
     def _update_rating(
         self,
@@ -898,7 +930,7 @@ class GlickoPredictor(Predictor):
                 if self._blends_players
                 else {}
             ),
-            **({"luck_share": self._luck_share} if self._luck_share else {}),
+            **{name: share for name, share in self._margin_shares.items() if share},
             # Only when on, like the blend's.
             **(
                 {
