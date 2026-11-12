@@ -682,11 +682,15 @@ module "picks_schedule" {
   command             = ["picks"]
 }
 
-# Womens basketball's books, hourly through the day its games are played,
-# on the half hour so a run doesn't start with football's and wait on its
-# lock. A game's entry is the first price once both teams' previous games
-# are rated (`cassandra.picks.ratings_waiting`), which is each morning's
-# player ratings -- so the rule below runs one as soon as they land.
+# The basketball books, hourly around the clock: a game's entry is nearly
+# always its market's opening, a day or two before tip and at any hour, and
+# an opening book's price lasts only until someone sweeps it -- in 2025-26,
+# reading only 9am-10pm CT cost mens three points of return. Mens on the
+# quarter hour and womens on the half, so neither starts with football's
+# runs on the hour and waits on the shared lock. A game also waits for both
+# teams' previous games to be in the player ratings
+# (`cassandra.picks.ratings_waiting`), which is each morning's -- so the
+# rule below runs both leagues as soon as they land.
 module "womens_picks_schedule" {
   source   = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/job_schedule?ref=main"
   for_each = var.womens_picks_schedules
@@ -698,6 +702,19 @@ module "womens_picks_schedule" {
   job_queue_arn       = local.shared.job_queue_arn
   scheduler_role_arn  = local.shared.batch_scheduler_role_arn
   command             = ["picks", "--league", "womens"]
+}
+
+module "mens_picks_schedule" {
+  source   = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/job_schedule?ref=main"
+  for_each = var.mens_picks_schedules
+
+  schedule_name       = "${var.resource_name_prefix}-picks-mens-${each.key}"
+  schedule_expression = each.value
+  schedule_timezone   = var.schedule_timezone
+  job_definition      = module.picks.name
+  job_queue_arn       = local.shared.job_queue_arn
+  scheduler_role_arn  = local.shared.batch_scheduler_role_arn
+  command             = ["picks", "--league", "mens"]
 }
 
 # The player ratings are the launcher's array job (`cassandra.batch.dag`),
@@ -723,20 +740,28 @@ resource "aws_cloudwatch_event_rule" "picks_after_player_ratings" {
   })
 }
 
+# One run per basketball league; the two share the picks lock, so the second
+# waits for the first.
+moved {
+  from = aws_cloudwatch_event_target.picks_after_player_ratings
+  to   = aws_cloudwatch_event_target.picks_after_player_ratings["womens"]
+}
+
 resource "aws_cloudwatch_event_target" "picks_after_player_ratings" {
+  for_each  = toset(["womens", "mens"])
   rule      = aws_cloudwatch_event_rule.picks_after_player_ratings.name
-  target_id = "picks-womens"
+  target_id = "picks-${each.key}"
   arn       = local.shared.job_queue_arn
   role_arn  = aws_iam_role.sweeps_after_finals.arn
 
   batch_target {
     job_definition = module.picks.name
-    job_name       = "${var.resource_name_prefix}-picks-after-player-ratings-womens"
+    job_name       = "${var.resource_name_prefix}-picks-after-player-ratings-${each.key}"
   }
 
   input = jsonencode({
     ContainerOverrides = {
-      Command = ["picks", "--league", "womens"]
+      Command = ["picks", "--league", each.key]
     }
   })
 }

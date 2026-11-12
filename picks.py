@@ -2,7 +2,7 @@
 
     python picks.py                    # refresh from s3, tonight's scores from ESPN
     python picks.py --offline          # no s3: the copies the last run saved
-    python picks.py --league womens    # another league, by its own rules
+    python picks.py --league mens      # another league, by its own rules
     python picks.py --place            # ...then buy them, after asking
 
 Run it once the last of the night's games is final. That's when the
@@ -163,6 +163,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import NamedTuple
 
@@ -217,6 +218,7 @@ from cassandra.predictor import frame as frames
 from cassandra.predictor.adjustments import MatchupSources
 from cassandra.predictor.config import load_predictor_class
 from cassandra.predictor.epa import EpaIndex
+from cassandra.predictor.luck import load_luck, luck_path
 from cassandra.predictor.opponent_prior import OpponentPriorManager
 from cassandra.predictor.player_ratings import (
     load_player_ratings,
@@ -440,7 +442,9 @@ async def _football_with_espn(seasons: list[Season]) -> list[Season]:
     return [merged if s is latest else s for s in seasons]
 
 
-async def _womens_with_espn(seasons: list[Season]) -> list[Season]:
+async def _basketball_with_espn(
+    seasons: list[Season], gender: NcaabbGender
+) -> list[Season]:
     """The season being played topped up from ESPN, from its last finished
     day on, its fixtures with it.
 
@@ -451,7 +455,7 @@ async def _womens_with_espn(seasons: list[Season]) -> list[Season]:
     year = season_for(datetime.now(CENTRAL).date())
     current = next((s for s in seasons if s.year == year), None)
     fresh = await get_ncaabb_season(
-        year, NcaabbGender.womens, season_so_far=current, include_unplayed=True
+        year, gender, season_so_far=current, include_unplayed=True
     )
     return sorted(
         [*(s for s in seasons if s.year != year), fresh], key=lambda s: s.year
@@ -462,7 +466,8 @@ async def _womens_with_espn(seasons: list[Season]) -> list[Season]:
 #: and the fixtures ahead.
 _ESPN_TOP_UPS: dict[str, Callable[[list[Season]], Awaitable[list[Season]]]] = {
     "ncaafb": _football_with_espn,
-    "womens": _womens_with_espn,
+    "womens": partial(_basketball_with_espn, gender=NcaabbGender.womens),
+    "mens": partial(_basketball_with_espn, gender=NcaabbGender.mens),
 }
 
 
@@ -569,6 +574,18 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--favorite-edge", type=float, help="the edge a --favorite-price pick needs"
+    )
+    parser.add_argument(
+        "--model-longshot-probability",
+        type=float,
+        metavar="P",
+        help="a side the model gives under this of winning needs "
+        "--model-longshot-edge, whatever its price",
+    )
+    parser.add_argument(
+        "--model-longshot-edge",
+        type=float,
+        help="the edge a --model-longshot-probability side needs",
     )
     parser.add_argument(
         "--max-since-entry",
@@ -764,6 +781,8 @@ _FROM_RULES = {
     "min_edge": "min_edge",
     "favorite_price": "favorite_price",
     "favorite_edge": "favorite_edge",
+    "model_longshot_probability": "model_longshot_probability",
+    "model_longshot_edge": "model_longshot_edge",
     "max_since_entry": "max_since_entry_hours",
     "max_overround": "max_overround",
     "min_price": "min_price",
@@ -839,6 +858,8 @@ def apply_rules(args: argparse.Namespace, rules: LeagueRules | None) -> None:
         favorite_price=args.favorite_price,
         favorite_edge=args.favorite_edge,
         min_price=args.min_price,
+        model_longshot_probability=args.model_longshot_probability,
+        model_longshot_edge=args.model_longshot_edge,
     )
 
 
@@ -924,8 +945,10 @@ def run(args: argparse.Namespace) -> Outcome:
         print(f"EPA index:      {_age(data / f'{league}_epa.json')}")
         print(f"QB index:       {_age(data / f'{league}_qb_out.json')}")
         print(f"QB starts:      {_age(data / f'{league}_qb_starts.json')}")
-    # Each team's newest player-ratings row, for `ratings_waiting`.
+    # Each team's newest player-ratings row, and the games whose box scores
+    # the mornings have read, for `ratings_waiting`.
     newest: dict[str, date] = {}
+    cleared: set[str] | None = None
     if spec.players:
         rated = load_player_ratings(league)
         newest = {team: rows[-1].as_of for team, rows in rated.items()}
@@ -935,6 +958,13 @@ def run(args: argparse.Namespace) -> Outcome:
         )
         if not newest:
             print(f"!! no {league} player ratings: the model prices unblended")
+        cleared = set(load_luck(league)) or None
+        print(
+            f"game luck:      {_age(luck_path(league))}"
+            + (f", {len(cleared)} games" if cleared else "")
+        )
+        if cleared is None:
+            print(f"!! no {league} luck file: games wait on the ratings' dates alone")
     if not args.no_espn:
         seasons = asyncio.run(_with_espn(seasons, league))
         print(
@@ -1084,7 +1114,7 @@ def run(args: argparse.Namespace) -> Outcome:
         listed = [b.opened for b in (found.home, found.away) if b.opened is not None]
         entered = entry(last.values(), max(listed) if listed else None)
         since_entry = None if entered is None else now - entered
-        behind = ratings_waiting(last, newest)
+        behind = ratings_waiting(last, newest, cleared)
         no_plays = (
             []
             if epa is None

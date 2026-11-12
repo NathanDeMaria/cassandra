@@ -869,6 +869,14 @@ def print_picks(
         if rule.favorite_price is not None and rule.favorite_edge is not None
         else ""
     )
+    if (
+        rule.model_longshot_probability is not None
+        and rule.model_longshot_edge is not None
+    ):
+        favorites += (
+            f", {rule.model_longshot_edge:.0%} with the model under "
+            f"{rule.model_longshot_probability:.0%}"
+        )
     top = "" if args.top is None else f", top {args.top} by edge"
     print(
         f"\n=== {len(picks)} picks (edge ≥ {rule.min_edge:.0%} over Kalshi's no-vig "

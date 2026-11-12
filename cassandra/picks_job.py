@@ -2,9 +2,9 @@
 emailed, a lock -- and the emails themselves.
 
 The job runs `picks.py` for one league a run (`jobs.py picks --league`):
-football on its schedules and after every ncaafb finals sweep, womens
-basketball hourly through the day and once each morning's player ratings
-land. It places the picks itself (`picks.py --place --yes`) by each
+football on its schedules and after every ncaafb finals sweep, mens and
+womens basketball hourly around the clock and once each morning's player
+ratings land. It places the picks itself (`picks.py --place --yes`) by each
 league's rules (`LeagueRules`) in `autobet.json` -- the bar a pick must
 clear, its stake, how long its order rests, never past kickoff -- the cash
 on hand the only budget. A league with a `max_exposure` spends only what
@@ -239,6 +239,8 @@ class LeagueRules:
     favorite_price: float | None = None
     favorite_edge: float | None = None
     min_price: float = 0.0
+    model_longshot_probability: float | None = None
+    model_longshot_edge: float | None = None
     #: The most of the bankroll the league's open positions and resting
     #: orders may hold (`picks.py --max-exposure`); None for no cap.
     max_exposure: float | None = None
