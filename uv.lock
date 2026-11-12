@@ -293,7 +293,7 @@ fit = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=25.1.0,<26" },
     { name = "call-it-what-you-want", git = "https://github.com/NathanDeMaria/call-it-what-you-want.git?rev=cc9c9e19e3e56eb48f7745853613aff51ca372b8" },
-    { name = "endgame", git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame&rev=8d19c73a4cce561663c2c2be06f18f3fe7312e02" },
+    { name = "endgame", git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame&rev=d320d7113257e54b39636e53b8973dd6786171c7" },
     { name = "numpy", specifier = ">=2.4.0,<3" },
     { name = "pandas", specifier = ">=3.0" },
     { name = "pydantic", specifier = ">=2.12.5,<3" },
@@ -314,7 +314,7 @@ dev = [
 fit = [
     { name = "bayesian-optimization", specifier = ">=3.2.1,<4" },
     { name = "cryptography", specifier = ">=46" },
-    { name = "endgame-aws", git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame-aws&rev=c89ecd79c85796239f07d0cdae9572fd97438eeb" },
+    { name = "endgame-aws", git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame-aws&rev=7573ab1b9c1000814bc650714b802a4db7851233" },
     { name = "fire", specifier = ">=0.7.1,<0.8" },
     { name = "lucky-ones", extras = ["data"], git = "https://github.com/NathanDeMaria/the-lucky-ones.git?rev=99e79fb9ed68deef0800b53d580677d1036b1dca" },
     { name = "numba", specifier = ">=0.68.0,<0.69" },
@@ -559,7 +559,7 @@ wheels = [
 [[package]]
 name = "endgame"
 version = "0.1.0"
-source = { git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame&rev=8d19c73a4cce561663c2c2be06f18f3fe7312e02#8d19c73a4cce561663c2c2be06f18f3fe7312e02" }
+source = { git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame&rev=d320d7113257e54b39636e53b8973dd6786171c7#d320d7113257e54b39636e53b8973dd6786171c7" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -572,7 +572,7 @@ dependencies = [
 [[package]]
 name = "endgame-aws"
 version = "0.1.0"
-source = { git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame-aws&rev=c89ecd79c85796239f07d0cdae9572fd97438eeb#c89ecd79c85796239f07d0cdae9572fd97438eeb" }
+source = { git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame-aws&rev=7573ab1b9c1000814bc650714b802a4db7851233#7573ab1b9c1000814bc650714b802a4db7851233" }
 dependencies = [
     { name = "aiobotocore" },
     { name = "dataclasses-json" },
