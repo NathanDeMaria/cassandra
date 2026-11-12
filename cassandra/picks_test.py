@@ -471,6 +471,21 @@ def test_a_game_waits_for_ratings_dated_after_both_previous_games() -> None:
     assert ratings_waiting(last, {**newest, "Alpha": date(2026, 11, 4)}) == []
 
 
+def test_a_team_waits_for_its_last_game_in_the_mornings_box_scores() -> None:
+    tuesday = datetime(2026, 11, 4, 1, 0, tzinfo=UTC)
+    last = {
+        "Alpha": PreviousGame("a", tuesday, True),
+        "Beta": PreviousGame("b", tuesday, True),
+        "Omega": PreviousGame("o", tuesday, True),  # never rated
+    }
+    # Wednesday's rows are in for everyone, but only Beta's game was read.
+    newest = {"Alpha": date(2026, 11, 4), "Beta": date(2026, 11, 4)}
+    assert ratings_waiting(last, newest, {"b", "o"}) == ["Alpha"]
+    assert ratings_waiting(last, newest, {"a", "b"}) == []
+    # Without the luck file, the rows' dates alone.
+    assert ratings_waiting(last, newest) == []
+
+
 def test_a_game_behind_on_ratings_isnt_a_pick() -> None:
     priced = price(0.80, _matched(0.60, 0.42))
     assert priced is not None
@@ -484,7 +499,7 @@ def test_a_game_behind_on_ratings_isnt_a_pick() -> None:
         top_division=None,
         ratings_behind=["Alpha"],
     )
-    assert reason == "player ratings not in yet: Alpha"
+    assert reason == "player data not in yet: Alpha"
 
 
 def test_a_longshot_is_staked_at_its_share_of_kelly():
@@ -499,6 +514,38 @@ def test_a_longshot_is_staked_at_its_share_of_kelly():
     assert kelly_counts([0.9], [0.6], [0.6], 200, 0.3, 50, shrink) == kelly_counts(
         [0.9], [0.6], [0.6], 200, 0.3, 50
     )
+
+
+def test_a_side_the_model_rates_a_longshot_needs_the_bigger_edge() -> None:
+    rule = RULE._replace(model_longshot_probability=0.30, model_longshot_edge=0.20)
+    assert rule.edge_needed(0.10, 0.29) == 0.20
+    assert rule.edge_needed(0.10, 0.30) == rule.min_edge
+    # The bigger of the two bars when both apply.
+    assert rule._replace(model_longshot_edge=0.10).edge_needed(0.80, 0.20) == 0.12
+    assert RULE.edge_needed(0.10, 0.01) == RULE.min_edge  # off by default
+    fresh = timedelta(hours=1)
+    # The model at 0.25 against a 12c side: a longshot to the model.
+    longshot = price(0.25, _matched(0.12, 0.87))
+    assert longshot is not None and longshot.model == pytest.approx(0.25)
+    assert RULE.min_edge <= longshot.edge < 0.20
+    assert skip_reason(longshot, None, None, [], fresh, RULE, top_division=None) is None
+    assert skip_reason(longshot, None, None, [], fresh, rule, top_division=None) == (
+        "edge under 20 points with the model under 30%"
+    )
+    # A cheap price on a side the model rates well isn't a longshot to it:
+    # the opening book's few cents on a team the model has at 0.70.
+    stale = price(0.70, _matched(0.04, 0.95))
+    assert stale is not None and stale.cost is not None and stale.cost < 0.10
+    assert skip_reason(stale, None, None, [], fresh, rule, top_division=None) is None
+    # Nor is a side the model gives enough edge.
+    far = price(0.28, _matched(0.05, 0.94))
+    assert far is not None and far.edge >= 0.20
+    assert skip_reason(far, None, None, [], fresh, rule, top_division=None) is None
+    # The ceiling stops where the longshot bar would.
+    matched = _matched(0.05, 0.94)
+    capped = max_price(0.28, far, matched.home, rule)
+    assert capped is not None
+    assert 0.28 - (capped + kalshi_fee(capped)) / far.overround >= 0.20
 
 
 def test_a_pick_under_the_price_floor_isnt_one():
@@ -516,7 +563,8 @@ def test_a_pick_under_the_price_floor_isnt_one():
 def test_a_ticker_names_its_league_by_series():
     assert league_of("KXNCAAFCSGAME-26NOV07MONTWEB-MONT") == "ncaafb"
     assert league_of("KXNCAAWBGAME-26NOV05SIEME") == "womens"
-    assert league_of("KXNCAAMBGAME-26NOV05X-Y") is None
+    assert league_of("KXNCAAMBGAME-26NOV05X-Y") == "mens"
+    assert league_of("KXNBAGAME-26NOV05X-Y") is None
 
 
 def test_a_book_keeps_its_exchange_shard():

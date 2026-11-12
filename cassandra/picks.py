@@ -30,8 +30,10 @@ graded.
 
 **What isn't a pick** (`skip_reason`):
 - an edge under the rule's `min_edge`, or under its `favorite_edge` for a
-  pick costing its `favorite_price` or more (`PickRule.edge_needed`), or a
-  pick costing under its `min_price`;
+  pick costing its `favorite_price` or more, or under its
+  `model_longshot_edge` for a side the model gives under
+  `model_longshot_probability` (`PickRule.edge_needed`), or a pick costing
+  under its `min_price`;
 - the model backing a team below FBS against an FBS one. The model's known
   miss on those games is under-rating the FBS side: 10-20 point FBS
   favorites beat it by about 2 points in 2015-25. So its edge on the
@@ -52,16 +54,23 @@ whether a pick's injury news is read. The edge, the entry and the window
 are the same for every league. `PICK_LEAGUES` holds the ones
 `picks.py --league` takes.
 
-Womens basketball (`WOMENS`) is the second, on `glicko_players`. On
-Kalshi's 2025-26 books, at the entry and under football's kind of bar, its
-picks paid -- most of it on longshots, with smaller but positive returns
-on the rest, and less two hours before tip (November 2026, the 10-31 fit,
-which had seen that season). Mens, on the same tests, lost near tip and
-was barely positive at the entry, and isn't here. The model's
-players' margin is ten-minute-version's daily ratings, filed each morning,
+Basketball (`WOMENS`, then `MENS`) prices on `glicko_players`. On Kalshi's
+2025-26 books, at the entry and under football's kind of bar, womens picks
+paid and mens a little (November 2026, at the 11-12 fits, which had seen
+that season; the season's first days, which they hadn't, too). Two hours
+before tip, mens lost. A basketball entry is nearly always the market's
+opening: teams play every few days, and Kalshi lists a game a day or two
+before tip, long after the previous final. Opening books are often a
+cent or two on one side and near a dollar on the other. They are real --
+contracts trade at those prices until someone sweeps them -- so they're
+bet like any other, on the edge, and sized under the rules' cap.
+
+The model's players' margin is ten-minute-version's daily ratings, filed
+each morning with each player's chance of playing and each game's luck,
 so a game also waits for those to cover both teams' previous games
-(`ratings_waiting`); waiting a morning past the final cost the backtest
-little.
+(`ratings_waiting`). Waiting a morning past the final cost the backtest
+little: in 2025-26 the book had opened before the morning's data on about
+one game in eight, and waiting for it cost under a point of return.
 
 Everything here is a pure function of Kalshi's JSON, the fixtures and the
 model's probabilities; `picks.py` at the repo root does the fetching.
@@ -70,12 +79,12 @@ model's probabilities; `picks.py` at the repo root does the fetching.
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
-from call_it_what_you_want import NCAAFB, NCAAWBB
+from call_it_what_you_want import NCAAFB, NCAAMBB, NCAAWBB
 from endgame.types import Game
 
 from .betting import GAME_LENGTH
@@ -106,16 +115,32 @@ class PickRule(NamedTuple):
     favorite_edge: float | None = None
     #: A pick costing less than this, fee included, isn't one.
     min_price: float = 0.0
+    #: A pick the model itself gives under `model_longshot_probability` of
+    #: winning must clear `model_longshot_edge` instead. It's the model's
+    #: probability, not the price: a cheap price on a team the model rates
+    #: well is a market behind, which the edge already measures, while a team
+    #: the model rates a longshot is where its probabilities are least tested.
+    #: None for no such rule.
+    model_longshot_probability: float | None = None
+    model_longshot_edge: float | None = None
 
-    def edge_needed(self, cost: float) -> float:
-        """The edge a pick costing `cost` a contract, fee included, must clear."""
+    def edge_needed(self, cost: float, model: float = 1.0) -> float:
+        """The edge a pick costing `cost` a contract, fee included, that the
+        model gives `model` of winning, must clear."""
+        need = self.min_edge
         if (
             self.favorite_price is not None
             and self.favorite_edge is not None
             and cost >= self.favorite_price
         ):
-            return max(self.min_edge, self.favorite_edge)
-        return self.min_edge
+            need = max(need, self.favorite_edge)
+        if (
+            self.model_longshot_probability is not None
+            and self.model_longshot_edge is not None
+            and model < self.model_longshot_probability
+        ):
+            need = max(need, self.model_longshot_edge)
+        return need
 
 
 #: Kalshi files a game under its US Eastern date. So does `match`.
@@ -180,8 +205,13 @@ WOMENS = PickLeague(
     news=False,
 )
 
+#: Kalshi's mens college basketball moneylines.
+NCAAMBB_SERIES = ("KXNCAAMBGAME",)
+
+MENS = WOMENS._replace(name="mens", series=NCAAMBB_SERIES, teams=NCAAMBB)
+
 PICK_LEAGUES: dict[str, PickLeague] = {
-    league.name: league for league in (FOOTBALL, WOMENS)
+    league.name: league for league in (FOOTBALL, WOMENS, MENS)
 }
 
 
@@ -657,17 +687,26 @@ def previous_games(
 
 
 def ratings_waiting(
-    previous: Mapping[str, PreviousGame | None], newest: Mapping[str, date]
+    previous: Mapping[str, PreviousGame | None],
+    newest: Mapping[str, date],
+    cleared: Collection[str] | None = None,
 ) -> list[str]:
-    """The teams whose player ratings haven't caught up with their previous
-    game: `newest` is each team's latest row's `as_of`, the first day its
-    fit left out.
+    """The teams whose player data hasn't caught up with their previous
+    game: `newest` is each team's latest ratings row's `as_of`, the first
+    day its fit left out, and `cleared` the games the morning's players run
+    read -- the luck file's ids (`cassandra.predictor.luck`).
 
     A row covers a game when it's dated after the game's Eastern date, as
     Kalshi files it: a late tip out west is the next day in UTC, and a row
-    dated that day might not have seen it. A team with no rows at all --
-    one the ratings don't reach -- is never waited for, since none are
-    coming; the model prices it unblended.
+    dated that day might not have seen it. But a morning files a row for
+    every team whether or not its last game's box score and plays were in
+    yet, and a game they weren't in for is in neither the team's fit nor its
+    missed-time estimate (the rows' `available`). The luck file gets a game
+    only from a morning that read its box score, so with `cleared` a team
+    also waits for its previous game to be in it.
+
+    A team with no rows at all -- one the ratings don't reach -- is never
+    waited for, since none are coming; the model prices it unblended.
     """
     return [
         team
@@ -675,7 +714,10 @@ def ratings_waiting(
         if game is not None
         and game.completed
         and team in newest
-        and newest[team] <= game.date.astimezone(EASTERN).date()
+        and (
+            newest[team] <= game.date.astimezone(EASTERN).date()
+            or (cleared is not None and game.game_id not in cleared)
+        )
     ]
 
 
@@ -706,6 +748,12 @@ class Priced(NamedTuple):
     route: Route | None
     cost: float | None
     expected_return: float | None
+
+    @property
+    def model(self) -> float:
+        """The model's probability of the side bet on: the side is the one
+        the model rates above the market, by `edge`."""
+        return (self.home_market if self.home else 1 - self.home_market) + self.edge
 
 
 def price(model_home: float, matched: Matched) -> Priced | None:
@@ -747,7 +795,7 @@ def max_price(model: float, priced: Priced, side: Book, rule: PickRule) -> float
     for cents in range(1, 100):
         ask = cents / 100
         route = ask + shift
-        need = rule.edge_needed(route + kalshi_fee(route))
+        need = rule.edge_needed(route + kalshi_fee(route), model)
         if ask + kalshi_fee(ask) > (model - need) * priced.overround:
             break
         found = route
@@ -776,7 +824,7 @@ def skip_reason(
     if waiting_on:
         return f"previous game not final: {', '.join(waiting_on)}"
     if ratings_behind:
-        return f"player ratings not in yet: {', '.join(ratings_behind)}"
+        return f"player data not in yet: {', '.join(ratings_behind)}"
     if since_entry is not None and since_entry > rule.max_since_entry:
         return "past the entry window"
     if priced.overround > rule.max_overround:
@@ -785,7 +833,15 @@ def skip_reason(
         return "nothing on offer"
     if priced.edge < rule.min_edge:
         return "edge under threshold"
-    if priced.cost is not None and priced.edge < rule.edge_needed(priced.cost):
+    if priced.cost is not None and priced.edge < rule.edge_needed(
+        priced.cost, priced.model
+    ):
+        # At no price at all only the model's own longshot bar is left.
+        if priced.edge < rule.edge_needed(0.0, priced.model):
+            return (
+                f"edge under {(rule.model_longshot_edge or 0) * 100:g} points with the "
+                f"model under {(rule.model_longshot_probability or 0) * 100:g}%"
+            )
         return (
             f"edge under {(rule.favorite_edge or 0) * 100:g} points at "
             f"{(rule.favorite_price or 0) * 100:g}c+"
