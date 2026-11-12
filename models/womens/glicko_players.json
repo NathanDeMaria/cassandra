@@ -85,6 +85,10 @@
         "closing_share": [
             0,
             1
+        ],
+        "home_crowd_slope": [
+            0,
+            40
         ]
     },
     "fixed": {
@@ -115,7 +119,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.45,
@@ -137,7 +142,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.45,
@@ -159,7 +165,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.45,
@@ -181,7 +188,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.4645,
@@ -203,7 +211,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.4645,
@@ -225,7 +234,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.4645,
@@ -247,7 +257,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.282562,
@@ -269,7 +280,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.282562,
@@ -291,7 +303,8 @@
             "turnover_rd_scale": 2.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.36227614282,
@@ -313,7 +326,54 @@
             "turnover_rd_scale": 0.990644125589,
             "jumper_share": 0.4,
             "lead_share": 0.0,
-            "closing_share": 0.3
+            "closing_share": 0.3,
+            "home_crowd_slope": 0.0
+        },
+        {
+            "glicko_share": 1.36227614282,
+            "player_rating_weight": 18.4789143883,
+            "absence_weight": 20.4410743128,
+            "luck_share": 0.394806892129,
+            "player_variance_scale": 5.27796583403,
+            "player_floor": 7.0861908932,
+            "weekly_rd_increase": 34.1012911868,
+            "season_rd_increase": 171.832780473,
+            "season_regression": 0.0582404896991,
+            "initial_rd": 351.286868841,
+            "coach_left_rating_shift": -146.554595605,
+            "coach_change_regression": 0.0,
+            "coach_change_rating_rd": 341.825529431,
+            "home_advantage": 73.8480560512,
+            "roster_change_shift": 22.5348527887,
+            "turnover_rating_shift": 88.1823330598,
+            "turnover_rd_scale": 0.990644125589,
+            "jumper_share": 0.4,
+            "lead_share": 0.0,
+            "closing_share": 0.3,
+            "home_crowd_slope": 0.0
+        },
+        {
+            "glicko_share": 1.36227614282,
+            "player_rating_weight": 18.4789143883,
+            "absence_weight": 20.4410743128,
+            "luck_share": 0.394806892129,
+            "player_variance_scale": 5.27796583403,
+            "player_floor": 7.0861908932,
+            "weekly_rd_increase": 34.1012911868,
+            "season_rd_increase": 171.832780473,
+            "season_regression": 0.0582404896991,
+            "initial_rd": 351.286868841,
+            "coach_left_rating_shift": -146.554595605,
+            "coach_change_regression": 0.0,
+            "coach_change_rating_rd": 341.825529431,
+            "home_advantage": 73.8480560512,
+            "roster_change_shift": 22.5348527887,
+            "turnover_rating_shift": 88.1823330598,
+            "turnover_rd_scale": 0.990644125589,
+            "jumper_share": 0.4,
+            "lead_share": 0.0,
+            "closing_share": 0.3,
+            "home_crowd_slope": 15.0
         }
     ]
 }

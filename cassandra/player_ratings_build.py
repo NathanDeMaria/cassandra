@@ -21,7 +21,8 @@ needs is copied down first, each where ten-minute-version reads it:
 
 and the file itself, which `morning` adds today's rows to, from and back to
 the predictor data prefix -- with `{league}_luck.csv` (`cassandra.predictor.
-luck`), which it adds the games before today to. About 250MB a league; the fit is seconds, the
+luck`), which it adds the games before today to, and `{league}_crowds.csv`
+(`cassandra.predictor.crowds`), whose season it rebuilds. About 250MB a league; the fit is seconds, the
 rosters a few minutes until every team has played.
 
 A morning also rewrites the season's players' table (`cassandra.players`),
@@ -46,6 +47,7 @@ from aiobotocore.session import get_session
 
 from cassandra.batch import artifacts
 from cassandra.players import PLAYERS_PREFIX, players_csv_path, roster_path
+from cassandra.predictor.crowds import crowds_path, load_crowds
 from cassandra.predictor.luck import load_luck, luck_path
 from cassandra.predictor.player_ratings import (
     load_player_ratings,
@@ -114,6 +116,7 @@ async def refresh(bucket: str, league: str, today: date | None = None) -> bool:
             return False
         await artifacts.download(bucket, f"predictor/data/{league}_player_ratings.csv")
         await artifacts.download(bucket, f"predictor/data/{league}_luck.csv")
+        await artifacts.download(bucket, f"predictor/data/{league}_crowds.csv")
         roster = roster_path(league, season)
         tables = work / "stints" / f"league={league}" / f"season={season}"
         if await artifacts.download(bucket, f"{PLAYERS_PREFIX}{roster.name}"):
@@ -146,8 +149,9 @@ async def refresh(bucket: str, league: str, today: date | None = None) -> bool:
             reading.append(roster)
     load_player_ratings.cache_clear()
     load_luck.cache_clear()
-    luck = luck_path(league)
-    keys = await artifacts.upload(bucket, [path, *([luck] if luck.exists() else [])])
+    load_crowds.cache_clear()
+    beside = [p for p in (luck_path(league), crowds_path(league)) if p.exists()]
+    keys = await artifacts.upload(bucket, [path, *beside])
     logger.info("%s: wrote %s", league, keys)
     if reading:
         logger.info("%s: wrote %s", league, await artifacts.upload(bucket, reading))

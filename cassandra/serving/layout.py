@@ -32,6 +32,8 @@ month and told every page both quarterbacks had started.
 `player_ratings.json` is there for the same reason: each mens and womens
 team's newest row of the players' file (`PlayerRatingsFile`), which a model
 rebuilt from its release needs to blend the players into a game it predicts.
+`crowds.json` is each team's home crowd reading (`CrowdsFile`), which the
+same model needs for the home side's edge.
 """
 
 from pathlib import Path
@@ -55,6 +57,11 @@ def qb_out_artifact_path(root: Path, league: str) -> Path:
 def player_ratings_artifact_path(root: Path, league: str) -> Path:
     """Where a league's published players' rows live."""
     return league_dir(root, league) / "player_ratings.json"
+
+
+def crowds_artifact_path(root: Path, league: str) -> Path:
+    """Where a league's published home crowd readings live."""
+    return league_dir(root, league) / "crowds.json"
 
 
 def players_artifact_path(root: Path, league: str, season: int) -> Path:

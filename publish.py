@@ -38,7 +38,8 @@ consumer can say of a played game what the model priced. See
 `qb_out_artifact`. Mens and womens get `models/{league}/player_ratings.json`
 the same way: each team's newest players' row, which a model rebuilt from
 its release needs to blend them into a game ahead. See
-`player_ratings_artifact`. They also get `models/{league}/players_{season}.json.gz`,
+`player_ratings_artifact`. `models/{league}/crowds.json` is each team's home
+crowd reading, for the same model's home edge: see `crowds_artifact`. They also get `models/{league}/players_{season}.json.gz`,
 every player of each season, for a page to read. See `_publish_players`.
 
 The one judgment call it does make is *when* the offseason rollover lands in
@@ -84,6 +85,7 @@ from cassandra.predictor import (
     RatingsUnsupported,
     load_predictor_class,
 )
+from cassandra.predictor.crowds import latest_crowds
 from cassandra.predictor.player_ratings import latest_player_ratings
 from cassandra.predictor.qb_out import read_qb_out_file
 from cassandra.save_predictions import join_with_odds, read_rated_seasons
@@ -95,6 +97,7 @@ from cassandra.serving import (
     TrainedThrough,
     WeekObserver,
     calibration_from_predictor,
+    crowds_artifact_path,
     history_bytes,
     history_path,
     metrics_from_scored,
@@ -582,6 +585,19 @@ def player_ratings_artifact(league: str) -> bytes | None:
     return stored.model_dump_json(indent=4).encode()
 
 
+def crowds_artifact(league: str) -> bytes | None:
+    """A league's home crowd readings as the bucket should carry them, or
+    None: not mens or womens, or no file. None means don't write, as for
+    `player_ratings_artifact` -- a consumer with no file gives every home
+    side the league's edge alone."""
+    if league not in PLAYER_RATING_LEAGUES:
+        return None
+    stored = latest_crowds(league)
+    if stored is None:
+        return None
+    return stored.model_dump_json(indent=4).encode()
+
+
 def _write_league_artifact(payload: bytes | None, path: Path) -> Path | None:
     if payload is None:
         return None
@@ -628,11 +644,25 @@ async def upload_player_ratings_artifact(league: str, bucket: str) -> str | None
     )
 
 
+def write_crowds_artifact(league: str, out: Path) -> Path | None:
+    """Write the league's home crowd readings into the layout, rooted at `out`."""
+    return _write_league_artifact(
+        crowds_artifact(league), crowds_artifact_path(out, league)
+    )
+
+
+async def upload_crowds_artifact(league: str, bucket: str) -> str | None:
+    """Put the same bytes in s3, under the same layout."""
+    return await _upload_league_artifact(
+        crowds_artifact(league), bucket, league, "crowds.json"
+    )
+
+
 async def _publish_league_facts(
     league: str, out: Path, upload: bool, bucket: str
 ) -> None:
     """The league's game facts beside its models, on disk and then in the
-    bucket: the quarterback index, the players' rows."""
+    bucket: the quarterback index, the players' rows, the home crowds."""
     for name, write, put in (
         ("qb_out", write_qb_out_artifact, upload_qb_out_artifact),
         (
@@ -640,6 +670,7 @@ async def _publish_league_facts(
             write_player_ratings_artifact,
             upload_player_ratings_artifact,
         ),
+        ("crowds", write_crowds_artifact, upload_crowds_artifact),
     ):
         path = write(league, out)
         if path is None:

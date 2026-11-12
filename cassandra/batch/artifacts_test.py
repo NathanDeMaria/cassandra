@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from cassandra.predictor.base_predictor import load_anchors
+from cassandra.predictor.crowds import load_crowds
 from cassandra.predictor.epa import load_epa
 from cassandra.predictor.game_control import load_game_control
 from cassandra.predictor.luck import load_luck
@@ -40,6 +41,7 @@ _LOADERS = (
     load_player_ratings,
     load_luck,
     load_turnover,
+    load_crowds,
 )
 
 

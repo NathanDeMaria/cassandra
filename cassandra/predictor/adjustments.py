@@ -68,6 +68,7 @@ from endgame.types import Game
 
 from cassandra.travel import distance_km
 
+from .crowds import CrowdIndex
 from .luck import LuckIndex
 from .player_ratings import PlayerRatingIndex
 from .qb_out import QbOutIndex, validated_qb_out_penalty
@@ -133,6 +134,8 @@ class MatchupSources(NamedTuple):
     luck: LuckIndex = LuckIndex()
     # Read at the rollover alone: see `turnover`.
     turnover: TurnoverIndex = TurnoverIndex()
+    # Read by the home side's edge, not priced here: see `crowds`.
+    crowds: CrowdIndex = CrowdIndex()
 
     @classmethod
     def for_league(cls, league: str) -> Self:
@@ -148,6 +151,7 @@ class MatchupSources(NamedTuple):
             player_ratings=PlayerRatingIndex.for_league(league),
             luck=LuckIndex.for_league(league),
             turnover=TurnoverIndex.for_league(league),
+            crowds=CrowdIndex.for_league(league),
         )
 
     @classmethod

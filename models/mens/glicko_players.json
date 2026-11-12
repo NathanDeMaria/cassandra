@@ -89,6 +89,10 @@
         "closing_share": [
             0,
             1
+        ],
+        "home_crowd_slope": [
+            0,
+            40
         ]
     },
     "fixed": {
@@ -120,7 +124,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.44,
@@ -143,7 +148,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.44,
@@ -166,7 +172,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.44,
@@ -189,7 +196,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.4255,
@@ -212,7 +220,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.4255,
@@ -235,7 +244,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.4255,
@@ -258,7 +268,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.406263,
@@ -281,7 +292,8 @@
             "turnover_rd_scale": 0.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.406263,
@@ -304,7 +316,8 @@
             "turnover_rd_scale": 1.0,
             "jumper_share": 0.0,
             "lead_share": 0.0,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
         },
         {
             "glicko_share": 1.3156085381,
@@ -327,7 +340,80 @@
             "turnover_rd_scale": 1.24327134185,
             "jumper_share": 0.4,
             "lead_share": 0.25,
-            "closing_share": 0.0
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
+        },
+        {
+            "glicko_share": 1.24101230599,
+            "player_rating_weight": 24.1120590005,
+            "absence_weight": 17.6883745478,
+            "luck_share": 0.40475663619,
+            "player_variance_scale": 0.148254918315,
+            "player_floor": 10.200934483,
+            "weekly_rd_increase": 39.1755164951,
+            "season_rd_increase": 79.8556656684,
+            "season_regression": 0.258608296642,
+            "initial_rd": 247.38150412,
+            "home_advantage_slope": 39.1427918924,
+            "coach_left_rating_shift": -61.2408104231,
+            "coach_change_regression": 0.315614655603,
+            "coach_change_rating_rd": 300.353304063,
+            "home_advantage": 86.4432008094,
+            "roster_change_shift": 14.9191245571,
+            "turnover_rating_shift": 202.727718038,
+            "turnover_rd_scale": 0.946518021908,
+            "jumper_share": 0.451039981168,
+            "lead_share": 0.255420073489,
+            "closing_share": 0.0,
+            "home_crowd_slope": 0.0
+        },
+        {
+            "glicko_share": 1.24101230599,
+            "player_rating_weight": 24.1120590005,
+            "absence_weight": 17.6883745478,
+            "luck_share": 0.40475663619,
+            "player_variance_scale": 0.148254918315,
+            "player_floor": 10.200934483,
+            "weekly_rd_increase": 39.1755164951,
+            "season_rd_increase": 79.8556656684,
+            "season_regression": 0.258608296642,
+            "initial_rd": 247.38150412,
+            "home_advantage_slope": 0.0,
+            "coach_left_rating_shift": -61.2408104231,
+            "coach_change_regression": 0.315614655603,
+            "coach_change_rating_rd": 300.353304063,
+            "home_advantage": 86.4432008094,
+            "roster_change_shift": 14.9191245571,
+            "turnover_rating_shift": 202.727718038,
+            "turnover_rd_scale": 0.946518021908,
+            "jumper_share": 0.451039981168,
+            "lead_share": 0.255420073489,
+            "closing_share": 0.0,
+            "home_crowd_slope": 15.0
+        },
+        {
+            "glicko_share": 1.24101230599,
+            "player_rating_weight": 24.1120590005,
+            "absence_weight": 17.6883745478,
+            "luck_share": 0.40475663619,
+            "player_variance_scale": 0.148254918315,
+            "player_floor": 10.200934483,
+            "weekly_rd_increase": 39.1755164951,
+            "season_rd_increase": 79.8556656684,
+            "season_regression": 0.258608296642,
+            "initial_rd": 247.38150412,
+            "home_advantage_slope": 10.0,
+            "coach_left_rating_shift": -61.2408104231,
+            "coach_change_regression": 0.315614655603,
+            "coach_change_rating_rd": 300.353304063,
+            "home_advantage": 86.4432008094,
+            "roster_change_shift": 14.9191245571,
+            "turnover_rating_shift": 202.727718038,
+            "turnover_rd_scale": 0.946518021908,
+            "jumper_share": 0.451039981168,
+            "lead_share": 0.255420073489,
+            "closing_share": 0.0,
+            "home_crowd_slope": 15.0
         }
     ]
 }
