@@ -262,7 +262,7 @@ lucky-ones = { git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev 
 #
 # Pinned for the reason lucky-ones is: the release files that ship inside it
 # (the box-score, recruit and newcomer priors) are the model.
-ten-minute-version = { git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "b20df98ce2fcc242ffb182da7295d08bd1c78e3c" }
+ten-minute-version = { git = "https://github.com/NathanDeMaria/ten-minute-version.git", rev = "6070a740fdfc93123729a8c11121e09343e6481c" }
 
 [tool.uv]
 # Poetry installed every group with no flags, and everything here -- local dev,
