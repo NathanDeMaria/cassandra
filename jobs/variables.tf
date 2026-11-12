@@ -28,6 +28,12 @@ variable "publish_schedule" {
   default     = "cron(0 9 * * ? *)"
 }
 
+variable "player_ratings_early_schedule" {
+  description = "When the basketball player ratings run on their own, ahead of the daily publish: after EndGame's 4:30 basketball pulls, so the picks job can bet a game once its teams' last games are in. An EventBridge Scheduler cron expression in schedule_timezone."
+  type        = string
+  default     = "cron(0 5 * 11,12,1,2,3,4 ? *)"
+}
+
 variable "schedule_timezone" {
   description = "Timezone both schedules are evaluated in"
   type        = string

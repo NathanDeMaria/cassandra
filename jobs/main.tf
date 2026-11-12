@@ -508,6 +508,27 @@ module "daily_publish" {
   command = ["submit", "--skip-optimize", "--skip-evaluate"]
 }
 
+# The basketball player ratings again, early: EndGame's basketball pulls land
+# the night's box scores and plays at 4:30 (its jobs/main.tf), and a bet on a
+# team waits for its last game to be in these (`cassandra.picks.
+# ratings_waiting`). Run inside the daily publish only, that wait lasted
+# until about 9am, and in 2025-26 a book opened before then on about one game
+# in eight. The publish's own run stays: it is what the release reads, and
+# it picks up a game the early pull missed. Named under the picks rule's
+# `cassandra-player-ratings-` prefix, so both leagues are priced the moment
+# it lands. November through April, the months EndGame pulls basketball.
+module "player_ratings_early" {
+  source = "git::https://github.com/NathanDeMaria/aws-batch-optimization.git//infra/modules/job_schedule?ref=main"
+
+  schedule_name       = "cassandra-player-ratings-early"
+  schedule_expression = var.player_ratings_early_schedule
+  schedule_timezone   = var.schedule_timezone
+  job_definition      = module.player_ratings.name
+  job_queue_arn       = local.shared.job_queue_arn
+  scheduler_role_arn  = local.shared.batch_scheduler_role_arn
+  command             = ["player_ratings"]
+}
+
 # ------------------------------------------------------------------------------
 # Sweeps after finals
 # ------------------------------------------------------------------------------
