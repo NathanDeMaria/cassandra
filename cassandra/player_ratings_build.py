@@ -5,7 +5,10 @@ player_ratings`) -- every mens and womens team as ten-minute-version's
 player ratings say it is, as of each day. The backfill is a one-off; in
 season the file needs today's row before the daily publish reads it, so
 this runs as a sweep in the same DAG, ahead of publish the way the football
-sweeps are, after EndGame's 8am jobs have landed the night's games.
+sweeps are. It also runs on its own at 5am, after EndGame's 4:30 basketball
+pulls have landed the night's games, so the picks job can bet a team's next
+game hours before the publish (jobs/main.tf, `player_ratings_early`). The
+publish's run then refits on whatever landed since.
 
 A morning is ten-minute-version's `morning` (`ten_minute_version.build`):
 the season's stint tables from the processed plays and summaries, ESPN's
