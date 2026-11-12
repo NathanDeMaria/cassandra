@@ -24,6 +24,7 @@ from .base_predictor import (
     validated_regression,
 )
 from .blend import validated_scale
+from .crowds import validated_home_crowd_slope
 from .distribution import LogisticMargin, MarginDistribution, decimal_logistic
 from .luck import validated_luck_share, validated_share
 from .opponent_prior import OpponentPriorManager
@@ -126,6 +127,11 @@ class GlickoPredictor(Predictor):
         # replays exactly as it did; a league with no anchors (nfl) has
         # every team at the mean and the knob does nothing.
         home_advantage_slope: float = 0.0,
+        # Rating points of home edge per unit of the home side's crowd
+        # reading (`crowds`, mens and womens): the log of its usual home
+        # crowd over the league's typical one. A team the file has no
+        # reading for gets the league's edge alone. 0 is off.
+        home_crowd_slope: float = 0.0,
         k: float = 65,
         # increase is 'c' in the paper
         weekly_rd_increase: float = 1,
@@ -294,6 +300,7 @@ class GlickoPredictor(Predictor):
         self._turnover_rd_scale = turnover_rd_scale
         self._home_advantage = home_advantage
         self._home_advantage_slope = home_advantage_slope
+        self._home_crowd_slope = validated_home_crowd_slope(home_crowd_slope)
         self._k = k
         self._weekly_rd_increase = weekly_rd_increase
         self._season_rd_increase = season_rd_increase
@@ -373,7 +380,8 @@ class GlickoPredictor(Predictor):
         0 at a neutral site. Otherwise the league constant plus the anchor
         slope -- see `home_advantage_slope` -- read at the home team's
         anchor for the season in hand, so a program that moved up gets the
-        tier it moved to. Its own method because three places take the edge
+        tier it moved to, plus `home_crowd_slope` of the home side's crowd
+        reading. Its own method because three places take the edge
         (the prediction, the update and `CompoundGlickoPredictor`'s unit
         contests) and they have to agree to the rating point.
         """
@@ -386,6 +394,9 @@ class GlickoPredictor(Predictor):
                 * (self.anchor(matchup.home) - MEAN_RATING)
                 / _ANCHOR_SLOPE_SCALE
             )
+        if self._home_crowd_slope:
+            crowd = self._adjustments.sources.crowds.home_crowd(matchup)
+            edge += self._home_crowd_slope * (crowd or 0.0)
         return edge
 
     def predict_distribution(self, matchup: Matchup) -> MarginDistribution:
@@ -889,6 +900,12 @@ class GlickoPredictor(Predictor):
             "league": self._league,
             "home_advantage": self._home_advantage,
             "home_advantage_slope": self._home_advantage_slope,
+            # Only when on, like the blend's.
+            **(
+                {"home_crowd_slope": self._home_crowd_slope}
+                if self._home_crowd_slope
+                else {}
+            ),
             "k": self._k,
             "weekly_rd_increase": self._weekly_rd_increase,
             "season_rd_increase": self._season_rd_increase,

@@ -13,6 +13,7 @@ from .history import (
     write_history,
 )
 from .layout import (
+    crowds_artifact_path,
     league_dir,
     model_dir,
     player_ratings_artifact_path,

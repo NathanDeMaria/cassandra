@@ -1144,3 +1144,28 @@ def test_a_bad_players_file_costs_a_league_none_of_its_models(
 
     monkeypatch.setattr(publish.artifacts, "download", download)
     asyncio.run(publish._publish_players("mens", tmp_path, False, "src", "dst"))
+
+
+def test_a_basketball_league_publishes_each_teams_home_crowd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Like the players' rows: the file only exists where the sweep ran."""
+    from cassandra.predictor import crowds
+
+    path = tmp_path / "mens_crowds.csv"
+    path.write_text(
+        "league,season,team_id,team,as_of,crowd,total,weight,games\n"
+        "mens,2026,1,Home U,2026-08-01,0.4,40,5,5\n"
+        "mens,2026,1,Home U,2026-11-05,0.5,48,6,6\n"
+        "mens,2026,2,New U,2026-11-05,,8,1,1\n"
+    )
+    monkeypatch.setattr(crowds, "crowds_path", lambda league: path)
+    crowds.load_crowds.cache_clear()
+    try:
+        written = publish.write_crowds_artifact("mens", tmp_path / "out")
+        assert publish.write_crowds_artifact("nfl", tmp_path / "out") is None
+    finally:
+        crowds.load_crowds.cache_clear()
+    assert written == tmp_path / "out" / "models" / "mens" / "crowds.json"
+    stored = crowds.CrowdsFile.model_validate_json(written.read_text())
+    assert stored.teams == {"Home U": 0.5}
