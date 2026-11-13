@@ -586,3 +586,44 @@ def test_a_shard_is_topped_up_from_the_fullest_others():
     assert shard_transfers({0: 100, 3: 0}, 3, 500) == [(0, 100)]
     # A shard the listing hasn't got yet is an empty one.
     assert shard_transfers({0: 900}, 3, 500) == [(0, 500)]
+
+
+def test_a_pick_must_return_enough_at_its_own_price():
+    # A wide book: the favorite's no-vig price sits well under its ask, so a
+    # model near its ask clears the edge but barely beats the price paid.
+    matched = _matched(0.95, 0.13, spread=0.09)
+    wide = price(0.98, matched)
+    assert wide is not None and wide.route is not None
+    assert wide.route.action == "yes" and wide.expected_return is not None
+    edged = RULE._replace(favorite_edge=0.10)
+    assert wide.edge >= 0.10
+    assert 0 < wide.expected_return < 0.04
+    fresh = timedelta(hours=1)
+    assert skip_reason(wide, None, None, [], fresh, edged, top_division=None) is None
+    floored = edged._replace(min_expected_return=0.04)
+    assert (
+        skip_reason(wide, None, None, [], fresh, floored, top_division=None)
+        == "returns under 4% at its price"
+    )
+    # Its ceiling drops under the ask: a few cents cheaper, it would return enough.
+    unfloored = max_price(0.98, wide, matched.home, edged)
+    ceiling = max_price(0.98, wide, matched.home, floored)
+    assert unfloored is not None and unfloored >= 0.95
+    assert ceiling is not None and ceiling < 0.95
+    assert 0.98 / (ceiling + kalshi_fee(ceiling)) - 1 >= 0.04
+    # Where the edge allows more, the ceiling stops at the return.
+    rule = RULE._replace(favorite_price=None, min_expected_return=0.10)
+    cheap = _matched(0.40, 0.62)
+    priced = price(0.60, cheap)
+    assert priced is not None
+    ceiling = max_price(0.60, priced, cheap.home, rule)
+    assert ceiling is not None
+
+    def returns(at: float) -> float:
+        return 0.60 / (at + kalshi_fee(at)) - 1
+
+    assert returns(ceiling) >= 0.10 > returns(ceiling + 0.01)
+    unfloored = max_price(
+        0.60, priced, cheap.home, rule._replace(min_expected_return=None)
+    )
+    assert unfloored is not None and unfloored > ceiling

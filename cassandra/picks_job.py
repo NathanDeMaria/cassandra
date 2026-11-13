@@ -241,6 +241,7 @@ class LeagueRules:
     min_price: float = 0.0
     model_longshot_probability: float | None = None
     model_longshot_edge: float | None = None
+    min_expected_return: float | None = None
     #: The most of the bankroll the league's open positions and resting
     #: orders may hold (`picks.py --max-exposure`); None for no cap.
     max_exposure: float | None = None

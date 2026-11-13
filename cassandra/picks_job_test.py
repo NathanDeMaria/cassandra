@@ -480,6 +480,7 @@ def test_league_rules_are_picks_flags():
     rules = _rules(
         favorite_price=0.7,
         favorite_edge=0.11,
+        min_expected_return=0.03,
         max_exposure=0.4,
         slippage=0.02,
         top=6,
@@ -495,6 +496,7 @@ def test_league_rules_are_picks_flags():
         "--favorite-price", "0.7",
         "--favorite-edge", "0.11",
         "--min-price", "0",
+        "--min-expected-return", "0.03",
         "--max-exposure", "0.4",
         "--longshot-price", "0",
         "--longshot-scale", "1",
@@ -508,6 +510,7 @@ def test_league_rules_are_picks_flags():
     args = picks.parse(["--place", *rules.argv()])
     picks.apply_rules(args, None)
     assert args.rule.min_edge == 0.06 and args.rule.favorite_edge == 0.11
+    assert args.rule.min_expected_return == 0.03
     assert args.rungs == (0.01, 0.03) and args.rest == 5.0 and args.top == 6
     assert "--rungs" in _rules().argv()  # none, said so
 

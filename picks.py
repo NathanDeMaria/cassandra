@@ -90,7 +90,8 @@ then stop.
 **Rules.** Every bar, stake and limit here is the league's rules in s3's
 `cassandra/betting/autobet.json` (`picks_job.LeagueRules`, set with `make
 autobet`): the edge a pick needs (`--min-edge`, `--favorite-price` and
-`--favorite-edge`), the entry window (`--max-since-entry`), the widest
+`--favorite-edge`), the return it must pay at its price
+(`--min-expected-return`), the entry window (`--max-since-entry`), the widest
 book (`--max-overround`), the price floor (`--min-price`), `--slippage`,
 `--top` and `--max-bet`; and for a run that places, the stake
 (`--kelly-fraction`), its limits (`--max-exposure`, the longshot shrink)
@@ -119,7 +120,8 @@ cost more than `--budget` or the cash on hand, they're cut down together.
 Each order is a limit order:
 
 - its price is at most `--slippage` past the ask, and never past
-  `max_price`, the most that still clears `--min-edge`;
+  `max_price`, the most that still clears `--min-edge` and
+  `--min-expected-return`;
 - its contracts are counted at that price, so the worst fill costs no more
   than the pick's target;
 - it's immediate-or-cancel, so what isn't on offer now is dropped (books
@@ -588,6 +590,13 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         help="the edge a --model-longshot-probability side needs",
     )
     parser.add_argument(
+        "--min-expected-return",
+        type=float,
+        metavar="R",
+        help="the least a pick must return per dollar at its price, by the "
+        "model: its probability over the cost, fee included, less one",
+    )
+    parser.add_argument(
         "--max-since-entry",
         type=float,
         metavar="HOURS",
@@ -783,6 +792,7 @@ _FROM_RULES = {
     "favorite_edge": "favorite_edge",
     "model_longshot_probability": "model_longshot_probability",
     "model_longshot_edge": "model_longshot_edge",
+    "min_expected_return": "min_expected_return",
     "max_since_entry": "max_since_entry_hours",
     "max_overround": "max_overround",
     "min_price": "min_price",
@@ -860,6 +870,7 @@ def apply_rules(args: argparse.Namespace, rules: LeagueRules | None) -> None:
         min_price=args.min_price,
         model_longshot_probability=args.model_longshot_probability,
         model_longshot_edge=args.model_longshot_edge,
+        min_expected_return=args.min_expected_return,
     )
 
 
