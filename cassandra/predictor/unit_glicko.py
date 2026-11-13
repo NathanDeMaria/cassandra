@@ -358,6 +358,44 @@ what an ncaafb prototype found in 2026-09, before these knobs existed: a
 little from the record's deviation, and a side's widening costing games
 1-4. They default to 0; the NFL's success-rate config searches them.
 
+Where the units sit
+-------------------
+
+A unit rating is `anchor + (S / c) (O + D)`, which says a team's record sits
+at its anchor on average. On ncaafb it doesn't. An anchor is on the Elo
+scale and the record settles on the margin model's own, about half as wide:
+replayed on the published fit, 2015 on, FBS records average 1765 under
+anchors that average 2090, FCS records 1520 over 1484. The units stay where
+the anchors are (FBS 2045), so the blend mixes two numbers 280 points apart,
+and a team's blended rating follows its units' *share* of the blend as much
+as anything either side knows: FBS as a whole opens a season at 1878 and
+ends it at 1791 as the record firms up and the share falls from 0.4 to 0.1,
+and an FBS team's margin over an FCS one is over-predicted by 6.2 points in
+the first two weeks against 3 later.
+
+`unit_level` moves the units' base toward where the record puts a team of
+that anchor: the line of record less anchor on anchor, over the teams whose
+units have earned anything, and `unit_level` of what it reads at the team's
+anchor added to its unit rating. 0 is the model above and 1 puts the units
+wholly on the record's level. A line rather than a mean per division
+because the predictor knows anchors and not divisions, and because the gap
+runs with the anchor inside a division too (FBS's lowest quarter of anchors
+sits 246 under, its highest 399). The line is a function of the ratings and
+sides as they stand, so nothing is carried for it: it is refit at the first
+prediction of each day, from what every earlier day left, and for `ratings`
+from what stands -- which is what a model rebuilt from a release fits too.
+
+At the published fit, 2015 on, nothing else moved:
+
+    unit_level    FBS v FBS     every game    FBS over FCS, weeks 1-2    its MAE
+    0              0.174914      0.148259             -6.2                 13.60
+    0.5            0.174858      0.148268             -1.2                 12.73
+    1              0.175070      0.148525             +3.8                 12.96
+
+(the third column the FBS side's margin less the raw rating gap's, the
+fourth over every FBS-FCS game). 0 by default; `glicko_margin_units_level`
+searches it with the weight it trades against.
+
 What a release carries
 ----------------------
 
@@ -466,6 +504,7 @@ knows how an FCS offense moves against FBS defenses fixes a lot of it.
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from datetime import date
 from typing import Any, NamedTuple, Self
 
 from endgame.types import Game
@@ -553,6 +592,11 @@ LEFT_FOR_JOB = "left_for_job"
 #: How many sides of last season's average offense this season's center
 #: starts with. A few weeks of games outweigh it.
 CENTER_PRIOR_SIDES = 200
+
+#: How many teams with units the record's level is fit over before it is
+#: read at all; see "Where the units sit". A line through a handful of teams
+#: is their own records, not a level.
+LEVEL_MIN_TEAMS = 20
 
 #: The two success rates a game carries: every pass and run once, or
 #: each weighted by how competitive the game still was. See "Success rate".
@@ -748,6 +792,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         # share of what `points_per_epa` converts it to; see "Across
         # conferences".
         anchor_epa_scale: float = 1.0,
+        # How far the units' base moves from a team's anchor to where the
+        # record puts a team of that anchor; see "Where the units sit".
+        unit_level: float = 0.0,
         # Offseason deviation for a team whose head coach changed; see
         # "A new head coach". Rating points for the record, EPA per play for
         # the units, all 0 by default.
@@ -902,6 +949,13 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         self._defense_success_weight = defense_success_weight
         self._success_reading = success_reading
         self._anchor_epa_scale = _non_negative("anchor_epa_scale", anchor_epa_scale)
+        if not 0.0 <= unit_level <= 1.0:
+            raise ValueError(f"unit_level must be in [0, 1], got {unit_level}")
+        self._unit_level = unit_level
+        # The record's level as last fit, and the day it was fit for; see
+        # `_level_on`. In-season state that is a function of the rest.
+        self._level: _Level | None = None
+        self._level_day: date | None = None
         self._coach_change_rd = _non_negative("coach_change_rd", coach_change_rd)
         self._coach_change_sd = _Pair(
             _non_negative("coach_change_offense_sd", coach_change_offense_sd),
@@ -976,12 +1030,56 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         )
         return max(0.0, now - prior)
 
-    def _blended(self, team: str) -> _Rating:
+    def _fit_level(self) -> _Level | None:
+        """Where the record puts a team by its anchor, as the ratings stand.
+
+        The least-squares line of record less anchor on anchor, over every
+        team whose units have earned something -- the teams a blend mixes.
+        None where `unit_level` is off, or there are too few of them, or they
+        share one anchor, which says nothing of how the gap runs with it.
+        """
+        if not self._unit_level:
+            return None
+        points = [
+            (self.anchor(team), self._ratings[team].rating)
+            for team in self._sides
+            if team in self._ratings and self.unit_information(team)
+        ]
+        if len(points) < LEVEL_MIN_TEAMS:
+            return None
+        mean_anchor = sum(anchor for anchor, _ in points) / len(points)
+        mean_gap = sum(rating - anchor for anchor, rating in points) / len(points)
+        spread = sum((anchor - mean_anchor) ** 2 for anchor, _ in points)
+        if not spread:
+            return None
+        slope = (
+            sum(
+                (anchor - mean_anchor) * (rating - anchor - mean_gap)
+                for anchor, rating in points
+            )
+            / spread
+        )
+        return _Level(slope, mean_gap - slope * mean_anchor)
+
+    def _level_on(self, day: date) -> _Level | None:
+        """The record's level for a game on `day`: fit at the day's first
+        prediction, from what the days before it left, and kept for the rest
+        of the day. Not refit game by game -- a day's games move it by
+        nothing a prediction can read, and a replay asks 78,000 times."""
+        if not self._unit_level:
+            return None
+        if day != self._level_day:
+            self._level = self._fit_level()
+            self._level_day = day
+        return self._level
+
+    def _blended(self, team: str, level: _Level | None = None) -> _Rating:
         """The team's rating for a prediction: record and units, by precision.
 
         The deviation is the parent's, so the implied-Gaussian prediction's
         spread is the parent's too -- the units sharpen where a team sits,
-        not how sure the margin model is of it.
+        not how sure the margin model is of it. `level` is the record's, for
+        a model that moves the units' base toward it.
         """
         parent = self.get_rating(team)
         if not self._unit_weight:
@@ -989,10 +1087,11 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         earned = self._unit_weight * self.unit_information(team)
         if not earned:
             return parent
+        unit = self.unit_rating(team)
+        if level is not None:
+            unit += self._unit_level * level.gap(self.anchor(team))
         precision = 1 / parent.rating_deviation**2
-        rating = (precision * parent.rating + earned * self.unit_rating(team)) / (
-            precision + earned
-        )
+        rating = (precision * parent.rating + earned * unit) / (precision + earned)
         return _Rating(rating, parent.rating_deviation)
 
     def matchup_adjustment(self, matchup: Matchup) -> float:
@@ -1017,8 +1116,9 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         `get_rating` directly; the arithmetic is the parent's, and
         `unit_weight` 0 reproducing it game by game is what guards that.
         """
-        home = self._blended(matchup.home)
-        away = self._blended(matchup.away)
+        level = self._level_on(matchup.date.date())
+        home = self._blended(matchup.home, level)
+        away = self._blended(matchup.away, level)
         edge = self.home_edge(matchup) + self.matchup_adjustment(matchup)
         if not self._implied_prediction:
             return self.gap_distribution(home.rating + edge, away.rating)
@@ -1390,6 +1490,8 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
             "defense_success_weight": self._defense_success_weight,
             "success_reading": self._success_reading,
             "anchor_epa_scale": self._anchor_epa_scale,
+            # Only when on, so a release published before it reads the same.
+            **({"unit_level": self._unit_level} if self._unit_level else {}),
             "coach_change_rd": self._coach_change_rd,
             "coach_change_offense_sd": self._coach_change_sd.offense,
             "coach_change_defense_sd": self._coach_change_sd.defense,
@@ -1443,10 +1545,13 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
         per_rating = (
             self._anchor_epa_scale * self.points_per_rating / (2 * self._points_per_epa)
         )
+        # From what stands, not the day's first prediction's: a release's
+        # ratings are read after the last game, and rebuilt from as they are.
+        level = self._fit_level()
         return {
             team: rating._replace(
                 units=self._absolute_units(team) if team in self._sides else None,
-                blended=self._blended(team).rating,
+                blended=self._blended(team, level).rating,
                 success=self._success(team, per_rating),
                 epa=self._epa(team, per_rating),
             )
@@ -1520,6 +1625,16 @@ class UnitMarginGlickoPredictor(MarginGlickoPredictor):
                 _Rating((defense.rating - anchor) / scale, defense.rd / scale),
             )
         return predictor
+
+
+class _Level(NamedTuple):
+    """Record less anchor as a line on the anchor; see "Where the units sit"."""
+
+    slope: float
+    intercept: float
+
+    def gap(self, anchor: float) -> float:
+        return self.slope * anchor + self.intercept
 
 
 class _Pair(NamedTuple):

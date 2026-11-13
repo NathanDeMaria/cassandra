@@ -10,6 +10,7 @@ that with the weight off or the index empty the parent is all there is.
 import json
 import math
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from . import unit_glicko
 from .base_predictor import MEAN_RATING, Anchor
 from .conftest import GameFactory
 from .epa import EpaIndex
+from .glicko import _Rating
 from .margin_glicko import MarginGlickoPredictor
 from .types import GameEpa, Rating
 from .unit_glicko import (
@@ -33,6 +35,7 @@ from .unit_glicko import (
     WEIGHTED,
     RateClock,
     UnitMarginGlickoPredictor,
+    _Sides,
 )
 
 
@@ -797,6 +800,7 @@ def test_the_new_knobs_round_trip() -> None:
         success_reading=WEIGHTED,
         defense_success_weight=0.2,
         anchor_epa_scale=0.8,
+        unit_level=0.4,
         coach_change_rd=35.0,
         coach_change_offense_sd=0.1,
         coach_change_defense_sd=0.05,
@@ -813,6 +817,138 @@ def test_the_new_knobs_round_trip() -> None:
         }
     )
     assert loaded.state_dict() == predictor.state_dict()
+
+
+# --- where the units sit --------------------------------------------------------
+
+
+def _off_their_anchors(**params: Any) -> UnitMarginGlickoPredictor:
+    """Four teams whose records sit half as far from 1000 as their anchors,
+    their units learned and at offset 0: units and record agree about each
+    team but for where the anchor puts the units."""
+    anchors = {"A": 2000.0, "B": 1800.0, "C": 1400.0, "D": 1200.0}
+    learned = _Sides(_Rating(0.0, 0.05), _Rating(0.0, 0.05))
+    return _predictor(
+        anchors=anchors,
+        ratings={
+            team: _Rating(1000 + (anchor - 1000) / 2, 80.0)
+            for team, anchor in anchors.items()
+        },
+        sides=dict.fromkeys(anchors, learned),
+        unit_weight=1.0,
+        **params,
+    )
+
+
+@pytest.fixture
+def few_teams(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(unit_glicko, "LEVEL_MIN_TEAMS", 4)
+
+
+@pytest.mark.usefixtures("few_teams")
+def test_the_units_move_to_where_the_record_puts_their_anchor() -> None:
+    plain = _off_their_anchors()
+    levelled = _off_their_anchors(unit_level=1.0)
+    halfway = _off_their_anchors(unit_level=0.5)
+
+    for team, record in (("A", 1500.0), ("D", 1100.0)):
+        # On their anchors the units pull a team that did what its record
+        # says off its record; on the record's level they have nothing to add.
+        assert plain.ratings[team].overall != pytest.approx(record)
+        assert levelled.ratings[team].overall == pytest.approx(record)
+        assert halfway.ratings[team].overall == pytest.approx(
+            (plain.ratings[team].overall + record) / 2
+        )
+
+
+@pytest.mark.usefixtures("few_teams")
+def test_a_prediction_reads_the_level_the_ratings_show(game: GameFactory) -> None:
+    levelled = _off_their_anchors(unit_level=1.0)
+    record_only = _off_their_anchors(unit_level=1.0)
+    record_only._unit_weight = 0.0
+
+    matchup = game("A", "D")
+    assert levelled.predict_game(matchup).team1_win_prob == pytest.approx(
+        record_only.predict_game(matchup).team1_win_prob
+    )
+    assert _off_their_anchors().predict_game(matchup).team1_win_prob > (
+        levelled.predict_game(matchup).team1_win_prob
+    )
+
+
+def test_too_few_teams_leave_the_units_on_their_anchors(game: GameFactory) -> None:
+    """Four teams are their own records, not a level."""
+    matchup = game("A", "D")
+    assert _off_their_anchors(unit_level=1.0).predict_game(
+        matchup
+    ).team1_win_prob == pytest.approx(
+        _off_their_anchors().predict_game(matchup).team1_win_prob
+    )
+
+
+@pytest.mark.usefixtures("few_teams")
+def test_one_anchor_says_nothing_of_how_the_gap_runs() -> None:
+    predictor = _predictor(
+        anchors=dict.fromkeys("ABCD", 1600.0),
+        ratings={team: _Rating(1400.0, 80.0) for team in "ABCD"},
+        sides=dict.fromkeys("ABCD", _Sides(_Rating(0.0, 0.05), _Rating(0.0, 0.05))),
+        unit_weight=1.0,
+        unit_level=1.0,
+    )
+    assert predictor._fit_level() is None
+
+
+@pytest.mark.usefixtures("few_teams")
+def test_the_level_is_fit_once_a_day(game: GameFactory) -> None:
+    predictor = _off_their_anchors(unit_level=1.0)
+    today = game("A", "D")
+    predictor.predict_game(today)
+
+    # The records move under it: the same day reads the level it was fit at,
+    # the next day the one that stands.
+    predictor._ratings = {
+        team: _Rating(rating.rating + (200 if team in "AB" else 0), 80.0)
+        for team, rating in predictor._ratings.items()
+    }
+    held = predictor._level
+    predictor.predict_game(today)
+    assert predictor._level is held
+    predictor.predict_game(today._replace(date=today.date + timedelta(days=1)))
+    assert predictor._level != held
+
+
+@pytest.mark.usefixtures("few_teams")
+def test_a_model_rebuilt_from_its_ratings_fits_the_same_level(
+    game: GameFactory,
+) -> None:
+    predictor = _off_their_anchors(unit_level=0.7)
+    anchors = {"A": 2000.0, "B": 1800.0, "C": 1400.0, "D": 1200.0}
+    rebuilt = UnitMarginGlickoPredictor.from_ratings(
+        "test_league",
+        predictor.ratings,
+        anchors=anchors,
+        game_epa=EpaIndex(),
+        unit_weight=1.0,
+        unit_level=0.7,
+    )
+    matchup = game("B", "C")
+    assert rebuilt.predict_game(matchup).team1_win_prob == pytest.approx(
+        predictor.predict_game(matchup).team1_win_prob
+    )
+    for team in anchors:
+        assert rebuilt.ratings[team].overall == pytest.approx(
+            predictor.ratings[team].overall
+        )
+
+
+@pytest.mark.parametrize("unit_level", [-0.1, 1.1])
+def test_a_level_outside_the_two_it_runs_between_is_refused(unit_level: float) -> None:
+    with pytest.raises(ValueError, match="unit_level"):
+        _predictor(unit_level=unit_level)
+
+
+def test_a_model_without_the_level_saves_as_it_did() -> None:
+    assert "unit_level" not in _predictor().state_dict()
 
 
 # --- the success rate a reader sees --------------------------------------------
