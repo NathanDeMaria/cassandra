@@ -34,6 +34,12 @@ graded.
   `model_longshot_edge` for a side the model gives under
   `model_longshot_probability` (`PickRule.edge_needed`), or a pick costing
   under its `min_price`;
+- a pick returning under the rule's `min_expected_return` per dollar at its
+  price: the model's probability over the cost, less one. The edge is
+  against the no-vig market, which on a wide book sits well under a
+  favorite's ask, so a heavy favorite can clear the edge while paying
+  nearly what the model says it's worth. On 2025-26's books those picks
+  were worth about nothing by the close, in all three leagues;
 - the model backing a team below FBS against an FBS one. The model's known
   miss on those games is under-rating the FBS side: 10-20 point FBS
   favorites beat it by about 2 points in 2015-25. So its edge on the
@@ -123,6 +129,13 @@ class PickRule(NamedTuple):
     #: None for no such rule.
     model_longshot_probability: float | None = None
     model_longshot_edge: float | None = None
+    #: The least a pick must return per dollar by the model: its probability
+    #: over what the pick costs, fee included, less one. The edge is the
+    #: model against the market, not against the price paid, and a wide
+    #: book's no-vig price sits well under a favorite's ask -- a 95c favorite
+    #: can clear a 10-point edge and return 2c on the dollar. None for no
+    #: such rule.
+    min_expected_return: float | None = None
 
     def edge_needed(self, cost: float, model: float = 1.0) -> float:
         """The edge a pick costing `cost` a contract, fee included, that the
@@ -781,7 +794,8 @@ def price(model_home: float, matched: Matched) -> Priced | None:
 
 def max_price(model: float, priced: Priced, side: Book, rule: PickRule) -> float | None:
     """The most the pick's route can cost, to the cent, and still clear the
-    edge it needs at that price (`PickRule.edge_needed`).
+    edge it needs at that price (`PickRule.edge_needed`) and the rule's
+    `min_expected_return`.
 
     The edge is the model against the side's share of the two asks, so a
     rising price eats it about a point a cent. This holds the overround
@@ -795,8 +809,14 @@ def max_price(model: float, priced: Priced, side: Book, rule: PickRule) -> float
     for cents in range(1, 100):
         ask = cents / 100
         route = ask + shift
-        need = rule.edge_needed(route + kalshi_fee(route), model)
+        cost = route + kalshi_fee(route)
+        need = rule.edge_needed(cost, model)
         if ask + kalshi_fee(ask) > (model - need) * priced.overround:
+            break
+        if (
+            rule.min_expected_return is not None
+            and model / cost - 1 < rule.min_expected_return
+        ):
             break
         found = route
     if found is None:
@@ -846,6 +866,12 @@ def skip_reason(
             f"edge under {(rule.favorite_edge or 0) * 100:g} points at "
             f"{(rule.favorite_price or 0) * 100:g}c+"
         )
+    if (
+        rule.min_expected_return is not None
+        and priced.expected_return is not None
+        and priced.expected_return < rule.min_expected_return
+    ):
+        return f"returns under {rule.min_expected_return * 100:g}% at its price"
     if priced.cost is not None and priced.cost < rule.min_price:
         return f"price under {rule.min_price * 100:g}c"
     if (
