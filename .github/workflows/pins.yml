@@ -1,0 +1,91 @@
+# Opens a pull request when a pinned git dependency's upstream has merged past
+# the pin: one per upstream repository, on the branch `pins/<repository>`.
+# `bump_deps.py` decides where each pin goes; this edits, locks, pushes and
+# opens. Merging stays a person's -- a bump moves the data or the fit a replay
+# reads, and the pull request is where that gets looked at.
+name: Pins
+
+on:
+  # Upstream merges land at any time and nothing here hears about them, so
+  # this polls. Off the hour and half hour, where scheduled runs queue.
+  schedule:
+    - cron: "17,47 * * * *"
+  # `gh workflow run pins.yml` right after an upstream merge, to skip the wait
+  workflow_dispatch:
+
+# Two runs would race each other's force-pushes
+concurrency:
+  group: pins
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  # To start CI on the branch -- see the dispatch below
+  actions: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The same uv and interpreter as CI, so the lock is written by the
+      # version that will check it
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.13.6"
+          python-version: "3.15"
+          enable-cache: true
+
+      # Needs the repository setting "Allow GitHub Actions to create and
+      # approve pull requests" (Settings > Actions > General). Without it the
+      # branch is pushed and `gh pr create` fails, which fails the run.
+      - name: Open or refresh a pull request per upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          failed=0
+          # --no-project: the script is standard library only, and syncing the
+          # fitting stack to read six lines of pyproject.toml would take minutes
+          # Assigned first so a failed lookup fails the step, where a `for`
+          # over the substitution would loop zero times and report success.
+          groups="$(uv run --no-project bump_deps.py list)"
+          for group in $groups; do
+            branch="pins/$group"
+            git checkout --quiet -B "$branch" "$GITHUB_SHA"
+            uv run --no-project bump_deps.py apply "$group" > "$RUNNER_TEMP/message.md"
+            # A lock that will not resolve means the upstreams disagree about
+            # a shared pin. Report it and carry on with the others.
+            if ! uv lock; then
+              echo "::error::uv lock failed for $group"
+              failed=1
+              git checkout --quiet -- .
+              continue
+            fi
+            git commit --quiet --all --message "$(head -n 1 "$RUNNER_TEMP/message.md")"
+            # Same tree as the branch already pushed: main and the upstream are
+            # where they were, and pushing again would only re-run CI
+            if git fetch --quiet origin "$branch" 2>/dev/null \
+                && git diff --quiet FETCH_HEAD HEAD; then
+              echo "$group: pull request is already current"
+              continue
+            fi
+            git push --quiet --force origin "$branch"
+            title="$(head -n 1 "$RUNNER_TEMP/message.md")"
+            tail -n +3 "$RUNNER_TEMP/message.md" > "$RUNNER_TEMP/body.md"
+            number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')"
+            if [ -n "$number" ]; then
+              gh pr edit "$number" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            else
+              gh pr create --head "$branch" --base main --title "$title" \
+                --body-file "$RUNNER_TEMP/body.md"
+            fi
+            # A push made with the workflow's own token starts no workflows, so
+            # the required `ci` check would never report. A dispatch is the one
+            # event that token may raise; ci.yml accepts it for this.
+            gh workflow run ci.yml --ref "$branch"
+          done
+          exit "$failed"
