@@ -27,3 +27,10 @@ __pycache__
 .devcontainer/local.env
 
 logs/
+
+# Credentials that live in the checkout because it is the devcontainer's only
+# persistent mount: the Kalshi trading key and the CFBD API key. Untracked is
+# not enough -- one `git add -A` would commit them.
+.kalshi/
+cfbdkey.txt
+*.pem
