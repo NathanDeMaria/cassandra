@@ -6,6 +6,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # For branches pushed by a workflow's own token, which raise no `push` or
+  # `pull_request` event: pins.yml dispatches this on its `pins/*` branches
+  # so the required check still reports on them.
+  workflow_dispatch:
 
 # Superseded PR runs are pointless, but let pushes to main finish
 concurrency:
