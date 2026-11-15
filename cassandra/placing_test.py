@@ -117,13 +117,14 @@ def _priced(
     return frame, matched
 
 
-def _rung(ticker: str, book_side: str, yes_price: float) -> dict:
+def _rung(ticker: str, buys: str, yes_price: float) -> dict:
+    """A resting rung as Kalshi lists it: a NO buy is an ask on "no"."""
     return {
-        "order_id": f"{ticker}-{book_side}",
+        "order_id": f"{ticker}-{buys}",
         "client_order_id": "rung-x",
         "ticker": ticker,
-        "outcome_side": "yes",
-        "book_side": book_side,
+        "outcome_side": buys,
+        "book_side": "bid" if buys == "yes" else "ask",
         "yes_price_dollars": f"{yes_price:.2f}",
     }
 
@@ -132,32 +133,32 @@ def test_a_rung_stays_while_the_model_still_backs_its_price():
     frame, matched = _priced()
     # YES on the home team at 0.40, and NO on the away team at 0.40: both
     # back the home team, under the 0.50 that still clears the edge.
-    orders = [_rung("EV-HOME", "bid", 0.40), _rung("EV-AWAY", "ask", 0.60)]
+    orders = [_rung("EV-HOME", "yes", 0.40), _rung("EV-AWAY", "no", 0.60)]
     assert placing.stale_rungs(orders, frame, matched) == []
 
 
 def test_a_rung_goes_when_its_price_no_longer_clears_the_edge():
     frame, matched = _priced(max_price=0.38)
     [(order, why)] = placing.stale_rungs(
-        [_rung("EV-HOME", "bid", 0.40)], frame, matched
+        [_rung("EV-HOME", "yes", 0.40)], frame, matched
     )
     assert why.startswith("0.40 is over the 0.38")
     frame, matched = _priced(max_price=None)
-    [(_, why)] = placing.stale_rungs([_rung("EV-HOME", "bid", 0.40)], frame, matched)
+    [(_, why)] = placing.stale_rungs([_rung("EV-HOME", "yes", 0.40)], frame, matched)
     assert why == "no price clears the edge now"
 
 
 def test_a_rung_goes_when_the_model_switches_sides_or_the_game_is_excluded():
     frame, matched = _priced()
     # YES on the away team: the pick now backs home.
-    [(_, why)] = placing.stale_rungs([_rung("EV-AWAY", "bid", 0.55)], frame, matched)
+    [(_, why)] = placing.stale_rungs([_rung("EV-AWAY", "yes", 0.55)], frame, matched)
     assert why == "the model backs Home Team now"
     found = placing.stale_rungs(
-        [_rung("EV-HOME", "bid", 0.40)], frame, matched, exclude=["home team"]
+        [_rung("EV-HOME", "yes", 0.40)], frame, matched, exclude=["home team"]
     )
     assert [why for _, why in found] == ["excluded by hand"]
     # A game this run didn't price is left alone.
-    assert placing.stale_rungs([_rung("OTHER-X", "bid", 0.4)], frame, matched) == []
+    assert placing.stale_rungs([_rung("OTHER-X", "yes", 0.4)], frame, matched) == []
 
 
 def test_rungs_come_after_the_picks_out_of_the_cash(no_books):
@@ -228,7 +229,7 @@ def test_a_pick_says_its_edge_if_its_starter_sits():
 def test_a_rung_goes_when_its_side_has_its_starter_in_doubt():
     frame, matched = _priced()
     frame["qb_doubt"] = "Home Team: A.Ace (5 starts) didn't play Oct 31"
-    orders = [_rung("EV-HOME", "bid", 0.40)]
+    orders = [_rung("EV-HOME", "yes", 0.40)]
     # Only when the run holds on it: an unattended run, or --hold-qb by hand.
     assert placing.stale_rungs(orders, frame, matched) == []
     [(_, why)] = placing.stale_rungs(orders, frame, matched, hold_qb=True)

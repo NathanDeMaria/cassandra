@@ -122,11 +122,18 @@ def test_event_of():
 @pytest.mark.parametrize(
     "order, side",
     [
-        ({"outcome_side": "yes", "book_side": "bid"}, "yes"),
-        ({"outcome_side": "yes", "book_side": "ask"}, "no"),
-        ({"outcome_side": "no", "book_side": "bid"}, "no"),
+        # As Kalshi lists them: a YES buy, then a NO buy.
+        (
+            {"outcome_side": "yes", "book_side": "bid", "side": "yes", "action": "buy"},
+            "yes",
+        ),
+        (
+            {"outcome_side": "no", "book_side": "ask", "side": "yes", "action": "sell"},
+            "no",
+        ),
         ({"side": "yes", "action": "buy"}, "yes"),
         ({"side": "no", "action": "sell"}, "yes"),
+        ({"side": "yes", "action": "sell"}, "no"),
     ],
 )
 def test_bought_reads_either_way_of_naming_a_side(order, side):
@@ -136,7 +143,7 @@ def test_bought_reads_either_way_of_naming_a_side(order, side):
 def test_a_rung_is_told_by_its_client_order_id_and_priced_from_its_side():
     order = {
         "client_order_id": rung_id(),
-        "outcome_side": "yes",
+        "outcome_side": "no",
         "book_side": "ask",
         "yes_price_dollars": "0.6200",
     }

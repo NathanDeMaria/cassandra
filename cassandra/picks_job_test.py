@@ -615,7 +615,7 @@ def test_the_summary_splits_leagues_and_prices_a_resting_no():
         {
             "ticker": "KXNCAAWBGAME-26NOV05HAMPSMU-SMU",
             "outcome_side": "no",
-            "book_side": "bid",
+            "book_side": "ask",
             "yes_price_dollars": "0.70",
             "remaining_count_fp": "10",
         }

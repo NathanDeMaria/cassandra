@@ -163,13 +163,15 @@ def is_rung(order: Mapping) -> bool:
 def bought(order: Mapping) -> str:
     """Which contract a listed order buys, "yes" or "no".
 
-    A YES bid and a NO ask buy YES; a YES ask and a NO bid buy NO. The
-    listing names a side both the new way (`outcome_side`, `book_side`)
-    and the deprecated one (`side`, `action`), so either reads.
+    The listing names a side both the new way (`outcome_side`, `book_side`)
+    and the deprecated one (`side`, `action`), so either reads. The new
+    way's `outcome_side` is the contract bought: Kalshi lists a NO buy as
+    `outcome_side` "no" with `book_side` "ask" (and as a `sell` of `yes`),
+    and a YES buy as "yes" with "bid" (a `buy` of `yes`).
     """
-    outcome, book = order.get("outcome_side"), order.get("book_side")
-    if outcome in ("yes", "no") and book in ("bid", "ask"):
-        return "yes" if (outcome == "yes") == (book == "bid") else "no"
+    outcome = order.get("outcome_side")
+    if outcome in ("yes", "no"):
+        return outcome
     side, action = order.get("side"), order.get("action")
     if side in ("yes", "no") and action in ("buy", "sell"):
         return "yes" if (side == "yes") == (action == "buy") else "no"
