@@ -301,7 +301,10 @@ def _row_side(row: pd.Series, codes: Sequence[str]) -> str | None:
 
 
 def _home_away(game: str) -> tuple[str, str]:
-    away, home = game.split(" @ ", 1)
+    """A picks row's game label split. `placing.fmt_game` writes a neutral
+    site as "away vs home", keeping ESPN's designated home second."""
+    joiner = " @ " if " @ " in game else " vs "
+    away, home = game.split(joiner, 1)
     return home, away
 
 

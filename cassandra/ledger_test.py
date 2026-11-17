@@ -165,6 +165,16 @@ def test_bet_time_turns_a_run_to_the_bets_side_and_takes_the_run_before_the_fill
     assert found["game_id"] == "402"
 
 
+def test_bet_time_reads_a_neutral_site_game_with_the_designated_home_second():
+    runs = _run(0.25).assign(
+        game="Oklahoma State Cowboys vs Houston Cougars",
+        started=pd.Timestamp("2026-10-10 23:09", tz=CENTRAL),
+    )
+    found = ledger.bet_time(_bet(), CODES, runs, pd.DataFrame())
+    assert found["bet"] == "Houston Cougars"
+    assert found["bet_home"] is True
+
+
 def test_bet_time_prefers_the_orders_log_weighted_by_contracts():
     orders = pd.DataFrame(
         [
