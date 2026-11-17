@@ -18,11 +18,12 @@ def test_a_code_that_ran_out_is_told_from_a_failed_login():
 
 def test_until_counts_down_the_session_this_tool_started(tmp_path, monkeypatch):
     monkeypatch.setattr(aws_login, "STATE", tmp_path)
+    monkeypatch.setattr(aws_login, "SESSION", timedelta(hours=8))
     assert aws_login.until(NOW) == ""
     (tmp_path / "logged_in_at").write_text((NOW - timedelta(hours=2)).isoformat())
     assert aws_login.until(NOW) == (
-        "; logged in Sat 20:00 CT, so the session lasts until about Sun 04:00 CT "
-        "(6.0 h left)"
+        "; logged in Sat Oct 24 20:00 CT, so the session lasts until about "
+        "Sun Oct 25 04:00 CT (6.0 h left)"
     )
     # A session that's over says nothing about the credentials working now.
     assert aws_login.until(NOW + timedelta(hours=7)) == ""
