@@ -316,7 +316,7 @@ fit = [
     { name = "cryptography", specifier = ">=46" },
     { name = "endgame-aws", git = "https://github.com/NathanDeMaria/EndGame.git?subdirectory=py-endgame-aws&rev=7573ab1b9c1000814bc650714b802a4db7851233" },
     { name = "fire", specifier = ">=0.7.1,<0.8" },
-    { name = "lucky-ones", extras = ["data"], git = "https://github.com/NathanDeMaria/the-lucky-ones.git?rev=99e79fb9ed68deef0800b53d580677d1036b1dca" },
+    { name = "lucky-ones", extras = ["data"], git = "https://github.com/NathanDeMaria/the-lucky-ones.git?rev=6cbc46673b618153e6773bb3bde3b17901ea621f" },
     { name = "numba", specifier = ">=0.68.0,<0.69" },
     { name = "pyarrow", specifier = ">=26.0" },
     { name = "scikit-learn", specifier = ">=1.8.0,<2" },
@@ -905,7 +905,7 @@ wheels = [
 [[package]]
 name = "lucky-ones"
 version = "0.1.0"
-source = { git = "https://github.com/NathanDeMaria/the-lucky-ones.git?rev=99e79fb9ed68deef0800b53d580677d1036b1dca#99e79fb9ed68deef0800b53d580677d1036b1dca" }
+source = { git = "https://github.com/NathanDeMaria/the-lucky-ones.git?rev=6cbc46673b618153e6773bb3bde3b17901ea621f#6cbc46673b618153e6773bb3bde3b17901ea621f" }
 dependencies = [
     { name = "numpy" },
     { name = "pydantic" },
