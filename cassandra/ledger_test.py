@@ -459,6 +459,177 @@ def test_themes_must_use_a_known_type(tmp_path):
     assert ledger.read_themes(tmp_path / "missing.toml") == {}
 
 
+def test_a_basketball_theme_takes_basketballs_types(tmp_path):
+    path = tmp_path / "themes.toml"
+    event = "KXNCAAMBGAME-26NOV13DEPNW"
+    path.write_text(f'[{event}]\ntype = "shooting"\ntheme = "Cold"\nwhy = "4 of 16."\n')
+    assert ledger.read_themes(path)[event].type == "shooting"
+    path.write_text(f'[{event}]\ntype = "trenches"\n')
+    with pytest.raises(ValueError, match="trenches"):
+        ledger.read_themes(path)
+
+
+# ------------------------------------------------------------------------------
+# Basketball
+# ------------------------------------------------------------------------------
+
+
+def _team_box(fg, threes, ft, offensive, turnovers) -> list:
+    return [
+        {"name": "fieldGoalsMade-fieldGoalsAttempted", "displayValue": fg},
+        {
+            "name": "threePointFieldGoalsMade-threePointFieldGoalsAttempted",
+            "displayValue": threes,
+        },
+        {"name": "freeThrowsMade-freeThrowsAttempted", "displayValue": ft},
+        {"name": "offensiveRebounds", "displayValue": str(offensive)},
+        {"name": "totalRebounds", "displayValue": "35"},
+        {"name": "totalTurnovers", "displayValue": str(turnovers)},
+        {"name": "fouls", "displayValue": "15"},
+        {"name": "pointsInPaint", "displayValue": "30"},
+    ]
+
+
+def _hoops_play(period: int, clock: str, away: int, home: int) -> dict:
+    return {
+        "period": {"number": period},
+        "clock": {"displayValue": clock},
+        "awayScore": away,
+        "homeScore": home,
+        "scoringPlay": True,
+        "text": "makes jumper",
+    }
+
+
+KEYS = [
+    "minutes",
+    "points",
+    "fieldGoalsMade-fieldGoalsAttempted",
+    "threePointFieldGoalsMade-threePointFieldGoalsAttempted",
+    "freeThrowsMade-freeThrowsAttempted",
+    "fouls",
+]
+
+# Men's: the away side led all game until the home side's run in the last
+# minute, on 12 of 20 threes.
+HOOPS = {
+    "format": {"regulation": {"periods": 2}},
+    "header": {
+        "competitions": [
+            {
+                "competitors": [
+                    {
+                        "homeAway": "home",
+                        "score": "70",
+                        "team": {"id": "1", "abbreviation": "HOME"},
+                        "linescores": [{"displayValue": "30"}, {"displayValue": "40"}],
+                    },
+                    {
+                        "homeAway": "away",
+                        "score": "68",
+                        "team": {"id": "2", "abbreviation": "AWAY"},
+                        "linescores": [{"displayValue": "36"}, {"displayValue": "32"}],
+                    },
+                ],
+                "status": {"period": 2},
+            }
+        ]
+    },
+    "plays": [
+        _hoops_play(1, "15:00", 12, 0),
+        _hoops_play(1, "0:01", 36, 30),
+        _hoops_play(2, "5:00", 68, 60),
+        _hoops_play(2, "0:40", 68, 66),
+        _hoops_play(2, "0:05", 68, 70),
+    ],
+    "winprobability": [
+        {"homeWinPercentage": w} for w in (0.5, 0.2, 0.05, 0.03, 0.6, 1.0)
+    ],
+    "boxscore": {
+        "teams": [
+            {
+                "homeAway": "home",
+                "statistics": _team_box("25-55", "12-20", "8-10", 8, 10),
+            },
+            {
+                "homeAway": "away",
+                "statistics": _team_box("28-60", "4-20", "8-10", 9, 9),
+            },
+        ],
+        "players": [
+            {
+                "team": {"id": "1"},
+                "statistics": [
+                    {
+                        "keys": KEYS,
+                        "athletes": [
+                            {
+                                "athlete": {"displayName": "Shooter"},
+                                "starter": True,
+                                "stats": ["36", "30", "10-16", "8-11", "2-2", "1"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "team": {"id": "2"},
+                "statistics": [
+                    {
+                        "keys": KEYS,
+                        "athletes": [
+                            {
+                                "athlete": {"displayName": "Big"},
+                                "starter": True,
+                                "stats": ["11", "4", "2-3", "0-0", "0-0", "5"],
+                            },
+                            {"athlete": {}, "didNotPlay": True, "stats": []},
+                        ],
+                    }
+                ],
+            },
+        ],
+    },
+}
+
+
+def test_hoops_facts_from_the_winners_side():
+    f = ledger.facts(HOOPS, bet_home=True, league="mens")
+    assert f["sport"] == "basketball"
+    assert f["score"] == "HOME 70–68 AWAY"
+    assert (f["margin"], f["half_margin"], f["largest_deficit"]) == (2, -6, -12)
+    assert f["go_ahead"] == "H2 0:05" and f["late_decider"]
+    # The last 0:40: 66-68 to 70-68, after 60-68 at 5:00 -- a 10-0 run.
+    assert f["run_for"] == 10
+    # 12 of 20 threes is 5.28 points over 34%; 4 of 20 is 8.4 under.
+    assert f["shooting_luck_for"] == pytest.approx(3 * (12 - 6.8) + (8 - 7.2))
+    assert f["adjusted_margin"] == pytest.approx(
+        2 - (f["shooting_luck_for"] - f["shooting_luck_against"])
+    )
+    assert f["players_for"][0].startswith("Shooter 30 pts in 36 min")
+    assert f["short_against"] == ["Big 11 min, 5 PF"]
+    assert f["periods_for"] == "30-40"
+
+
+def test_a_win_on_hot_shooting_is_lucky_and_typed_shooting():
+    f = ledger.facts(HOOPS, bet_home=True, league="mens")
+    assert ledger.box_read(f, won=True) == "lucky"
+    found = ledger.tags(f, won=True)
+    assert {"close", "late_go_ahead", "comeback", "hot_shooting"} <= set(found)
+    assert "starter_short_them" in found
+    # The last minute decides it, before the shooting does.
+    assert ledger.suggest(f, found, won=True, price=0.3) == "late_swing"
+
+
+def test_the_same_game_from_the_losers_side():
+    f = ledger.facts(HOOPS, bet_home=False, league="mens")
+    assert (f["margin"], f["largest_lead"]) == (-2, 12)
+    assert ledger.box_read(f, won=False) == "unlucky"
+    found = ledger.tags(f, won=False)
+    assert "hot_shooting" in found and "starter_short_us" in found
+    assert ledger.digest(pd.Series(_row("KXNCAAMBGAME-X", False, 0.7, 5)), f)
+
+
 def _row(event: str, won: bool | None, price: float, contracts: float, **kw) -> dict:
     settled = won is not None
     cost = price * contracts

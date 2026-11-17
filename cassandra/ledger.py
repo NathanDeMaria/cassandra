@@ -36,6 +36,7 @@ import pandas as pd
 
 from . import injuries
 from .constants import CASSANDRA_HOME
+from .picks import league_of
 from .picks_job import RUN_FILES
 from .placing import CENTRAL
 
@@ -46,19 +47,52 @@ THEMES = LEDGER_DIR / "themes.toml"
 PICKS_DIR, ORDERS_DIR = RUN_FILES.values()
 
 #: Why a game went the way it did, from the bet's side, one per game so the
-#: weeks add up. The description is the test for using it.
+#: weeks add up. The description is the test for using it. Some are one
+#: sport's (`SPORT_TYPES`).
 TYPES = {
-    "late_swing": "decided in the last minutes or overtime: a late drive, a "
-    "walk-off kick, a late lead lost, a call at the goal line",
-    "trenches": "the run game and the line of scrimmage decided it",
+    "late_swing": "decided in the last minutes or overtime: a late drive or "
+    "shot, a walk-off kick, a late lead lost, a call at the goal line",
+    "trenches": "football: the run game and the line of scrimmage decided it",
+    "inside": "basketball: the paint and the glass decided it -- second "
+    "chances, size, points inside",
+    "shooting": "basketball: a hot or cold night from three or at the line decided it",
     "turnovers": "turnovers or return touchdowns decided it",
-    "qb": "a quarterback decided it: an injury, a benching, a debut, a career "
-    "day or a meltdown",
+    "qb": "football: a quarterback decided it: an injury, a benching, a debut, "
+    "a career day or a meltdown",
+    "player": "basketball: one player decided it: a career night, foul "
+    "trouble, an injury or an absence",
     "outclassed": "one side was better all game: a rout, or never in doubt",
     "upset": "the underdog outplayed the favorite outright, no single cause",
-    "special_teams": "kicks, punts or returns decided it",
+    "special_teams": "football: kicks, punts or returns decided it",
     "officiating": "a call or a review swung it",
 }
+#: The types each sport uses, by `league_of`'s league.
+FOOTBALL_TYPES = (
+    "late_swing",
+    "trenches",
+    "turnovers",
+    "qb",
+    "outclassed",
+    "upset",
+    "special_teams",
+    "officiating",
+)
+BASKETBALL_TYPES = (
+    "late_swing",
+    "inside",
+    "shooting",
+    "turnovers",
+    "player",
+    "outclassed",
+    "upset",
+    "officiating",
+)
+SPORT_TYPES = {
+    "ncaafb": FOOTBALL_TYPES,
+    "mens": BASKETBALL_TYPES,
+    "womens": BASKETBALL_TYPES,
+}
+BASKETBALL = ("mens", "womens")
 
 #: The box-score read: a side outplayed the other when it gained at least
 #: this many more yards, and this many more a play. Short of either, even.
@@ -78,6 +112,28 @@ WP_DROP = 0.25
 LATE_SECONDS = 300
 #: A second passer with this many attempts is a quarterback change.
 QB_ATTEMPTS = 5
+
+#: Basketball. The box-score read takes the margin with both sides' threes
+#: and free throws made at these Division I rates instead; within
+#: `EVEN_POINTS` of zero, it's even.
+THREE_RATE = {"mens": 0.34, "womens": 0.31}
+FREE_THROW_RATE = {"mens": 0.72, "womens": 0.71}
+EVEN_POINTS = 5
+#: Tags' thresholds, in points, possessions and minutes.
+CLOSE = 5
+HOOPS_BLOWOUT = 20
+HOOPS_BIG_LEAD = 10
+#: The winner shot this many points better than average than the loser did.
+HOT_SHOOTING = 8
+HOOPS_TURNOVER_EDGE = 6
+GLASS_EDGE = 8
+FREE_THROW_EDGE = 12
+#: A starter playing fewer minutes than this, in a game that wasn't a
+#: blowout, sat with fouls, an injury or a benching.
+SHORT_MINUTES = 15
+#: "Late" in basketball is the last two minutes of regulation, or overtime:
+#: five minutes is a tenth of a game.
+HOOPS_LATE_SECONDS = 120
 
 _STAMP = re.compile(r"_(\d{8}-\d{4})(?:_orders)?\.csv$")
 _RETURN_TD = re.compile(r"\b(Interception|Fumble|Kickoff|Punt|Blocked \w+) Return\b")
@@ -478,8 +534,10 @@ def _clock(play: Mapping) -> float:
     return float((play.get("clock") or {}).get("value") or 0)
 
 
-def facts(summary: Mapping, bet_home: bool) -> dict:
+def facts(summary: Mapping, bet_home: bool, league: str = "ncaafb") -> dict:
     """What a final game's ESPN summary says, from the bet's side."""
+    if league in BASKETBALL:
+        return hoops_facts(summary, bet_home, league)
     comp = summary["header"]["competitions"][0]
     sides = {c["homeAway"]: c for c in comp["competitors"]}
     mine, theirs = (
@@ -541,6 +599,7 @@ def facts(summary: Mapping, bet_home: bool) -> dict:
     line = ((summary.get("pickcenter") or [{}])[0] or {}).get("details")
     article = summary.get("article") or {}
     return {
+        "sport": "football",
         "score": f"{mine['team']['abbreviation']} {points_for}–{points_against} "
         f"{theirs['team']['abbreviation']}" + (" (OT)" if periods > 4 else ""),
         "points_for": points_for,
@@ -587,7 +646,9 @@ def box_read(f: Mapping, won: bool) -> str:
     `EVEN_YARDS` and `EVEN_YPP`): a win while outplaying is earned, while
     outplayed is lucky; a loss is unlucky or deserved the same way. Total
     yards alone favor the side that held the ball; a play alone, the side
-    with the long plays; so it takes both."""
+    with the long plays; so it takes both. Basketball's is `hoops_read`."""
+    if f.get("sport") == "basketball":
+        return hoops_read(f, won)
     yards = f["yards_for"] - f["yards_against"]
     per_play = f["ypp_for"] - f["ypp_against"]
     if math.isnan(per_play) or abs(yards) < EVEN_YARDS or abs(per_play) < EVEN_YPP:
@@ -604,8 +665,11 @@ def tags(f: Mapping, won: bool) -> list[str]:
 
     The tags describe the game, whoever won it -- a `comeback` is the
     winner's -- so a tag's record says how the bets in such games went.
-    The two QB tags are the exception, being about one side.
+    The two QB tags are the exception, being about one side. Basketball's
+    are `hoops_tags`.
     """
+    if f.get("sport") == "basketball":
+        return hoops_tags(f, won)
     found = []
     margin = abs(f["margin"])
     if f["overtime"]:
@@ -648,6 +712,8 @@ def tags(f: Mapping, won: bool) -> list[str]:
 def suggest(f: Mapping, found: Sequence[str], won: bool, price: float) -> str:
     """A first guess at the game's type from the box score, for games no one
     has written a theme for yet."""
+    if f.get("sport") == "basketball":
+        return hoops_suggest(f, found, won, price)
     winner_returns = f["return_tds_for"] if won else f["return_tds_against"]
     if "overtime" in found or ("late_go_ahead" in found and "one_score" in found):
         return "late_swing"
@@ -666,6 +732,306 @@ def suggest(f: Mapping, found: Sequence[str], won: bool, price: float) -> str:
 
 
 # ------------------------------------------------------------------------------
+# Basketball, from the bet's side
+# ------------------------------------------------------------------------------
+
+
+def _made_tried(text: str | None) -> tuple[int, int]:
+    """`8-15` -> (8, 15)."""
+    if not text or "-" not in text:
+        return 0, 0
+    made, tried = text.split("-", 1)
+    return _int(made), _int(tried)
+
+
+def _seconds_left(play: Mapping) -> float:
+    """A play's clock, `4:32` or `12.3`, as seconds left in its period."""
+    clock = play.get("clock") or {}
+    if clock.get("value") is not None:
+        return float(clock["value"])
+    minutes, _, seconds = (clock.get("displayValue") or "0").rpartition(":")
+    try:
+        return 60 * float(minutes or 0) + float(seconds)
+    except ValueError:
+        return 0.0
+
+
+def _box(team: Mapping) -> dict:
+    """A team's box score line: shots, rebounds, turnovers, fouls, and an
+    estimate of its possessions."""
+    fg, fga = _made_tried(_stat(team, "fieldGoalsMade-fieldGoalsAttempted"))
+    threes, three_tries = _made_tried(
+        _stat(team, "threePointFieldGoalsMade-threePointFieldGoalsAttempted")
+    )
+    ft, fta = _made_tried(_stat(team, "freeThrowsMade-freeThrowsAttempted"))
+    offensive = _int(_stat(team, "offensiveRebounds"))
+    turnovers = _int(_stat(team, "totalTurnovers") or _stat(team, "turnovers"))
+    return {
+        "fg": fg,
+        "fga": fga,
+        "threes": threes,
+        "three_tries": three_tries,
+        "ft": ft,
+        "fta": fta,
+        "offensive_rebounds": offensive,
+        "rebounds": _int(_stat(team, "totalRebounds")),
+        "turnovers": turnovers,
+        "fouls": _int(_stat(team, "fouls")),
+        "paint": _int(_stat(team, "pointsInPaint")),
+        "efg": (fg + 0.5 * threes) / fga if fga else math.nan,
+        "possessions": fga - offensive + turnovers + 0.44 * fta,
+    }
+
+
+def hoops_players(summary: Mapping, team_id: str) -> list[dict]:
+    """A team's players in a box score, most points first."""
+    found = []
+    for team in (summary.get("boxscore") or {}).get("players", []):
+        if str(team["team"]["id"]) != str(team_id):
+            continue
+        for group in team.get("statistics", [])[:1]:
+            keys = group.get("keys") or []
+            for athlete in group.get("athletes", []):
+                person = athlete.get("athlete") or {}
+                name = (
+                    person.get("displayName") or person.get("shortName") or "?"
+                ).strip()
+                stats = dict(zip(keys, athlete.get("stats") or []))
+                minutes = _int(stats.get("minutes"))
+                points = _int(stats.get("points"))
+                fouls = _int(stats.get("fouls"))
+                found.append(
+                    {
+                        "name": name,
+                        "starter": bool(athlete.get("starter")),
+                        "played": not athlete.get("didNotPlay") and minutes > 0,
+                        "minutes": minutes,
+                        "points": points,
+                        "fouls": fouls,
+                        "line": f"{name} {points} pts in {minutes} min "
+                        f"({stats.get('fieldGoalsMade-fieldGoalsAttempted', '?')} FG, "
+                        f"{stats.get('threePointFieldGoalsMade-threePointFieldGoalsAttempted', '?')} 3PT, "
+                        f"{stats.get('freeThrowsMade-freeThrowsAttempted', '?')} FT, {fouls} PF)",
+                    }
+                )
+    return sorted(found, key=lambda p: -p["points"])
+
+
+def _shooting_luck(box: Mapping, league: str) -> float:
+    """Points a side scored over making its threes and free throws at the
+    league's average rates."""
+    return 3 * (box["threes"] - THREE_RATE[league] * box["three_tries"]) + (
+        box["ft"] - FREE_THROW_RATE[league] * box["fta"]
+    )
+
+
+def _period_name(period: int, regulation: int) -> str:
+    if period > regulation:
+        return f"OT{period - regulation}"
+    return f"{'H' if regulation == 2 else 'Q'}{period}"
+
+
+def hoops_facts(summary: Mapping, bet_home: bool, league: str) -> dict:
+    """What a final basketball game's ESPN summary says, from the bet's side."""
+    comp = summary["header"]["competitions"][0]
+    sides = {c["homeAway"]: c for c in comp["competitors"]}
+    mine, theirs = (
+        (sides["home"], sides["away"]) if bet_home else (sides["away"], sides["home"])
+    )
+    sign = 1 if bet_home else -1
+    points_for, points_against = _int(mine.get("score")), _int(theirs.get("score"))
+    margin = points_for - points_against
+    final_sign = (margin > 0) - (margin < 0)
+    regulation = ((summary.get("format") or {}).get("regulation") or {}).get(
+        "periods"
+    ) or (2 if league == "mens" else 4)
+
+    scoring = [p for p in summary.get("plays") or [] if p.get("scoringPlay")]
+    half_margin, lead, deficit, last = 0, 0, 0, 0
+    go_ahead, previous = None, 0
+    run, run_side, best_run = 0, 0, {1: 0, -1: 0}
+    late_lines = []
+    for play in scoring:
+        m = sign * (play["homeScore"] - play["awayScore"])
+        period = play["period"]["number"]
+        lead, deficit = max(lead, m), min(deficit, m)
+        if period <= regulation // 2:
+            half_margin = m
+        now = (m > 0) - (m < 0)
+        if now == final_sign and previous != final_sign:
+            go_ahead = play
+        previous = now
+        side = (m > last) - (m < last)
+        if side:
+            run = run + abs(m - last) if side == run_side else abs(m - last)
+            run_side = side
+            best_run[side] = max(best_run[side], run)
+        last = m
+        if period > regulation or (
+            period == regulation and _seconds_left(play) <= 2 * HOOPS_LATE_SECONDS
+        ):
+            late_lines.append(
+                f"{_period_name(period, regulation)} "
+                f"{(play.get('clock') or {}).get('displayValue', '')} "
+                f"{play.get('text', '').strip()} ({play['awayScore']}-{play['homeScore']})"
+            )
+    periods = max([p["period"]["number"] for p in scoring], default=regulation)
+    periods = max(periods, (comp.get("status") or {}).get("period") or regulation)
+    late = go_ahead is not None and (
+        go_ahead["period"]["number"] > regulation
+        or (
+            go_ahead["period"]["number"] == regulation
+            and _seconds_left(go_ahead) <= HOOPS_LATE_SECONDS
+        )
+    )
+
+    wp = [w["homeWinPercentage"] for w in summary.get("winprobability") or []]
+    wp = wp if bet_home else [1 - w for w in wp]
+    core = wp[1:-1] if len(wp) > 3 else wp
+
+    stats = {t["homeAway"]: t for t in (summary.get("boxscore") or {}).get("teams", [])}
+    box_for = _box(stats.get("home" if bet_home else "away", {}))
+    box_against = _box(stats.get("away" if bet_home else "home", {}))
+    luck_for = _shooting_luck(box_for, league)
+    luck_against = _shooting_luck(box_against, league)
+    players_for = hoops_players(summary, mine["team"]["id"])
+    players_against = hoops_players(summary, theirs["team"]["id"])
+
+    def short(players: list[dict]) -> list[str]:
+        return [
+            f"{p['name']} {p['minutes']} min, {p['fouls']} PF"
+            for p in players
+            if p["starter"] and p["minutes"] < SHORT_MINUTES
+        ]
+
+    def by_period(side: Mapping) -> str:
+        return "-".join(s.get("displayValue", "?") for s in side.get("linescores", []))
+
+    line = ((summary.get("pickcenter") or [{}])[0] or {}).get("details")
+    article = summary.get("article") or {}
+    overtime = periods > regulation
+    return {
+        "sport": "basketball",
+        "score": f"{mine['team']['abbreviation']} {points_for}–{points_against} "
+        f"{theirs['team']['abbreviation']}" + (" (OT)" if overtime else ""),
+        "points_for": points_for,
+        "points_against": points_against,
+        "margin": margin,
+        "overtime": overtime,
+        "half_margin": half_margin,
+        "largest_lead": lead,
+        "largest_deficit": deficit,
+        "go_ahead": None
+        if go_ahead is None
+        else f"{_period_name(go_ahead['period']['number'], regulation)} "
+        f"{(go_ahead.get('clock') or {}).get('displayValue', '')}",
+        "late_decider": late,
+        "run_for": best_run[1],
+        "run_against": best_run[-1],
+        "periods_for": by_period(mine),
+        "periods_against": by_period(theirs),
+        "wp_start": wp[0] if wp else math.nan,
+        "wp_peak": max(core) if core else math.nan,
+        "wp_low": min(core) if core else math.nan,
+        "box_for": box_for,
+        "box_against": box_against,
+        "shooting_luck_for": luck_for,
+        "shooting_luck_against": luck_against,
+        "adjusted_margin": margin - (luck_for - luck_against),
+        "turnovers_for": box_for["turnovers"],
+        "turnovers_against": box_against["turnovers"],
+        "players_for": [p["line"] for p in players_for if p["played"]][:3],
+        "players_against": [p["line"] for p in players_against if p["played"]][:3],
+        "short_for": short(players_for),
+        "short_against": short(players_against),
+        "line": line,
+        "headline": article.get("headline"),
+        "recap": " ".join(injuries.sentences(article.get("story") or "")),
+        "scoring": late_lines,
+    }
+
+
+def hoops_read(f: Mapping, won: bool) -> str:
+    """Would the result have held with both sides making their threes and
+    free throws at the league's average rates? Within `EVEN_POINTS`, even;
+    a win that held is earned, one that wouldn't have is lucky; a loss is
+    unlucky or deserved the same way. Shooting from three and the line
+    swings more from night to night than anything else in the box score."""
+    adjusted = f["adjusted_margin"]
+    if abs(adjusted) < EVEN_POINTS:
+        return "even"
+    if won:
+        return "earned" if adjusted > 0 else "lucky"
+    return "unlucky" if adjusted > 0 else "deserved"
+
+
+def hoops_tags(f: Mapping, won: bool) -> list[str]:
+    """`tags` for a basketball game: the game's shape, then what the winner
+    did better. The two `starter_short` tags are about one side."""
+    found = []
+    margin = abs(f["margin"])
+    if f["overtime"]:
+        found.append("overtime")
+    elif margin <= CLOSE:
+        found.append("close")
+    blowout = margin >= HOOPS_BLOWOUT
+    if blowout:
+        found.append("blowout")
+    if f["late_decider"]:
+        found.append("late_go_ahead")
+    deficit = f["largest_deficit"] if won else -f["largest_lead"]
+    start = f["wp_start"] if won else 1 - f["wp_start"]
+    low = f["wp_low"] if won else 1 - f["wp_peak"]
+    sank = not math.isnan(low) and low <= 1 - BLOWN_WP and start - low >= WP_DROP
+    if deficit <= -HOOPS_BIG_LEAD or sank:
+        found.append("comeback")
+    elif deficit == 0:
+        found.append("wire_to_wire")
+    side = 1 if won else -1
+    winner, loser = (
+        (f["box_for"], f["box_against"]) if won else (f["box_against"], f["box_for"])
+    )
+    shooting = side * (f["shooting_luck_for"] - f["shooting_luck_against"])
+    if shooting >= HOT_SHOOTING:
+        found.append("hot_shooting")
+    elif shooting <= -HOT_SHOOTING:
+        found.append("won_shooting_cold")
+    if loser["turnovers"] - winner["turnovers"] >= HOOPS_TURNOVER_EDGE:
+        found.append("turnover_edge")
+    if winner["offensive_rebounds"] - loser["offensive_rebounds"] >= GLASS_EDGE:
+        found.append("glass")
+    if winner["fta"] - loser["fta"] >= FREE_THROW_EDGE:
+        found.append("free_throw_edge")
+    if not blowout:
+        if f["short_for"]:
+            found.append("starter_short_us")
+        if f["short_against"]:
+            found.append("starter_short_them")
+    return found
+
+
+def hoops_suggest(f: Mapping, found: Sequence[str], won: bool, price: float) -> str:
+    """`suggest` for a basketball game."""
+    if "overtime" in found or ("late_go_ahead" in found and "close" in found):
+        return "late_swing"
+    if "blowout" in found:
+        return "outclassed"
+    if hoops_read(f, won) in ("lucky", "unlucky") or "hot_shooting" in found:
+        return "shooting"
+    if "turnover_edge" in found:
+        return "turnovers"
+    if "glass" in found:
+        return "inside"
+    if ("starter_short_us" in found and not won) or (
+        "starter_short_them" in found and won
+    ):
+        return "player"
+    if (price < 0.5) == won:
+        return "upset"
+    return "outclassed"
+
+
+# ------------------------------------------------------------------------------
 # Themes
 # ------------------------------------------------------------------------------
 
@@ -677,16 +1043,18 @@ class Theme(NamedTuple):
 
 
 def read_themes(path: Path) -> dict[str, Theme]:
-    """`themes.toml`: a table per event ticker with `type` (one of `TYPES`),
+    """`themes.toml`: a table per event ticker with `type` (one of its sport's
+    `SPORT_TYPES`),
     `theme` (a few words) and `why` (a sentence or two)."""
     if not path.exists():
         return {}
     found = {}
     for event, entry in tomllib.loads(path.read_text()).items():
         kind = entry.get("type")
-        if kind not in TYPES:
+        allowed = SPORT_TYPES.get(league_of(event) or "", tuple(TYPES))
+        if kind not in allowed:
             raise ValueError(
-                f"{path}: {event} has type {kind!r}; use one of {', '.join(TYPES)}"
+                f"{path}: {event} has type {kind!r}; use one of {', '.join(allowed)}"
             )
         found[event] = Theme(kind, entry.get("theme", ""), entry.get("why", ""))
     return found
@@ -986,9 +1354,11 @@ def report(ledger: pd.DataFrame, as_of: datetime) -> str:
                 TYPES,
             ),
             "",
-            "**Box-score read** -- did the side that outgained the other, in yards "
-            f"(by {EVEN_YARDS}+) and yards a play (by {EVEN_YPP}+), win? Turnovers aside, so a "
-            "lucky win is one the box score didn't earn.",
+            "**Box-score read** -- a lucky win is one the box score didn't earn. "
+            "Football: did the side that outgained the other, in yards "
+            f"(by {EVEN_YARDS}+) and yards a play (by {EVEN_YPP}+), win? Turnovers aside. "
+            "Basketball: would the result have held with both sides' threes and free "
+            f"throws made at the Division I average? Within {EVEN_POINTS} points is even.",
             "",
             *_table(breakdown(settled, "read"), "read"),
             "",
@@ -997,6 +1367,11 @@ def report(ledger: pd.DataFrame, as_of: datetime) -> str:
             *_table(tag_table(settled), "tag"),
             "",
             "## Splits",
+            "",
+            *_table(
+                breakdown(settled, settled["event"].map(league_of).fillna("?")),
+                "league",
+            ),
             "",
             *_table(
                 breakdown(
@@ -1128,6 +1503,8 @@ def report(ledger: pd.DataFrame, as_of: datetime) -> str:
 
 def digest(row: pd.Series, f: Mapping) -> str:
     """Everything a theme is written from, for one settled game."""
+    if f.get("sport") == "basketball":
+        return hoops_digest(row, f)
     lines = [
         f"=== {row['event']}",
         f"{row['title']}: bet {row['bet_short']} @ {row['avg_price']:.2f}"
@@ -1143,6 +1520,46 @@ def digest(row: pd.Series, f: Mapping) -> str:
         f"{f['turnovers_against']} TO, 3rd {f['third_downs_against']} | {'; '.join(f['passers_against'])}",
         f"tags: {', '.join(row['tags'])} | box score: {row['read']} | suggested type: {row['type']}",
         "scoring:",
+        *(f"  {s}" for s in f["scoring"]),
+        f"HEADLINE: {f['headline']}",
+        f["recap"][:3000],
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _box_line(box: Mapping) -> str:
+    efg = "?" if math.isnan(box["efg"]) else f"{box['efg']:.0%}"
+    return (
+        f"FG {box['fg']}-{box['fga']}, 3PT {box['threes']}-{box['three_tries']}, "
+        f"FT {box['ft']}-{box['fta']}, eFG {efg}, OREB {box['offensive_rebounds']}, "
+        f"TO {box['turnovers']}, PF {box['fouls']}, paint {box['paint']}, "
+        f"~{box['possessions']:.0f} poss"
+    )
+
+
+def hoops_digest(row: pd.Series, f: Mapping) -> str:
+    """`digest` for a basketball game: the late scoring, not all of it."""
+    lines = [
+        f"=== {row['event']}",
+        f"{row['title']}: bet {row['bet_short']} @ {row['avg_price']:.2f}"
+        + ("" if pd.isna(row.get("model")) else f", model {row['model']:.2f}")
+        + ("" if pd.isna(row.get("close")) else f", close {row['close']:.2f}")
+        + f" | {row['divisions']} | {'WON' if row['won'] else 'LOST'} {f['score']} | P&L {_money(row['pnl'])}",
+        f"line {f['line']} | WP start {f['wp_start']:.2f} peak {f['wp_peak']:.2f} low {f['wp_low']:.2f} "
+        f"| by period us {f['periods_for']}, them {f['periods_against']}",
+        f"half {f['half_margin']:+d}, biggest lead {f['largest_lead']}, deficit {f['largest_deficit']}, "
+        f"winner went ahead for good {f['go_ahead']} | best run us {f['run_for']}, them {f['run_against']}",
+        f"us:   {_box_line(f['box_for'])}",
+        f"them: {_box_line(f['box_against'])}",
+        f"shooting vs average (3s and FTs): us {f['shooting_luck_for']:+.1f} pts, them "
+        f"{f['shooting_luck_against']:+.1f}; margin at average shooting {f['adjusted_margin']:+.1f}",
+        f"us:   {'; '.join(f['players_for'])}"
+        + (f" | short: {'; '.join(f['short_for'])}" if f["short_for"] else ""),
+        f"them: {'; '.join(f['players_against'])}"
+        + (f" | short: {'; '.join(f['short_against'])}" if f["short_against"] else ""),
+        f"tags: {', '.join(row['tags'])} | box score: {row['read']} | suggested type: {row['type']}",
+        "late scoring:",
         *(f"  {s}" for s in f["scoring"]),
         f"HEADLINE: {f['headline']}",
         f["recap"][:3000],
