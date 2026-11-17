@@ -60,6 +60,25 @@ Several sessions share this machine and this repository at once.
   in code, tests, docs, commit messages or pull requests. Betting values live
   only in s3 `cassandra/betting/autobet.json`; code holds the structures.
 
+## Other repositories, and what survives a rebuild
+
+This is a devcontainer. Only the bind mounts outlive a rebuild:
+`/workspaces/cassandra`, `~/.cassandra`, `~/.claude` and `~/.aws`. Everything
+else -- the rest of `/home/dev`, and `/tmp` -- is gone with the container.
+
+- Every other repository has one clone, `~/.cassandra/repos/<repo>` (EndGame,
+  call-it-what-you-want, gold-rush, invisible-string, say-youll-remember-me,
+  so-high-school, ten-minute-version, the-archer, the-lucky-ones). Clone a
+  missing one there, not into `/home/dev` or `/tmp`. The old `/home/dev/<repo>`
+  paths are symlinks to these for now.
+- Leave each clone on its default branch at origin's tip, and do your work in a
+  worktree of it (`git -C ~/.cassandra/repos/<repo> worktree add /tmp/<name> -b
+  <branch> origin/main`). A worktree in `/tmp` is fine for a branch that gets
+  pushed; anything that must outlast the container goes under `~/.cassandra`.
+- The main checkout is kept on `origin/main` by a session-start hook
+  (`~/.claude/hooks/sync-main-checkout.sh`, which also re-syncs the shared
+  venv). Leave it on main.
+
 ## Secrets
 
 - The Kalshi key is in `/workspaces/cassandra/.kalshi/` and the CFBD key in
