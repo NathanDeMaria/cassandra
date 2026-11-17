@@ -252,7 +252,7 @@ endgame-aws = { git = "https://github.com/NathanDeMaria/EndGame.git", rev = "757
 # scikit-learn that produces a win probability fit, and cassandra produces
 # none -- it reads the one that ships inside the package. The scikit-learn
 # above is cassandra's own, for the prob-to-margin calibration.
-lucky-ones = { git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "99e79fb9ed68deef0800b53d580677d1036b1dca" }
+lucky-ones = { git = "https://github.com/NathanDeMaria/the-lucky-ones.git", rev = "6cbc46673b618153e6773bb3bde3b17901ea621f" }
 # Player ratings for college basketball, from who was on the floor for every
 # possession: what the `player-ratings` sweep runs each morning to file every
 # mens and womens team as of today (`cassandra.player_ratings_build`), which
