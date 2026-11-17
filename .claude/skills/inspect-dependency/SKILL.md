@@ -40,6 +40,9 @@ revs in `pyproject.toml`. So "the EndGame checkout" is not one version of anythi
 subdirectory and which rev you mean.
 
 Clone one that's missing with `git clone <url from pyproject.toml> ~/.cassandra/repos/<name>`.
+`~/.cassandra` is a bind mount, so the clone outlives the container; `/home/dev` and `/tmp` don't.
+Each clone sits on its default branch: `git -C <checkout> pull --ff-only` before reading main, and
+put your own changes in a worktree rather than switching the clone's branch.
 
 ## The installed revision
 
