@@ -43,6 +43,7 @@ import pandas as pd
 
 from cassandra import ledger
 from cassandra.kalshi_trade import KalshiClient, public_get
+from cassandra.picks import league_of
 from cassandra.picks_job import RUN_FILES, client
 from cassandra.placing import espn_summary
 
@@ -218,8 +219,9 @@ def build(client: KalshiClient) -> tuple[pd.DataFrame, dict[str, dict]]:
         row["edge"] = row["model"] - row["market"]
 
         summary = {}
+        league = league_of(bet["event"]) or "ncaafb"
         if bet["settled"] and row.get("game_id"):
-            summary = espn_summary(row["game_id"], final=True)
+            summary = espn_summary(row["game_id"], final=True, league=league)
         kickoff = _timestamp(row.get("kickoff"))
         if kickoff is None and summary:
             kickoff = _timestamp(summary["header"]["competitions"][0].get("date"))
@@ -247,7 +249,7 @@ def build(client: KalshiClient) -> tuple[pd.DataFrame, dict[str, dict]]:
             {"score": None, "read": None, "tags": [], "type": None, "type_from": None}
         )
         if bet["settled"] and summary and row.get("bet_home") is not None:
-            f = ledger.facts(summary, bool(row["bet_home"]))
+            f = ledger.facts(summary, bool(row["bet_home"]), league)
             all_facts[bet["event"]] = f
             won = bool(bet["won"])
             row["score"] = f["score"]
@@ -310,7 +312,8 @@ def main() -> None:
     print(f"report: {ledger.LEDGER_DIR / 'report.md'}")
     print(f"wins and losses: {ledger.LEDGER_DIR / 'wins-losses.md'}")
     if args.digest:
-        print(f"\ntypes: {', '.join(ledger.TYPES)}\n")
+        print(f"\nfootball types: {', '.join(ledger.FOOTBALL_TYPES)}")
+        print(f"basketball types: {', '.join(ledger.BASKETBALL_TYPES)}\n")
         for _, row in pending.sort_values("kickoff").iterrows():
             if row["event"] in facts:
                 print(ledger.digest(row, facts[row["event"]]))

@@ -455,3 +455,27 @@ def test_no_shard_balances_doesnt_lose_the_runs_orders(tmp_path, monkeypatch):
     placed = placing.place(exchange, picks, matched, args, out)
     assert exchange.log == [("buy", "F-A")]
     assert placed is not None and placed["filled"].iloc[0] == 5
+
+
+def _final(started: datetime, story: str | None = None) -> dict:
+    return {
+        "header": {
+            "competitions": [
+                {
+                    "date": started.strftime("%Y-%m-%dT%H:%MZ"),
+                    "status": {"type": {"completed": True}},
+                }
+            ]
+        },
+        "article": {"story": story} if story else {},
+    }
+
+
+def test_a_final_summary_is_kept_once_its_recap_is_in_or_overdue():
+    now = datetime.now(UTC)
+    assert placing._keep(_final(now - timedelta(hours=3), story="Recap."))
+    # No recap yet: it may still come.
+    assert not placing._keep(_final(now - timedelta(hours=3)))
+    # Many small-college games never get one.
+    assert placing._keep(_final(now - placing.STORY_WAIT - timedelta(hours=1)))
+    assert not placing._keep({"header": {"competitions": [{}]}})

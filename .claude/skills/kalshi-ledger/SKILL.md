@@ -40,11 +40,16 @@ The summary lines say what's missing. Watch for:
 
 - the price paid, model, close and result;
 - the DraftKings line and the win-probability path;
-- both teams' yards, rushing, turnovers, third downs and passers;
+- football: both teams' yards, rushing, turnovers, third downs and passers, and every
+  scoring play;
+- basketball: the score by period, the biggest lead and run each way, both teams'
+  shooting, offensive rebounds, turnovers and fouls, each side's points from threes and
+  free throws over the Division I average, the margin had both shot the average, the
+  top scorers, starters who played under 15 minutes, and the scoring in the last four
+  minutes and overtime;
 - the tags and the box-score read;
 - the **suggested type**;
-- every scoring play;
-- the AP recap.
+- the AP recap, when there is one (many small-college basketball games have none).
 
 ## 2. Write each theme
 
@@ -64,19 +69,22 @@ why = "Tulane forced 6 turnovers (1 in its first five games), one a pick-6 at th
 - No double quotes inside the strings. TOML needs them escaped, so use single quotes or
   none.
 
-**`type` is exactly one of these** (`cassandra.ledger.TYPES`). Pick the one that most
-decided the result, from the bet's side:
+**`type` is exactly one of its sport's types** (`cassandra.ledger.SPORT_TYPES`). Pick the
+one that most decided the result, from the bet's side:
 
-| type | use when |
-|---|---|
-| `late_swing` | decided in the last ~5 minutes or OT: a late drive, a walk-off kick, a late lead lost, a goal-line call |
-| `trenches` | the run game or the line of scrimmage decided it: one side ran over the other |
-| `turnovers` | turnovers or return TDs decided it, often while the box score said otherwise |
-| `qb` | a quarterback decided it: an injury, a benching, a debut, a career day or a meltdown |
-| `outclassed` | one side was better all game: a rout, or a game never in doubt |
-| `upset` | the underdog simply outplayed the favorite, no single cause |
-| `special_teams` | kicks, punts or returns decided it |
-| `officiating` | a call or a review swung it |
+| type | sport | use when |
+|---|---|---|
+| `late_swing` | both | decided late or in OT: a late drive or shot, a walk-off kick, a late lead lost, a goal-line call. Football's late is the last ~5 minutes; basketball's the last ~2 |
+| `trenches` | football | the run game or the line of scrimmage decided it: one side ran over the other |
+| `inside` | basketball | the paint and the glass decided it: second chances, size, points inside |
+| `shooting` | basketball | a hot or cold night from three or at the line decided it |
+| `turnovers` | both | turnovers or return TDs decided it, often while the box score said otherwise |
+| `qb` | football | a quarterback decided it: an injury, a benching, a debut, a career day or a meltdown |
+| `player` | basketball | one player decided it: a career night, foul trouble, an injury or an absence |
+| `outclassed` | both | one side was better all game: a rout, or a game never in doubt |
+| `upset` | both | the underdog simply outplayed the favorite, no single cause |
+| `special_teams` | football | kicks, punts or returns decided it |
+| `officiating` | both | a call or a review swung it |
 
 **Judgment rules**, so the weeks stay comparable:
 
@@ -87,6 +95,11 @@ decided the result, from the bet's side:
   not a `qb` game.
 - **`upset` is for when no single cause stands out.** If the underdog won by running the
   ball, it's `trenches`.
+- **Basketball's box-score read is about shooting luck.** `lucky` or `unlucky` means the
+  result would have flipped with both sides shooting the average from three and the
+  line, so it's usually `shooting`. A short-minutes starter is a `player` game only when
+  the recap or fouls say why (foul trouble, an injury), not when a coach just went deep
+  into the bench.
 - **Note big price moves.** If the market moved a lot toward the bet (CLV of 10¢ or
   more) and it still lost, say so in `why`: a good bet, a bad outcome.
 

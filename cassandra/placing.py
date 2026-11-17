@@ -65,9 +65,18 @@ from .picks import (
 CENTRAL = ZoneInfo("America/Chicago")
 ORDERS_DIR = CASSANDRA_HOME / "betting" / "orders"
 SUMMARIES_DIR = CASSANDRA_HOME / "picks" / "summaries"
-ESPN_SUMMARY = (
-    "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary"
-)
+#: ESPN's game summary (box score, plays, AP story) for each pick league.
+ESPN_SUMMARY = {
+    league: f"https://site.api.espn.com/apis/site/v2/sports/{sport}/summary"
+    for league, sport in (
+        ("ncaafb", "football/college-football"),
+        ("mens", "basketball/mens-college-basketball"),
+        ("womens", "basketball/womens-college-basketball"),
+    )
+}
+#: A final summary still without an AP story this long after the start is
+#: kept anyway: many small-college games never get one.
+STORY_WAIT = timedelta(days=2)
 #: How many of each team's last games' stories are read for injury news.
 NEWS_GAMES = 2
 #: How long a run waits for a transfer between shards to land before it gives
@@ -389,13 +398,14 @@ def cancel(
     return lines
 
 
-def espn_summary(game_id: str, final: bool) -> dict:
+def espn_summary(game_id: str, final: bool, league: str = "ncaafb") -> dict:
     """ESPN's summary of a game: box score and AP story. A final one is kept."""
     path = SUMMARIES_DIR / f"{game_id}.json.gz"
     if final and path.exists():
         return json.loads(gzip.decompress(path.read_bytes()))
     request = urllib.request.Request(
-        f"{ESPN_SUMMARY}?event={game_id}", headers={"User-Agent": "cassandra-picks"}
+        f"{ESPN_SUMMARY[league]}?event={game_id}",
+        headers={"User-Agent": "cassandra-picks"},
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -403,12 +413,24 @@ def espn_summary(game_id: str, final: bool) -> dict:
     except OSError as error:
         logging.warning("no ESPN summary for %s: %s", game_id, error)
         return {}
-    # A recap can land after the final whistle, so don't keep a summary
-    # without one.
-    if final and (summary.get("article") or {}).get("story"):
+    if final and _keep(summary):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(gzip.compress(json.dumps(summary).encode()))
     return summary
+
+
+def _keep(summary: Mapping) -> bool:
+    """Whether a final game's summary is done changing. A recap can land
+    after the final whistle, so one without waits up to `STORY_WAIT`."""
+    if (summary.get("article") or {}).get("story"):
+        return True
+    competition = ((summary.get("header") or {}).get("competitions") or [{}])[0]
+    completed = ((competition.get("status") or {}).get("type") or {}).get("completed")
+    started = competition.get("date")
+    if not completed or not started:
+        return False
+    start = datetime.fromisoformat(started.replace("Z", "+00:00"))
+    return datetime.now(UTC) - start >= STORY_WAIT
 
 
 def injury_news(
