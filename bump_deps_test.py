@@ -114,3 +114,70 @@ def test_the_pull_request_names_every_pin_and_what_merged():
     assert f"- `endgame` {OLD[:7]} -> {NEW[:7]}" in body
     assert "the rev `endgame-aws` pins it at" in body
     assert "  - A change" in body and "with a body" not in body
+
+
+CONSUMER = f"""\
+[tool.uv.sources]
+cassandra = {{ git = "https://github.com/o/cassandra.git", rev = "{OLD}" }}
+names = {{ git = "https://github.com/o/names.git", rev = "{OLD}" }}
+lucky = {{ git = "https://github.com/o/lucky.git", rev = "{OLD}" }}
+other = {{ git = "https://github.com/o/other.git", rev = "{OLD}" }}
+
+[tool.bump-deps]
+follow = {{ names = "cassandra", lucky = "cassandra" }}
+"""  # noqa: E501
+
+
+def _consumer_upstream():
+    """`cassandra` moved and pins `names` at THIRD but has no `lucky`; neither
+    follower's own repository is ever asked for its head."""
+    return _upstream(
+        **{
+            "repos/o/cassandra/commits?per_page=1": [{"sha": NEW}],
+            "repos/o/other/commits?per_page=1": [{"sha": NEW}],
+            f"repos/o/cassandra/contents/pyproject.toml?ref={NEW}": _contents(
+                "[tool.uv.sources]\n"
+                f'names = {{ git = "https://github.com/o/names.git", rev = "{THIRD}" }}\n'
+            ),
+        }
+    )
+
+
+def test_a_declared_follower_takes_its_leaders_pin_in_its_leaders_pull_request():
+    get = _consumer_upstream()
+    bumps = bump_deps.plan(CONSUMER, get)
+    assert _revs(bumps) == {"cassandra": NEW, "names": THIRD, "other": NEW}
+    assert [(b.pin.name, b.group, b.follows) for b in bumps] == [
+        ("cassandra", "cassandra", None),
+        ("names", "cassandra", "cassandra"),
+        ("other", "other", None),
+    ]
+    title, body = bump_deps.describe(bumps[:2], get)
+    assert title == "Bump cassandra and names"
+    assert body.startswith("[o/cassandra](https://github.com/o/cassandra) has merged")
+    assert f"https://github.com/o/names/compare/{OLD}...{THIRD}" in body
+    assert "the rev `cassandra` pins it at" in body
+
+
+def test_a_follow_must_name_two_pins_and_one_leader():
+    for follow, problem in [
+        ('{ names = "nobody" }', "both must be pins"),
+        ('{ names = "cassandra", cassandra = "other" }', "cassandra follows too"),
+    ]:
+        pyproject = CONSUMER.replace(
+            'follow = { names = "cassandra", lucky = "cassandra" }',
+            f"follow = {follow}",
+        )
+        with pytest.raises(ValueError, match=problem):
+            bump_deps.plan(pyproject, _consumer_upstream())
+
+
+def test_the_cli_bumps_the_pyproject_it_is_pointed_at(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "pyproject.toml"
+    path.write_text(CONSUMER)
+    monkeypatch.setattr(bump_deps, "github", _consumer_upstream())
+    assert bump_deps.main(["--pyproject", str(path), "list"]) == 0
+    assert capsys.readouterr().out.split() == ["cassandra", "other"]
+    assert bump_deps.main(["--pyproject", str(path), "apply", "cassandra"]) == 0
+    assert capsys.readouterr().out.startswith("Bump cassandra and names\n\n")
+    assert bump_deps.read_pins(path.read_text())[1].rev == THIRD

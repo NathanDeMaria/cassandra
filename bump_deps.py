@@ -2,6 +2,7 @@
 
     python bump_deps.py list            # upstream repositories with a newer commit
     python bump_deps.py apply EndGame   # rewrite that repository's pins in place
+    python bump_deps.py --pyproject backend/pyproject.toml list   # another repo's
 
 Every dependency under `[tool.uv.sources]` is pinned to a commit, on purpose:
 a bump moves the data or the fit a replay reads, so it should arrive as a
@@ -19,6 +20,12 @@ Where a pin goes:
   that pin. `endgame-aws` names the `endgame` rev it was built against in its
   own `[tool.uv.sources]`, and the two must agree about what a Game is, so
   `endgame` moves only when `endgame-aws` says so.
+- A pin named in the bumped file's own `[tool.bump-deps] follow` table, as
+  `follower = "leader"`, takes the rev the leader pins it at, whatever
+  repository the two are in -- and stays where it is when the leader doesn't
+  pin it. invisible-string uses this: its `call-it-what-you-want` and
+  `lucky-ones` must be the revs its `cassandra` was built against.
+- A follower moves in its leader's pull request, so the two arrive together.
 - A pin that is already ahead of the default branch -- a commit from a pull
   request not merged yet -- is left alone rather than moved backwards.
 
@@ -68,6 +75,11 @@ class Bump:
     pin: Pin
     rev: str
     follows: str | None = None  # the pin whose own pyproject chose this rev
+    group: str = ""  # the pull request it goes in; the pin's own when empty
+
+    def __post_init__(self) -> None:
+        if not self.group:
+            object.__setattr__(self, "group", self.pin.group)
 
 
 def github(path: str) -> Any:
@@ -118,16 +130,35 @@ def _own_pins(pin: Pin, rev: str, get: Get) -> list[Pin]:
     return read_pins(base64.b64decode(found["content"]).decode())
 
 
+def read_follows(pyproject: str) -> dict[str, str]:
+    """`[tool.bump-deps] follow`: each follower pin's leader pin."""
+    tool = tomllib.loads(pyproject).get("tool", {}).get("bump-deps", {})
+    return dict(tool.get("follow", {}))
+
+
 def plan(pyproject: str, get: Get = github) -> list[Bump]:
     """Every pin that should move, in the order pyproject.toml lists them."""
     pins = read_pins(pyproject)
-    targets = {pin.name: _latest(pin, get) for pin in pins}
+    by_name = {pin.name: pin for pin in pins}
+    declared = read_follows(pyproject)
+    for follower, leader in declared.items():
+        if follower not in by_name or leader not in by_name:
+            raise ValueError(f"follow {follower} = {leader!r}: both must be pins")
+        if leader in declared:
+            raise ValueError(f"follow {follower} = {leader!r}: {leader} follows too")
+    # A declared follower's rev is its leader's to choose, so it isn't looked up
+    targets = {
+        pin.name: pin.rev if pin.name in declared else _latest(pin, get) for pin in pins
+    }
     follows: dict[str, str] = {}
     for pin in pins:
-        if pin.name in follows:
+        if pin.name in follows or pin.name in declared:
             continue  # its own rev is somebody else's choice; so is what it pins
         for own in _own_pins(pin, targets[pin.name], get):
-            if own.repo == pin.repo and own.name in targets and own.name != pin.name:
+            same_repo = own.repo == pin.repo and own.name != pin.name
+            if declared.get(own.name) == pin.name or (
+                same_repo and own.name in targets and own.name not in declared
+            ):
                 targets[own.name] = own.rev
                 follows[own.name] = pin.name
     bumps = []
@@ -138,7 +169,9 @@ def plan(pyproject: str, get: Get = github) -> list[Bump]:
         compared = get(f"repos/{pin.repo}/compare/{rev}...{pin.rev}")
         if compared is not None and compared.get("status") == "ahead":
             continue  # the pin is past the target already: an unmerged commit
-        bumps.append(Bump(pin, rev, follows.get(pin.name)))
+        leader = follows.get(pin.name)
+        group = by_name[leader].group if leader else pin.group
+        bumps.append(Bump(pin, rev, leader, group))
     return bumps
 
 
@@ -173,11 +206,12 @@ def describe(bumps: list[Bump], get: Get = github) -> tuple[str, str]:
     title = "Bump " + (
         names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     )
-    repo = bumps[0].pin.repo
+    leads = [bump for bump in bumps if not bump.follows] or bumps
+    repo = leads[0].pin.repo
     lines = [f"[{repo}](https://github.com/{repo}) has merged past the pin.", ""]
     for bump in bumps:
         old, new = bump.pin.rev, bump.rev
-        compare = f"https://github.com/{repo}/compare/{old}...{new}"
+        compare = f"https://github.com/{bump.pin.repo}/compare/{old}...{new}"
         entry = f"- `{bump.pin.name}` {old[:7]} -> {new[:7]} ([compare]({compare}))"
         if bump.follows:
             entry += f", the rev `{bump.follows}` pins it at"
@@ -193,24 +227,30 @@ def describe(bumps: list[Bump], get: Get = github) -> tuple[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    parser.add_argument(
+        "--pyproject",
+        type=Path,
+        default=PYPROJECT,
+        help="the pyproject.toml to bump (default: cassandra's)",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="upstream repositories with a newer commit")
     applying = commands.add_parser("apply", help="rewrite one repository's pins")
     applying.add_argument("group", help="a repository name printed by `list`")
     args = parser.parse_args(argv)
 
-    pyproject = PYPROJECT.read_text()
-    bumps = plan(pyproject)
+    pyproject = args.pyproject.read_text()
+    bumps = plan(pyproject, github)
     if args.command == "list":
-        for group in dict.fromkeys(bump.pin.group for bump in bumps):
+        for group in dict.fromkeys(bump.group for bump in bumps):
             print(group)
         return 0
-    bumps = [bump for bump in bumps if bump.pin.group == args.group]
+    bumps = [bump for bump in bumps if bump.group == args.group]
     if not bumps:
         print(f"nothing to bump for {args.group}", file=sys.stderr)
         return 1
-    PYPROJECT.write_text(apply(pyproject, bumps))
-    title, body = describe(bumps)
+    args.pyproject.write_text(apply(pyproject, bumps))
+    title, body = describe(bumps, github)
     print(f"{title}\n\n{body}")
     return 0
 
