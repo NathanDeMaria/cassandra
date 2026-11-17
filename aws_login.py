@@ -14,8 +14,8 @@ this handles:
   A second call while one waits prints that one's links and waits on it.
 
 The session a login starts lasts IAM Identity Center's session duration --
-8 hours unless it's been changed -- and the CLI renews the hour-long token
-under it until then. `status` says when this tool last logged in, and so
+set to 7 days on 2026-11-17, from the 8-hour default -- and the CLI renews
+the hour-long token under it until then. `status` says when this tool last logged in, and so
 about when that runs out; `--fresh` starts a new session before a long run.
 
     python3 aws_login.py            # log in if logged out
@@ -40,9 +40,10 @@ from zoneinfo import ZoneInfo
 STATE = Path.home() / ".cache" / "aws-login"
 CENTRAL = ZoneInfo("America/Chicago")
 
-#: IAM Identity Center's session duration, the default unless
-#: `AWS_SESSION_HOURS` says yours is different.
-SESSION = timedelta(hours=float(os.environ.get("AWS_SESSION_HOURS", "8")))
+#: IAM Identity Center's session duration, as set in its console (Settings >
+#: Authentication > Session duration), unless `AWS_SESSION_HOURS` says it's
+#: something else. Only `status` reads it; the console is what decides.
+SESSION = timedelta(hours=float(os.environ.get("AWS_SESSION_HOURS", str(7 * 24))))
 
 LOGIN = ["aws", "sso", "login", "--use-device-code", "--no-browser"]
 
@@ -86,8 +87,9 @@ def until(now: datetime | None = None) -> str:
         return ""
     end = (at + SESSION).astimezone(CENTRAL)
     return (
-        f"; logged in {at.astimezone(CENTRAL):%a %H:%M} CT, so the session lasts "
-        f"until about {end:%a %H:%M} CT ({left.total_seconds() / 3600:.1f} h left)"
+        f"; logged in {at.astimezone(CENTRAL):%a %b %d %H:%M} CT, so the session "
+        f"lasts until about {end:%a %b %d %H:%M} CT "
+        f"({left.total_seconds() / 3600:.1f} h left)"
     )
 
 

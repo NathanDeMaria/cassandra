@@ -58,9 +58,10 @@ login, about when the session ends ("6.0 h left"). If the job will outlast that,
 
 ## Why logins keep running out
 
-IAM Identity Center's session duration is 8 hours by default. The CLI renews the
-hour-long access token under it until the session ends, then
-`Token has expired and refresh failed`. A morning login is gone by the night games.
-The lasting fix is Nathan's to make, in the IAM Identity Center console:
-Settings → Authentication → Session duration. If he lengthens it, set
-`AWS_SESSION_HOURS` so `status` counts down from the right length.
+The CLI renews the hour-long access token until IAM Identity Center's session
+duration runs out, then `Token has expired and refresh failed`. That duration was the
+8-hour default, so a morning login was gone by the night games. Nathan set it to
+7 days on 2026-11-17, in the IAM Identity Center console (Settings → Authentication →
+Session duration); there is no API for it. `aws_login.py` assumes 7 days for
+`status`. If the console setting changes, change the default there too, or set
+`AWS_SESSION_HOURS`.
