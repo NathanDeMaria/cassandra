@@ -45,9 +45,14 @@ class PlayerRow(BaseModel):
     starts: int | None = None
     minutes: float | None = None
     share: float | None = None
-    # of playing the team's next game: an estimate from his missed games and
-    # last game's minutes; none for a finished season
+    # of playing the team's next game: an estimate from his missed games,
+    # last game's minutes and role; none for a finished season
     play_chance: float | None = None
+    # rotation, fringe, bench or deep bench, by his recent share: how to read
+    # play_chance -- a deep reserve's is mostly whether the game turns into a
+    # blowout, not whether he's fit. None before his team has played, and in
+    # a file written before roles
+    role: str | None = None
 
     @field_validator(
         "player",
@@ -57,6 +62,7 @@ class PlayerRow(BaseModel):
         "minutes",
         "share",
         "play_chance",
+        "role",
         mode="before",
     )
     @classmethod
