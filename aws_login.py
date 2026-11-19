@@ -120,6 +120,19 @@ def follow(pid: int) -> int:
     return 0 if arn else 1
 
 
+def is_link(line: str) -> bool:
+    """Whether a line the CLI printed is the link to approve, code included.
+
+    Older CLIs print a bare verification page and then the same page with
+    `?user_code=`; only the second fills the code in. Since 2.39 both lines are
+    one `signin.aws/platform/authorize?request_uri=...` link that carries the
+    request itself, printed twice.
+    """
+    return line.startswith("https://") and (
+        "user_code=" in line or "request_uri=" in line
+    )
+
+
 def login(tries: int) -> int:
     """Offer up to `tries` codes, each for as long as the CLI waits on it."""
     STATE.mkdir(parents=True, exist_ok=True)
@@ -131,12 +144,15 @@ def login(tries: int) -> int:
                 LOGIN, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
             said = []
+            shown = None
             assert proc.stdout is not None
             for raw in proc.stdout:
                 line = raw.strip()
-                if "user_code=" in line:
-                    (STATE / "link").write_text(line)
-                    print(f"approve: {line}\n{RELAY}", flush=True)
+                if is_link(line):
+                    if line != shown:
+                        (STATE / "link").write_text(line)
+                        print(f"approve: {line}\n{RELAY}", flush=True)
+                        shown = line
                 elif line:
                     said.append(line)
             proc.wait()
