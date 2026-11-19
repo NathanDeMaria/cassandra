@@ -11,6 +11,15 @@ The devcontainer has no browser, so a login is a link Nathan approves on his pho
 about ten minutes. It needs only `python3` and the AWS CLI, so it works from any
 worktree without a virtualenv.
 
+## Log in first, not last
+
+The moment you see AWS is out -- a `no s3 (TokenRetrievalError)` line, a failed call,
+or a task you know will write to s3 -- start the login, before the analysis or
+whatever else the turn holds. A login found in the first minute and mentioned at the
+end of a long answer is ten minutes of code gone, and the link lands under
+everything else. If the task needs AWS later, `python3 aws_login.py status` at the
+start of the turn says whether to log in now.
+
 ## When a call fails on an expired token
 
 1. Start it in the background, with a timeout longer than its three ten-minute codes:
@@ -19,18 +28,23 @@ worktree without a virtualenv.
    python3 aws_login.py      # Bash, run_in_background: true, timeout 2400000
    ```
 
-2. Read the task's output file after a few seconds, and **put the `approve:` link in
-   your chat reply right away** -- the next thing you write, before any other tool
-   call. Nathan sees only your messages: a link in a log, a tool result or a tool
-   description never reaches him, and a login nobody can see is a login nobody
-   approves. A bare URL on its own line, not markdown link text, so it taps through
-   on a phone. Only then go on with work that doesn't need AWS.
-3. Don't sit in a blocking wait on the login (an `until` loop, `sleep`): he can't
-   see the link while you wait, and can't interrupt you to ask for it. Send the link
-   and end the turn, or keep working; the task notification says when it's done.
+2. Read the task's output file after a few seconds. Then, before any other tool call:
+   - **Push.** Send a `PushNotification` (load it with ToolSearch
+     `select:PushNotification` if it isn't loaded), e.g. `AWS login waiting: approve
+     the link at the bottom of the chat (code good until 1:42 PM CT)`. The link
+     itself doesn't go in it: a push is capped near 200 characters and the link is
+     ~500. Tapping the push opens the session, where the link is waiting. The tool
+     skips the push when he's at the terminal; that's fine.
+   - **End your reply with the link and end the turn.** One short line saying what
+     the login is for, then the link as a bare URL on its own line, not markdown link
+     text, so it taps through on a phone. Nothing after it. Nathan sees only your
+     messages -- a link in a log, a tool result or a tool description never reaches
+     him -- and anything you write after the link pushes it out of sight.
+3. Don't wait on the login (an `until` loop, `sleep`) or carry on with other work in
+   the same turn: either hides the link. The task notification wakes you when it ends.
 4. If he says the link is dead, or comes back after ten minutes, read the output file
    again. It holds a newer `approve:` line once the old code has expired. Send that
-   one in chat the same way -- every new code, as soon as it appears.
+   one the same way, push and all -- every new code, as soon as it appears.
 5. The task notification says how it ended:
    - `logged in` (exit 0): carry on.
    - `3 codes expired unapproved` (exit 1): don't start another round while he's

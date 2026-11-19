@@ -50,7 +50,10 @@ LOGIN = ["aws", "sso", "login", "--use-device-code", "--no-browser"]
 #: Printed under every link. Whoever runs this is usually an agent whose
 #: tool output Nathan never sees: a link left in a log is a login nobody
 #: can approve, so the reminder travels with the link.
-RELAY = "  ^ send this link to Nathan in the chat now, as a bare URL; he can't see this output"
+RELAY = (
+    "  ^ Nathan can't see this output: send a PushNotification now, then end your"
+    " reply with this link as a bare URL and end the turn"
+)
 
 #: What the CLI says when a code ran out before anyone approved it.
 _EXPIRED = ("InvalidGrantException", "ExpiredTokenException", "expired")
