@@ -27,3 +27,18 @@ def test_until_counts_down_the_session_this_tool_started(tmp_path, monkeypatch):
     )
     # A session that's over says nothing about the credentials working now.
     assert aws_login.until(NOW + timedelta(hours=7)) == ""
+
+
+def test_the_link_to_approve_is_picked_out_of_either_cli_prompt():
+    # Before 2.39: a bare page, then the same page with the code filled in.
+    assert not aws_login.is_link("https://device.sso.us-east-2.amazonaws.com/")
+    assert aws_login.is_link(
+        "https://d-9a675ddd0f.awsapps.com/start/#/device?user_code=ABCD-EFGH"
+    )
+    # 2.39 on: one signin.aws link carrying the request, and no user_code.
+    assert aws_login.is_link(
+        "https://us-east-2.signin.aws/platform/authorize?request_uri=urn%3Aietf"
+        "%3Aparams%3Aoauth%3Arequest_uri%3AAAAA&identitystore_id=d-9a675ddd0f"
+    )
+    assert not aws_login.is_link("Then enter the code:")
+    assert not aws_login.is_link("ABCD-EFGH")
