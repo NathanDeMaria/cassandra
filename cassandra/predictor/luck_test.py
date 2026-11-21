@@ -78,12 +78,12 @@ def test_a_share_needs_a_scoring_method_that_reads_the_margin() -> None:
         GlickoPredictor("test_league", scoring_method="binary", luck_share=0.4)
 
 
-FLOWED = LuckIndex({"g1": GameLuck("Home U", "Away St", 6.0, 4.0, -8.0, 2.0)})
+FLOWED = LuckIndex({"g1": GameLuck("Home U", "Away St", 6.0, 4.0, -8.0, 2.0, 10.0)})
 
 
 def test_the_flow_readings_turn_with_the_luck(game: GameFactory) -> None:
     found = FLOWED.toward_home(game("Away St", "Home U", game_id="g1"))
-    assert found == GameLuck("Away St", "Home U", -6.0, -4.0, 8.0, -2.0)
+    assert found == GameLuck("Away St", "Home U", -6.0, -4.0, 8.0, -2.0, -10.0)
     # a game filed without them turns to nothing
     assert INDEX.toward_home(game("Away St", "Home U", game_id="g1")) == GameLuck(
         "Away St", "Home U", -6.0
@@ -96,15 +96,15 @@ def test_the_file_reads_its_flow_columns_where_it_has_them(
     path = tmp_path / "nfl_luck.csv"
     path.write_text(
         "league,season,game_id,date,home_team_id,home,away_team_id,away,luck,as_of,"
-        "jumpers,over_lead,closing,source\n"
-        "nfl,2025,g1,2025-11-04,1,Home U,2,Away St,-3.5,2025-11-05,1.5,-4,2,shots\n"
-        "nfl,2010,g2,2010-11-04,1,Home U,2,Away St,2.5,2010-11-05,,,,box\n"
+        "jumpers,over_lead,closing,source,process\n"
+        "nfl,2025,g1,2025-11-04,1,Home U,2,Away St,-3.5,2025-11-05,1.5,-4,2,shots,0.75\n"
+        "nfl,2010,g2,2010-11-04,1,Home U,2,Away St,2.5,2010-11-05,,,,box,\n"
     )
     monkeypatch.setattr(luck, "luck_path", lambda league: path)
     load_luck.cache_clear()
     try:
         assert load_luck("nfl") == {
-            "g1": GameLuck("Home U", "Away St", -3.5, 1.5, -4.0, 2.0),
+            "g1": GameLuck("Home U", "Away St", -3.5, 1.5, -4.0, 2.0, 0.75),
             "g2": GameLuck("Home U", "Away St", 2.5),
         }
     finally:
@@ -116,6 +116,7 @@ def _flowed(
     jumper_share: float = 0.0,
     lead_share: float = 0.0,
     closing_share: float = 0.0,
+    process_share: float = 0.0,
 ) -> GlickoPredictor:
     sources = MatchupSources(QbOutIndex(), RestLedger(), luck=FLOWED)
     return GlickoPredictor(
@@ -126,6 +127,7 @@ def _flowed(
         jumper_share=jumper_share,
         lead_share=lead_share,
         closing_share=closing_share,
+        process_share=process_share,
     )
 
 
@@ -135,6 +137,7 @@ def _flowed(
         ({"jumper_share": 0.5}, 78),  # 4 points of jumpers, half off
         ({"lead_share": 0.25}, 82),  # the margin 8 short of twice the lead
         ({"closing_share": 0.5}, 79),  # 2 points in the last five minutes
+        ({"process_share": 0.1}, 79),  # the box score says 10 points won't repeat
         ({"luck_share": 0.5, "jumper_share": 0.5, "closing_share": 0.5}, 74),
     ],
 )
@@ -169,3 +172,6 @@ def test_flow_shares_are_kept_only_when_on_and_need_a_margin() -> None:
         GlickoPredictor("test_league", scoring_method="binary", lead_share=0.2)
     with pytest.raises(ValueError, match="jumper_share"):
         GlickoPredictor("test_league", scoring_method="sigmoid", jumper_share=1.5)
+    assert _flowed(process_share=0.1).state_dict()["process_share"] == 0.1
+    with pytest.raises(ValueError, match="process_share"):
+        GlickoPredictor("test_league", scoring_method="sigmoid", process_share=-0.1)

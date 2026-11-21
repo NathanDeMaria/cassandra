@@ -59,6 +59,18 @@ file as it was before these:
 
 The box-score luck is all in the seasons it fills. `closing_share` adds
 nothing to the men's pair and `lead_share` 0.00001 to the women's.
+
+`process` is what the box score says won't repeat (`ten_minute_version.
+process`): the points of the home margin its ten rates -- shooting each way,
+offensive rebounding, free throws each way, assists, blocks, three-point
+rate, turnovers each way -- put above what the team will do again, by a fit
+on how a game's rates carry into a team's next five games beyond its
+margin. The fit rolls, each season's on the seasons before it, and reads
+only box scores whose players' lines add up to the final; it's empty before
+2016 mens and 2018 womens. Its share is `process_share`. At the 2026-11-16
+fits with nothing else moved, Brier per season against none: mens 0.10
+-4.6e-5 over 2016-25 (8 of 10 seasons), womens 0.05 -4.7e-5 over 2018-25
+(7 of 8); twice that hurts womens.
 """
 
 import csv
@@ -93,8 +105,9 @@ def validated_luck_share(share: float) -> float:
 
 class GameLuck(NamedTuple):
     """A game's luck in points, toward `home` (a canonical name), and the
-    flow readings beside it, each None where the file has none: a game
-    whose plays don't give them, or a file from before it carried them."""
+    flow and box-score readings beside it, each None where the file has
+    none: a game whose plays or box score don't give them, or a file from
+    before it carried them."""
 
     home: str
     away: str
@@ -102,6 +115,7 @@ class GameLuck(NamedTuple):
     jumpers: float | None = None
     over_lead: float | None = None
     closing: float | None = None
+    process: float | None = None
 
     def turned(self) -> GameLuck:
         """The same game with the other side called home."""
@@ -116,6 +130,7 @@ class GameLuck(NamedTuple):
             other(self.jumpers),
             other(self.over_lead),
             other(self.closing),
+            other(self.process),
         )
 
 
@@ -142,6 +157,7 @@ def load_luck(league: str) -> dict[str, GameLuck]:
             reading(row, "jumpers"),
             reading(row, "over_lead"),
             reading(row, "closing"),
+            reading(row, "process"),
         )
         for row in csv.DictReader(path.read_text().splitlines())
     }
