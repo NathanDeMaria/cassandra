@@ -1,4 +1,4 @@
-"""What to bet on Kalshi now: the model's win probability against the live book.
+"""What to bet now: the model's win probability against a venue's live book.
 
 `betting.py` grades a model's picks after the fact. On Kalshi's college
 football moneylines it found an edge at the *entry* -- the first price after
@@ -78,8 +78,14 @@ so a game also waits for those to cover both teams' previous games
 little: in 2025-26 the book had opened before the morning's data on about
 one game in eight, and waiting for it cost under a point of return.
 
-Everything here is a pure function of Kalshi's JSON, the fixtures and the
-model's probabilities; `picks.py` at the repo root does the fetching.
+**Venues.** The backtest was Kalshi's, and the rule is judged the same way
+on every venue's own book (`cassandra.venues`): its no-vig market from its
+own asks and fee, its cheapest route, its own listing time for the entry.
+A game on two venues is two `Offer`s; it backs one side (`backed_side`),
+and an order goes to its offers cheapest first (`ranked`).
+
+Everything here is a pure function of the venues' JSON, the fixtures and
+the model's probabilities; `picks.py` at the repo root does the fetching.
 """
 
 import math
@@ -94,7 +100,7 @@ from call_it_what_you_want import NCAAFB, NCAAMBB, NCAAWBB
 from endgame.types import Game
 
 from .betting import GAME_LENGTH
-from .markets import kalshi_fee
+from .venues import KALSHI_FEES, Book, Fees, Route, Venue, VenueGame
 
 #: Kalshi's college football moneylines. FCS-only games are in their own
 #: series, which is how gold-rush lists them too.
@@ -247,55 +253,6 @@ _MONTHS: dict[str, int] = {
 }
 
 
-class Book(NamedTuple):
-    """One team's YES market: its best quotes and the contracts behind them.
-
-    `bid` and `ask` are None when nobody is offering that side. Kalshi
-    sends 0 or 1 then, which is not a price anyone could trade.
-    """
-
-    ticker: str
-    code: str
-    team: str
-    bid: float | None
-    bid_size: float
-    ask: float | None
-    ask_size: float
-    volume: float
-    volume_24h: float
-    #: When Kalshi opened the market; None when the listing doesn't say.
-    opened: datetime | None = None
-    #: The exchange shard it trades on, whose balance pays for an order on it.
-    shard: int = 0
-
-    @property
-    def spread(self) -> float | None:
-        if self.bid is None or self.ask is None:
-            return None
-        return self.ask - self.bid
-
-
-class KalshiGame(NamedTuple):
-    """One Kalshi event: a game, filed under its Eastern date, one market per team."""
-
-    event: str
-    day: date
-    sides: tuple[Book, Book]
-
-
-class Route(NamedTuple):
-    """One way to back a team: which contract, which side of it, at what price.
-
-    `action` is "yes" for buying the team's own market and "no" for buying
-    NO on its opponent's.
-    """
-
-    ticker: str
-    action: str
-    price: float
-    size: float
-
-
 def event_day(event_ticker: str) -> date | None:
     """The date in an event ticker: `KXNCAAFGAME-26OCT17BRWNPRIN` is 2026-10-17."""
     found = _EVENT_DATE.search(event_ticker)
@@ -341,7 +298,7 @@ def book(market: Mapping) -> Book:
     )
 
 
-def kalshi_games(markets: Iterable[Mapping]) -> tuple[list[KalshiGame], list[str]]:
+def kalshi_games(markets: Iterable[Mapping]) -> tuple[list[VenueGame], list[str]]:
     """Group a market listing into games, and name the events that aren't one.
 
     An event is a game when it has exactly two team markets. A tie market,
@@ -358,7 +315,7 @@ def kalshi_games(markets: Iterable[Mapping]) -> tuple[list[KalshiGame], list[str
         if len(teams) != 2 or day is None:
             odd.append(event)
             continue
-        games.append(KalshiGame(event, day, (teams[0], teams[1])))
+        games.append(VenueGame(event, day, (teams[0], teams[1])))
     return games, odd
 
 
@@ -371,22 +328,23 @@ class Fixture(NamedTuple):
 
 
 class Matched(NamedTuple):
-    """The Kalshi game a fixture is, with its books in ESPN's home/away order."""
+    """The venue's game a fixture is, with its books in ESPN's home/away order."""
 
-    kalshi: KalshiGame
+    game: VenueGame
     home: Book
     away: Book
 
 
 def match(
     fixtures: Sequence[Fixture],
-    games: Sequence[KalshiGame],
+    games: Sequence[VenueGame],
     side_ids: Callable[[Book], frozenset[str]],
 ) -> tuple[dict[str, Matched], list[str]]:
-    """Which Kalshi game each fixture is, by game id; and the Kalshi events that fit none.
+    """Which venue game each fixture is, by game id; and the venue's events
+    that fit none.
 
     gold-rush's rule, on the live listing: a side resolves to every ESPN
-    team its code or name could be (`side_ids`). A Kalshi game is the one
+    team its code or name could be (`side_ids`). A venue's game is the one
     fixture on its Eastern day, or the day either side, whose two teams are
     its two sides. Kalshi writes Washington State and Wayne State both as
     `WSU`; the opponent and the date are what say which.
@@ -422,22 +380,25 @@ def match(
     return matched, unmatched
 
 
-def no_vig_home(home: Book, away: Book) -> tuple[float, float] | None:
+def no_vig_home(
+    home: Book, away: Book, fees: Fees = KALSHI_FEES
+) -> tuple[float, float] | None:
     """The backtest's market: the home probability, and the overround it came from.
 
-    Each side's cost is its YES ask plus the taker fee, as `markets._cost`
-    prices a gold-rush row. None when either side has no ask.
+    Each side's cost is its own contract's ask plus the venue's fee, as
+    `markets._cost` prices a gold-rush row. None when either side has no ask.
     """
     if home.ask is None or away.ask is None:
         return None
-    home_cost = home.ask + kalshi_fee(home.ask)
-    away_cost = away.ask + kalshi_fee(away.ask)
+    home_cost = home.ask + fees.contract(home.ask)
+    away_cost = away.ask + fees.contract(away.ask)
     total = home_cost + away_cost
     return home_cost / total, total
 
 
 def routes(side: Book, other: Book) -> list[Route]:
-    """Every way to back `side`, cheapest first: its YES, or NO on `other`."""
+    """Every way to back `side` on Kalshi, cheapest first: its YES, or NO on
+    `other`."""
     found = []
     if side.ask is not None:
         found.append(Route(side.ticker, "yes", side.ask, side.ask_size))
@@ -446,17 +407,26 @@ def routes(side: Book, other: Book) -> list[Route]:
     return sorted(found, key=lambda route: (route.price, route.action != "yes"))
 
 
-def order_fee(price: float, contracts: int) -> float:
-    """Kalshi's taker fee on one order: the per-contract fee, rounded up to the cent."""
-    return math.ceil(round(100 * contracts * kalshi_fee(price), 6)) / 100
+def order_fee(price: float, contracts: int, fees: Fees = KALSHI_FEES) -> float:
+    """The fee on one order filling at `price`: Kalshi's per-contract fee,
+    rounded up to the cent, unless another venue's `fees`."""
+    return fees.order(price, contracts)
 
 
-def contracts_for(stake: float, price: float) -> int:
-    """How many contracts `stake` dollars buys at `price`, fee included."""
-    count = int(stake // (price + kalshi_fee(price)))
-    while count > 0 and count * price + order_fee(price, count) > stake:
+def contracts_for(stake: float, price: float, fees: Fees = KALSHI_FEES) -> int:
+    """How many contracts `stake` dollars buys at `price`, the order's fee
+    included."""
+    # The contract's fee in the end is never more than its order's share, so
+    # this starts at or over the answer.
+    count = int(stake // (price + fees.contract(price)))
+    while count > 0 and count * price + fees.order(price, count) > stake:
         count -= 1
     return count
+
+
+def _each(fees: Fees | Sequence[Fees], n: int) -> list[Fees]:
+    """One venue's fees for every pick, or each pick's own."""
+    return list(fees) if isinstance(fees, Sequence) else [fees] * n
 
 
 def kelly(probability: float, cost: float) -> float:
@@ -465,7 +435,10 @@ def kelly(probability: float, cost: float) -> float:
 
 
 def allocate(
-    budget: float, prices: Sequence[float], weights: Sequence[float]
+    budget: float,
+    prices: Sequence[float],
+    weights: Sequence[float],
+    fees: Fees | Sequence[Fees] = KALSHI_FEES,
 ) -> list[int]:
     """Contracts for each pick when `budget` dollars are split by `weights`.
 
@@ -481,11 +454,13 @@ def allocate(
     can't tell any of the three
     apart.
     """
+    each = _each(fees, len(prices))
     active = [i for i, weight in enumerate(weights) if weight > 0]
     while active:
         total = sum(weights[i] for i in active)
         counts = {
-            i: contracts_for(budget * weights[i] / total, prices[i]) for i in active
+            i: contracts_for(budget * weights[i] / total, prices[i], each[i])
+            for i in active
         }
         unplaced = [i for i in active if counts[i] == 0]
         if not unplaced:
@@ -520,6 +495,7 @@ def kelly_counts(
     fraction: float,
     max_bet: float,
     longshots: Longshots = Longshots(),
+    fees: Fees | Sequence[Fees] = KALSHI_FEES,
 ) -> list[int]:
     """Contracts for each pick staked on its own: `fraction` of Kelly on `bankroll`.
 
@@ -527,13 +503,18 @@ def kelly_counts(
     are, so picks that turn up an hour apart are sized alike. Each stake is
     at most `max_bet`, and the contracts are counted at the pick's limit
     price, fee included, so a fill at the limit costs no more than the stake.
-    A longshot's stake is shrunk first (`Longshots`).
+    A longshot's stake is shrunk first (`Longshots`). Each pick's contracts
+    are counted with its venue's `fees`.
     """
     return [
         contracts_for(
-            min(fraction * longshots.of(c) * kelly(p, c) * bankroll, max_bet), limit
+            min(fraction * longshots.of(c) * kelly(p, c) * bankroll, max_bet),
+            limit,
+            venue,
         )
-        for p, c, limit in zip(probabilities, costs, limits)
+        for p, c, limit, venue in zip(
+            probabilities, costs, limits, _each(fees, len(limits))
+        )
     ]
 
 
@@ -546,6 +527,7 @@ def rungs(
     bankroll: float,
     fraction: float,
     max_bet: float,
+    fees: Fees = KALSHI_FEES,
 ) -> list[tuple[float, int]]:
     """The rungs under a pick: (price, contracts) for each of `unders`.
 
@@ -569,17 +551,17 @@ def rungs(
         if at < 0.01:
             break
         stake = min(
-            fraction * kelly(probability, at + kalshi_fee(at)) * bankroll, max_bet
+            fraction * kelly(probability, at + fees.contract(at)) * bankroll, max_bet
         )
         count = min(
-            top_up(contracts_for(stake, at), covered),
-            contracts_for(max(max_bet - covered_cost, 0.0), at),
+            top_up(contracts_for(stake, at, fees), covered),
+            contracts_for(max(max_bet - covered_cost, 0.0), at, fees),
         )
         if count <= 0:
             continue
         found.append((at, count))
         covered += count
-        covered_cost += count * at + order_fee(at, count)
+        covered_cost += count * at + fees.order(at, count)
     return found
 
 
@@ -630,12 +612,21 @@ def top_up(target: int, held: float) -> int:
 
 
 def fit_to_cash(
-    counts: Sequence[int], limits: Sequence[float], cash: float
+    counts: Sequence[int],
+    limits: Sequence[float],
+    cash: float,
+    fees: Fees | Sequence[Fees] = KALSHI_FEES,
 ) -> list[int]:
-    """`counts` scaled down together until their worst-case cost fits `cash`."""
+    """`counts` scaled down together until their worst-case cost fits `cash`,
+    each order's fee its venue's (`fees`)."""
+    each = _each(fees, len(limits))
 
     def cost(found: Sequence[int]) -> float:
-        return sum(n * p + order_fee(p, n) for n, p in zip(found, limits) if n > 0)
+        return sum(
+            n * p + venue.order(p, n)
+            for n, p, venue in zip(found, limits, each)
+            if n > 0
+        )
 
     total = cost(counts)
     if total <= cash:
@@ -769,30 +760,51 @@ class Priced(NamedTuple):
         return (self.home_market if self.home else 1 - self.home_market) + self.edge
 
 
-def price(model_home: float, matched: Matched) -> Priced | None:
-    """The model's side of a game, its edge, and where to buy it. None for no market."""
-    market = no_vig_home(matched.home, matched.away)
+def price(
+    model_home: float,
+    matched: Matched,
+    fees: Fees = KALSHI_FEES,
+    ways: Callable[[Book, Book], list[Route]] = routes,
+    home: bool | None = None,
+) -> Priced | None:
+    """The model's side of a game, its edge, and where to buy it, on one
+    venue: its `fees` and its `ways` to back a side (`Venue.routes`). None
+    for no market.
+
+    The side is the one the model rates above this venue's market, unless
+    `home` says which: another venue's book can put the model on the other
+    side of a close game, and a pick backs one side. Its edge on a side the
+    model rates under the market is negative.
+    """
+    market = no_vig_home(matched.home, matched.away, fees)
     if market is None:
         return None
     home_market, overround = market
-    home = model_home > home_market
+    if home is None:
+        home = model_home > home_market
     side, other = (matched.home, matched.away) if home else (matched.away, matched.home)
     model = model_home if home else 1 - model_home
-    found = routes(side, other)
+    found = ways(side, other)
     best = found[0] if found else None
-    cost = None if best is None else best.price + kalshi_fee(best.price)
+    cost = None if best is None else best.price + fees.contract(best.price)
     return Priced(
         home_market=home_market,
         overround=overround,
         home=home,
-        edge=abs(model_home - home_market),
+        edge=(model_home - home_market) * (1 if home else -1),
         route=best,
         cost=cost,
         expected_return=None if cost is None else model / cost - 1,
     )
 
 
-def max_price(model: float, priced: Priced, side: Book, rule: PickRule) -> float | None:
+def max_price(
+    model: float,
+    priced: Priced,
+    side: Book,
+    rule: PickRule,
+    fees: Fees = KALSHI_FEES,
+) -> float | None:
     """The most the pick's route can cost, to the cent, and still clear the
     edge it needs at that price (`PickRule.edge_needed`) and the rule's
     `min_expected_return`.
@@ -800,7 +812,7 @@ def max_price(model: float, priced: Priced, side: Book, rule: PickRule) -> float
     The edge is the model against the side's share of the two asks, so a
     rising price eats it about a point a cent. This holds the overround
     where it was read -- one side going up as the other comes down -- and
-    lets the route move as far as the side's YES ask can.
+    lets the route move as far as the side's own ask can.
     """
     if priced.route is None or side.ask is None:
         return None
@@ -809,9 +821,9 @@ def max_price(model: float, priced: Priced, side: Book, rule: PickRule) -> float
     for cents in range(1, 100):
         ask = cents / 100
         route = ask + shift
-        cost = route + kalshi_fee(route)
+        cost = route + fees.contract(route)
         need = rule.edge_needed(cost, model)
-        if ask + kalshi_fee(ask) > (model - need) * priced.overround:
+        if ask + fees.contract(ask) > (model - need) * priced.overround:
             break
         if (
             rule.min_expected_return is not None
@@ -881,3 +893,39 @@ def skip_reason(
     ):
         return f"lower-division side vs {top_division}"
     return None
+
+
+class Offer(NamedTuple):
+    """One venue's price on a game's side: whether it's a pick there, and the
+    most an order there may pay (`max_price`). The same game on another venue
+    is another offer, priced on that venue's own book by the same rule."""
+
+    venue: Venue
+    matched: Matched
+    priced: Priced
+    max_price: float | None
+    since_entry: timedelta | None
+    skip: str | None
+
+    @property
+    def sides(self) -> tuple[Book, Book]:
+        """The book of the side backed, and its opponent's."""
+        home, away = self.matched.home, self.matched.away
+        return (home, away) if self.priced.home else (away, home)
+
+
+def backed_side(priced: Sequence[Priced]) -> bool:
+    """Whether a game's pick backs its home side, from each venue's price of
+    it: the side the model rates furthest above a venue's market. Venues
+    disagree only on a game the model and the market call close."""
+    return max(priced, key=lambda p: p.edge).home
+
+
+def ranked(offers: Sequence[Offer]) -> list[Offer]:
+    """A game's offers in the order an order goes to them: the picks, the
+    cheapest first, then the rest in the order given."""
+    picks = sorted(
+        (o for o in offers if o.skip is None),
+        key=lambda o: o.priced.cost if o.priced.cost is not None else math.inf,
+    )
+    return [*picks, *(o for o in offers if o.skip is not None)]

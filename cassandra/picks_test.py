@@ -13,11 +13,12 @@ from .picks import (
     WOMENS,
     Book,
     Fixture,
-    KalshiGame,
     Longshots,
     Matched,
+    Offer,
     PickRule,
     PreviousGame,
+    VenueGame,
     allocate,
     book,
     contracts_for,
@@ -119,7 +120,7 @@ def _ids(table: dict[str, set[str]]):
 
 
 def test_home_and_away_come_from_espn_not_kalshi() -> None:
-    kalshi = KalshiGame(
+    kalshi = VenueGame(
         "E", date(2026, 10, 17), (_book("A", 0.3, 0.32), _book("B", 0.66, 0.68))
     )
     fixture = Fixture(_game("Beta", "Alpha"), home_id="2", away_id="1")
@@ -131,7 +132,7 @@ def test_home_and_away_come_from_espn_not_kalshi() -> None:
 
 def test_a_shared_code_is_settled_by_the_opponent() -> None:
     # Kalshi writes Washington State and Wayne State both as WSU.
-    kalshi = KalshiGame(
+    kalshi = VenueGame(
         "E", date(2026, 10, 17), (_book("OSU", 0.5, 0.52), _book("WSU", 0.46, 0.48))
     )
     fixtures = [
@@ -144,7 +145,7 @@ def test_a_shared_code_is_settled_by_the_opponent() -> None:
 
 
 def test_a_game_two_fixtures_fit_is_not_matched() -> None:
-    kalshi = KalshiGame(
+    kalshi = VenueGame(
         "E", date(2026, 10, 17), (_book("A", 0.3, 0.32), _book("B", 0.6, 0.62))
     )
     fixtures = [
@@ -281,7 +282,7 @@ def test_a_book_keeps_when_its_market_opened() -> None:
 def _matched(home_ask: float, away_ask: float, spread=0.02) -> Matched:
     home = _book("H", home_ask - spread, home_ask)
     away = _book("A", away_ask - spread, away_ask)
-    return Matched(KalshiGame("E", date(2026, 10, 17), (home, away)), home, away)
+    return Matched(VenueGame("E", date(2026, 10, 17), (home, away)), home, away)
 
 
 def test_the_model_takes_the_side_it_likes_more_than_the_market() -> None:
@@ -627,3 +628,29 @@ def test_a_pick_must_return_enough_at_its_own_price():
         0.60, priced, cheap.home, rule._replace(min_expected_return=None)
     )
     assert unfloored is not None and unfloored > ceiling
+
+
+def test_a_game_backs_one_side_whichever_venues_book_says_more():
+    from .picks import backed_side, ranked
+    from .polymarket_us import POLYMARKET_US
+
+    home = Book("E-H", "H", "Home", 0.48, 10, 0.50, 10, 0, 0)
+    away = Book("E-A", "A", "Away", 0.48, 10, 0.50, 10, 0, 0)
+    matched = Matched(VenueGame("E", date(2026, 11, 7), (home, away)), home, away)
+    # The model at 0.53: over one book's market, under a tighter one's.
+    kalshi = price(0.53, matched)
+    other = price(
+        0.53,
+        matched._replace(home=home._replace(ask=0.56), away=away._replace(ask=0.45)),
+    )
+    assert kalshi is not None and other is not None
+    assert kalshi.home and not other.home
+    assert backed_side([kalshi, other]) is (kalshi.edge > other.edge)
+    # Priced on the side the game backs, the other book's edge is negative.
+    forced = price(0.53, matched, home=False)
+    assert forced is not None and not forced.home and forced.edge < 0
+    # The picks first, cheapest first; then the rest, in the order given.
+    a = Offer(POLYMARKET_US, matched, kalshi._replace(cost=0.52), None, None, None)
+    b = Offer(POLYMARKET_US, matched, kalshi._replace(cost=0.51), None, None, None)
+    c = Offer(POLYMARKET_US, matched, kalshi._replace(cost=0.40), None, None, "wide")
+    assert ranked([c, a, b]) == [b, a, c]

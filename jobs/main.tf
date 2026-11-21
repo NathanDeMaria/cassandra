@@ -138,7 +138,7 @@ data "aws_iam_policy_document" "job" {
   }
 
   # The picks job: email its holds and the morning summary, and read the
-  # Kalshi key it places with. Both scoped to the one topic and the one secret.
+  # venue keys it places with. Scoped to the one topic and the two secrets.
   statement {
     sid       = "EmailPicks"
     actions   = ["sns:Publish"]
@@ -146,9 +146,9 @@ data "aws_iam_policy_document" "job" {
   }
 
   statement {
-    sid       = "ReadKalshiKey"
+    sid       = "ReadVenueKeys"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.kalshi.arn]
+    resources = [aws_secretsmanager_secret.kalshi.arn, aws_secretsmanager_secret.polymarket_us.arn]
   }
 
   statement {
@@ -436,6 +436,7 @@ module "picks" {
   environment_variables = concat(local.job_environment, [
     { name = "CASSANDRA_PICKS_TOPIC_ARN", value = aws_sns_topic.picks.arn },
     { name = "CASSANDRA_KALSHI_SECRET", value = aws_secretsmanager_secret.kalshi.arn },
+    { name = "CASSANDRA_POLYMARKET_US_SECRET", value = aws_secretsmanager_secret.polymarket_us.arn },
   ])
 }
 
@@ -824,6 +825,19 @@ resource "aws_sns_topic" "picks" {
 resource "aws_secretsmanager_secret" "kalshi" {
   name        = "${var.resource_name_prefix}/kalshi-key"
   description = "Kalshi API key id and private key PEM, for cassandra-picks"
+}
+
+# The Polymarket US API key (polymarket.us/developer), put by hand the same
+# way --
+#
+#   aws secretsmanager put-secret-value --secret-id cassandra/polymarket-us-key \
+#     --secret-string "$(jq -n --arg id "$(cat ~/.polymarket_us/key_id)" \
+#       --rawfile secret ~/.polymarket_us/secret_key '{key_id: $id, secret_key: $secret}')"
+#
+# Until it has a value the job prices and places on Kalshi alone.
+resource "aws_secretsmanager_secret" "polymarket_us" {
+  name        = "${var.resource_name_prefix}/polymarket-us-key"
+  description = "Polymarket US API key id and base64 secret key, for cassandra-picks"
 }
 
 # ------------------------------------------------------------------------------

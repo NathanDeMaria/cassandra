@@ -28,11 +28,13 @@ import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from .venues import Fill, VenueError
 
 LIVE_API = "https://api.elections.kalshi.com/trade-api/v2"
 DEMO_API = "https://demo-api.kalshi.co/trade-api/v2"
@@ -115,16 +117,6 @@ def order_body(
     if expires_at is not None:
         body["expiration_time"] = expires_at
     return body
-
-
-class Fill(NamedTuple):
-    """What an order did when it was placed, priced from the side bought."""
-
-    order_id: str
-    filled: float
-    resting: float
-    price: float | None
-    fee: float | None
 
 
 def fill(response: Mapping, action: str) -> Fill:
@@ -218,7 +210,7 @@ def signed_positions(market_positions: Iterable[Mapping]) -> dict[str, float]:
     return found
 
 
-class KalshiError(RuntimeError):
+class KalshiError(VenueError):
     pass
 
 

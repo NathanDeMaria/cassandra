@@ -488,6 +488,32 @@ def _kalshi_key(secret_id: str | None) -> bool:
     return True
 
 
+def _polymarket_us_key(secret_id: str | None) -> bool:
+    """Put the Polymarket US key where `PolymarketUsClient.from_env` reads it,
+    from Secrets Manager: `{"key_id": ..., "secret_key": ...}`. False when
+    there's no secret or it has no value yet; the run then prices and places
+    on Kalshi alone (`picks.run_venues`)."""
+    if not secret_id:
+        return False
+    from botocore.exceptions import ClientError
+
+    from cassandra.picks_job import client
+
+    try:
+        value = client("secretsmanager").get_secret_value(SecretId=secret_id)
+    except ClientError as error:
+        print(f"no Polymarket US key ({error.response['Error']['Code']})")
+        return False
+    key = json.loads(value["SecretString"])
+    secret = CASSANDRA_HOME / "polymarket_us" / "secret_key"
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.touch(mode=0o600)
+    secret.write_text(key["secret_key"])
+    os.environ["POLYMARKET_US_KEY_ID"] = key["key_id"]
+    os.environ["POLYMARKET_US_SECRET_FILE"] = str(secret)
+    return True
+
+
 def picks_script_leagues() -> list[str]:
     """The leagues `picks.py --league` takes."""
     from cassandra.picks import PICK_LEAGUES
@@ -530,6 +556,8 @@ def _picks(espn: bool, league: str) -> None:
         if not (rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))):
             print("no Kalshi key: nothing to place with, and nothing to email")
             return
+        if not rehearsal:
+            _polymarket_us_key(os.environ.get("CASSANDRA_POLYMARKET_US_SECRET"))
         rules = picks_job.autobet(s3, bucket)
         print(rules.describe())
         placing = rules.placing(league)
@@ -621,11 +649,14 @@ def _picks_summary() -> None:
     from cassandra import picks_job
     from cassandra.kalshi_trade import KalshiClient
     from cassandra.placing import CENTRAL
+    from cassandra.polymarket_us import POLYMARKET_US
 
     rehearsal = bool(os.environ.get("CASSANDRA_PICKS_DRY_RUN"))
     if not (rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))):
         print("no Kalshi key: no account to summarize")
         return
+    if not rehearsal:
+        _polymarket_us_key(os.environ.get("CASSANDRA_POLYMARKET_US_SECRET"))
     s3, bucket = picks_job.client("s3"), _bucket()
     now = picks_job.now_utc()
     last, _ = picks_job.read_json(s3, bucket, picks_job.SUMMARY_KEY)
@@ -654,6 +685,19 @@ def _picks_summary() -> None:
                 logs.append(pd.read_csv(io.BytesIO(body), dtype={"order_id": str}))
     orders = pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
     bets = picks_job.placed_bets(fills, orders)
+    # Another venue's bets are read off the orders logs, and its account
+    # gets a line of its own.
+    others = []
+    if POLYMARKET_US.has_key():
+        bets = pd.concat(
+            [bets, picks_job.logged_bets(orders, since, POLYMARKET_US.name)],
+            ignore_index=True,
+        ).sort_values("cost", ascending=False)
+        account = POLYMARKET_US.account(dry_run=True)
+        money = account.balance()
+        others.append(
+            (POLYMARKET_US.label, money.cash, money.invested, len(account.resting()))
+        )
     rejected = picks_job.rejected_orders(orders)
     if not rejected.empty:
         # The logs reach back past `since`, for a rung's old order; a
@@ -679,6 +723,7 @@ def _picks_summary() -> None:
         since.astimezone(CENTRAL),
         now.astimezone(CENTRAL),
         rejected,
+        others,
     )
     _email(subject, text, rehearsal)
     if not rehearsal:

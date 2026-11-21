@@ -1,18 +1,22 @@
-"""From priced games to orders on Kalshi: sizing, the news, the prompt, placing.
+"""From priced games to orders on the venues: sizing, the news, the prompt, placing.
 
-`picks.py` prices every matched game and says which are picks; this is
-the rest of a `--place` run. Its docstring says how a run sizes, asks and
-places, from the bettor's side. Here:
+`picks.py` prices every matched game on every venue and says which are
+picks; this is the rest of a `--place` run. Its docstring says how a run
+sizes, asks and places, from the bettor's side. Every function here works
+on a game's offers (`cassandra.picks.Offer`, one a venue) and the venues'
+accounts through `cassandra.venues`, so none of it is any one venue's. Here:
 
 - `size` turns the picks into contracts: each pick's target (`--kelly-fraction`
-  of Kelly on the bankroll, or a share of `--budget`), less what's held,
-  over the top `--top` with something left to buy, fit to the cash; and,
-  under `--kelly-fraction`, the rungs under each (`cassandra.picks.rungs`);
+  of Kelly on the bankroll, or a share of `--budget`), less what's held on
+  every venue, over the top `--top` with something left to buy, fit to the
+  cash; and, under `--kelly-fraction`, the rungs under each
+  (`cassandra.picks.rungs`), on a venue that can mark them;
 - `stale_rungs` says which rungs left resting by an earlier run the model
   no longer backs at their price, for `cancel` to take off the book;
 - `injury_news` reads each pick's two teams' last stories and box scores;
 - `print_picks` and `print_orders` show them, `ask` asks, and `place`
-  sends the limit orders, cheapest route first, and logs what filled.
+  sends the limit orders, the cheapest route on any venue first, and logs
+  what filled.
 
 The functions take `picks.py`'s argparse namespace for its knobs.
 """
@@ -21,10 +25,8 @@ import argparse
 import gzip
 import json
 import logging
-import math
-import time
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,31 +37,30 @@ import pandas as pd
 from call_it_what_you_want import TeamNamer
 from endgame.types import Game
 
-from . import injuries
+from . import injuries, venues
 from .constants import CASSANDRA_HOME
-from .kalshi_trade import (
-    CENTICENTS,
-    KalshiClient,
-    KalshiError,
-    bought,
-    event_of,
-    order_price,
-    public_get,
-    rung_id,
-)
 from .picks import (
     Longshots,
+    Offer,
     allocate,
     contracts_for,
-    fillable,
     fit_to_cash,
     kelly,
     kelly_counts,
     order_fee,
-    routes,
     rungs,
-    shard_transfers,
     top_up,
+)
+from .venues import (
+    KALSHI_FEES,
+    Account,
+    Book,
+    Fees,
+    Holding,
+    Resting,
+    Route,
+    Venue,
+    VenueError,
 )
 
 CENTRAL = ZoneInfo("America/Chicago")
@@ -79,14 +80,19 @@ ESPN_SUMMARY = {
 STORY_WAIT = timedelta(days=2)
 #: How many of each team's last games' stories are read for injury news.
 NEWS_GAMES = 2
-#: How long a run waits for a transfer between shards to land before it gives
-#: up on the pick, and how often it looks. Kalshi processes them asynchronously.
-FUND_WAIT = timedelta(seconds=30)
-FUND_POLL = timedelta(seconds=1)
 #: A nominal budget, split over a run's picks to show them with contracts
 #: when neither --budget nor --kelly-fraction says what to stake: a run
 #: that places always has the league's Kelly fraction.
 DISPLAY_BUDGET = 100.0
+
+
+def cents(price: float) -> str:
+    """A price to the cent, or the half cent a venue quotes in."""
+    return (
+        f"{price:.2f}"
+        if abs(price * 100 - round(price * 100)) < 1e-6
+        else f"{price:.3f}"
+    )
 
 
 def fmt_game(game: Game) -> str:
@@ -123,14 +129,44 @@ def _budget(args: argparse.Namespace) -> float:
 
 def limit_price(price: float, ceiling: float | None, slippage: float) -> float:
     """The most an order pays a contract: `--slippage` past the ask, never past
-    the price that still clears the edge (`max_price`)."""
+    the price that still clears the edge (`max_price`). To the half cent, the
+    finest a venue quotes."""
     limit = price + slippage
     if ceiling is not None and not pd.isna(ceiling):
         limit = min(limit, max(ceiling, price))
-    return round(min(limit, 0.99), 2)
+    return round(round(min(limit, 0.99) * 200) / 200, 3)
 
 
-def _targets(picks: pd.DataFrame, args: argparse.Namespace) -> list[int]:
+def offer_limit(offer: Offer, slippage: float) -> float | None:
+    """The most an order on `offer`'s venue pays a contract (`limit_price`);
+    None when it has nothing on offer."""
+    if offer.priced.route is None:
+        return None
+    return limit_price(offer.priced.route.price, offer.max_price, slippage)
+
+
+def good_offers(offers: Mapping[str, Sequence[Offer]], game_id: str) -> list[Offer]:
+    """A game's offers that are picks on their own venue, cheapest first."""
+    return [o for o in offers.get(game_id, ()) if o.skip is None]
+
+
+def _sides(offer: Offer, bet_home: bool) -> tuple[Book, Book]:
+    """The book of the side a pick backs on `offer`'s venue, and its opponent's."""
+    home, away = offer.matched.home, offer.matched.away
+    return (home, away) if bet_home else (away, home)
+
+
+def _fees(picks: pd.DataFrame, offers: Mapping[str, Sequence[Offer]]) -> list[Fees]:
+    """Each pick's fees: its cheapest venue's, which it's sized at."""
+    return [
+        offers[game_id][0].venue.fees if offers.get(game_id) else KALSHI_FEES
+        for game_id in picks["game_id"]
+    ]
+
+
+def _targets(
+    picks: pd.DataFrame, args: argparse.Namespace, fees: Sequence[Fees]
+) -> list[int]:
     """Each pick's contracts before what's held: Kelly on the bankroll, or a
     Kelly-weighted share of the budget. Either way at most `--max-bet`."""
     limits = list(picks["limit"])
@@ -144,13 +180,16 @@ def _targets(picks: pd.DataFrame, args: argparse.Namespace) -> list[int]:
             args.kelly_fraction,
             args.max_bet,
             longshots,
+            fees,
         )
     weights = [
         longshots.of(c) * kelly(m, c) for m, c in zip(picks["model"], picks["cost"])
     ]
     return [
-        min(n, contracts_for(args.max_bet, limit))
-        for n, limit in zip(allocate(_budget(args), limits, weights), limits)
+        min(n, contracts_for(args.max_bet, limit, venue))
+        for n, limit, venue in zip(
+            allocate(_budget(args), limits, weights, fees), limits, fees
+        )
     ]
 
 
@@ -162,30 +201,16 @@ def _longshots(args: argparse.Namespace) -> Longshots:
 
 
 def league_exposure(
-    market_positions: Sequence[Mapping],
-    resting: Sequence[Mapping],
-    series: Sequence[str],
+    accounts: Mapping[str, tuple[Venue, Sequence[Holding], Sequence[Resting]]],
+    league: str,
 ) -> float:
-    """Dollars a league has at risk: what its open positions cost
-    (`market_exposure_dollars`), and the most its resting orders -- rungs
-    too -- could still spend. A market is the league's when its ticker is in
-    one of `series`, the league's (`PickLeague.series`).
-    """
-
-    def ours(ticker: str) -> bool:
-        return ticker.split("-", 1)[0] in series
-
-    held = sum(
-        float(p.get("market_exposure_dollars") or 0)
-        for p in market_positions
-        if ours(p["ticker"])
+    """Dollars a league has at risk across every account: what its open
+    positions cost, and the most its resting orders -- rungs too -- could
+    still spend (`venues.league_exposure`)."""
+    return sum(
+        venues.league_exposure(venue, held, resting, league)
+        for venue, held, resting in accounts.values()
     )
-    waiting = sum(
-        float(o.get("remaining_count_fp") or 0) * order_price(o)
-        for o in resting
-        if ours(o["ticker"])
-    )
-    return held + waiting
 
 
 def exposure_room(bankroll: float, max_exposure: float, exposure: float) -> float:
@@ -195,16 +220,19 @@ def exposure_room(bankroll: float, max_exposure: float, exposure: float) -> floa
 
 
 def size(
-    frame: pd.DataFrame, matched: dict, args: argparse.Namespace
+    frame: pd.DataFrame,
+    offers: Mapping[str, Sequence[Offer]],
+    args: argparse.Namespace,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The picks and their contracts, and every game with what was bet on it.
 
     Each pick gets a target: `--kelly-fraction` of Kelly on the bankroll,
     or with no fraction its Kelly-weighted share of `--budget`. Either way
-    it's at most `--max-bet`, counted at the limit price, so an order
-    filling at its worst still costs no more than that. What's already held
-    on the pick's side counts toward its target, and only the rest is
-    bought. The whole run's worst case then fits `--budget` and the cash.
+    it's at most `--max-bet`, counted at the limit price of its cheapest
+    venue (`offers`, each game's, cheapest pick first), so an order filling
+    at its worst still costs no more than that. What's already held on the
+    pick's side, on any venue, counts toward its target, and only the rest
+    is bought. The whole run's worst case then fits `--budget` and the cash.
     """
     frame = frame.copy()
     # The top `--top` are taken from the games with something left to buy,
@@ -214,7 +242,8 @@ def size(
     ranked = frame[frame["skip"].isna()].sort_values("edge", ascending=False)
     while True:
         top = ranked.iloc[: args.top]
-        targets = pd.Series(_targets(top, args), index=top.index, dtype=int)
+        fees = _fees(top, offers)
+        targets = pd.Series(_targets(top, args, fees), index=top.index, dtype=int)
         counts = pd.Series(
             [top_up(t, h) for t, h in zip(targets, top["held"])], index=top.index
         )
@@ -233,7 +262,8 @@ def size(
     caps = [c for c in (args.budget, args.cash) if c is not None]
     if caps:
         counts = pd.Series(
-            fit_to_cash(list(counts), list(top["limit"]), min(caps)), index=top.index
+            fit_to_cash(list(counts), list(top["limit"]), min(caps), fees),
+            index=top.index,
         )
     for i in top.index[counts == 0]:
         frame.at[i, "skip"] = (
@@ -241,29 +271,34 @@ def size(
         )
     picks = frame[frame["skip"].isna()].copy()
     contracts = list(counts[picks.index])
+    fees = _fees(picks, offers)
     offered = f"offered_within_{round(args.slippage * 100)}c"
     fills = []
     for _, row in picks.iterrows():
-        found = matched[row["game_id"]]
-        side, other = (
-            (found.home, found.away) if row["bet_home"] else (found.away, found.home)
-        )
-        # Both routes to the same side count: YES on it and NO on the
-        # opponent fill on the same result, and `place` tries both.
+        # Every route on every venue where it's a pick counts: they pay on
+        # the same result, and `place` tries them all, each at its own limit.
         on_offer = 0.0
-        for route in routes(side, other):
-            book = public_get(f"/markets/{route.ticker}/orderbook")
-            on_offer += fillable(book, route.action, row["limit"])
+        for offer in good_offers(offers, row["game_id"]):
+            limit = offer_limit(offer, args.slippage)
+            if limit is None:
+                continue
+            for route in offer.venue.routes(*_sides(offer, row["bet_home"])):
+                on_offer += offer.venue.on_offer(route, limit)
         fills.append(on_offer)
     picks["contracts"] = contracts
-    picks["fee"] = [order_fee(p, c) for p, c in zip(picks["limit"], contracts)]
+    picks["fee"] = [
+        order_fee(p, c, venue) for p, c, venue in zip(picks["limit"], contracts, fees)
+    ]
     picks["outlay"] = picks["contracts"] * picks["limit"] + picks["fee"]
     picks[offered] = fills
+    ladders, venues_ = _rungs(picks, offers, args, min(caps) if caps else None)
     # A column of lists, one ladder per pick; pandas-stubs types a column
     # assignment's value as scalars or a flat sequence.
-    picks["rungs"] = _rungs(picks, args, min(caps) if caps else None)  # ty: ignore[invalid-assignment]
+    picks["rungs"] = ladders  # ty: ignore[invalid-assignment]
+    picks["rung_venue"] = venues_
     picks["rung_outlay"] = [
-        sum(n * p + order_fee(p, n) for p, n in found) for found in picks["rungs"]
+        sum(n * p + _venue_fees(offers, g, v).order(p, n) for p, n in found)
+        for g, found, v in zip(picks["game_id"], picks["rungs"], picks["rung_venue"])
     ]
     frame = frame.merge(
         picks[["game_id", "contracts", "fee", "outlay", offered, "rung_outlay"]],
@@ -273,124 +308,165 @@ def size(
     return frame, picks
 
 
+def _venue_fees(
+    offers: Mapping[str, Sequence[Offer]], game_id: str, venue: str | None
+) -> Fees:
+    for offer in offers.get(game_id, ()):
+        if offer.venue.name == venue:
+            return offer.venue.fees
+    return KALSHI_FEES
+
+
+def rung_offer(offers: Sequence[Offer]) -> Offer | None:
+    """Where a pick's rungs rest: its cheapest venue that can mark an order as
+    a rung (`Venue.tags_orders`), if it's a pick there."""
+    return next((o for o in offers if o.skip is None and o.venue.tags_orders), None)
+
+
 def _rungs(
-    picks: pd.DataFrame, args: argparse.Namespace, cap: float | None
-) -> list[list[tuple[float, int]]]:
-    """Each pick's rungs, fit to what the run's cap leaves after the picks.
+    picks: pd.DataFrame,
+    offers: Mapping[str, Sequence[Offer]],
+    args: argparse.Namespace,
+    cap: float | None,
+) -> tuple[list[list[tuple[float, int]]], list[str | None]]:
+    """Each pick's rungs and the venue they rest on (`rung_offer`), fit to
+    what the run's cap leaves after the picks.
 
     Only under `--kelly-fraction`, which says what a lower price is worth;
     a split budget has no stake to grow. A game with rungs resting from an
-    earlier run (`args.rung_events`) gets no more.
+    earlier run (`args.rung_events`, by venue and event) gets no more.
     """
     unders = getattr(args, "rungs", ())
+    none: list[list[tuple[float, int]]] = [[] for _ in range(len(picks))]
     if not unders or args.kelly_fraction is None or picks.empty:
-        return [[] for _ in range(len(picks))]
+        return none, [None] * len(picks)
     resting = getattr(args, "rung_events", set())
-    found = [
-        []
-        if row["event"] in resting
-        else rungs(
-            row["model"],
-            row["price"],
-            row["held"] + row["contracts"],
-            (row["held"] + row["contracts"]) * row["limit"] + row["fee"],
-            unders,
-            args.bankroll,
-            # A longshot's rungs are shrunk with it.
-            args.kelly_fraction * _longshots(args).of(row["cost"]),
-            args.max_bet,
+    found: list[list[tuple[float, int]]] = []
+    where: list[str | None] = []
+    fees: list[Fees] = []
+    for _, row in picks.iterrows():
+        offer = rung_offer(offers.get(row["game_id"], ()))
+        if (
+            offer is None
+            or offer.priced.route is None
+            or (offer.venue.name, offer.matched.game.event) in resting
+        ):
+            found.append([])
+            where.append(None)
+            fees.append(KALSHI_FEES)
+            continue
+        found.append(
+            rungs(
+                row["model"],
+                offer.priced.route.price,
+                row["held"] + row["contracts"],
+                (row["held"] + row["contracts"]) * row["limit"] + row["fee"],
+                unders,
+                args.bankroll,
+                # A longshot's rungs are shrunk with it.
+                args.kelly_fraction * _longshots(args).of(row["cost"]),
+                args.max_bet,
+                offer.venue.fees,
+            )
         )
-        for _, row in picks.iterrows()
-    ]
+        where.append(offer.venue.name)
+        fees.append(offer.venue.fees)
     if cap is None:
-        return found
+        return found, where
     flat = [(i, p, n) for i, ladder in enumerate(found) for p, n in ladder]
     left = cap - picks["outlay"].sum()
-    counts = fit_to_cash([n for *_, n in flat], [p for _, p, _ in flat], max(left, 0))
+    counts = fit_to_cash(
+        [n for *_, n in flat],
+        [p for _, p, _ in flat],
+        max(left, 0),
+        [fees[i] for i, _, _ in flat],
+    )
     fitted: list[list[tuple[float, int]]] = [[] for _ in found]
     for (i, p, _), n in zip(flat, counts):
         if n > 0:
             fitted[i].append((p, n))
-    return fitted
-
-
-def _backs(order: dict, side_ticker: str, other_ticker: str) -> bool | None:
-    """Whether a resting order pays when the pick's side wins; None if it's
-    in neither market."""
-    action = bought(order)
-    if order["ticker"] == side_ticker:
-        return action == "yes"
-    if order["ticker"] == other_ticker:
-        return action == "no"
-    return None
+    return fitted, where
 
 
 def stale_rungs(
-    orders: list[dict],
+    orders: Sequence[tuple[Venue, Resting]],
     frame: pd.DataFrame,
-    matched: dict,
+    offers: Mapping[str, Sequence[Offer]],
     exclude: Sequence[str] = (),
     hold_qb: bool = False,
-) -> list[tuple[dict, str]]:
-    """The resting rungs to cancel, each with why.
+) -> list[tuple[Venue, Resting, str]]:
+    """The resting rungs to cancel, each with its venue and why.
 
     A rung rests until kickoff, long after its pick's entry window, so it's
     held to what the model says now, not to whether the game is still a
     pick: it goes when the model backs the other side, when the game names
-    a team in `exclude` (`--exclude` and the overrides file), or when its price is over `max_price`, the most the
-    side can cost and clear the edge -- which a starter ruled out does. With
-    `hold_qb` it also goes when the side it backs has its starter in doubt
-    (`qb_doubt`): a pick in doubt waits for a person, and so does buying
-    more of one. A game this run didn't price is left alone.
+    a team in `exclude` (`--exclude` and the overrides file), or when its
+    price is over its venue's `max_price`, the most the side can cost there
+    and clear the edge -- which a starter ruled out does. With `hold_qb` it
+    also goes when the side it backs has its starter in doubt (`qb_doubt`):
+    a pick in doubt waits for a person, and so does buying more of one. A
+    game this run didn't price is left alone.
     """
-    by_event = {row["event"]: row for _, row in frame.iterrows()}
-    found = []
-    for order in orders:
-        row = by_event.get(event_of(order["ticker"]))
-        if row is None:
+    rows = {row["game_id"]: row for _, row in frame.iterrows()}
+    by_event: dict[tuple[str, str], tuple[pd.Series, Offer]] = {}
+    for game_id, found in offers.items():
+        if game_id in rows:
+            for offer in found:
+                key = (offer.venue.name, offer.matched.game.event)
+                by_event[key] = (rows[game_id], offer)
+    stale = []
+    for venue, order in orders:
+        hit = by_event.get((venue.name, venue.event_of(order.ticker)))
+        if hit is None:
             continue
-        game = matched[row["game_id"]]
-        side, other = (
-            (game.home, game.away) if row["bet_home"] else (game.away, game.home)
-        )
-        backs = _backs(order, side.ticker, other.ticker)
+        row, offer = hit
+        backs = venue.pays(*_sides(offer, row["bet_home"]), order.ticker, order.action)
         if backs is None:
             continue
-        price = order_price(order)
-        ceiling = row.get("max_price")
+        ceiling = offer.max_price
         if not backs:
             why = f"the model backs {row['bet']} now"
         elif any(team.lower() in row["game"].lower() for team in exclude):
             why = "excluded by hand"
         elif hold_qb and isinstance(row.get("qb_doubt"), str):
             why = f"QB in doubt: {row['qb_doubt']}"
-        elif row.get("price") is None or pd.isna(row.get("price")):
+        elif offer.priced.route is None:
             continue
         elif ceiling is None or pd.isna(ceiling):
             why = "no price clears the edge now"
-        elif price > ceiling + 1e-9:
-            why = f"{price:.2f} is over the {ceiling:.2f} that clears the edge now"
+        elif order.price > ceiling + 1e-9:
+            why = (
+                f"{order.price:.2f} is over the {ceiling:.2f} that clears the edge now"
+            )
         else:
             continue
-        found.append((order, why))
-    return found
+        stale.append((venue, order, why))
+    return stale
 
 
 def cancel(
-    client: KalshiClient, stale: list[tuple[dict, str]], frame: pd.DataFrame
+    accounts: Mapping[str, Account],
+    stale: Sequence[tuple[Venue, Resting, str]],
+    offers: Mapping[str, Sequence[Offer]],
+    frame: pd.DataFrame,
 ) -> list[str]:
     """Take the stale rungs off the book; a line for each."""
-    games = {row["event"]: row["game"] for _, row in frame.iterrows()}
+    titles = dict(zip(frame["game_id"], frame["game"]))
+    games = {
+        (offer.venue.name, offer.matched.game.event): titles.get(game_id, game_id)
+        for game_id, found in offers.items()
+        for offer in found
+    }
     lines = []
-    for order, why in stale:
-        game = games.get(event_of(order["ticker"]), order["ticker"])
+    for venue, order, why in stale:
+        game = games.get((venue.name, venue.event_of(order.ticker)), order.ticker)
         try:
-            reduced = client.cancel(order["order_id"], order["ticker"])
-        except KalshiError as error:
+            reduced = accounts[venue.name].cancel(order)
+        except VenueError as error:
             lines.append(f"  !! couldn't cancel the rung on {game}: {error}")
             continue
         lines.append(
-            f"  cancelled the {order_price(order):.2f} rung on {game} "
+            f"  cancelled the {order.price:.2f} rung on {game} "
             f"({reduced:g} contracts): {why}"
         )
     for line in lines:
@@ -554,7 +630,7 @@ def print_orders(
             flagged.append(number)
         print(
             f"{number:>3}. {mark} {row['kickoff']:%a %H:%M}  {row['bet']:<28} "
-            f"{row['buy']:<40} {row['contracts']:>3.0f} @ ≤{row['limit']:.2f}  "
+            f"{row['buy']:<40} {row['contracts']:>3.0f} @ ≤{cents(row['limit'])}  "
             f"≤${row['outlay']:.2f}   ({row['game']}, edge {row['edge']:+.3f})"
             + (f"  [topping up: holds {row['held_as']}]" if row["held"] else "")
         )
@@ -625,71 +701,104 @@ def ask(count: int) -> set[int] | None:
 
 
 def place(
-    client: KalshiClient,
+    accounts: Mapping[str, Account],
     picks: pd.DataFrame,
-    matched: dict,
+    offers: Mapping[str, Sequence[Offer]],
     args: argparse.Namespace,
     out: Path,
+    cash: Mapping[str, float] | None = None,
 ) -> pd.DataFrame | None:
-    """Send the orders: the cheapest route first, what it left on the other.
+    """Send the orders: every route on every venue where the pick is a pick,
+    cheapest first, each taking what the last one left.
 
-    Each is a limit order at the pick's `limit`, so nothing fills at a price
-    that doesn't clear the edge. Immediate-or-cancel unless `--rest`, and
-    never resting past kickoff (`order_expiry`). Each pick's shard is funded
-    first (`fund_shard`). An order or a transfer that fails is logged with
-    its `error`, and the next pick goes on.
+    Each is a limit order at its venue's limit (`offer_limit`; the pick's
+    own `limit` on its cheapest venue), so nothing fills at a price that
+    doesn't clear the edge on that venue's book. One past the cheapest
+    venue is held to the dollars the pick has left and that venue's `cash`,
+    so the pick never costs more than it was sized at. Immediate-or-cancel,
+    unless `--rest`: then what's on offer at the limits is taken first and
+    the rest rests on the cheapest route, never past kickoff
+    (`order_expiry`); a pick with one route at all rests there in one order.
+    A venue is funded before its first order (`Account.fund`). An order or a
+    transfer that fails is logged with its `error`, and the next venue, then
+    the next pick, goes on.
     """
     rows = []
-    try:
-        balances = client.shard_balances()
-    except KalshiError as error:
-        # Not worth losing the run's orders over: one on a funded shard still
-        # goes through, and one that isn't is rejected and emailed.
-        print(f"  !! no shard balances, so nothing moved: {error}")
-        balances = {}
+    left_on = dict(cash or {})
     for _, row in picks.sort_values("kickoff").iterrows():
         expires = order_expiry(args.rest, row["kickoff"], datetime.now(UTC))
-        found = matched[row["game_id"]]
-        side, other = (
-            (found.home, found.away) if row["bet_home"] else (found.away, found.home)
-        )
-        try:
-            fund_shard(
-                client,
-                balances,
-                side.shard,
-                row["outlay"] + row.get("rung_outlay", 0.0),
-            )
-        except KalshiError as error:
-            print(f"  !! {row['bet']}: {error}")
-            rows.append(_rejected(row, side.ticker, error))
+        good = good_offers(offers, row["game_id"])
+        if not good:
             continue
-        wanted = int(row["contracts"])
-        failed = False
-        for route in routes(side, other):
-            if wanted <= 0:
-                break
-            if route.price > row["limit"] + 1e-9 and expires is None:
+        best = good[0]
+        tries: list[tuple[Offer, Book, Route, float]] = []
+        for offer in good:
+            side, other = _sides(offer, row["bet_home"])
+            limit = row["limit"] if offer is best else offer_limit(offer, args.slippage)
+            if limit is None:
                 continue
-            try:
-                done = client.buy(
-                    route.ticker, route.action, wanted, row["limit"], expires
+            tries += [(offer, side, r, limit) for r in offer.venue.routes(side, other)]
+        # Stable, so a venue's own order of its routes holds on a tie.
+        tries.sort(key=lambda t: t[2].price + t[0].venue.fees.contract(t[2].price))
+        one_order = expires is not None and len(tries) == 1
+        wanted = int(row["contracts"])
+        dollars = row["outlay"]
+        funded: set[str] = set()
+        failed: set[str] = set()
+
+        def attempt(
+            offer: Offer, side: Book, route: Route, limit: float, rest: int | None
+        ) -> None:
+            nonlocal wanted, dollars
+            venue = offer.venue
+            count = wanted
+            if offer is not best:
+                count = min(count, contracts_for(max(dollars, 0.0), limit, venue.fees))
+            if venue.name in left_on:
+                count = min(
+                    count,
+                    contracts_for(max(left_on[venue.name], 0.0), limit, venue.fees),
                 )
-            except KalshiError as error:
+            if count <= 0:
+                return
+            account = accounts[venue.name]
+            if venue.name not in funded:
+                need = (
+                    row["outlay"]
+                    + (
+                        row.get("rung_outlay", 0.0)
+                        if row.get("rung_venue") == venue.name
+                        else 0.0
+                    )
+                    if offer is best
+                    else count * limit + venue.fees.order(limit, count)
+                )
+                try:
+                    account.fund(side, need)
+                except VenueError as error:
+                    print(f"  !! {row['bet']}: {error}")
+                    rows.append(_rejected(row, venue, side.ticker, error))
+                    failed.add(venue.name)
+                    return
+                funded.add(venue.name)
+            try:
+                done = account.buy(route, count, limit, rest)
+            except VenueError as error:
                 print(f"  !! {row['bet']}: {error}")
-                rows.append(_rejected(row, route.ticker, error))
-                failed = True
-                break
+                rows.append(_rejected(row, venue, route.ticker, error))
+                failed.add(venue.name)
+                return
             rows.append(
                 {
                     "placed_at": datetime.now(CENTRAL),
+                    "venue": venue.name,
                     "game": row["game"],
                     "game_id": row["game_id"],
                     "bet": row["bet"],
                     "ticker": route.ticker,
                     "action": route.action,
-                    "ordered": wanted,
-                    "limit": row["limit"],
+                    "ordered": count,
+                    "limit": limit,
                     "filled": done.filled,
                     "resting": done.resting,
                     "fill_price": done.price,
@@ -702,17 +811,54 @@ def place(
                 }
             )
             price = "" if done.price is None else f" at {done.price:.2f}"
-            rest = f", {done.resting:.0f} resting" if expires and done.resting else ""
+            rest_note = f", {done.resting:.0f} resting" if rest and done.resting else ""
+            on = "" if venue.name == "kalshi" else f" on {venue.label}"
             print(
-                f"  {row['bet']:<28} {route.action.upper()} {route.ticker}: "
-                f"{done.filled:g}/{wanted} filled{price}{rest}"
+                f"  {row['bet']:<28} {route.action.upper()} {route.ticker}{on}: "
+                f"{done.filled:g}/{count} filled{price}{rest_note}"
             )
-            # A resting order holds the rest; only an IOC's leftover moves on.
-            # A dry run shows the first order only: nothing filled to say
-            # what the second would be.
-            wanted = 0 if expires or args.dry_run else top_up(wanted, done.filled)
-        if not failed:
-            rows += _place_rungs(client, row, routes(side, other), args)
+            spent = done.filled * (done.price or limit) + (done.fee or 0.0)
+            held_back = done.resting * limit + (
+                venue.fees.order(limit, done.resting) if done.resting else 0.0
+            )
+            dollars -= spent + held_back
+            if venue.name in left_on:
+                left_on[venue.name] -= spent + held_back
+            # A resting order holds the rest. A dry run shows the first order
+            # only: nothing filled to say what the next would be.
+            wanted = (
+                0
+                if rest or args.dry_run
+                else top_up(wanted, done.filled + done.resting)
+            )
+
+        for offer, side, route, limit in tries:
+            if wanted <= 0:
+                break
+            if offer.venue.name in failed:
+                continue
+            if one_order:
+                attempt(offer, side, route, limit, expires)
+                continue
+            if route.price > limit + 1e-9:
+                continue
+            attempt(offer, side, route, limit, None)
+        if (
+            wanted > 0
+            and expires is not None
+            and not one_order
+            and tries
+            and tries[0][0].venue.name not in failed
+            and not args.dry_run
+        ):
+            attempt(*tries[0], expires)
+        venue = row.get("rung_venue")
+        if row.get("rungs") and venue and venue not in failed:
+            offer = next(o for o in good if o.venue.name == venue)
+            side, other = _sides(offer, row["bet_home"])
+            found = offer.venue.routes(side, other)
+            if found:
+                rows += _place_rungs(accounts[venue], offer.venue, row, found[0], args)
     placed = pd.DataFrame(rows)
     if placed.empty:
         return None
@@ -731,11 +877,12 @@ def place(
     return placed
 
 
-def _rejected(row: pd.Series, ticker: str, error: KalshiError) -> dict:
-    """An orders log's row for what Kalshi turned away, for the job's email
+def _rejected(row: pd.Series, venue: Venue, ticker: str, error: VenueError) -> dict:
+    """An orders log's row for what a venue turned away, for the job's email
     and the morning summary (`picks_job.rejected_orders`)."""
     return {
         "placed_at": datetime.now(CENTRAL),
+        "venue": venue.name,
         "game": row["game"],
         "game_id": row["game_id"],
         "bet": row["bet"],
@@ -744,56 +891,14 @@ def _rejected(row: pd.Series, ticker: str, error: KalshiError) -> dict:
     }
 
 
-def fund_shard(
-    client: KalshiClient,
-    balances: dict[int, int],
-    shard: int,
-    dollars: float,
-    wait: timedelta = FUND_WAIT,
-    poll: timedelta = FUND_POLL,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
-    """Have `dollars` on `shard` for a pick's orders, moving it from the other
-    shards if it isn't there, and set it aside in `balances`, this run's read
-    of them in centicents (`KalshiClient.shard_balances`).
-
-    What an order pays comes from its market's shard alone, and the leagues
-    trade on different ones. A transfer is processed asynchronously, so this
-    waits for the money to land; `KalshiError` if it hasn't by `wait`, or if
-    Kalshi turns the transfer down. No breakdown to read means nothing to
-    move. A dry run prints the moves and doesn't wait.
-    """
-    if not balances:
-        return
-    need = math.ceil(round(dollars * CENTICENTS, 6))
-    moves = shard_transfers(balances, shard, need)
-    for source, amount in moves:
-        client.transfer(source, shard, amount)
-        balances[source] -= amount
-        balances[shard] = balances.get(shard, 0) + amount
-        print(f"  moved ${amount / CENTICENTS:,.2f} from shard {source} to {shard}")
-    if moves and not client.dry_run:
-        deadline = datetime.now(UTC) + wait
-        while (found := client.shard_balances()).get(shard, 0) < need:
-            if datetime.now(UTC) >= deadline:
-                raise KalshiError(
-                    f"transfer to shard {shard} not in after {wait}: it holds "
-                    f"{found.get(shard, 0) / CENTICENTS:,.2f}, this pick needs "
-                    f"{need / CENTICENTS:,.2f}"
-                )
-            sleep(poll.total_seconds())
-        balances.update(found)
-    balances[shard] = balances.get(shard, 0) - need
-
-
 def order_expiry(
     rest_hours: float | None, kickoff: datetime, now: datetime
 ) -> int | None:
-    """When a pick's order stops resting, as Kalshi takes it (epoch seconds):
+    """When a pick's order stops resting, as the venues take it (epoch seconds):
     `rest_hours` from now, or kickoff if that's sooner; None for
     immediate-or-cancel.
 
-    Kalshi trades a game while it's played, so an order left past kickoff
+    The venues trade a game while it's played, so an order left past kickoff
     could fill at a pregame price on an in-game book. A football pick is
     usually days ahead, but a basketball entry can be hours before tip.
     """
@@ -803,25 +908,28 @@ def order_expiry(
 
 
 def _place_rungs(
-    client: KalshiClient, row: pd.Series, found: list, args: argparse.Namespace
+    account: Account,
+    venue: Venue,
+    row: pd.Series,
+    route: Route,
+    args: argparse.Namespace,
 ) -> list[dict]:
-    """A pick's rungs, on its cheapest route as read, resting until kickoff."""
+    """A pick's rungs, on its rung venue's cheapest route as read, resting
+    until kickoff."""
     ladder = row.get("rungs") or []
-    if not ladder or not found:
-        return []
-    route = found[0]
     kickoff = int(row["kickoff"].timestamp())
     rows = []
     for at, count in ladder:
         try:
-            done = client.buy(route.ticker, route.action, count, at, kickoff, rung_id())
-        except KalshiError as error:
+            done = account.buy(route, count, at, kickoff, rung=True)
+        except VenueError as error:
             print(f"  !! {row['bet']} rung at {at:.2f}: {error}")
-            rows.append(_rejected(row, route.ticker, error))
+            rows.append(_rejected(row, venue, route.ticker, error))
             break
         rows.append(
             {
                 "placed_at": datetime.now(CENTRAL),
+                "venue": venue.name,
                 "game": row["game"],
                 "game_id": row["game_id"],
                 "bet": row["bet"],
@@ -863,9 +971,10 @@ def print_picks(
         "model": lambda s: s.map("{:.3f}".format),
         "market": lambda s: s.map("{:.3f}".format),
         "edge": lambda s: s.map("{:+.3f}".format),
+        "venue": None,
         "buy": None,
-        "price": lambda s: s.map("{:.2f}".format),
-        "limit": lambda s: s.map("{:.2f}".format),
+        "price": lambda s: s.map(cents),
+        "limit": lambda s: s.map(cents),
         "max_price": lambda s: s.map(lambda v: "" if pd.isna(v) else f"{v:.2f}"),
         "ev": lambda s: s.map("{:+.1%}".format),
         "contracts": lambda s: s.map(lambda v: "" if pd.isna(v) else f"{v:.0f}"),
@@ -903,7 +1012,7 @@ def print_picks(
         favorites += f", returning {rule.min_expected_return:.0%}+ at its price"
     top = "" if args.top is None else f", top {args.top} by edge"
     print(
-        f"\n=== {len(picks)} picks (edge ≥ {rule.min_edge:.0%} over Kalshi's no-vig "
+        f"\n=== {len(picks)} picks (edge ≥ {rule.min_edge:.0%} over a venue's no-vig "
         f"price{favorites}){top}; {sizing(args)}"
     )
     if not table.empty:
