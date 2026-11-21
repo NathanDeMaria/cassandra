@@ -1,9 +1,10 @@
-"""What to bet on Kalshi this week: the model against the live order books.
+"""What to bet this week: the model against the venues' live order books.
 
     python picks.py                    # refresh from s3, tonight's scores from ESPN
     python picks.py --offline          # no s3: the copies the last run saved
     python picks.py --league mens      # another league, by its own rules
     python picks.py --place            # ...then buy them, after asking
+    python picks.py --venue kalshi --venue polymarket_us   # name the venues
 
 Run it once the last of the night's games is final. That's when the
 backtest bought, and the edge it measured faded as the book caught up (see
@@ -24,11 +25,11 @@ backtest bought, and the edge it measured faded as the book caught up (see
 2. **Replay.** The model is replayed through every result, warmed on its
    search's own priors as `betting.py`'s replay is. The predictor is left
    where the season is now, and predicts the fixtures.
-3. **Market.** It reads every open Kalshi college football game, matches
-   each to its ESPN fixture, and takes each side's ask and size.
-4. **Price.** It computes the backtest's edge, the cheapest way to take
-   it, and Kalshi's fee. `cassandra.picks.skip_reason` says which games
-   aren't picks.
+3. **Market.** It reads every open game on each venue (see "Venues"),
+   matches each to its ESPN fixture, and takes each side's ask and size.
+4. **Price.** On each venue's book it computes the backtest's edge, the
+   cheapest way to take it, and the venue's fee.
+   `cassandra.picks.skip_reason` says which games aren't picks there.
 5. **Size.** The `--top` picks by edge with something left to buy -- a
    pick already held in full doesn't count -- are sized (see "Sizing"),
    and for each it reads the order book: how many contracts are offered
@@ -79,6 +80,23 @@ games and re-size the rest, `q` stops. A drop never brings in a game that
 wasn't on the first list, even when it frees a place in the `--top`.
 `--only GAME` prices every game as usual and picks only the ones named,
 by ESPN game id or team: the line each pick in the picks email carries.
+
+**Venues.** Kalshi and Polymarket US, through one interface
+(`cassandra.venues`); a run uses Kalshi and every other venue whose API key
+is set up, or the ones `--venue` names. Each venue's book is priced by the
+same rule on its own prices -- its no-vig market, its fee, its own listing
+for the entry -- so a game can be a pick on one and not the other. A game
+backs one side. The money is added up: the bankroll is every account's,
+a pick's stake is one stake whichever venues hold it, what's held on any
+venue counts toward it, and a league's `--max-exposure` counts every
+account's positions and resting orders. An order goes to the cheapest
+venue where the game is a pick first, at that venue's limit, and what it
+can't fill goes to the next, held to the dollars the pick has left. With
+`--rest`, what's on offer at every venue's limit is taken first and the rest
+rests on the cheapest. Rungs rest only on a venue that can mark an order as
+one (Kalshi). The picks file's `venue` is the cheapest venue where a game is
+a pick (or its first venue), and `offers` lists every venue's price, edge
+and reason.
 
 **Unattended.** `jobs.py picks` runs this in the cloud, on a schedule and
 after every finals sweep (`cassandra.picks_job`), with `--place --yes
@@ -171,7 +189,7 @@ from typing import NamedTuple
 
 import pandas as pd
 import pyarrow as pa
-from call_it_what_you_want import ESPN, KALSHI, NCAA, TeamNamer, default_teams
+from call_it_what_you_want import ESPN, NCAA, TeamNamer, default_teams
 from endgame.async_tools import apply_in_parallel
 from endgame.football_plays import FootballLeague, get_game_plays
 from endgame.ncaabb.gender import NcaabbGender
@@ -185,13 +203,7 @@ from cassandra import overrides, picks_job, placing
 from cassandra.batch.artifacts import download, download_predictor_data
 from cassandra.constants import CASSANDRA_HOME
 from cassandra.exhibitions import without_exhibitions
-from cassandra.kalshi_trade import (
-    KalshiClient,
-    event_of,
-    is_rung,
-    public_get,
-    signed_positions,
-)
+from cassandra.kalshi_venue import KALSHI_VENUE
 from cassandra.model_eval import rebuild_priors
 from cassandra.odds import OddsDatabase
 from cassandra.picks import (
@@ -201,20 +213,22 @@ from cassandra.picks import (
     PICK_LEAGUES,
     Book,
     Fixture,
+    Matched,
+    Offer,
     PickRule,
+    backed_side,
     entry,
-    event_day,
-    held_on,
-    kalshi_games,
     match,
     max_price,
     previous_games,
     price,
+    ranked,
     ratings_waiting,
     skip_reason,
 )
 from cassandra.picks_job import Autobet, LeagueRules
-from cassandra.placing import CENTRAL, DISPLAY_BUDGET
+from cassandra.placing import CENTRAL, DISPLAY_BUDGET, cents
+from cassandra.polymarket_us import POLYMARKET_US
 from cassandra.predictor import OptimizationConfig, Predictor, load_predictor
 from cassandra.predictor import frame as frames
 from cassandra.predictor.adjustments import MatchupSources
@@ -233,6 +247,7 @@ from cassandra.qb_starts import Doubt, GameQb, doubts, read_qb_starts
 from cassandra.replay_cache import AUTHORED_DIR, GENERATED_DIR
 from cassandra.residuals import team_tiers
 from cassandra.save_predictions import join_with_odds, read_all_seasons
+from cassandra.venues import Account, Holding, Resting, Venue, held_on
 
 PICKS_DIR = CASSANDRA_HOME / "picks"
 PLAYS_DIR = PICKS_DIR / "plays"
@@ -518,20 +533,44 @@ def _replay(
     return predictor, pd.DataFrame([asdict(p) for p in predictions])
 
 
-def _kalshi_markets(series: tuple[str, ...]) -> list[dict]:
-    markets: list[dict] = []
-    for ticker in series:
-        cursor = None
-        while True:
-            params = {"series_ticker": ticker, "status": "open", "limit": 1000}
-            if cursor:
-                params["cursor"] = cursor
-            page = public_get("/markets", params)
-            markets += page.get("markets") or []
-            cursor = page.get("cursor")
-            if not cursor or not page.get("markets"):
-                break
-    return markets
+#: Every venue a run can price and bet on (`cassandra.venues`).
+VENUES: dict[str, Venue] = {v.name: v for v in (KALSHI_VENUE, POLYMARKET_US)}
+
+
+def run_venues(names: list[str], demo: bool = False) -> list[Venue]:
+    """The venues a run uses: those named, or Kalshi and every other venue
+    with an API key where its account looks -- so a run on a machine with
+    only Kalshi's key runs as it always has. A `--demo` run is Kalshi's."""
+    if names:
+        return [VENUES[name] for name in dict.fromkeys(names)]
+    if demo:
+        return [KALSHI_VENUE]
+    return [v for v in VENUES.values() if v is KALSHI_VENUE or v.has_key()]
+
+
+def side_ids_on(venue: Venue, league: str) -> Callable[[Book], frozenset[str]]:
+    """Every ESPN team a venue's side could be: its code and names as the
+    venue spells them, or, when none of those is on file, ESPN's names -- for
+    a team a venue's roster leaves out but its games don't."""
+    known = default_teams(NCAA)
+
+    def side_ids(side: Book) -> frozenset[str]:
+        found = {
+            t.espn_id
+            for spelling in (side.code, side.team, *side.names)
+            if spelling
+            for t in known.find(spelling, source=venue.spelled_as, league=league)
+        }
+        if not found:
+            found = {
+                t.espn_id
+                for name in (side.team, *side.names)
+                if name
+                for t in known.find(name, source=ESPN, league=league)
+            }
+        return frozenset(found)
+
+    return side_ids
 
 
 class Outcome(NamedTuple):
@@ -558,6 +597,14 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model", help="the model to price with (default: the league's own)"
+    )
+    parser.add_argument(
+        "--venue",
+        action="append",
+        default=[],
+        choices=sorted(VENUES),
+        help="a venue to price and bet on (repeatable; default: Kalshi and "
+        "every other venue whose API key is set up)",
     )
     parser.add_argument(
         "--days",
@@ -1025,71 +1072,77 @@ def run(args: argparse.Namespace) -> Outcome:
         for g in games
         if not g.completed and g.status not in NOT_HAPPENING and g.date <= now
     ]
-    teams = default_teams(NCAA)
-
-    def side_ids(side: Book) -> frozenset[str]:
-        found = {
-            t.espn_id
-            for spelling in (side.code, side.team)
-            if spelling
-            for t in teams.find(spelling, source=KALSHI, league=spec.teams)
-        }
-        if not found and side.team:
-            found = {
-                t.espn_id for t in teams.find(side.team, source=ESPN, league=spec.teams)
-            }
-        return frozenset(found)
-
-    markets = _kalshi_markets(spec.series)
-    kalshi, odd = kalshi_games(markets)
+    venues = run_venues(args.venue, args.demo)
     # Today's events stay listed until they settle, and the ones under way
-    # have no fixture left to match; from tomorrow (Eastern) on, a Kalshi
+    # have no fixture left to match; from tomorrow (Eastern) on, a venue's
     # game with no fixture is a matching miss worth seeing.
     tomorrow = now.astimezone(EASTERN).date() + timedelta(days=1)
-    in_window = [k for k in kalshi if k.day <= horizon.date()]
-    matched, unmatched = match(fixtures, in_window, side_ids)
-    missed = [e for e in unmatched if (event_day(e) or tomorrow) >= tomorrow]
-    priced_ids = {f.game.game_id for f in fixtures if f.game.date < horizon}
-    print(
-        f"{len(priced_ids)} fixtures in the next {args.days:g} days, "
-        f"{len(priced_ids & matched.keys())} of them on Kalshi"
-        + (
-            f"; {len(missed)} Kalshi games matched no fixture: {', '.join(missed)}"
-            if missed
-            else ""
-        )
+    # A venue listing further ahead than ESPN's fixtures go -- basketball's
+    # two weeks against a top-up's one -- has games no fixture could match.
+    last_fixture = max(
+        (f.game.date.astimezone(EASTERN).date() for f in fixtures), default=tomorrow
     )
-    # Only the unfinished games a Kalshi game is waiting on are worth a line;
+    priced_ids = {f.game.game_id for f in fixtures if f.game.date < horizon}
+    matched: dict[str, dict[str, Matched]] = {}
+    misses: list[str] = []
+    for venue in venues:
+        listed, _ = venue.games(league)
+        in_window = [k for k in listed if k.day <= horizon.date()]
+        matched[venue.name], unmatched = match(
+            fixtures, in_window, side_ids_on(venue, spec.teams)
+        )
+        missed = sorted(
+            {k.event for k in in_window if tomorrow <= k.day <= last_fixture}
+            & set(unmatched)
+        )
+        if missed:
+            misses.append(
+                f"{len(missed)} {venue.label} games matched no fixture: "
+                + ", ".join(missed[:20])
+                + (f" (+{len(missed) - 20} more)" if len(missed) > 20 else "")
+            )
+    on_any = set().union(*(found.keys() for found in matched.values()))
+    counts = ", ".join(
+        f"{len(priced_ids & matched[v.name].keys())} {'of them ' if i == 0 else ''}"
+        f"on {v.label}"
+        for i, v in enumerate(venues)
+    )
+    print(
+        f"{len(priced_ids)} fixtures in the next {args.days:g} days, {counts}"
+        + (f" ({len(priced_ids & on_any)} on any)" if len(venues) > 1 else "")
+        + "".join(f"; {miss}" for miss in misses)
+    )
+    # Only the unfinished games a venue's game is waiting on are worth a line;
     # on a Saturday most of the rest are D-III games nobody lists.
-    on_kalshi = {
+    on_venues = {
         team
         for f in fixtures
-        if f.game.game_id in priced_ids & matched.keys()
+        if f.game.game_id in priced_ids & on_any
         for team in (f.game.home, f.game.away)
     }
-    for team in sorted(doubted.keys() & on_kalshi):
+    for team in sorted(doubted.keys() & on_venues):
         print(f"QB in doubt:    {doubted[team].sentence}")
     # Most games ESPN has no plays for are D-II/III games it never covers
-    # play by play; only the ones a Kalshi game is waiting on are worth a line.
+    # play by play; only the ones a listed game is waiting on are worth a line.
     for game in sorted(blind, key=lambda g: by_id[g].date):
-        if blind[game] & on_kalshi:
+        if blind[game] & on_venues:
             print(
                 f"!! no plays from ESPN yet for {placing.fmt_game(by_id[game])}: "
-                f"{', '.join(sorted(blind[game] & on_kalshi))}'s next game waits "
+                f"{', '.join(sorted(blind[game] & on_venues))}'s next game waits "
                 "for a run that can read who played quarterback"
             )
-    holding = [g for g in unfinished if {g.home, g.away} & on_kalshi]
+    holding = [g for g in unfinished if {g.home, g.away} & on_venues]
     if holding:
         print(
             f"\n!! {len(holding)} games have kicked off and aren't final "
-            "-- their teams' Kalshi games are held back:"
+            "-- their teams' next games are held back:"
         )
         for g in holding:
             print(f"   {g.away} @ {g.home}  ({g.status or 'no status'})")
     if len(unfinished) > len(holding):
         print(
             f"   {len(unfinished) - len(holding)} other games aren't final, "
-            "with no Kalshi game waiting on them"
+            "with no listed game waiting on them"
         )
 
     # 4. Price.
@@ -1102,29 +1155,35 @@ def run(args: argparse.Namespace) -> Outcome:
         found_tier = tier(team, year) if tier else None
         return None if found_tier is None else found_tier[0]
 
+    by_name = {v.name: v for v in venues}
+    #: Each priced game's offers, one a venue, in the order an order goes
+    #: to them (`cassandra.picks.ranked`).
+    offers: dict[str, list[Offer]] = {}
     for fixture in fixtures:
-        found = matched.get(fixture.game.game_id)
-        if found is None or fixture.game.game_id not in priced_ids:
-            continue
         game = fixture.game
-        model_home = predictor.predict_game(game).team1_win_prob
-        priced = price(model_home, found)
-        if priced is None:
+        found = {
+            name: on[game.game_id] for name, on in matched.items() if game.game_id in on
+        }
+        if not found or game.game_id not in priced_ids:
             continue
-        side, other = (game.home, game.away) if priced.home else (game.away, game.home)
-        market_side = priced.home_market if priced.home else 1 - priced.home_market
-        # The same game with the side bet on missing its starter: what a pick
-        # held on a QB check is worth if the news says he sits.
-        edge_qb_out = None
-        if spec.plays:
-            with sources.qb_out.assuming(game.game_id, side):
-                out_home = predictor.predict_game(game).team1_win_prob
-            edge_qb_out = (out_home if priced.home else 1 - out_home) - market_side
+        model_home = predictor.predict_game(game).team1_win_prob
+        prices = {
+            name: priced
+            for name, m in found.items()
+            if (
+                priced := price(model_home, m, by_name[name].fees, by_name[name].routes)
+            )
+            is not None
+        }
+        if not prices:
+            continue
+        # One side for the game: where the venues' books disagree on it, the
+        # side the model rates furthest over a market.
+        home = backed_side(list(prices.values()))
+        side, other = (game.home, game.away) if home else (game.away, game.home)
+        model_side = model_home if home else 1 - model_home
         last = {team: previous(team, game.date) for team in (game.home, game.away)}
         waiting = [t for t, p in last.items() if p is not None and not p.completed]
-        listed = [b.opened for b in (found.home, found.away) if b.opened is not None]
-        entered = entry(last.values(), max(listed) if listed else None)
-        since_entry = None if entered is None else now - entered
         behind = ratings_waiting(last, newest, cleared)
         no_plays = (
             []
@@ -1135,31 +1194,56 @@ def run(args: argparse.Namespace) -> Outcome:
                 if p is not None and p.completed and epa.get(p.game_id) is None
             ]
         )
-
-        reason = skip_reason(
-            priced,
-            division(side),
-            division(other),
-            waiting,
-            since_entry,
-            args.rule,
-            spec.top_division,
-            behind,
-        )
         unknown = sorted({game.home, game.away} & unread_teams)
-        if reason is None and unknown:
-            reason = f"QB check incomplete: {', '.join(unknown)}"
-        book = found.home if priced.home else found.away
+        game_offers = []
+        for name, priced in prices.items():
+            venue, m = by_name[name], found[name]
+            if priced.home != home:
+                priced = price(model_home, m, venue.fees, venue.routes, home=home)
+                assert priced is not None
+            # Each venue's entry is its own: the later of the previous games
+            # and its own listing.
+            listed = [b.opened for b in (m.home, m.away) if b.opened is not None]
+            entered = entry(last.values(), max(listed) if listed else None)
+            since_entry = None if entered is None else now - entered
+            reason = skip_reason(
+                priced,
+                division(side),
+                division(other),
+                waiting,
+                since_entry,
+                args.rule,
+                spec.top_division,
+                behind,
+            )
+            if reason is None and unknown:
+                reason = f"QB check incomplete: {', '.join(unknown)}"
+            book = m.home if home else m.away
+            ceiling = max_price(model_side, priced, book, args.rule, venue.fees)
+            game_offers.append(Offer(venue, m, priced, ceiling, since_entry, reason))
+        offers[game.game_id] = ranked(game_offers)
+        # The game's row is its cheapest pick, or with none its first venue's.
+        shown = offers[game.game_id][0]
+        priced, m, since_entry = shown.priced, shown.matched, shown.since_entry
+        market_side = priced.home_market if home else 1 - priced.home_market
+        # The same game with the side bet on missing its starter: what a pick
+        # held on a QB check is worth if the news says he sits.
+        edge_qb_out = None
+        if spec.plays:
+            with sources.qb_out.assuming(game.game_id, side):
+                out_home = predictor.predict_game(game).team1_win_prob
+            edge_qb_out = (out_home if home else 1 - out_home) - market_side
+        book = m.home if home else m.away
         route = priced.route
-        model_side = model_home if priced.home else 1 - model_home
         rows.append(
             {
                 "kickoff": game.date.astimezone(CENTRAL),
                 "game": placing.fmt_game(game),
                 "game_id": game.game_id,
-                "event": found.kalshi.event,
+                "venue": shown.venue.name,
+                "event": m.game.event,
                 "bet": side,
-                "bet_home": priced.home,
+                "bet_home": home,
                 "divisions": f"{division(side) or '?'} v {division(other) or '?'}",
                 "model": model_side,
                 "market": market_side,
@@ -1169,7 +1253,7 @@ def run(args: argparse.Namespace) -> Outcome:
                 if route is None
                 else f"{route.action.upper()} {route.ticker}",
                 "price": None if route is None else route.price,
-                "max_price": max_price(model_side, priced, book, args.rule),
+                "max_price": shown.max_price,
                 "cost": priced.cost,
                 "ev": priced.expected_return,
                 "size_at_price": None if route is None else route.size,
@@ -1183,12 +1267,13 @@ def run(args: argparse.Namespace) -> Outcome:
                 "hours_since_entry": None
                 if since_entry is None
                 else since_entry.total_seconds() / 3600,
-                "skip": reason,
+                "skip": shown.skip,
+                "offers": offers_line(offers[game.game_id]),
                 "home_model": model_home,
-                "home_ask": found.home.ask,
-                "away_ask": found.away.ask,
-                "home_bid": found.home.bid,
-                "away_bid": found.away.bid,
+                "home_ask": m.home.ask,
+                "away_ask": m.away.ask,
+                "home_bid": m.home.bid,
+                "away_bid": m.away.bid,
                 "read_at": now,
             }
         )
@@ -1198,30 +1283,47 @@ def run(args: argparse.Namespace) -> Outcome:
         return Outcome(frame, frame, None)
 
     # 5. Size the picks (`placing.size`), each at its limit price.
-    client = None
+    accounts: dict[str, Account] = {}
+    holdings: dict[str, list[Holding]] = {}
+    resting: dict[str, list[Resting]] = {}
+    cash_on: dict[str, float] = {}
     frame["held"] = 0.0
     frame["held_as"] = ""
     args.cash = None
     args.rung_events = set()
-    rung_orders: list[dict] = []
+    rung_orders: list[tuple[Venue, Resting]] = []
     if args.place:
-        client = KalshiClient.from_env(demo=args.demo, dry_run=args.dry_run)
-        cash, invested = client.account()
-        held_markets = client.market_positions()
-        positions = signed_positions(held_markets)
-        orders = client.resting_orders()
-        resting = {event_of(o["ticker"]) for o in orders if not is_rung(o)}
-        rung_orders = [o for o in orders if is_rung(o)]
-        args.rung_events = {event_of(o["ticker"]) for o in rung_orders}
+        mode = (" DEMO" if args.demo else "") + (" (dry run)" if args.dry_run else "")
+        cash = invested = 0.0
+        for venue in venues:
+            account = venue.account(demo=args.demo, dry_run=args.dry_run)
+            accounts[venue.name] = account
+            money = account.balance()
+            holdings[venue.name] = account.holdings()
+            resting[venue.name] = account.resting()
+            cash_on[venue.name] = money.cash
+            cash += money.cash
+            invested += money.invested
+            rungs_here = [o for o in resting[venue.name] if o.rung]
+            rung_orders += [(venue, o) for o in rungs_here]
+            args.rung_events |= {
+                (venue.name, venue.event_of(o.ticker)) for o in rungs_here
+            }
+            events = {
+                venue.event_of(o.ticker) for o in resting[venue.name] if not o.rung
+            }
+            rung_events = {venue.event_of(o.ticker) for o in rungs_here}
+            print(
+                f"\n{venue.label}{mode}: ${money.cash:,.2f} cash, ${money.invested:,.2f} in "
+                f"{len(holdings[venue.name])} open positions, {len(events)} events "
+                "with resting orders"
+                + (f", {len(rung_events)} with rungs" if rungs_here else "")
+            )
         args.cash = cash
+        if len(venues) > 1:
+            print(f"every account: ${cash:,.2f} cash, ${invested:,.2f} in positions")
         if args.kelly_fraction is not None and args.bankroll is None:
             args.bankroll = cash + invested
-        mode = (" DEMO" if args.demo else "") + (" (dry run)" if args.dry_run else "")
-        print(
-            f"\nKalshi{mode}: ${cash:,.2f} cash, ${invested:,.2f} in "
-            f"{len(positions)} open positions, {len(resting)} events with resting orders"
-            + (f", {len(args.rung_events)} with rungs" if rung_orders else "")
-        )
         if args.budget is not None and args.budget > cash and args.yes:
             print(f"--budget ${args.budget:g} cut to the ${cash:,.2f} on hand")
             args.budget = cash
@@ -1230,10 +1332,13 @@ def run(args: argparse.Namespace) -> Outcome:
                 f"--budget ${args.budget:g} is more than the ${cash:,.2f} on hand"
             )
         if args.max_exposure is not None:
-            # The league's share of the account: what it has at risk now
+            # The league's share of every account: what it has at risk now
             # counts against it, and only the rest can go out this run.
             bankroll = args.bankroll if args.bankroll is not None else cash + invested
-            at_risk = placing.league_exposure(held_markets, orders, spec.series)
+            at_risk = placing.league_exposure(
+                {v.name: (v, holdings[v.name], resting[v.name]) for v in venues},
+                league,
+            )
             room = placing.exposure_room(bankroll, args.max_exposure, at_risk)
             print(
                 f"{league} at risk: ${at_risk:,.2f} of its "
@@ -1242,28 +1347,36 @@ def run(args: argparse.Namespace) -> Outcome:
             )
             args.budget = room if args.budget is None else min(args.budget, room)
         for i, row in frame.iterrows():
-            found = matched[row["game_id"]]
-            side, other = (
-                (found.home, found.away)
-                if row["bet_home"]
-                else (found.away, found.home)
-            )
-            mine, against = held_on(positions, side, other)
+            mine = against = 0.0
+            held_as: list[str] = []
+            resting_on: list[str] = []
+            for offer in offers[row["game_id"]]:
+                venue = offer.venue
+                home, away = offer.matched.home, offer.matched.away
+                side, other = (home, away) if row["bet_home"] else (away, home)
+                on_side, on_other = held_on(venue, holdings[venue.name], side, other)
+                mine += on_side
+                against += on_other
+                # The same outcome can be held through more than one contract,
+                # and a top-up may buy another: say which are held.
+                held_as += [
+                    venue.held_as(h)
+                    for h in sorted(
+                        holdings[venue.name], key=lambda h: h.ticker != side.ticker
+                    )
+                    if venue.pays(side, other, h.ticker, h.action)
+                ]
+                if any(
+                    not o.rung and venue.event_of(o.ticker) == offer.matched.game.event
+                    for o in resting[venue.name]
+                ):
+                    resting_on.append(venue.label)
             frame.at[i, "held"] = mine
-            # The same outcome can be held through either contract, and a
-            # top-up may buy the other one: say which is held.
-            frame.at[i, "held_as"] = ", ".join(
-                f"{count:g} {action} {ticker.rsplit('-', 1)[-1]}"
-                for ticker, action, count in (
-                    (side.ticker, "YES", positions.get(side.ticker, 0.0)),
-                    (other.ticker, "NO", -positions.get(other.ticker, 0.0)),
-                )
-                if count > 0
-            )
+            frame.at[i, "held_as"] = ", ".join(held_as)
             if not pd.isna(row["skip"]):
                 continue
-            if row["event"] in resting:
-                frame.at[i, "skip"] = "resting order on Kalshi"
+            if resting_on:
+                frame.at[i, "skip"] = f"resting order on {' and '.join(resting_on)}"
             elif against:
                 frame.at[i, "skip"] = f"held on the other side ({against:g})"
     if args.kelly_fraction is not None and args.bankroll is None:
@@ -1281,19 +1394,23 @@ def run(args: argparse.Namespace) -> Outcome:
         for p, m in zip(frame["price"], frame["max_price"])
     ]
     cancelled: tuple[str, ...] = ()
-    if client is not None and rung_orders:
+    if accounts and rung_orders:
         stale = placing.stale_rungs(
-            rung_orders, frame, matched, args.exclude, hold_qb=args.hold_qb
+            rung_orders, frame, offers, args.exclude, hold_qb=args.hold_qb
         )
         if stale:
             print(f"\n=== {len(stale)} resting rungs the model no longer backs")
-            canceller = client
+            cancellers = dict(accounts)
             if args.dry_run and args.cancel_rungs:
-                canceller = KalshiClient.from_env(demo=args.demo)
-            cancelled = tuple(placing.cancel(canceller, stale, frame))
+                for venue, _, _ in stale:
+                    cancellers[venue.name] = venue.account(demo=args.demo)
+            cancelled = tuple(placing.cancel(cancellers, stale, offers, frame))
             # A game whose rungs went can have new ones, priced now.
-            if not canceller.dry_run:
-                args.rung_events -= {event_of(o["ticker"]) for o, _ in stale}
+            args.rung_events -= {
+                (v.name, v.event_of(o.ticker))
+                for v, o, _ in stale
+                if not cancellers[v.name].dry_run
+            }
     priced_skips = frame["skip"].copy()
     dropped: set[str] = set()
     # Why each game was off the first list asked about. Dropping some frees
@@ -1312,7 +1429,7 @@ def run(args: argparse.Namespace) -> Outcome:
         if unlisted is not None:
             off = frame["game_id"].isin(unlisted.index)
             frame.loc[off, "skip"] = frame.loc[off, "game_id"].map(unlisted)
-        sized, picks = placing.size(frame, matched, args)
+        sized, picks = placing.size(frame, offers, args)
         if unlisted is None:
             unlisted = sized.set_index("game_id")["skip"].dropna()
         if spec.news and not args.no_news:
@@ -1323,7 +1440,7 @@ def run(args: argparse.Namespace) -> Outcome:
         placing.print_picks(sized, picks, args)
         placing.print_orders(picks, news, args)
         print(f"\nevery matched game: {out}")
-        if client is None or picks.empty or args.notify:
+        if not accounts or picks.empty or args.notify:
             return Outcome(sized, picks, None, cancelled, _held(held_rows))
         flagged = placing.qb_news(picks, news) if args.hold_qb else {}
         if flagged:
@@ -1348,9 +1465,21 @@ def run(args: argparse.Namespace) -> Outcome:
     return Outcome(
         sized,
         picks,
-        placing.place(client, picks, matched, args, out),
+        placing.place(accounts, picks, offers, args, out, cash_on),
         cancelled,
         _held(held_rows),
+    )
+
+
+def offers_line(offers: list[Offer]) -> str:
+    """A game's offers in a line, for the picks file: each venue's price,
+    edge, and why it isn't a pick there."""
+    return "; ".join(
+        f"{o.venue.name} "
+        + ("-" if o.priced.route is None else cents(o.priced.route.price))
+        + f" {o.priced.edge:+.3f}"
+        + (f" ({o.skip})" if o.skip else "")
+        for o in offers
     )
 
 

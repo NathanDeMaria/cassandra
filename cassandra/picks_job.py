@@ -404,14 +404,28 @@ def unsent(picks: pd.DataFrame, sent: dict, held: bool = False) -> pd.DataFrame:
     return picks[fresh]
 
 
+#: How each venue's name reads in an email (`cassandra.venues.Venue.label`).
+VENUE_LABELS = {"kalshi": "Kalshi", "polymarket_us": "Polymarket US"}
+
+
+def venues_in(frame: pd.DataFrame) -> str:
+    """The venues a frame's rows are on, as a person reads them: Kalshi's
+    for a log from before there was another."""
+    found = (
+        frame["venue"].fillna("kalshi") if "venue" in frame else pd.Series(["kalshi"])
+    )
+    names = list(dict.fromkeys(found)) or ["kalshi"]
+    return " and ".join(VENUE_LABELS.get(n, n) for n in names)
+
+
 def _reason(error: str) -> str:
-    """What Kalshi said, short: its error code, or the start of the message."""
+    """What the venue said, short: its error code, or the start of the message."""
     found = re.search(r'"code":\s*"([^"]+)"', error)
     return found.group(1) if found else error[:120]
 
 
 def rejected_orders(orders: pd.DataFrame | None) -> pd.DataFrame:
-    """The rows of an orders log that Kalshi turned away, each with its short
+    """The rows of an orders log that a venue turned away, each with its short
     `reason`. An order filled or resting has no `error`."""
     if orders is None or "error" not in orders:
         return pd.DataFrame(columns=["game", "bet", "ticker", "error", "reason"])
@@ -449,13 +463,14 @@ def record_rejected(sent: dict, rejected: pd.DataFrame, at: datetime) -> dict:
 
 
 def rejected_email(rejected: pd.DataFrame, at: datetime) -> tuple[str, str]:
-    """The email saying Kalshi turned orders away: nothing else would, since
+    """The email saying a venue turned orders away: nothing else would, since
     the run itself succeeds."""
-    count = f"{len(rejected)} Kalshi order{'s' if len(rejected) != 1 else ''}"
+    where = venues_in(rejected)
+    count = f"{len(rejected)} {where} order{'s' if len(rejected) != 1 else ''}"
     reasons = ", ".join(sorted(set(rejected["reason"])))
     subject = f"{count} rejected ({at:%a %H:%M} CT): {reasons}"[:99]
     lines = [
-        f"Kalshi turned away {count}, so these bets weren't placed. A later run "
+        f"{where} turned away {count}, so these bets weren't placed. A later run "
         "tries each again while it's still a pick, and this email won't repeat "
         "for the same market and reason.",
         "",
@@ -515,7 +530,7 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
     numbered as `picks.py` numbers them (so "place 2" works in reply)."""
     offered = f"offered_within_{round(slippage * 100)}c"
     names = ", ".join(ordered(held)["bet"])
-    count = f"{len(held)} Kalshi pick{'s' if len(held) != 1 else ''}"
+    count = f"{len(held)} {venues_in(held)} pick{'s' if len(held) != 1 else ''}"
     need = "needs" if len(held) == 1 else "need"
     subject = f"{count} {need} your OK, QB check ({at:%a %H:%M} CT): {names}"[:99]
     lines = [
@@ -528,7 +543,7 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
         "summary lists it until then.",
         "",
     ]
-    from cassandra.placing import if_out_line
+    from cassandra.placing import cents, if_out_line
 
     for number, (_, row) in enumerate(ordered(held).iterrows(), start=1):
         lines.append(
@@ -536,7 +551,13 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
         )
         lines.append(f"   QB: {row['qb_news'][:240]}")
         lines.append(
-            f"   {row['buy']}: {row['contracts']:.0f} @ <= {row['limit']:.2f}, "
+            f"   {row['buy']}"
+            + (
+                f" on {VENUE_LABELS.get(row['venue'], row['venue'])}"
+                if row.get("venue", "kalshi") != "kalshi"
+                else ""
+            )
+            + f": {row['contracts']:.0f} @ <= {cents(row['limit'])}, "
             f"at most ${row['outlay']:.2f}"
         )
         since = row.get("hours_since_entry")
@@ -646,6 +667,50 @@ def placed_bets(fills: Sequence[Mapping], orders: pd.DataFrame) -> pd.DataFrame:
     return found.drop(columns="paid").sort_values("cost", ascending=False)
 
 
+def logged_bets(orders: pd.DataFrame, since: datetime, venue: str) -> pd.DataFrame:
+    """`placed_bets`' rows for a venue with no fills listing read here, from
+    the job's orders logs: what each order filled when it was placed, since
+    `since`. An order left resting that fills later isn't in them."""
+    columns = [
+        "event",
+        "bet",
+        "game",
+        "contracts",
+        "price",
+        "cost",
+        "model",
+        "edge",
+        "rung",
+    ]
+    if orders.empty or "venue" not in orders or "filled" not in orders:
+        return pd.DataFrame(columns=columns)
+    found = orders[(orders["venue"] == venue) & (orders["filled"].fillna(0) > 0)].copy()
+    placed = pd.to_datetime(found["placed_at"], utc=True, errors="coerce")
+    found = found[placed >= since]
+    if found.empty:
+        return pd.DataFrame(columns=columns)
+    found["paid"] = found["filled"] * found["fill_price"]
+    found["cost"] = found["paid"] + found["fee"].fillna(0)
+    found["rung_count"] = found["filled"].where(
+        found.get("rung", pd.Series(False, index=found.index))
+        .astype(str)
+        .str.lower()
+        .eq("true"),
+        0.0,
+    )
+    grouped = found.groupby(["ticker", "bet"], as_index=False).agg(
+        game=("game", "first"),
+        contracts=("filled", "sum"),
+        paid=("paid", "sum"),
+        cost=("cost", "sum"),
+        model=("model", "first"),
+        edge=("edge", "first"),
+        rung=("rung_count", "sum"),
+    )
+    grouped["price"] = grouped["paid"] / grouped["contracts"]
+    return grouped.rename(columns={"ticker": "event"}).drop(columns="paid")[columns]
+
+
 def settled_games(settlements: Sequence[Mapping]) -> pd.DataFrame:
     """Each game `settlements` closed, its P&L with fees, and whether it won.
     A YES-NO pair (a sale before the end, booked as a buy of the other side)
@@ -678,15 +743,19 @@ def summary_email(
     since: datetime,
     at: datetime,
     rejected: pd.DataFrame | None = None,
+    others: Sequence[tuple[str, float, float, int]] = (),
 ) -> tuple[str, str]:
     """The morning email: what was placed since `since`, what still rests,
-    what settled, the holds still waiting, what Kalshi rejected, and the
-    account."""
+    what settled, the holds still waiting, what the venues rejected, and the
+    accounts. `account` and `resting` are Kalshi's; `others` each other
+    venue's account -- its name, cash, positions, and resting orders --
+    whose bets are already in `bets`. Settlements are Kalshi's alone."""
     from cassandra.kalshi_trade import is_rung, order_price
 
     won, lost = int(settled["won"].sum()), int((~settled["won"]).sum())
     subject = (
-        f"Kalshi {at:%a %b %-d}: {len(bets)} bet{'s' if len(bets) != 1 else ''} "
+        f"{'Bets' if others else 'Kalshi'} {at:%a %b %-d}: "
+        f"{len(bets)} bet{'s' if len(bets) != 1 else ''} "
         f"placed (${bets['cost'].sum():,.2f})"
         + (
             f", settled {won}-{lost} ({_money(settled['pnl'].sum())})"
@@ -750,7 +819,7 @@ def summary_email(
         ]
         lines.append("")
     if rejected is not None and not rejected.empty:
-        lines.append(f"Rejected by Kalshi: {len(rejected)}, not placed")
+        lines.append(f"Rejected by {venues_in(rejected)}: {len(rejected)}, not placed")
         for (bet, game, reason), group in rejected.groupby(
             ["bet", "game", "reason"], sort=False
         ):
@@ -758,7 +827,16 @@ def summary_email(
             lines.append(f"  {bet} -- {game}: {reason}{times}")
         lines.append("")
     cash, positions = account
-    lines.append(f"Account: ${cash:,.2f} cash, ${positions:,.2f} in open positions.")
+    lines.append(
+        f"{'Kalshi' if others else 'Account'}: ${cash:,.2f} cash, "
+        f"${positions:,.2f} in open positions."
+    )
+    for name, cash, positions, waiting in others:
+        lines.append(
+            f"{name}: ${cash:,.2f} cash, ${positions:,.2f} in open positions"
+            + (f", {waiting} resting orders" if waiting else "")
+            + "."
+        )
     return subject, "\n".join(lines)
 
 
@@ -770,10 +848,13 @@ def _by_league(
     one league (or none) among them, so a single league's email reads as
     it always has."""
     from cassandra.picks import PICK_LEAGUES, league_of
+    from cassandra.polymarket_us import POLYMARKET_US
 
     if frame.empty:
         return []
-    leagues = frame["event"].map(lambda e: league_of(str(e)) or "other")
+    leagues = frame["event"].map(
+        lambda e: league_of(str(e)) or POLYMARKET_US.league_of(str(e)) or "other"
+    )
     if leagues.nunique() < 2:
         return [(None, frame)]
     order = [*PICK_LEAGUES, "other"]
