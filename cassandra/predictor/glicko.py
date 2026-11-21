@@ -205,6 +205,11 @@ class GlickoPredictor(Predictor):
         jumper_share: float = 0.0,
         lead_share: float = 0.0,
         closing_share: float = 0.0,
+        # The share of a game's box-score reading (`luck`'s `process`, mens
+        # and womens) taken off its margin the same way: the points its
+        # shooting, rebounding, assists, blocks, shot selection and
+        # turnovers put above what the team will do again. 0 is off.
+        process_share: float = 0.0,
         season_regression: float = 0.0,
         # A team whose head coach is gone since last season opened
         # (`cassandra.offseason`'s departures; college basketball and
@@ -326,6 +331,7 @@ class GlickoPredictor(Predictor):
         self._jumper_share = validated_share("jumper_share", jumper_share)
         self._lead_share = validated_share("lead_share", lead_share)
         self._closing_share = validated_share("closing_share", closing_share)
+        self._process_share = validated_share("process_share", process_share)
         for name, share in self._margin_shares.items():
             if share and scoring_method != "sigmoid":
                 raise ValueError(
@@ -526,6 +532,7 @@ class GlickoPredictor(Predictor):
             + self._jumper_share * (found.jumpers or 0.0)
             + self._lead_share * (found.over_lead or 0.0)
             + self._closing_share * (found.closing or 0.0)
+            + self._process_share * (found.process or 0.0)
         )
         return sigmoid_of_margin(
             game.home_score - game.away_score - off, self._sigmoid_scale
@@ -540,6 +547,7 @@ class GlickoPredictor(Predictor):
             "jumper_share": self._jumper_share,
             "lead_share": self._lead_share,
             "closing_share": self._closing_share,
+            "process_share": self._process_share,
         }
 
     def _update_rating(
