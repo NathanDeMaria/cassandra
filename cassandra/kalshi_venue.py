@@ -13,6 +13,7 @@ import math
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from call_it_what_you_want import KALSHI
 
@@ -70,6 +71,16 @@ def markets(series: tuple[str, ...]) -> list[dict]:
     return found
 
 
+def _public[T](read: Callable[..., T], *args: Any) -> T:
+    """A public read, its failure -- an HTTP error, a timeout, a body that
+    isn't JSON -- a `KalshiError` like the account's. `public_get` itself
+    raises urllib's, which `cassandra.ledger` waits out a 429 by."""
+    try:
+        return read(*args)
+    except (OSError, ValueError) as error:
+        raise KalshiError(f"Kalshi's market data: {error}") from None
+
+
 class Kalshi:
     """Kalshi's market data; `account` opens the account."""
 
@@ -80,13 +91,13 @@ class Kalshi:
     tags_orders = True
 
     def games(self, league: str) -> tuple[list[VenueGame], list[str]]:
-        return kalshi_games(markets(PICK_LEAGUES[league].series))
+        return kalshi_games(_public(markets, PICK_LEAGUES[league].series))
 
     def routes(self, side: Book, other: Book) -> list[Route]:
         return routes(side, other)
 
     def on_offer(self, route: Route, limit: float) -> float:
-        book = public_get(f"/markets/{route.ticker}/orderbook")
+        book = _public(public_get, f"/markets/{route.ticker}/orderbook")
         return fillable(book, route.action, limit)
 
     def pays(self, side: Book, other: Book, ticker: str, action: str) -> bool | None:

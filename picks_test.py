@@ -94,3 +94,18 @@ def test_a_run_uses_kalshi_and_every_venue_with_a_key(monkeypatch):
     assert [v.name for v in run_venues([], demo=True)] == ["kalshi"]
     named = run_venues(["polymarket_us", "polymarket_us"])
     assert [v.name for v in named] == ["polymarket_us"]
+
+
+def test_a_venue_that_cant_be_read_sits_the_run_out():
+    import pytest
+
+    from cassandra.kalshi_venue import KALSHI_VENUE
+    from cassandra.polymarket_us import POLYMARKET_US
+    from picks import sit_out
+
+    why: dict[str, str] = {}
+    left = sit_out([KALSHI_VENUE, POLYMARKET_US], POLYMARKET_US, "its games: 503", why)
+    assert left == [KALSHI_VENUE] and why == {"polymarket_us": "its games: 503"}
+    # With none left, the run fails: that's what raises the alarm.
+    with pytest.raises(RuntimeError, match="no venue could be read"):
+        sit_out(left, KALSHI_VENUE, "its account: timeout", why)

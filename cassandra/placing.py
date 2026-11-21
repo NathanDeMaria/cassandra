@@ -60,7 +60,6 @@ from .venues import (
     Resting,
     Route,
     Venue,
-    VenueError,
 )
 
 CENTRAL = ZoneInfo("America/Chicago")
@@ -283,7 +282,14 @@ def size(
             if limit is None:
                 continue
             for route in offer.venue.routes(*_sides(offer, row["bet_home"])):
-                on_offer += offer.venue.on_offer(route, limit)
+                try:
+                    on_offer += offer.venue.on_offer(route, limit)
+                except Exception as error:
+                    # What's on offer is shown, not placed by: an order
+                    # takes what's there whatever this read says.
+                    print(
+                        f"  !! no {offer.venue.label} book for {route.ticker}: {error!r}"
+                    )
         fills.append(on_offer)
     picks["contracts"] = contracts
     picks["fee"] = [
@@ -462,7 +468,7 @@ def cancel(
         game = games.get((venue.name, venue.event_of(order.ticker)), order.ticker)
         try:
             reduced = accounts[venue.name].cancel(order)
-        except VenueError as error:
+        except Exception as error:
             lines.append(f"  !! couldn't cancel the rung on {game}: {error}")
             continue
         lines.append(
@@ -775,7 +781,7 @@ def place(
                 )
                 try:
                     account.fund(side, need)
-                except VenueError as error:
+                except Exception as error:
                     print(f"  !! {row['bet']}: {error}")
                     rows.append(_rejected(row, venue, side.ticker, error))
                     failed.add(venue.name)
@@ -783,7 +789,7 @@ def place(
                 funded.add(venue.name)
             try:
                 done = account.buy(route, count, limit, rest)
-            except VenueError as error:
+            except Exception as error:
                 print(f"  !! {row['bet']}: {error}")
                 rows.append(_rejected(row, venue, route.ticker, error))
                 failed.add(venue.name)
@@ -877,9 +883,11 @@ def place(
     return placed
 
 
-def _rejected(row: pd.Series, venue: Venue, ticker: str, error: VenueError) -> dict:
-    """An orders log's row for what a venue turned away, for the job's email
-    and the morning summary (`picks_job.rejected_orders`)."""
+def _rejected(row: pd.Series, venue: Venue, ticker: str, error: Exception) -> dict:
+    """An orders log's row for what a venue turned away, or an order that
+    failed on the way -- a timeout, an answer that couldn't be read -- for the
+    job's email and the morning summary (`picks_job.rejected_orders`). A
+    failed order may still have landed; the next run reads what's held."""
     return {
         "placed_at": datetime.now(CENTRAL),
         "venue": venue.name,
@@ -887,7 +895,7 @@ def _rejected(row: pd.Series, venue: Venue, ticker: str, error: VenueError) -> d
         "game_id": row["game_id"],
         "bet": row["bet"],
         "ticker": ticker,
-        "error": str(error),
+        "error": str(error) or repr(error),
     }
 
 
@@ -922,7 +930,7 @@ def _place_rungs(
     for at, count in ladder:
         try:
             done = account.buy(route, count, at, kickoff, rung=True)
-        except VenueError as error:
+        except Exception as error:
             print(f"  !! {row['bet']} rung at {at:.2f}: {error}")
             rows.append(_rejected(row, venue, route.ticker, error))
             break

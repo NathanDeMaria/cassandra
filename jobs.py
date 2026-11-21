@@ -504,12 +504,18 @@ def _polymarket_us_key(secret_id: str | None) -> bool:
     except ClientError as error:
         print(f"no Polymarket US key ({error.response['Error']['Code']})")
         return False
-    key = json.loads(value["SecretString"])
+    try:
+        key = json.loads(value["SecretString"])
+        key_id, secret_key = key["key_id"], key["secret_key"]
+    except (KeyError, TypeError, ValueError) as error:
+        # A key that can't be read is no key: the run goes on with Kalshi.
+        print(f"Polymarket US key unreadable ({error!r}): Kalshi alone this run")
+        return False
     secret = CASSANDRA_HOME / "polymarket_us" / "secret_key"
     secret.parent.mkdir(parents=True, exist_ok=True)
     secret.touch(mode=0o600)
-    secret.write_text(key["secret_key"])
-    os.environ["POLYMARKET_US_KEY_ID"] = key["key_id"]
+    secret.write_text(secret_key)
+    os.environ["POLYMARKET_US_KEY_ID"] = key_id
     os.environ["POLYMARKET_US_SECRET_FILE"] = str(secret)
     return True
 
@@ -553,11 +559,17 @@ def _picks(espn: bool, league: str) -> None:
         # A rehearsal: the real key reads the account, the orders are
         # printed rather than sent, and nothing is emailed or recorded.
         rehearsal = bool(os.environ.get("CASSANDRA_PICKS_DRY_RUN"))
-        if not (rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))):
-            print("no Kalshi key: nothing to place with, and nothing to email")
+        # Each venue's key, where there is one. A run places on the venues it
+        # can reach, so one missing key leaves the other venue to run alone.
+        keys = rehearsal or any(
+            [
+                _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET")),
+                _polymarket_us_key(os.environ.get("CASSANDRA_POLYMARKET_US_SECRET")),
+            ]
+        )
+        if not keys:
+            print("no venue key: nothing to place with, and nothing to email")
             return
-        if not rehearsal:
-            _polymarket_us_key(os.environ.get("CASSANDRA_POLYMARKET_US_SECRET"))
         rules = picks_job.autobet(s3, bucket)
         print(rules.describe())
         placing = rules.placing(league)
@@ -585,6 +597,8 @@ def _picks(espn: bool, league: str) -> None:
 
         args = picks_script.parse(argv)
         outcome = picks_script.run(args)
+        for line in outcome.unavailable:
+            print(f"sat this run out: {line}")
 
         # Every run's prices go up for `make ledger` and the morning summary,
         # so a bet is read against the run that made it; the orders only
@@ -693,11 +707,20 @@ def _picks_summary() -> None:
             [bets, picks_job.logged_bets(orders, since, POLYMARKET_US.name)],
             ignore_index=True,
         ).sort_values("cost", ascending=False)
-        account = POLYMARKET_US.account(dry_run=True)
-        money = account.balance()
-        others.append(
-            (POLYMARKET_US.label, money.cash, money.invested, len(account.resting()))
-        )
+        try:
+            account = POLYMARKET_US.account(dry_run=True)
+            money = account.balance()
+            others.append(
+                (
+                    POLYMARKET_US.label,
+                    money.cash,
+                    money.invested,
+                    len(account.resting()),
+                )
+            )
+        except Exception as error:
+            # The summary goes out without that venue's account line.
+            print(f"no {POLYMARKET_US.label} account for the summary: {error!r}")
     rejected = picks_job.rejected_orders(orders)
     if not rejected.empty:
         # The logs reach back past `since`, for a rung's old order; a

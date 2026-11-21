@@ -637,3 +637,37 @@ def test_a_limit_can_be_a_half_cent():
         _offer(_book("H")._replace(ask=0.555), _book("A")), 0.0
     ) == pytest.approx(0.555)
     assert Route("t", "yes", 0.4, 1).price == 0.4
+
+
+class _Broken(_Account):
+    """An account whose orders fail on the way, not with the venue's error."""
+
+    def buy(self, route, contracts, limit, expires=None, rung=False) -> Fill:
+        self.log.append((route.ticker, route.action, contracts, limit, expires))
+        raise RuntimeError("connection reset mid-order")
+
+
+def test_an_order_that_fails_any_way_is_logged_and_the_next_venue_goes_on(
+    tmp_path, monkeypatch
+):
+    picks, offers, args, out = _two_venues(tmp_path, monkeypatch)
+    kalshi = _Broken(KALSHI_VENUE, fills=0)
+    poly = _Account(polymarket_us.POLYMARKET_US, fills=100)
+    placed = placing.place(
+        {"kalshi": kalshi, "polymarket_us": poly}, picks, offers, args, out
+    )
+    assert placed is not None
+    bad = placed[placed["error"].notna()].iloc[0]
+    assert bad["venue"] == "kalshi" and "connection reset" in bad["error"]
+    assert placed[placed["venue"] == "polymarket_us"]["filled"].sum() > 0
+
+
+def test_a_book_that_cant_be_read_counts_as_nothing_on_offer(monkeypatch):
+    def down(path):
+        raise KalshiError("GET orderbook: 503")
+
+    monkeypatch.setattr(kalshi_venue, "public_get", down)
+    frame, matched = _frame([0])
+    _, picks = placing.size(frame, matched, _args())
+    assert picks["offered_within_1c"].iloc[0] == 0
+    assert picks["contracts"].iloc[0] > 0
