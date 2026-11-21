@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from endgame.types import Game
 
-from picks import QB_UNREAD_WINDOW, apply_rules, parse, qb_reads
+from picks import QB_UNREAD_WINDOW, apply_rules, parse, qb_reads, run_venues
 
 NOW = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)  # Tue 22:00 CT
 
@@ -82,3 +82,15 @@ def test_a_run_takes_its_leagues_rules_unless_told_otherwise() -> None:
     assert apply_rules(parse(["--place", "--no-rungs"]), rules) is None
     with pytest.raises(SystemExit, match="no ncaafb rule for --min-edge"):
         apply_rules(parse([]), None)
+
+
+def test_a_run_uses_kalshi_and_every_venue_with_a_key(monkeypatch):
+    from cassandra.polymarket_us import PolymarketUs
+
+    monkeypatch.setattr(PolymarketUs, "has_key", lambda self: False)
+    assert [v.name for v in run_venues([])] == ["kalshi"]
+    monkeypatch.setattr(PolymarketUs, "has_key", lambda self: True)
+    assert [v.name for v in run_venues([])] == ["kalshi", "polymarket_us"]
+    assert [v.name for v in run_venues([], demo=True)] == ["kalshi"]
+    named = run_venues(["polymarket_us", "polymarket_us"])
+    assert [v.name for v in named] == ["polymarket_us"]
