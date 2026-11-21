@@ -93,7 +93,10 @@ account's positions and resting orders. An order goes to the cheapest
 venue where the game is a pick first, at that venue's limit, and what it
 can't fill goes to the next, held to the dollars the pick has left. With
 `--rest`, what's on offer at every venue's limit is taken first and the rest
-rests on the cheapest. Rungs rest only on a venue that can mark an order as
+rests on the cheapest. What rests counts toward the stake as if held, and
+keeps that venue alone off the game while it rests: a later run can buy
+the rest of the stake on another venue, a venue that lists the game later
+included. Rungs rest only on a venue that can mark an order as
 one (Kalshi). The picks file's `venue` is the cheapest venue where a game is
 a pick (or its first venue), and `offers` lists every venue's price, edge
 and reason.
@@ -129,10 +132,12 @@ this repository.
   as the backtest's weekly bet was sized; with neither, a nominal budget,
   only to show the picks with contracts.
 
-A pick's target is at most `--max-bet`. Contracts already held on its side
-count toward it and only the rest is bought, so a partial fill is topped up
-on a later run while the pick still clears the edge. A game held on the
-other side, or with a resting order, is skipped. If the run's orders would
+A pick's target is at most `--max-bet`. Contracts already held on its side,
+or on their way in a resting order, count toward it and only the rest is
+bought, so a partial fill is topped up on a later run while the pick still
+clears the edge. A venue with the pick's order resting on the game isn't
+sent another -- the other venues may buy what it leaves. A game held, or
+resting, on the other side is skipped. If the run's orders would
 cost more than `--budget` or the cash on hand, they're cut down together.
 
 Each order is a limit order:
@@ -247,7 +252,7 @@ from cassandra.qb_starts import Doubt, GameQb, doubts, read_qb_starts
 from cassandra.replay_cache import AUTHORED_DIR, GENERATED_DIR
 from cassandra.residuals import team_tiers
 from cassandra.save_predictions import join_with_odds, read_all_seasons
-from cassandra.venues import Account, Holding, Resting, Venue, held_on
+from cassandra.venues import Account, Holding, Resting, Venue, held_on, pending_on
 
 PICKS_DIR = CASSANDRA_HOME / "picks"
 PLAYS_DIR = PICKS_DIR / "plays"
@@ -1145,6 +1150,74 @@ def run(args: argparse.Namespace) -> Outcome:
             "with no listed game waiting on them"
         )
 
+    # The accounts, before pricing: a venue already holding a pick's order
+    # resting on a game isn't a place to send another.
+    accounts: dict[str, Account] = {}
+    holdings: dict[str, list[Holding]] = {}
+    resting: dict[str, list[Resting]] = {}
+    cash_on: dict[str, float] = {}
+    args.cash = None
+    args.rung_events = set()
+    rung_orders: list[tuple[Venue, Resting]] = []
+    if args.place:
+        mode = (" DEMO" if args.demo else "") + (" (dry run)" if args.dry_run else "")
+        cash = invested = 0.0
+        for venue in venues:
+            account = venue.account(demo=args.demo, dry_run=args.dry_run)
+            accounts[venue.name] = account
+            money = account.balance()
+            holdings[venue.name] = account.holdings()
+            resting[venue.name] = account.resting()
+            cash_on[venue.name] = money.cash
+            cash += money.cash
+            invested += money.invested
+            rungs_here = [o for o in resting[venue.name] if o.rung]
+            rung_orders += [(venue, o) for o in rungs_here]
+            args.rung_events |= {
+                (venue.name, venue.event_of(o.ticker)) for o in rungs_here
+            }
+            events = {
+                venue.event_of(o.ticker) for o in resting[venue.name] if not o.rung
+            }
+            rung_events = {venue.event_of(o.ticker) for o in rungs_here}
+            print(
+                f"\n{venue.label}{mode}: ${money.cash:,.2f} cash, ${money.invested:,.2f} in "
+                f"{len(holdings[venue.name])} open positions, {len(events)} events "
+                "with resting orders"
+                + (f", {len(rung_events)} with rungs" if rungs_here else "")
+            )
+        args.cash = cash
+        if len(venues) > 1:
+            print(f"every account: ${cash:,.2f} cash, ${invested:,.2f} in positions")
+        if args.kelly_fraction is not None and args.bankroll is None:
+            args.bankroll = cash + invested
+        if args.budget is not None and args.budget > cash and args.yes:
+            print(f"--budget ${args.budget:g} cut to the ${cash:,.2f} on hand")
+            args.budget = cash
+        if args.budget is not None and args.budget > cash:
+            raise SystemExit(
+                f"--budget ${args.budget:g} is more than the ${cash:,.2f} on hand"
+            )
+        if args.max_exposure is not None:
+            # The league's share of every account: what it has at risk now
+            # counts against it, and only the rest can go out this run.
+            bankroll = args.bankroll if args.bankroll is not None else cash + invested
+            at_risk = placing.league_exposure(
+                {v.name: (v, holdings[v.name], resting[v.name]) for v in venues},
+                league,
+            )
+            room = placing.exposure_room(bankroll, args.max_exposure, at_risk)
+            print(
+                f"{league} at risk: ${at_risk:,.2f} of its "
+                f"${args.max_exposure * bankroll:,.2f} cap "
+                f"({args.max_exposure:g} of ${bankroll:,.2f}); ${room:,.2f} left"
+            )
+            args.budget = room if args.budget is None else min(args.budget, room)
+    resting_events = {
+        v.name: {v.event_of(o.ticker) for o in resting.get(v.name, []) if not o.rung}
+        for v in venues
+    }
+
     # 4. Price.
     tier = team_tiers(df, league)
     epa = EpaIndex.for_league(league) if spec.plays else None
@@ -1218,6 +1291,8 @@ def run(args: argparse.Namespace) -> Outcome:
             )
             if reason is None and unknown:
                 reason = f"QB check incomplete: {', '.join(unknown)}"
+            if reason is None and m.game.event in resting_events.get(name, ()):
+                reason = f"resting order on {venue.label}"
             book = m.home if home else m.away
             ceiling = max_price(model_side, priced, book, args.rule, venue.fees)
             game_offers.append(Offer(venue, m, priced, ceiling, since_entry, reason))
@@ -1283,80 +1358,22 @@ def run(args: argparse.Namespace) -> Outcome:
         return Outcome(frame, frame, None)
 
     # 5. Size the picks (`placing.size`), each at its limit price.
-    accounts: dict[str, Account] = {}
-    holdings: dict[str, list[Holding]] = {}
-    resting: dict[str, list[Resting]] = {}
-    cash_on: dict[str, float] = {}
     frame["held"] = 0.0
     frame["held_as"] = ""
-    args.cash = None
-    args.rung_events = set()
-    rung_orders: list[tuple[Venue, Resting]] = []
     if args.place:
-        mode = (" DEMO" if args.demo else "") + (" (dry run)" if args.dry_run else "")
-        cash = invested = 0.0
-        for venue in venues:
-            account = venue.account(demo=args.demo, dry_run=args.dry_run)
-            accounts[venue.name] = account
-            money = account.balance()
-            holdings[venue.name] = account.holdings()
-            resting[venue.name] = account.resting()
-            cash_on[venue.name] = money.cash
-            cash += money.cash
-            invested += money.invested
-            rungs_here = [o for o in resting[venue.name] if o.rung]
-            rung_orders += [(venue, o) for o in rungs_here]
-            args.rung_events |= {
-                (venue.name, venue.event_of(o.ticker)) for o in rungs_here
-            }
-            events = {
-                venue.event_of(o.ticker) for o in resting[venue.name] if not o.rung
-            }
-            rung_events = {venue.event_of(o.ticker) for o in rungs_here}
-            print(
-                f"\n{venue.label}{mode}: ${money.cash:,.2f} cash, ${money.invested:,.2f} in "
-                f"{len(holdings[venue.name])} open positions, {len(events)} events "
-                "with resting orders"
-                + (f", {len(rung_events)} with rungs" if rungs_here else "")
-            )
-        args.cash = cash
-        if len(venues) > 1:
-            print(f"every account: ${cash:,.2f} cash, ${invested:,.2f} in positions")
-        if args.kelly_fraction is not None and args.bankroll is None:
-            args.bankroll = cash + invested
-        if args.budget is not None and args.budget > cash and args.yes:
-            print(f"--budget ${args.budget:g} cut to the ${cash:,.2f} on hand")
-            args.budget = cash
-        if args.budget is not None and args.budget > cash:
-            raise SystemExit(
-                f"--budget ${args.budget:g} is more than the ${cash:,.2f} on hand"
-            )
-        if args.max_exposure is not None:
-            # The league's share of every account: what it has at risk now
-            # counts against it, and only the rest can go out this run.
-            bankroll = args.bankroll if args.bankroll is not None else cash + invested
-            at_risk = placing.league_exposure(
-                {v.name: (v, holdings[v.name], resting[v.name]) for v in venues},
-                league,
-            )
-            room = placing.exposure_room(bankroll, args.max_exposure, at_risk)
-            print(
-                f"{league} at risk: ${at_risk:,.2f} of its "
-                f"${args.max_exposure * bankroll:,.2f} cap "
-                f"({args.max_exposure:g} of ${bankroll:,.2f}); ${room:,.2f} left"
-            )
-            args.budget = room if args.budget is None else min(args.budget, room)
         for i, row in frame.iterrows():
             mine = against = 0.0
             held_as: list[str] = []
-            resting_on: list[str] = []
             for offer in offers[row["game_id"]]:
                 venue = offer.venue
                 home, away = offer.matched.home, offer.matched.away
                 side, other = (home, away) if row["bet_home"] else (away, home)
                 on_side, on_other = held_on(venue, holdings[venue.name], side, other)
-                mine += on_side
-                against += on_other
+                # A pick's order resting on one venue counts toward its stake,
+                # so another venue buys only what it leaves.
+                coming, going = pending_on(venue, resting[venue.name], side, other)
+                mine += on_side + coming
+                against += on_other + going
                 # The same outcome can be held through more than one contract,
                 # and a top-up may buy another: say which are held.
                 held_as += [
@@ -1366,18 +1383,13 @@ def run(args: argparse.Namespace) -> Outcome:
                     )
                     if venue.pays(side, other, h.ticker, h.action)
                 ]
-                if any(
-                    not o.rung and venue.event_of(o.ticker) == offer.matched.game.event
-                    for o in resting[venue.name]
-                ):
-                    resting_on.append(venue.label)
+                if coming:
+                    held_as.append(f"{coming:g} resting on {venue.label}")
             frame.at[i, "held"] = mine
             frame.at[i, "held_as"] = ", ".join(held_as)
             if not pd.isna(row["skip"]):
                 continue
-            if resting_on:
-                frame.at[i, "skip"] = f"resting order on {' and '.join(resting_on)}"
-            elif against:
+            if against:
                 frame.at[i, "skip"] = f"held on the other side ({against:g})"
     if args.kelly_fraction is not None and args.bankroll is None:
         raise SystemExit("--kelly-fraction without --place needs --bankroll")

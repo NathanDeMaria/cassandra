@@ -350,6 +350,26 @@ def held_on(
     return mine, against
 
 
+def pending_on(
+    venue: Venue, resting: Sequence[Resting], side: Book, other: Book
+) -> tuple[float, float]:
+    """Contracts an account's resting orders -- not its rungs -- would buy for
+    `side` winning, and for it losing. A pick's order resting on one venue is
+    contracts on their way: they count toward its stake as if held, so another
+    venue buys only the rest. A rung is a bid under the pick's price, extra to
+    its stake by design, so it doesn't count."""
+    mine = against = 0.0
+    for order in resting:
+        if order.rung:
+            continue
+        pays = venue.pays(side, other, order.ticker, order.action)
+        if pays is True:
+            mine += order.remaining
+        elif pays is False:
+            against += order.remaining
+    return mine, against
+
+
 def league_exposure(
     venue: Venue,
     holdings: Sequence[Holding],

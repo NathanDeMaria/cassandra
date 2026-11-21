@@ -4,7 +4,7 @@ import pytest
 
 from .kalshi_venue import KALSHI_VENUE
 from .markets import kalshi_fee
-from .venues import KALSHI_FEES, Book, Holding, held_on
+from .venues import KALSHI_FEES, Book, Holding, Resting, held_on, pending_on
 
 
 def test_kalshis_order_fee_rounds_each_order_up_to_the_cent():
@@ -27,3 +27,16 @@ def test_whats_held_for_a_side_counts_every_contract_that_pays_on_it():
     ]
     assert held_on(KALSHI_VENUE, holdings, side, other) == (5, 1)
     assert KALSHI_VENUE.held_as(holdings[1]) == "2 NO A"
+
+
+def test_a_resting_order_is_on_its_way_and_a_rung_isnt():
+    side = Book("E-H", "H", "Home", 0.4, 1, 0.42, 1, 0, 0)
+    other = Book("E-A", "A", "Away", 0.55, 1, 0.58, 1, 0, 0)
+    resting = [
+        Resting("a", "E-H", "yes", 0.42, 6),  # the pick's own order
+        Resting("b", "E-A", "no", 0.41, 2),  # the same result, the other way
+        Resting("c", "E-H", "yes", 0.38, 9, rung=True),  # a rung: extra
+        Resting("d", "E-A", "yes", 0.55, 3),  # against
+        Resting("e", "F-X", "yes", 0.30, 4),  # another game
+    ]
+    assert pending_on(KALSHI_VENUE, resting, side, other) == (8, 3)
