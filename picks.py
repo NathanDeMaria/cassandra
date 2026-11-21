@@ -97,7 +97,11 @@ rests on the cheapest. What rests counts toward the stake as if held, and
 keeps that venue alone off the game while it rests: a later run can buy
 the rest of the stake on another venue, a venue that lists the game later
 included. Rungs rest only on a venue that can mark an order as
-one (Kalshi). The picks file's `venue` is the cheapest venue where a game is
+one (Kalshi). A venue whose listing or account can't be read -- an outage, a
+timeout, an answer that doesn't parse, a key that isn't there -- sits the
+run out (`sit_out`): the run goes on as if it weren't an option, and only
+fails when no venue is left. An order that fails any way is logged as that
+order's error, and the next venue and pick go on. The picks file's `venue` is the cheapest venue where a game is
 a pick (or its first venue), and `offers` lists every venue's price, edge
 and reason.
 
@@ -590,6 +594,8 @@ class Outcome(NamedTuple):
     cancelled: tuple[str, ...] = ()
     #: Picks `--hold-qb` kept back, each with its `qb_news` sentence.
     held: pd.DataFrame | None = None
+    #: A line per venue that sat the run out, and why (`sit_out`).
+    unavailable: tuple[str, ...] = ()
 
 
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1090,8 +1096,13 @@ def run(args: argparse.Namespace) -> Outcome:
     priced_ids = {f.game.game_id for f in fixtures if f.game.date < horizon}
     matched: dict[str, dict[str, Matched]] = {}
     misses: list[str] = []
-    for venue in venues:
-        listed, _ = venue.games(league)
+    unavailable: dict[str, str] = {}
+    for venue in list(venues):
+        try:
+            listed, _ = venue.games(league)
+        except Exception as error:
+            venues = sit_out(venues, venue, f"its games: {error!r}", unavailable)
+            continue
         in_window = [k for k in listed if k.day <= horizon.date()]
         matched[venue.name], unmatched = match(
             fixtures, in_window, side_ids_on(venue, spec.teams)
@@ -1162,12 +1173,19 @@ def run(args: argparse.Namespace) -> Outcome:
     if args.place:
         mode = (" DEMO" if args.demo else "") + (" (dry run)" if args.dry_run else "")
         cash = invested = 0.0
-        for venue in venues:
-            account = venue.account(demo=args.demo, dry_run=args.dry_run)
+        for venue in list(venues):
+            try:
+                account = venue.account(demo=args.demo, dry_run=args.dry_run)
+                money = account.balance()
+                held_here, resting_here = account.holdings(), account.resting()
+            except (Exception, SystemExit) as error:
+                # SystemExit: no key where its account looks.
+                venues = sit_out(venues, venue, f"its account: {error!r}", unavailable)
+                matched.pop(venue.name, None)
+                continue
             accounts[venue.name] = account
-            money = account.balance()
-            holdings[venue.name] = account.holdings()
-            resting[venue.name] = account.resting()
+            holdings[venue.name] = held_here
+            resting[venue.name] = resting_here
             cash_on[venue.name] = money.cash
             cash += money.cash
             invested += money.invested
@@ -1355,7 +1373,7 @@ def run(args: argparse.Namespace) -> Outcome:
     frame = pd.DataFrame(rows)
     if frame.empty:
         print("\nno priced games")
-        return Outcome(frame, frame, None)
+        return Outcome(frame, frame, None, unavailable=_lines(unavailable))
 
     # 5. Size the picks (`placing.size`), each at its limit price.
     frame["held"] = 0.0
@@ -1453,7 +1471,9 @@ def run(args: argparse.Namespace) -> Outcome:
         placing.print_orders(picks, news, args)
         print(f"\nevery matched game: {out}")
         if not accounts or picks.empty or args.notify:
-            return Outcome(sized, picks, None, cancelled, _held(held_rows))
+            return Outcome(
+                sized, picks, None, cancelled, _held(held_rows), _lines(unavailable)
+            )
         flagged = placing.qb_news(picks, news) if args.hold_qb else {}
         if flagged:
             held |= flagged
@@ -1468,7 +1488,9 @@ def run(args: argparse.Namespace) -> Outcome:
         answer = set() if args.yes else placing.ask(len(picks))
         if answer is None:
             print("nothing placed")
-            return Outcome(sized, picks, None, cancelled, _held(held_rows))
+            return Outcome(
+                sized, picks, None, cancelled, _held(held_rows), _lines(unavailable)
+            )
         if not answer:
             break
         order = picks.sort_values(["kickoff", "edge"], ascending=[True, False])
@@ -1480,7 +1502,34 @@ def run(args: argparse.Namespace) -> Outcome:
         placing.place(accounts, picks, offers, args, out, cash_on),
         cancelled,
         _held(held_rows),
+        _lines(unavailable),
     )
+
+
+def sit_out(
+    venues: list[Venue], venue: Venue, why: str, unavailable: dict[str, str]
+) -> list[Venue]:
+    """`venues` without one whose listing or account couldn't be read: the run
+    goes on as if it weren't an option, and says so. With none left there's
+    nothing to price or place on, and the run fails, as a run did before
+    there was a second venue -- a failed job is what raises the alarm.
+
+    What it holds isn't known then, so it doesn't count toward a pick's stake
+    or a league's exposure this run, and its cash isn't in the bankroll.
+    """
+    unavailable[venue.name] = why
+    left = [v for v in venues if v.name != venue.name]
+    print(f"!! {venue.label} sits this run out, couldn't read {why}")
+    if not left:
+        raise RuntimeError(
+            "no venue could be read: "
+            + "; ".join(f"{name}: {found}" for name, found in unavailable.items())
+        )
+    return left
+
+
+def _lines(unavailable: dict[str, str]) -> tuple[str, ...]:
+    return tuple(f"{name}: {why}" for name, why in unavailable.items())
 
 
 def offers_line(offers: list[Offer]) -> str:

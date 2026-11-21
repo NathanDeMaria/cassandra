@@ -265,13 +265,24 @@ def on_offer(book: Mapping, outcome: str, limit: float) -> float:
 
 
 def public_get(path: str, params: dict | None = None) -> dict:
+    """A GET of the public market data. Anything that goes wrong -- an HTTP
+    error, a timeout, a body that isn't JSON -- is tried again a few times,
+    then raised as `PolymarketUsError`."""
     query = f"?{urllib.parse.urlencode(params, doseq=True)}" if params else ""
     request = urllib.request.Request(
         f"{GATEWAY}{path}{query}", headers={"User-Agent": "cassandra-picks"}
     )
-    time.sleep(_PACE)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    retries = list(_READ_RETRIES)
+    while True:
+        time.sleep(_PACE)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except (OSError, ValueError) as error:
+            if retries:
+                time.sleep(retries.pop(0))
+                continue
+            raise PolymarketUsError(f"GET {path}: {error}") from None
 
 
 def _iso(stamp: datetime) -> str:
@@ -601,6 +612,13 @@ class PolymarketUsClient:
                 raise PolymarketUsError(
                     f"{method} {path}: {error.code} {detail}"
                 ) from None
+            except (OSError, ValueError) as error:
+                # A timeout, a dropped connection, a body that isn't JSON. A
+                # read is tried again; a write isn't, since it may have landed.
+                if retries:
+                    time.sleep(retries.pop(0))
+                    continue
+                raise PolymarketUsError(f"{method} {path}: {error}") from None
 
     def balances(self) -> list[dict]:
         return self._request("GET", "/v1/account/balances").get("balances") or []

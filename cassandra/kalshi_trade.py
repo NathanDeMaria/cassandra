@@ -276,6 +276,13 @@ class KalshiClient:
                     continue
                 detail = error.read().decode(errors="replace")[:500]
                 raise KalshiError(f"{method} {path}: {error.code} {detail}") from None
+            except (OSError, ValueError) as error:
+                # A timeout, a dropped connection, a body that isn't JSON. A
+                # read is tried again; a write isn't, since it may have landed.
+                if retries:
+                    time.sleep(retries.pop(0))
+                    continue
+                raise KalshiError(f"{method} {path}: {error}") from None
 
     def _pages(self, path: str, key: str, params: dict) -> list[dict]:
         found: list[dict] = []

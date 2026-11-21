@@ -40,3 +40,35 @@ def test_a_resting_order_is_on_its_way_and_a_rung_isnt():
         Resting("e", "F-X", "yes", 0.30, 4),  # another game
     ]
     assert pending_on(KALSHI_VENUE, resting, side, other) == (8, 3)
+
+
+def test_a_network_failure_is_the_venues_error_and_a_read_tries_again(monkeypatch):
+    import urllib.request
+
+    from . import kalshi_trade, kalshi_venue, polymarket_us
+    from .kalshi_trade import KalshiClient, KalshiError
+    from .polymarket_us import PolymarketUsError
+
+    calls: list[str] = []
+
+    def down(request, timeout=None):
+        calls.append(getattr(request, "method", None) or "GET")
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", down)
+    monkeypatch.setattr(kalshi_trade.time, "sleep", lambda _: None)
+    monkeypatch.setattr(polymarket_us.time, "sleep", lambda _: None)
+    monkeypatch.setattr(kalshi_trade, "sign", lambda *_: "sig")
+    client = KalshiClient("id", None)
+    with pytest.raises(KalshiError, match="timed out"):
+        client.account()
+    assert len(calls) == 4  # the read and its three retries
+    calls.clear()
+    # A write isn't tried again: it may have landed.
+    with pytest.raises(KalshiError, match="timed out"):
+        client.buy("T-X", "yes", 1, 0.5)
+    assert calls == ["POST"]
+    with pytest.raises(KalshiError):
+        kalshi_venue.KALSHI_VENUE.games("ncaafb")
+    with pytest.raises(PolymarketUsError):
+        polymarket_us.POLYMARKET_US.games("mens")
