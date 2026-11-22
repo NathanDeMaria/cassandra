@@ -773,12 +773,32 @@ def _offers(book: Mapping) -> dict[float, float]:
     }
 
 
+def order_convention(order: Mapping, limit: float) -> str | None:
+    """How a resting NO buy of one contract at `limit` was read, from the
+    order as `GET /v1/orders/open` lists it: the cash it holds (`principal`)
+    is what the contract costs, `limit` if its price was read as the YES
+    price ("yes", as this module sends it), 1 - `limit` if as the NO's
+    ("no"). The first probe, 2026-11-22, listed a principal of 0.3 for a
+    limit of 0.30. None when the listing doesn't say."""
+    principal = _money(order.get("principal"))
+    quantity = float(order.get("quantity") or 0)
+    if principal is None or not quantity:
+        return None
+    each = principal / quantity
+    if abs(each - limit) < 0.006:
+        return "yes"
+    if abs(each - (1 - limit)) < 0.006:
+        return "no"
+    return None
+
+
 def convention(before: Mapping, after: Mapping, limit: float) -> str | None:
     """How a resting NO buy at `limit` was read, from the book before and
     after it. The book is in YES terms, so the order rests as an offer:
     at 1 - `limit` if its price was read as the YES price ("yes", as this
     module sends it), at `limit` if as the NO's ("no"). None when the books
-    don't say -- neither level grew, or both did."""
+    don't say -- neither level grew, or both did, or the book doesn't list
+    levels that far from the market, as on the first probe."""
     was, now = _offers(before), _offers(after)
 
     def grew(price: float) -> bool:
@@ -840,7 +860,9 @@ def probe(send: bool = False) -> int:
     print(f"cancelled: {'no -- cancel it by hand' if left else 'yes'}")
     if done.filled:
         print(f"!! it filled {done.filled:g} at {done.price}: check the position")
-    found_convention = convention(before, after, PROBE_LIMIT)
+    found_convention = (
+        order_convention(listed[0], PROBE_LIMIT) if listed else None
+    ) or convention(before, after, PROBE_LIMIT)
     if found_convention == "yes":
         print("a NO buy's price is read in YES terms, as this module sends it: OK")
         return 0
@@ -850,7 +872,7 @@ def probe(send: bool = False) -> int:
             "Don't put the key in the cloud job until order_body is fixed."
         )
         return 2
-    print("the book didn't say which way: read the listed order's price above")
+    print("neither the order nor the book said which way: read the listing above")
     return 3
 
 
