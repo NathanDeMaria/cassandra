@@ -52,7 +52,7 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 from call_it_what_you_want import POLYMARKET
@@ -908,3 +908,127 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ------------------------------------------------------------------------------
+# What the account did: trades, resolutions, rebates (the summary and ledger)
+# ------------------------------------------------------------------------------
+
+
+class Trade(NamedTuple):
+    """One of the account's fills, from its activity feed: the market, when,
+    the YES price it traded at, and how many contracts. The feed doesn't say
+    which side was bought; `sides_bought` does."""
+
+    ticker: str
+    at: datetime
+    yes_price: float
+    contracts: float
+
+
+class Resolution(NamedTuple):
+    """A position the venue closed when its market settled: the position
+    just before, and just after."""
+
+    ticker: str
+    at: datetime
+    before: Mapping
+    after: Mapping
+
+
+def trades(activities: Sequence[Mapping]) -> list[Trade]:
+    """The trades in an activity feed, oldest first. A busted or rejected
+    trade isn't one."""
+    found = []
+    for activity in activities:
+        trade = activity.get("trade")
+        if not trade or trade.get("state") in (
+            "TRADE_STATE_BUSTED",
+            "TRADE_STATE_REJECTED",
+        ):
+            continue
+        at = _time(trade.get("createTime") or trade.get("updateTime"))
+        price = _money(trade.get("price"))
+        contracts = float(trade.get("qtyDecimal") or trade.get("qty") or 0)
+        if at is None or price is None or not contracts:
+            continue
+        found.append(Trade(trade["marketSlug"], at, price, contracts))
+    return sorted(found, key=lambda t: t.at)
+
+
+def resolutions(activities: Sequence[Mapping]) -> list[Resolution]:
+    """The positions an activity feed shows closed at settlement, oldest first."""
+    found = []
+    for activity in activities:
+        resolved = activity.get("positionResolution")
+        if not resolved:
+            continue
+        at = _time(resolved.get("updateTime"))
+        if at is None:
+            continue
+        found.append(
+            Resolution(
+                resolved["marketSlug"],
+                at,
+                resolved.get("beforePosition") or {},
+                resolved.get("afterPosition") or {},
+            )
+        )
+    return sorted(found, key=lambda r: r.at)
+
+
+def rebates(activities: Sequence[Mapping], since: datetime) -> float:
+    """Dollars of taker-fee rebates the feed shows paid since `since`."""
+    total = 0.0
+    for activity in activities:
+        if activity.get("type") != "ACTIVITY_TYPE_TAKER_FEE_REBATE":
+            continue
+        change = activity.get("accountBalanceChange") or {}
+        at = _time(change.get("updateTime") or change.get("createTime"))
+        if at is not None and at >= since:
+            total += _money(change.get("amount")) or 0.0
+    return total
+
+
+def net(position: Mapping) -> float:
+    """A position's contracts: long positive, short negative."""
+    return float(position.get("netPositionDecimal") or position.get("netPosition") or 0)
+
+
+def settlement(ticker: str) -> float | None:
+    """A settled market's price, 1 when its long side won and 0 when its short
+    side did; None while it isn't settled."""
+    try:
+        found = public_get(f"/v1/markets/{ticker}/settlement")
+    except PolymarketUsError as error:
+        if " 404" in str(error) or "Not Found" in str(error):
+            return None
+        raise
+    return _money(found.get("settlement"))
+
+
+def price_history(ticker: str, start: datetime, end: datetime) -> list[dict]:
+    """A market's hourly book, from `/v1/price-history`: each point's
+    `timestamp`, `longPrice` (the long side's ask) and `shortPrice` (the
+    short side's, one minus the bid)."""
+    found = public_get(
+        "/v1/price-history",
+        {
+            "symbol": ticker,
+            "timestamp.startTimestamp": int(start.timestamp()),
+            "timestamp.endTimestamp": int(end.timestamp()),
+            "fidelity": 60,
+        },
+    )
+    return sorted(found.get("history") or [], key=lambda p: int(p["timestamp"]))
+
+
+def long_no_vig(history: Sequence[Mapping], at: int) -> float | None:
+    """The long side's no-vig price at the last point at or before `at`:
+    its ask over the two asks."""
+    before = [p for p in history if int(p["timestamp"]) <= at]
+    for point in reversed(before):
+        long, short = _quote(point.get("longPrice")), _quote(point.get("shortPrice"))
+        if long is not None and short is not None:
+            return long / (long + short)
+    return None

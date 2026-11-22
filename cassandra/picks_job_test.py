@@ -710,3 +710,52 @@ def test_the_summary_lists_rejections_once_each():
     assert "Jax -- J @ M: insufficient_shard_balance (2 times)" in text
     assert "Indiana -- S @ I: timed out" in text
     assert text.index("Rejected by Kalshi") < text.index("Account:")
+
+
+def test_polymarket_trades_and_settlements_go_in_the_morning_summary():
+    from cassandra.polymarket_us import Resolution, Trade
+
+    at = datetime(2026, 11, 22, 21, 33, tzinfo=UTC)
+    trades = [
+        Trade("aec-s", at, 0.61, 4.99),
+        Trade("aec-s", at, 0.62, 0.01),
+        Trade("aec-l", at, 0.35, 6.0),
+        Trade("aec-old", at - timedelta(days=3), 0.40, 5.0),
+    ]
+    resolved = [
+        Resolution(
+            "aec-s",
+            at + timedelta(hours=3),
+            {"netPositionDecimal": "-5", "cost": {"value": "2.10"}},
+            {},
+        )
+    ]
+    positions = {"aec-l": {"netPositionDecimal": "6"}}
+    orders = pd.DataFrame(
+        [
+            {
+                "venue": "polymarket_us",
+                "ticker": "aec-s",
+                "action": "short",
+                "bet": "Home Hawks",
+                "game": "Away Owls @ Home Hawks",
+                "model": 0.55,
+                "edge": 0.08,
+            }
+        ]
+    )
+    sides = picks_job.pm_sides(positions, resolved, orders)
+    assert sides == {"aec-s": "short", "aec-l": "long"}
+    since = at - timedelta(hours=1)
+    bets = picks_job.pm_placed(trades, sides, orders, since).set_index("event")
+    assert set(bets.index) == {"aec-s", "aec-l"}
+    hawks = bets.loc["aec-s"]
+    assert hawks["bet"] == "Home Hawks" and hawks["contracts"] == 5.0
+    assert hawks["price"] == pytest.approx((0.39 * 4.99 + 0.38 * 0.01) / 5)
+    assert bets.loc["aec-l", "bet"] == "LONG aec-l"
+    # The short lost: the long side settled at 1.
+    settled = picks_job.pm_settled(resolved, sides, lambda t: 1.0, since)
+    assert settled.to_dict("records") == [
+        {"event": "aec-s", "pnl": pytest.approx(-2.10), "won": False}
+    ]
+    assert picks_job.pm_settled(resolved, sides, lambda t: None, since).empty

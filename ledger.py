@@ -1,12 +1,15 @@
-"""The Kalshi ledger: every game bet, what it paid, and why it went that way.
+"""The ledger: every game bet, on Kalshi and Polymarket US, what it paid,
+and why it went that way.
 
     python ledger.py             # or `make ledger`
     python ledger.py --offline   # no s3: skip the cloud job's orders and the backup
     python ledger.py --digest    # also print each settled game still without a theme
 
-Each run rebuilds the whole history from the account (read-only, like
-`make positions`), Kalshi's hourly prices for each game, and ESPN's box
-score and AP recap for each settled one. It writes two files to
+Each run rebuilds the whole history from the accounts (read-only, like
+`make positions`), each venue's hourly prices for each game, and ESPN's box
+score and AP recap for each settled one. Polymarket US's bets are read when
+its key is set up (`cassandra.polymarket_us`); a game there is keyed by its
+market (`aec-...`) where Kalshi's is keyed by its event. It writes two files to
 ~/.cassandra/betting/ledger/: `ledger.csv`, one row per game bet, and
 `report.md`. The report has the overall numbers, a table per result type
 and tag, every week's games with their themes, and the open bets. A
@@ -42,6 +45,7 @@ from pathlib import Path
 import pandas as pd
 
 from cassandra import ledger
+from cassandra import polymarket_us as pm
 from cassandra.kalshi_trade import KalshiClient, public_get
 from cassandra.picks import league_of
 from cassandra.picks_job import RUN_FILES, client
@@ -49,6 +53,7 @@ from cassandra.placing import espn_summary
 
 #: Each game's Kalshi event and hourly prices, once final.
 KALSHI_DIR = ledger.LEDGER_DIR / "kalshi"
+POLYMARKET_DIR = ledger.LEDGER_DIR / "polymarket_us"
 S3_LEDGER = "cassandra/betting/ledger/"
 #: A market in any of these is done moving, so its prices can be kept.
 FINAL = {"finalized", "settled", "determined"}
@@ -194,8 +199,6 @@ def build(client: KalshiClient) -> tuple[pd.DataFrame, dict[str, dict]]:
     tickers |= {p["ticker"] for p in positions}
     events = {e: event_json(e) for e in sorted({ledger.event_of(t) for t in tickers})}
     frame = ledger.bets(fills, settlements, positions, events)
-    if frame.empty:
-        return frame, {}
     runs = ledger.read_runs(ledger.PICKS_DIR)
     orders = ledger.read_orders(ledger.ORDERS_DIR)
     themes = ledger.read_themes(ledger.THEMES)
@@ -245,27 +248,125 @@ def build(client: KalshiClient) -> tuple[pd.DataFrame, dict[str, dict]]:
         row["mark"] = math.nan if bet["settled"] else price
         row["clv"] = 100 * (row["close"] - row["avg_price"])
 
-        row.update(
-            {"score": None, "read": None, "tags": [], "type": None, "type_from": None}
-        )
-        if bet["settled"] and summary and row.get("bet_home") is not None:
-            f = ledger.facts(summary, bool(row["bet_home"]), league)
-            all_facts[bet["event"]] = f
-            won = bool(bet["won"])
-            row["score"] = f["score"]
-            row["margin"] = f["margin"]
-            row["headline"] = f["headline"]
-            row["read"] = ledger.box_read(f, won)
-            row["tags"] = ledger.tags(f, won)
-            row["type"] = ledger.suggest(f, row["tags"], won, row["avg_price"])
-            row["type_from"] = "box score"
-        theme = themes.get(bet["event"])
-        if theme is not None:
-            row.update(
-                type=theme.type, theme=theme.theme, why=theme.why, type_from="theme"
-            )
+        read_result(row, summary, league, themes, all_facts)
         rows.append(row)
-    return pd.DataFrame(rows), all_facts
+    pm_rows, pm_facts = build_polymarket(runs, orders, themes, now)
+    all_facts.update(pm_facts)
+    return pd.DataFrame([*rows, *pm_rows]), all_facts
+
+
+def read_result(
+    row: dict, summary: dict, league: str, themes: dict, all_facts: dict
+) -> None:
+    """A settled game's result read off its ESPN summary -- score, margin,
+    the box score's read, tags, a suggested type -- and its written theme
+    over the suggestion, into `row`."""
+    row.update(
+        {"score": None, "read": None, "tags": [], "type": None, "type_from": None}
+    )
+    if row["settled"] and summary and row.get("bet_home") is not None:
+        f = ledger.facts(summary, bool(row["bet_home"]), league)
+        all_facts[row["event"]] = f
+        won = bool(row["won"])
+        row["score"] = f["score"]
+        row["margin"] = f["margin"]
+        row["headline"] = f["headline"]
+        row["read"] = ledger.box_read(f, won)
+        row["tags"] = ledger.tags(f, won)
+        row["type"] = ledger.suggest(f, row["tags"], won, row["avg_price"])
+        row["type_from"] = "box score"
+    theme = themes.get(row["event"])
+    if theme is not None:
+        row.update(type=theme.type, theme=theme.theme, why=theme.why, type_from="theme")
+
+
+def settlement(ticker: str) -> float | None:
+    """A Polymarket US market's settlement price, kept once there is one."""
+    found = _cached(
+        POLYMARKET_DIR / f"{ticker}_settlement.json",
+        lambda: {"settlement": pm.settlement(ticker)},
+        lambda f: f["settlement"] is not None,
+    )
+    return found["settlement"]
+
+
+def pm_history(ticker: str, start: datetime, end: datetime, final: bool) -> list:
+    """A Polymarket US market's hourly book from `start` to `end`, kept once
+    the game is over."""
+    return _cached(
+        POLYMARKET_DIR / f"{ticker}_history.json",
+        lambda: {"history": pm.price_history(ticker, start, end)},
+        lambda _: final,
+    )["history"]
+
+
+def build_polymarket(
+    runs: pd.DataFrame, orders: pd.DataFrame, themes: dict, now: datetime
+) -> tuple[list[dict], dict[str, dict]]:
+    """The Polymarket US account's game bets as ledger rows, and each settled
+    game's facts; none without its key. Its kickoff is the picks runs'; its
+    close and mark its own book's no-vig price."""
+    if not pm.POLYMARKET_US.has_key():
+        return [], {}
+    try:
+        client = pm.PolymarketUsClient.from_env(dry_run=True)
+        activities = client.activities()
+        positions = client.positions()
+    except Exception as error:
+        print(f"!! Polymarket US left out, couldn't read its account: {error!r}")
+        return [], {}
+    frame = ledger.pm_bets(
+        pm.trades(activities),
+        positions,
+        pm.resolutions(activities),
+        orders,
+        settlement,
+        pm.FEES,
+    )
+    rows, all_facts = [], {}
+    for _, bet in frame.iterrows():
+        row = bet.to_dict()
+        for key in ("model", "market", "game_id", "bet_home"):
+            row.setdefault(key, math.nan if key in ("model", "market") else None)
+        row["edge"] = row["model"] - row["market"]
+        league = ledger.league_of(bet["event"]) or "ncaafb"
+        game_id = row.get("game_id")
+        if isinstance(game_id, float):
+            game_id = row["game_id"] = None
+        summary = {}
+        if bet["settled"] and game_id:
+            summary = espn_summary(game_id, final=True, league=league)
+        listed = runs[runs["game_id"] == game_id] if game_id else runs.iloc[0:0]
+        kickoff = _timestamp(listed["kickoff"].iloc[-1]) if len(listed) else None
+        if kickoff is None and summary:
+            kickoff = _timestamp(summary["header"]["competitions"][0].get("date"))
+        row["kickoff"] = kickoff
+        when = kickoff or row["first_fill"]
+        row["week"] = (
+            ledger.week_of(when.to_pydatetime())
+            if when is not None and not pd.isna(when)
+            else None
+        )
+        first = (
+            row["first_fill"]
+            if not pd.isna(row["first_fill"])
+            else now - timedelta(days=10)
+        )
+        end = min(kickoff + timedelta(hours=1), now) if kickoff is not None else now
+        history = pm_history(
+            bet["event"], first - timedelta(hours=2), end, final=bool(bet["settled"])
+        )
+        at = kickoff if (bet["settled"] and kickoff is not None) else now
+        long = pm.long_no_vig(history, int(at.timestamp()))
+        price = (
+            math.nan if long is None else (long if bet["side"] == "long" else 1 - long)
+        )
+        row["close"] = price if bet["settled"] else math.nan
+        row["mark"] = math.nan if bet["settled"] else price
+        row["clv"] = 100 * (row["close"] - row["avg_price"])
+        read_result(row, summary, league, themes, all_facts)
+        rows.append(row)
+    return rows, all_facts
 
 
 def main() -> None:

@@ -209,8 +209,8 @@ def test_positions_orders_and_balance_read_as_the_venues_shapes():
             }
         ],
         {
-            "aec-b": {"netPositionDecimal": "9", "cashValue": {"value": "5.94"}},
-            "aec-a": {"netPositionDecimal": "-3", "cashValue": {"value": "1.38"}},
+            "aec-b": {"netPositionDecimal": "4", "cashValue": {"value": "2.40"}},
+            "aec-a": {"netPositionDecimal": "-2", "cashValue": {"value": "0.70"}},
             "aec-x": {
                 "netPositionDecimal": "1",
                 "cashValue": {"value": "0.9"},
@@ -219,7 +219,7 @@ def test_positions_orders_and_balance_read_as_the_venues_shapes():
         },
     )
     assert money.cash == pytest.approx(50.0)
-    assert money.invested == pytest.approx(5.94 + 1.38 + 0.5)
+    assert money.invested == pytest.approx(2.40 + 0.70 + 0.5)
 
 
 def test_a_request_is_signed_over_its_time_method_and_path():
@@ -291,3 +291,105 @@ def test_the_listed_order_says_which_way_a_no_buy_was_read():
     assert pm.order_convention(order, 0.30) == "yes"
     assert pm.order_convention({**order, "principal": {"value": "0.7"}}, 0.30) == "no"
     assert pm.order_convention({**order, "principal": None}, 0.30) is None
+
+
+def _activities() -> list[dict]:
+    """A feed shaped as the account's (made-up amounts): two trades on a
+    short, one on a long, a resolution, a rebate, and a busted trade."""
+    return [
+        {
+            "type": "ACTIVITY_TYPE_TRADE",
+            "trade": {
+                "marketSlug": "aec-s",
+                "createTime": "2026-11-22T21:33:00Z",
+                "price": {"value": "0.6100"},
+                "qtyDecimal": "4.99",
+                "state": "TRADE_STATE_NEW",
+            },
+        },
+        {
+            "type": "ACTIVITY_TYPE_TRADE",
+            "trade": {
+                "marketSlug": "aec-s",
+                "createTime": "2026-11-22T21:33:01Z",
+                "price": {"value": "0.6200"},
+                "qtyDecimal": "0.01",
+                "state": "TRADE_STATE_NEW",
+            },
+        },
+        {
+            "type": "ACTIVITY_TYPE_TRADE",
+            "trade": {
+                "marketSlug": "aec-l",
+                "createTime": "2026-11-22T21:34:00Z",
+                "price": {"value": "0.3500"},
+                "qtyDecimal": "6",
+                "state": "TRADE_STATE_CLEARED",
+            },
+        },
+        {
+            "type": "ACTIVITY_TYPE_TRADE",
+            "trade": {
+                "marketSlug": "aec-x",
+                "createTime": "2026-11-22T21:35:00Z",
+                "price": {"value": "0.5"},
+                "qtyDecimal": "1",
+                "state": "TRADE_STATE_BUSTED",
+            },
+        },
+        {
+            "type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+            "positionResolution": {
+                "marketSlug": "aec-s",
+                "updateTime": "2026-11-23T00:20:00Z",
+                "beforePosition": {
+                    "netPositionDecimal": "-5",
+                    "cost": {"value": "2.10"},
+                    "marketMetadata": {"title": "Home U vs. Away U"},
+                },
+                "afterPosition": {"netPositionDecimal": "0"},
+                "side": "POSITION_RESOLUTION_SIDE_SHORT",
+            },
+        },
+        {
+            "type": "ACTIVITY_TYPE_TAKER_FEE_REBATE",
+            "accountBalanceChange": {
+                "amount": "0.07",
+                "updateTime": "2026-11-23T08:00:00Z",
+            },
+        },
+    ]
+
+
+def test_the_feed_reads_as_trades_resolutions_and_rebates():
+    found = pm.trades(_activities())
+    assert [(t.ticker, t.yes_price, t.contracts) for t in found] == [
+        ("aec-s", 0.61, 4.99),
+        ("aec-s", 0.62, 0.01),
+        ("aec-l", 0.35, 6.0),
+    ]
+    [resolved] = pm.resolutions(_activities())
+    assert resolved.ticker == "aec-s" and pm.net(resolved.before) == -5
+    assert pm.rebates(_activities(), datetime(2026, 11, 23, tzinfo=UTC)) == 0.07
+    assert pm.rebates(_activities(), datetime(2026, 11, 24, tzinfo=UTC)) == 0.0
+
+
+def test_a_settled_market_says_who_won_and_an_open_one_doesnt(monkeypatch):
+    def gateway(path, params=None):
+        if "aec-open" in path:
+            raise pm.PolymarketUsError(f"GET {path}: HTTP Error 404: Not Found")
+        return {"slug": "aec-done", "settlement": 1}
+
+    monkeypatch.setattr(pm, "public_get", gateway)
+    assert pm.settlement("aec-done") == 1.0
+    assert pm.settlement("aec-open") is None
+
+
+def test_the_no_vig_price_is_the_last_one_before():
+    history = [
+        {"timestamp": 100, "longPrice": "0.60", "shortPrice": "0.44"},
+        {"timestamp": 200, "longPrice": "0.70", "shortPrice": "0.34"},
+    ]
+    assert pm.long_no_vig(history, 150) == pytest.approx(0.60 / 1.04)
+    assert pm.long_no_vig(history, 250) == pytest.approx(0.70 / 1.04)
+    assert pm.long_no_vig(history, 50) is None
