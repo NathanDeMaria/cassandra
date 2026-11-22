@@ -263,3 +263,17 @@ def test_the_book_says_which_way_a_no_buy_was_read():
     assert pm.convention(before, book({0.26: 40.0, 0.70: 6.0}), 0.30) == "yes"
     assert pm.convention(before, book({0.26: 40.0, 0.30: 1.0, 0.70: 5.0}), 0.30) == "no"
     assert pm.convention(before, before, 0.30) is None
+
+
+def test_the_listed_order_says_which_way_a_no_buy_was_read():
+    # As the first probe's order was listed, 2026-11-22.
+    order = {
+        "intent": "ORDER_INTENT_BUY_SHORT",
+        "side": "ORDER_SIDE_SELL",
+        "price": {"value": "0.7", "currency": "USD"},
+        "quantity": 1,
+        "principal": {"value": "0.3", "currency": "USD"},
+    }
+    assert pm.order_convention(order, 0.30) == "yes"
+    assert pm.order_convention({**order, "principal": {"value": "0.7"}}, 0.30) == "no"
+    assert pm.order_convention({**order, "principal": None}, 0.30) is None
