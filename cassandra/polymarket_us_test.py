@@ -195,17 +195,31 @@ def test_positions_orders_and_balance_read_as_the_venues_shapes():
         ]
     )
     assert (order.action, order.price, order.remaining) == ("short", 0.4, 5.0)
+    # Shaped as the account read on 2026-11-22: a long, and a short holding
+    # margin, which isn't what the positions are worth.
     money = pm.balance(
         [
             {
                 "currency": "USD",
-                "currentBalance": 50,
-                "buyingPower": 45,
-                "assetNotional": 12,
+                "currentBalance": 52.0,
+                "buyingPower": 50.0,
+                "assetNotional": 0,
+                "openOrders": 0.5,
+                "marginRequirement": 2,
             }
-        ]
+        ],
+        {
+            "aec-b": {"netPositionDecimal": "9", "cashValue": {"value": "5.94"}},
+            "aec-a": {"netPositionDecimal": "-3", "cashValue": {"value": "1.38"}},
+            "aec-x": {
+                "netPositionDecimal": "1",
+                "cashValue": {"value": "0.9"},
+                "expired": True,
+            },
+        },
     )
-    assert (money.cash, money.invested) == (45.0, 17.0)
+    assert money.cash == pytest.approx(50.0)
+    assert money.invested == pytest.approx(5.94 + 1.38 + 0.5)
 
 
 def test_a_request_is_signed_over_its_time_method_and_path():
