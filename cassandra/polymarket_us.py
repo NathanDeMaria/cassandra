@@ -538,18 +538,32 @@ def resting(orders: Sequence[Mapping]) -> list[Resting]:
     return found
 
 
-def balance(balances: Sequence[Mapping]) -> Balance:
-    """`GET /v1/account/balances`'s dollar balance: what can be spent now
-    (`buyingPower`, open orders' cash already out), and what the positions
-    are worth plus the cash open orders hold."""
+def balance(
+    balances: Sequence[Mapping], positions: Mapping[str, Mapping] | None = None
+) -> Balance:
+    """The account's money: what can be spent now (`buyingPower`, the cash
+    open orders and short positions hold already out), and what it has
+    elsewhere -- its positions at what they'd sell for now (`cashValue`, as
+    Kalshi's portfolio value is), and the cash its open orders hold.
+
+    The balance's own fields don't say what the positions are worth. Read
+    live on 2026-11-22, `assetNotional` was 0 with positions open, and
+    `currentBalance` less `buyingPower` was a short's margin, not its
+    value; a position's `cashValue`, which the docs call unrealized P&L,
+    was its contracts at the price they'd sell for.
+    """
     usd = next(
         (b for b in balances if (b.get("currency") or "USD") == "USD"),
         {},
     )
     current = float(usd.get("currentBalance") or 0)
-    spendable = float(usd.get("buyingPower") or 0)
-    cash = min(spendable, current)
-    return Balance(cash, float(usd.get("assetNotional") or 0) + current - cash)
+    cash = min(float(usd.get("buyingPower") or 0), current)
+    worth = sum(
+        abs(_money(p.get("cashValue")) or 0.0)
+        for p in (positions or {}).values()
+        if not p.get("expired")
+    )
+    return Balance(cash, worth + float(usd.get("openOrders") or 0))
 
 
 class PolymarketUsClient:
@@ -685,7 +699,7 @@ class PolymarketUsAccount:
         return self.client.dry_run
 
     def balance(self) -> Balance:
-        return balance(self.client.balances())
+        return balance(self.client.balances(), self.client.positions())
 
     def holdings(self) -> list[Holding]:
         return holdings(self.client.positions())
@@ -817,8 +831,9 @@ def probe(send: bool = False) -> int:
     book, cancelled. Without `send`, nothing is sent: it shows the order.
     0 when the price is read as this module sends it."""
     client = PolymarketUsClient.from_env(dry_run=not send)
-    money = balance(client.balances())
-    held, waiting = holdings(client.positions()), resting(client.open_orders())
+    positions = client.positions()
+    money = balance(client.balances(), positions)
+    held, waiting = holdings(positions), resting(client.open_orders())
     print(
         f"account: ${money.cash:,.2f} to spend, ${money.invested:,.2f} in positions "
         f"and open orders; {len(held)} positions, {len(waiting)} open orders"
