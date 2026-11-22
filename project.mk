@@ -97,6 +97,12 @@ login:
 picks-status:
 	uv run python -m cassandra.picks_job status
 
+# The Polymarket US account read, and how it reads a NO buy's price settled:
+# one contract priced where it can't fill either way, read back off the book,
+# cancelled. Sends nothing without ARGS="--send" (cassandra/polymarket_us.py).
+polymarket-probe:
+	uv run python -m cassandra.polymarket_us probe $(ARGS)
+
 # The Kalshi account, read-only: cash, and each open position's cost and what
 # it would sell for now.
 positions:
@@ -230,4 +236,4 @@ submit:
 	uv run python jobs.py submit $(ARGS)
 
 
-.PHONY: login report diagnose team-seasons evidence betting picks bet pause resume autobet push-overrides picks-status positions account-value account-review ledger publish build push manifest _ecr_login submit
+.PHONY: login report diagnose team-seasons evidence betting picks bet pause resume autobet push-overrides picks-status polymarket-probe positions account-value account-review ledger publish build push manifest _ecr_login submit

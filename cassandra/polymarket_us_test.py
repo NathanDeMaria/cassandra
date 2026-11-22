@@ -230,3 +230,36 @@ def test_the_api_promotion_prices_contracts_net_of_its_rebate():
     # the docs' 100 at 0.50 is $1.74.
     assert pm.FEES.order(0.5, 100, during) == 1.74
     assert pm.FEES.order(0.5, 2, during) == 0.03
+
+
+def test_a_probe_uses_a_game_whose_short_side_is_a_clear_favorite():
+    from datetime import timedelta
+
+    now = datetime(2026, 11, 21, 12, tzinfo=UTC)
+    soon = {**_event(bid="0.1500"), "startTime": "2026-11-21T13:00:00Z"}
+    later = {**_event(bid="0.2000"), "startTime": "2026-11-21T19:00:00Z"}
+    close = {**_event(bid="0.5000"), "startTime": "2026-11-21T19:00:00Z"}
+    found = pm.probe_game([soon, later, close], now)
+    assert found is not None
+    read, kickoff = found
+    # The short side asks 1 - 0.20: the soon game is too near kickoff, the
+    # close one no favorite.
+    assert read.sides[1].ask == pytest.approx(0.80)
+    assert kickoff - now == timedelta(hours=7)
+    assert pm.probe_game([close], now) is None
+
+
+def test_the_book_says_which_way_a_no_buy_was_read():
+    def book(offers: dict[float, float]) -> dict:
+        return {
+            "marketData": {
+                "offers": [
+                    {"px": {"value": str(p)}, "qty": str(q)} for p, q in offers.items()
+                ]
+            }
+        }
+
+    before = book({0.26: 40.0, 0.70: 5.0})
+    assert pm.convention(before, book({0.26: 40.0, 0.70: 6.0}), 0.30) == "yes"
+    assert pm.convention(before, book({0.26: 40.0, 0.30: 1.0, 0.70: 5.0}), 0.30) == "no"
+    assert pm.convention(before, before, 0.30) is None
