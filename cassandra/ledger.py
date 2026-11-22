@@ -1,4 +1,5 @@
-"""The Kalshi bets' ledger: what each game bet cost, what it paid, and why.
+"""The bets' ledger, Kalshi's and Polymarket US's: what each game bet cost,
+what it paid, and why.
 
 `ledger.py` (`make ledger`) gathers the pieces and writes the report; this
 is what it does with them:
@@ -6,7 +7,9 @@ is what it does with them:
 - `bets` nets the account into one bet per game (a Kalshi event). What's
   held comes from Kalshi's own books -- settlements for games over,
   positions for the rest -- and the fills only say when, and in which
-  orders.
+  orders. `pm_bets` does the same for Polymarket US, where a game is its
+  moneyline market, from the account's positions, trades and resolutions,
+  and each settled market's price.
 - `bet_time` finds what the model said when the bet was made: the orders
   log `placing.place` keeps (its rows carry the order ids), or failing
   that the last picks run started before the first fill.
@@ -27,7 +30,7 @@ bet team's points less its opponent's.
 import math
 import re
 import tomllib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
@@ -36,9 +39,11 @@ import pandas as pd
 
 from . import injuries
 from .constants import CASSANDRA_HOME
-from .picks import league_of
+from .picks import league_of as kalshi_league
 from .picks_job import RUN_FILES
 from .placing import CENTRAL
+from .polymarket_us import POLYMARKET_US, Resolution, Trade, net
+from .venues import Fees
 
 LEDGER_DIR = CASSANDRA_HOME / "betting" / "ledger"
 THEMES = LEDGER_DIR / "themes.toml"
@@ -287,6 +292,132 @@ def bets(
                 "order_ids": sorted({f["order_id"] for f in filled.get(event, [])}),
             }
         )
+    return pd.DataFrame(rows)
+
+
+def league_of(event: str) -> str | None:
+    """The league a bet's game is in: a Kalshi event's, or a Polymarket US
+    market's."""
+    return kalshi_league(event) or POLYMARKET_US.league_of(event)
+
+
+def _pm_orders(orders: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """The orders log's filled Polymarket US orders on one market."""
+    if orders.empty or "ticker" not in orders:
+        return orders.iloc[0:0]
+    mine = orders["ticker"] == ticker
+    if "venue" in orders:
+        mine &= orders["venue"] == POLYMARKET_US.name
+    if "filled" in orders:
+        mine &= orders["filled"].fillna(0) > 0
+    return orders[mine]
+
+
+def pm_bets(
+    found: Sequence[Trade],
+    positions: Mapping[str, Mapping],
+    resolved: Sequence[Resolution],
+    orders: pd.DataFrame,
+    settled_at: Callable[[str], float | None],
+    fees: Fees,
+) -> pd.DataFrame:
+    """One row per Polymarket US game bet, with `bets`' columns and, from the
+    orders log, `bet_time`'s: the model and market it was sent on, the game.
+
+    A game is its moneyline market, one instrument held long or short. The
+    side is the open position's, or the one resolution closed, or failing
+    both the logged orders'. What it holds and cost comes from the position
+    (whose cost includes the fees), or from the trades priced from the
+    side's terms; the fees are the schedule's on each trade. A market is
+    settled once nothing is held in it and it has a settlement price
+    (`settled_at`, 1 when the long side won), which says what it paid.
+    """
+    by_ticker: dict[str, list[Trade]] = {}
+    for trade in found:
+        by_ticker.setdefault(trade.ticker, []).append(trade)
+    last_resolved = {r.ticker: r for r in resolved}
+    tickers = sorted(
+        set(by_ticker)
+        | {t for t, p in positions.items() if net(p) and not p.get("expired")}
+        | set(last_resolved)
+    )
+    rows = []
+    for ticker in tickers:
+        position = positions.get(ticker) or {}
+        open_now = bool(net(position)) and not position.get("expired")
+        before = last_resolved[ticker].before if ticker in last_resolved else {}
+        held = position if open_now else before
+        logged = _pm_orders(orders, ticker)
+        if net(held):
+            side = "long" if net(held) > 0 else "short"
+        elif not logged.empty:
+            side = str(logged["action"].iloc[0])
+        else:
+            continue
+        traded = by_ticker.get(ticker, [])
+        prices = [(t.yes_price if side == "long" else 1 - t.yes_price) for t in traded]
+        trade_fees = sum(
+            fees.order(price, t.contracts, t.at) for price, t in zip(prices, traded)
+        )
+        contracts = abs(net(held)) or sum(t.contracts for t in traded)
+        held_cost = abs(float((held.get("cost") or {}).get("value") or 0))
+        stake = (
+            held_cost
+            or sum(price * t.contracts for price, t in zip(prices, traded)) + trade_fees
+        )
+        cost = stake - trade_fees
+        settled_price = None if open_now else settled_at(ticker)
+        settled = settled_price is not None
+        payout = math.nan
+        if settled_price is not None:
+            payout = contracts * (
+                settled_price if side == "long" else 1 - settled_price
+            )
+        meta = held.get("marketMetadata") or {}
+        team = meta.get("team") or {}
+        times = sorted(t.at for t in traded)
+        row = {
+            "venue": POLYMARKET_US.name,
+            "side": side,
+            "event": ticker,
+            "title": meta.get("title") or ticker,
+            "bet_code": team.get("abbreviation") or side,
+            "bet_short": team.get("name") or meta.get("outcome") or side,
+            "contracts": contracts,
+            "avg_price": cost / contracts if contracts else math.nan,
+            "cost": cost,
+            "fees": trade_fees,
+            "stake": stake,
+            "settled": settled,
+            "payout": payout,
+            "pnl": payout - stake if settled else math.nan,
+            "won": (payout > 0) if settled else None,
+            "both_sides": False,
+            "first_fill": pd.Timestamp(times[0]) if times else pd.NaT,
+            "last_fill": pd.Timestamp(times[-1]) if times else pd.NaT,
+            "order_ids": sorted(
+                set(logged.get("order_id", pd.Series(dtype=str)).astype(str))
+            ),
+            "model_from": None,
+        }
+        if not logged.empty:
+            weights = logged["filled"].astype(float)
+            model = logged["model"].astype(float)
+            market = model - logged["edge"].astype(float)
+            first = logged.iloc[0]
+            home, _ = _home_away(first["game"])
+            row.update(
+                model=float((weights * model).sum() / weights.sum()),
+                market=float((weights * market).sum() / weights.sum()),
+                model_from="orders log",
+                game_id=str(first["game_id"]),
+                game=first["game"],
+                title=first["game"],
+                bet=first["bet"],
+                bet_short=first["bet"],
+                bet_home=first["bet"] == home,
+            )
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -1253,10 +1384,18 @@ def _card_lines(card: Mapping) -> list[str]:
     return lines
 
 
+def venue_of(frame: pd.DataFrame) -> pd.Series:
+    """Each bet's venue: Kalshi for a row from before there was another."""
+    if "venue" not in frame:
+        return pd.Series("kalshi", index=frame.index)
+    return frame["venue"].fillna("kalshi")
+
+
 def _game_cell(row: pd.Series) -> str:
     model = "" if pd.isna(row.get("model")) else f" ({row['model']:.0%})"
     close = "" if pd.isna(row.get("close")) else f" → {100 * row['close']:.0f}¢"
-    return f"{row['bet_short']} {100 * row['avg_price']:.0f}¢{close}{model}"
+    where = " (PM)" if row.get("venue") == POLYMARKET_US.name else ""
+    return f"{row['bet_short']}{where} {100 * row['avg_price']:.0f}¢{close}{model}"
 
 
 def _theme_cell(row: pd.Series) -> str:
@@ -1340,6 +1479,14 @@ def report(ledger: pd.DataFrame, as_of: datetime) -> str:
         by_week = breakdown(settled, "week")
         by_week["group"] = by_week["group"].map(lambda d: f"{d:%b %d}")
         out += ["", "### By week", "", *_table(by_week, "week of")]
+        venues = venue_of(settled)
+        if venues.nunique() > 1:
+            out += [
+                "",
+                "### By venue",
+                "",
+                *_table(breakdown(settled, venues), "venue"),
+            ]
 
         out += [
             "",

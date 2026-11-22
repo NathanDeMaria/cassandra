@@ -706,3 +706,63 @@ def test_wins_losses_lists_each_settled_bet_under_its_result():
     assert "_pending_ (one_score)" in losses
     # The open bet is in neither.
     assert page.count("| Oct 17 |") == 2
+
+
+def test_polymarket_bets_are_one_row_a_market_from_the_bets_side():
+    from datetime import UTC, datetime
+
+    from .polymarket_us import FEES, Resolution, Trade
+
+    at = datetime(2026, 11, 22, 21, 33, tzinfo=UTC)
+    trades = [Trade("aec-s", at, 0.61, 5.0), Trade("aec-l", at, 0.35, 6.0)]
+    positions = {
+        "aec-l": {
+            "netPositionDecimal": "6",
+            "cost": {"value": "2.20"},
+            "marketMetadata": {"title": "Long U vs. Other U"},
+        }
+    }
+    resolved = [
+        Resolution(
+            "aec-s",
+            datetime(2026, 11, 23, tzinfo=UTC),
+            {"netPositionDecimal": "-5", "cost": {"value": "2.10"}},
+            {},
+        )
+    ]
+    orders = pd.DataFrame(
+        [
+            {
+                "venue": "polymarket_us",
+                "ticker": "aec-s",
+                "action": "short",
+                "filled": 5.0,
+                "order_id": "o1",
+                "model": 0.55,
+                "edge": 0.08,
+                "game": "Away Owls @ Home Hawks",
+                "game_id": "999",
+                "bet": "Home Hawks",
+            }
+        ]
+    )
+    # The long side won the settled market: the short lost.
+    frame = ledger.pm_bets(
+        trades,
+        positions,
+        resolved,
+        orders,
+        lambda t: 1.0 if t == "aec-s" else None,
+        FEES,
+    ).set_index("event")
+    short = frame.loc["aec-s"]
+    assert (short["side"], short["contracts"], short["settled"]) == ("short", 5.0, True)
+    assert short["payout"] == 0.0 and short["pnl"] == pytest.approx(-2.10)
+    assert short["fees"] == FEES.order(0.39, 5.0, at)
+    assert short["avg_price"] == pytest.approx((2.10 - short["fees"]) / 5)
+    assert (short["model"], short["market"]) == (0.55, pytest.approx(0.47))
+    assert short["bet_home"] and short["title"] == "Away Owls @ Home Hawks"
+    held = frame.loc["aec-l"]
+    assert (held["side"], held["settled"], held["stake"]) == ("long", False, 2.20)
+    assert held["title"] == "Long U vs. Other U" and pd.isna(held["model"])
+    assert ledger.league_of("aec-wcbb-alpha-beta-2026-11-22") == "womens"

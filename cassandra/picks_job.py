@@ -667,10 +667,79 @@ def placed_bets(fills: Sequence[Mapping], orders: pd.DataFrame) -> pd.DataFrame:
     return found.drop(columns="paid").sort_values("cost", ascending=False)
 
 
-def logged_bets(orders: pd.DataFrame, since: datetime, venue: str) -> pd.DataFrame:
-    """`placed_bets`' rows for a venue with no fills listing read here, from
-    the job's orders logs: what each order filled when it was placed, since
-    `since`. An order left resting that fills later isn't in them."""
+def pm_sides(
+    positions: Mapping[str, Mapping], resolved: Sequence[Any], orders: pd.DataFrame
+) -> dict[str, str]:
+    """Which side, long or short, the account backs in each Polymarket US
+    market: the open position's, or the one a resolution closed, or the
+    logged orders'. A trade in the activity feed doesn't say."""
+    from cassandra.polymarket_us import net
+
+    found: dict[str, str] = {}
+    if not orders.empty and {"venue", "ticker", "action"} <= set(orders.columns):
+        mine = orders[orders["venue"] == "polymarket_us"]
+        for ticker, action in zip(mine["ticker"], mine["action"]):
+            if action in ("long", "short"):
+                found[ticker] = action
+    for r in resolved:
+        if net(r.before):
+            found[r.ticker] = "long" if net(r.before) > 0 else "short"
+    for ticker, position in positions.items():
+        if net(position) and not position.get("expired"):
+            found[ticker] = "long" if net(position) > 0 else "short"
+    return found
+
+
+def pm_placed(
+    found: Sequence[Any],
+    sides: Mapping[str, str],
+    orders: pd.DataFrame,
+    since: datetime,
+) -> pd.DataFrame:
+    """`placed_bets`' rows for Polymarket US: the trades since `since`, by
+    market, priced from the side bought, the fee the schedule charges on
+    each, and the model and edge from the orders log. Unlike the orders
+    logs' fills, the trades include an order that rested and filled later."""
+    from cassandra.polymarket_us import FEES
+
+    logged = (
+        orders[orders.get("venue", pd.Series(dtype=str)) == "polymarket_us"]
+        .drop_duplicates("ticker")
+        .set_index("ticker")
+        if not orders.empty and "venue" in orders
+        else pd.DataFrame()
+    )
+    rows = []
+    for trade in found:
+        if trade.at < since or trade.ticker not in sides:
+            continue
+        side = sides[trade.ticker]
+        price = trade.yes_price if side == "long" else 1 - trade.yes_price
+        if trade.ticker in logged.index:
+            log = logged.loc[trade.ticker]
+            bet, game = log["bet"], log["game"]
+            model, edge = float(log["model"]), float(log["edge"])
+        else:
+            bet, game, model, edge = (
+                f"{side.upper()} {trade.ticker}",
+                trade.ticker,
+                math.nan,
+                math.nan,
+            )
+        rows.append(
+            {
+                "event": trade.ticker,
+                "bet": bet,
+                "game": game,
+                "contracts": trade.contracts,
+                "paid": price * trade.contracts,
+                "cost": price * trade.contracts
+                + FEES.order(price, trade.contracts, trade.at),
+                "model": model,
+                "edge": edge,
+                "rung": 0.0,
+            }
+        )
     columns = [
         "event",
         "bet",
@@ -682,33 +751,52 @@ def logged_bets(orders: pd.DataFrame, since: datetime, venue: str) -> pd.DataFra
         "edge",
         "rung",
     ]
-    if orders.empty or "venue" not in orders or "filled" not in orders:
+    if not rows:
         return pd.DataFrame(columns=columns)
-    found = orders[(orders["venue"] == venue) & (orders["filled"].fillna(0) > 0)].copy()
-    placed = pd.to_datetime(found["placed_at"], utc=True, errors="coerce")
-    found = found[placed >= since]
-    if found.empty:
-        return pd.DataFrame(columns=columns)
-    found["paid"] = found["filled"] * found["fill_price"]
-    found["cost"] = found["paid"] + found["fee"].fillna(0)
-    found["rung_count"] = found["filled"].where(
-        found.get("rung", pd.Series(False, index=found.index))
-        .astype(str)
-        .str.lower()
-        .eq("true"),
-        0.0,
+    found_bets = (
+        pd.DataFrame(rows)
+        .groupby(["event", "bet"], as_index=False)
+        .agg(
+            game=("game", "first"),
+            contracts=("contracts", "sum"),
+            paid=("paid", "sum"),
+            cost=("cost", "sum"),
+            model=("model", "first"),
+            edge=("edge", "first"),
+            rung=("rung", "sum"),
+        )
     )
-    grouped = found.groupby(["ticker", "bet"], as_index=False).agg(
-        game=("game", "first"),
-        contracts=("filled", "sum"),
-        paid=("paid", "sum"),
-        cost=("cost", "sum"),
-        model=("model", "first"),
-        edge=("edge", "first"),
-        rung=("rung_count", "sum"),
-    )
-    grouped["price"] = grouped["paid"] / grouped["contracts"]
-    return grouped.rename(columns={"ticker": "event"}).drop(columns="paid")[columns]
+    found_bets["price"] = found_bets["paid"] / found_bets["contracts"]
+    return found_bets[columns]
+
+
+def pm_settled(
+    resolved: Sequence[Any],
+    sides: Mapping[str, str],
+    settled_at: Callable[[str], float | None],
+    since: datetime,
+) -> pd.DataFrame:
+    """`settled_games`' rows for Polymarket US: each market a resolution
+    closed since `since`, its P&L the payout -- the contracts at the
+    settlement price, from the side held -- less what the position cost,
+    fees in."""
+    from cassandra.polymarket_us import net
+
+    rows = []
+    for r in resolved:
+        if r.at < since:
+            continue
+        price = settled_at(r.ticker)
+        contracts = abs(net(r.before))
+        if price is None or not contracts:
+            continue
+        side = sides.get(r.ticker, "long" if net(r.before) > 0 else "short")
+        payout = contracts * (price if side == "long" else 1 - price)
+        cost = abs(float((r.before.get("cost") or {}).get("value") or 0))
+        rows.append({"event": r.ticker, "pnl": payout - cost})
+    found = pd.DataFrame(rows, columns=["event", "pnl"])
+    found["won"] = found["pnl"] > 0
+    return found
 
 
 def settled_games(settlements: Sequence[Mapping]) -> pd.DataFrame:
@@ -744,6 +832,7 @@ def summary_email(
     at: datetime,
     rejected: pd.DataFrame | None = None,
     others: Sequence[tuple[str, float, float, int]] = (),
+    notes: Sequence[str] = (),
 ) -> tuple[str, str]:
     """The morning email: what was placed since `since`, what still rests,
     what settled, the holds still waiting, what the venues rejected, and the
@@ -826,6 +915,7 @@ def summary_email(
             times = f" ({len(group)} times)" if len(group) > 1 else ""
             lines.append(f"  {bet} -- {game}: {reason}{times}")
         lines.append("")
+    lines += [*notes, *([""] if notes else [])]
     cash, positions = account
     lines.append(
         f"{'Kalshi' if others else 'Account'}: ${cash:,.2f} cash, "
