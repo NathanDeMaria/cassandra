@@ -150,6 +150,16 @@ class CrowdIndex:
     def __len__(self) -> int:
         return len(self._teams)
 
+    def until(self, day: date) -> Self:
+        """The index as it stood on `day`: only rows dated by then, as
+        `PlayerRatingIndex.until` cuts its own."""
+        return type(self)(
+            {
+                team: [row for row in rows if row.as_of <= day]
+                for team, rows in self._teams.items()
+            }
+        )
+
     def home_crowd(self, matchup: Matchup) -> float | None:
         """The home side's reading on the day of `matchup`; None if it has
         none yet, or the game is at a neutral site.

@@ -62,6 +62,7 @@ told anything. That is the safe direction -- a missing input reads as "no
 adjustment" rather than as a wrong number.
 """
 
+from datetime import date
 from typing import NamedTuple, Self
 
 from endgame.types import Game
@@ -165,6 +166,20 @@ class MatchupSources(NamedTuple):
         must not walk into the same one.
         """
         return cls(qb_out=QbOutIndex(), rest=RestLedger())
+
+    def until(self, day: date) -> Self:
+        """The bundle as it stood on `day`: the indexes kept by date cut to
+        the rows dated by then (`PlayerRatingIndex.until`, `CrowdIndex.until`).
+
+        The rest are keyed by game or season. `luck` only discounts a result
+        already in, `turnover` is read at the season's rollover, and
+        `qb_out`'s flags come from each game's own plays, so a replay cuts
+        those to the games it has walked; that's its business, not this.
+        """
+        return self._replace(
+            player_ratings=self.player_ratings.until(day),
+            crowds=self.crowds.until(day),
+        )
 
 
 def resolved_sources(league: str, sources: MatchupSources | None) -> MatchupSources:

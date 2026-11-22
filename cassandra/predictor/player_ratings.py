@@ -290,6 +290,20 @@ class PlayerRatingIndex:
     def __len__(self) -> int:
         return len(self._teams)
 
+    def until(self, day: date) -> Self:
+        """The index as it was published on `day`: only rows dated by then.
+
+        A row dated `day` left that day's games out, so a replay standing on
+        the morning of `day` could have read it. Without the cut, a game read
+        a row fitted on games played after the replay's moment.
+        """
+        return type(self)(
+            {
+                team: [row for row in rows if row.as_of <= day]
+                for team, rows in self._teams.items()
+            }
+        )
+
     def team(self, team: str, day: date) -> TeamAsOf | None:
         """The team's latest row from before `day`, if one is recent enough.
 

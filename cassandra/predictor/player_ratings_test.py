@@ -54,6 +54,30 @@ def test_a_team_is_its_latest_row_from_before_the_day() -> None:
     assert net("Nobody", date(2024, 11, 12)) is None
 
 
+def test_an_index_until_a_day_keeps_only_the_rows_dated_by_then() -> None:
+    cut = INDEX.until(date(2024, 11, 10))
+    # the second row, fitted on the week after, isn't published yet
+    row = cut.team("Home U", date(2024, 11, 12))
+    assert row is not None and row.net == 10.0
+    assert INDEX.until(date(2024, 11, 3)).team("Home U", date(2024, 11, 5)) is None
+    # a row dated the day itself left that day's games out, so it's kept
+    row = INDEX.until(date(2024, 11, 11)).team("Home U", date(2024, 11, 12))
+    assert row is not None and row.net == 4.0
+
+
+def test_sources_until_a_day_cut_the_dated_indexes() -> None:
+    sources = MatchupSources(
+        qb_out=QbOutIndex(), rest=RestLedger(), player_ratings=INDEX
+    )
+    row = sources.until(date(2024, 11, 10)).player_ratings.team(
+        "Home U", date(2024, 11, 12)
+    )
+    assert row is not None and row.net == 10.0
+    # the bundle it came from is left whole
+    whole = sources.player_ratings.team("Home U", date(2024, 11, 12))
+    assert whole is not None and whole.net == 4.0
+
+
 def test_a_row_goes_stale() -> None:
     assert INDEX.team("Away St", date(2024, 11, 18)) is not None
     assert INDEX.team("Away St", date(2024, 11, 19)) is None
