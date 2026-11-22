@@ -38,6 +38,16 @@ def test_the_histogram_has_a_line_per_bin():
     assert len(lines) == 5
 
 
+def test_plot_bins_take_in_the_same_number_of_whole_dollar_payouts():
+    # $3.40 staked: every draw nets a whole dollar less $3.40
+    draws = np.arange(0.0, 120.0) - 3.4
+    edges = av.lattice_bins(draws)
+    counts, _ = np.histogram(draws, bins=edges)
+    assert len(edges) - 1 <= 50
+    assert set(counts[:-1]) == {3}
+    assert counts.sum() == len(draws)
+
+
 def _game(game_id, hours_from_cutoff, completed=True):
     from datetime import UTC, datetime, timedelta
 

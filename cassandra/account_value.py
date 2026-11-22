@@ -105,6 +105,20 @@ def histogram(balances: np.ndarray, bins: int = 14, width: int = 40) -> list[str
     ]
 
 
+def lattice_bins(draws: np.ndarray, most: int = 50) -> np.ndarray:
+    """Histogram edges for draws of a slate's net, a whole number of dollars wide.
+
+    A bet pays its contract count, a whole number of dollars, so every draw
+    sits on one lattice: the stake's cents below a whole dollar. Edges set
+    halfway between its points take in the same number of them each; edges
+    that ignore it take in one more here than there, and a smooth
+    distribution comes out as a comb.
+    """
+    low, high = float(draws.min()), float(draws.max())
+    width = max(1.0, float(np.ceil((high - low) / most)))
+    return np.arange(low - 0.5, high + width, width)
+
+
 def plot(balances: np.ndarray, s: dict, path: str) -> None:
     """A density histogram of the final balances, with the break-even and the mean."""
     import matplotlib
@@ -234,7 +248,7 @@ def plot_weeks(panels: list[dict], path: str) -> None:
         ax.set_facecolor(surface)
         ax.hist(
             panel["pnl"],
-            bins=50,
+            bins=lattice_bins(panel["pnl"]),
             density=True,
             color=grey,
             edgecolor=surface,

@@ -33,6 +33,15 @@ def test_a_reading_is_the_latest_on_or_before_the_games_day(game: GameFactory) -
     assert INDEX.home_crowd(played._replace(date=datetime(2022, 7, 1))) is None
 
 
+def test_an_index_until_a_day_keeps_only_the_rows_dated_by_then(
+    game: GameFactory,
+) -> None:
+    later = game("Home U", "Away St")._replace(date=datetime(2023, 1, 5))
+    assert INDEX.home_crowd(later) == 3.0
+    assert INDEX.until(date(2023, 1, 1)).home_crowd(later) == 1.0
+    assert INDEX.until(date(2022, 8, 1)).home_crowd(later) is None
+
+
 def test_no_reading_without_enough_games_a_file_or_a_home_side(
     game: GameFactory,
 ) -> None:

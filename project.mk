@@ -107,8 +107,9 @@ positions:
 account-value:
 	uv run python account_value.py $(ARGS)
 
-# How past weeks' bets did against what the model expected of them, with the
-# model replayed as of each bet (account_review.py; reads the ledger).
+# How past weeks' bets did against what the model expected of them, in every
+# league bet, with the model replayed as of each bet (account_review.py; reads
+# the ledger). `ARGS="--league womens"` for one league.
 account-review:
 	uv run python account_review.py $(ARGS)
 
