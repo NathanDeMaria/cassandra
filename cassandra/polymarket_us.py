@@ -727,3 +727,147 @@ class PolymarketUsAccount:
     def fund(self, side: Book, dollars: float) -> None:
         # One balance pays for every market.
         return None
+
+
+# ------------------------------------------------------------------------------
+# The probe: how a NO buy's price is read, settled without spending anything
+# ------------------------------------------------------------------------------
+
+#: A probe's game: one whose short side costs at least this, so a NO buy at
+#: `PROBE_LIMIT` is far under its market whichever way the price is read --
+#: 30c in NO terms, or 70c if the venue took the YES price as the NO's.
+PROBE_FAVORITE = 0.75
+PROBE_LIMIT = 0.30
+#: Far enough from kickoff that the book isn't moving with the game.
+PROBE_LEAD = timedelta(hours=3)
+#: How long the probe's order may rest if it isn't cancelled first.
+PROBE_REST = timedelta(seconds=90)
+
+
+def probe_game(
+    events: Sequence[Mapping], now: datetime
+) -> tuple[VenueGame, datetime] | None:
+    """The game a probe uses, and its kickoff: open, at least `PROBE_LEAD`
+    away, its short side asking `PROBE_FAVORITE` or more (and under 97c, past
+    which a book is barely a market). The dearest short side such."""
+    found = []
+    for event in events:
+        read = game(event)
+        kickoff = _time(event.get("startTime"))
+        if read is None or kickoff is None or kickoff < now + PROBE_LEAD:
+            continue
+        short = read.sides[1]
+        if short.ask is not None and PROBE_FAVORITE <= short.ask < 0.97:
+            found.append((short.ask, read, kickoff))
+    if not found:
+        return None
+    _, read, kickoff = max(found, key=lambda f: f[0])
+    return read, kickoff
+
+
+def _offers(book: Mapping) -> dict[float, float]:
+    data = book.get("marketData") or {}
+    return {
+        round(_money(level["px"]) or 0.0, 4): float(level["qty"])
+        for level in data.get("offers") or []
+    }
+
+
+def convention(before: Mapping, after: Mapping, limit: float) -> str | None:
+    """How a resting NO buy at `limit` was read, from the book before and
+    after it. The book is in YES terms, so the order rests as an offer:
+    at 1 - `limit` if its price was read as the YES price ("yes", as this
+    module sends it), at `limit` if as the NO's ("no"). None when the books
+    don't say -- neither level grew, or both did."""
+    was, now = _offers(before), _offers(after)
+
+    def grew(price: float) -> bool:
+        key = round(price, 4)
+        return now.get(key, 0.0) - was.get(key, 0.0) >= 1 - 1e-9
+
+    yes, no = grew(1 - limit), grew(limit)
+    if yes != no:
+        return "yes" if yes else "no"
+    return None
+
+
+def probe(send: bool = False) -> int:
+    """Read the account, then settle how a NO buy is priced: one contract,
+    priced where it can't fill whichever way it's read, read back off the
+    book, cancelled. Without `send`, nothing is sent: it shows the order.
+    0 when the price is read as this module sends it."""
+    client = PolymarketUsClient.from_env(dry_run=not send)
+    money = balance(client.balances())
+    held, waiting = holdings(client.positions()), resting(client.open_orders())
+    print(
+        f"account: ${money.cash:,.2f} to spend, ${money.invested:,.2f} in positions "
+        f"and open orders; {len(held)} positions, {len(waiting)} open orders"
+    )
+    now = datetime.now(UTC)
+    events = [e for league in LEAGUES for e in listing(league, now)]
+    found = probe_game(events, now)
+    if found is None:
+        print("no game to probe with: none with a short side at 75c+ three hours out")
+        return 1
+    read, kickoff = found
+    long, short = read.sides
+    print(
+        f"game: {long.team} (long) v {short.team} (short), {kickoff:%a %H:%M} UTC; "
+        f"{short.team} asks {short.ask:.3f}, {long.team} bid {long.bid}"
+    )
+    body = order_body(
+        read.event, "short", 1, PROBE_LIMIT, int((now + PROBE_REST).timestamp())
+    )
+    # Maker only: an order that would match is rejected, not filled, so even a
+    # price read the other way can't buy anything.
+    body["participateDontInitiate"] = True
+    if not send:
+        client.create(body)
+        print("nothing sent; rerun with --send to place it, read it back and cancel it")
+        return 0
+    before = public_get(f"/v1/markets/{read.event}/book")
+    created = client.create(body)
+    order_id = str(created.get("id") or "")
+    done = fill(created, "short", 1)
+    time.sleep(2)
+    after = public_get(f"/v1/markets/{read.event}/book")
+    listed = [o for o in client.open_orders() if str(o.get("id")) == order_id]
+    try:
+        client.cancel(order_id, read.event)
+    finally:
+        left = [o for o in client.open_orders() if str(o.get("id")) == order_id]
+    print(f"order {order_id}: listed as {json.dumps(listed[0]) if listed else 'gone'}")
+    print(f"cancelled: {'no -- cancel it by hand' if left else 'yes'}")
+    if done.filled:
+        print(f"!! it filled {done.filled:g} at {done.price}: check the position")
+    found_convention = convention(before, after, PROBE_LIMIT)
+    if found_convention == "yes":
+        print("a NO buy's price is read in YES terms, as this module sends it: OK")
+        return 0
+    if found_convention == "no":
+        print(
+            "!! a NO buy's price is read in NO terms: this module sends it wrong. "
+            "Don't put the key in the cloud job until order_body is fixed."
+        )
+        return 2
+    print("the book didn't say which way: read the listed order's price above")
+    return 3
+
+
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Polymarket US account tools")
+    commands = parser.add_subparsers(dest="command", required=True)
+    probing = commands.add_parser(
+        "probe", help="settle how a NO buy is priced, without spending anything"
+    )
+    probing.add_argument(
+        "--send", action="store_true", help="place the probe order, then cancel it"
+    )
+    args = parser.parse_args(argv)
+    raise SystemExit(probe(send=args.send))
+
+
+if __name__ == "__main__":
+    main()
