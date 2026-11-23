@@ -63,10 +63,13 @@ from .venues import (
     Book,
     FeeTerm,
     Fill,
+    GameInfo,
     Holding,
     Resting,
     Route,
     ScheduledFees,
+    Settled,
+    Trade,
     VenueError,
     VenueGame,
 )
@@ -364,6 +367,46 @@ class PolymarketUs:
             if part in _BY_SLUG:
                 return _BY_SLUG[part]
         return None
+
+    def contract_label(self, ticker: str, action: str) -> str:
+        return f"{action.upper()} {ticker}"
+
+    def fetch_game(self, event: str) -> dict:
+        return public_get(f"/v1/market/slug/{event}")
+
+    def read_game(self, listing: Mapping) -> GameInfo:
+        """A moneyline's title and its long and short teams, women's " (W)"
+        off, as `game` reads them."""
+        market = listing.get("market") or listing
+        sides = {}
+        for side in market.get("marketSides") or []:
+            if side.get("team") and side.get("long") is not None:
+                _, name, _ = _names(side["team"])
+                sides["long" if side["long"] else "short"] = name
+        # A settled market's listing has no title (seen 2026-11-22): name
+        # its two teams, long first, as Polymarket does.
+        title = (market.get("title") or "").replace(_WOMENS, "")
+        if not title and len(sides) == 2:
+            title = f"{sides['long']} vs. {sides['short']}"
+        return GameInfo(
+            title=title,
+            sides=sides,
+            final=bool(market.get("closed")),
+            kickoff=_time(market.get("gameStartTime")),
+        )
+
+    def side_key(self, ticker: str, action: str, game: GameInfo) -> str:
+        # One instrument: what's bought is the side.
+        return action
+
+    def fetch_prices(
+        self, event: str, listing: Mapping, start: datetime, end: datetime
+    ) -> dict:
+        return {"history": price_history(event, start, end)}
+
+    def no_vig(self, prices: Mapping, at: int) -> dict[str, float]:
+        long = long_no_vig(prices.get("history") or [], at)
+        return {} if long is None else {"long": long, "short": 1 - long}
 
     def held_as(self, holding: Holding) -> str:
         return f"{holding.contracts:g} {holding.action.upper()} on {self.label}"
@@ -693,6 +736,11 @@ class PolymarketUsAccount:
         self.client = client
         #: Set once a NO order fills over its limit: the run sends no more.
         self.shorts_stopped: str | None = None
+        # The activity feed, and what `_history` read from it, once a run.
+        self._feed: list[dict] = []
+        self._read: tuple[list[FeedTrade], list[Resolution], dict[str, str]] | None = (
+            None
+        )
 
     @property
     def dry_run(self) -> bool:
@@ -702,7 +750,17 @@ class PolymarketUsAccount:
         return balance(self.client.balances(), self.client.positions())
 
     def holdings(self) -> list[Holding]:
-        return holdings(self.client.positions())
+        """The open positions, each one's fees -- the schedule's, on its
+        trades -- taken out of its cost, which has them in."""
+        fees: dict[str, float] = {}
+        for trade in self.trades():
+            fees[trade.ticker] = fees.get(trade.ticker, 0.0) + trade.fee
+        return [
+            h._replace(
+                cost=h.cost - fees.get(h.ticker, 0.0), fees=fees.get(h.ticker, 0.0)
+            )
+            for h in holdings(self.client.positions())
+        ]
 
     def resting(self) -> list[Resting]:
         return resting(self.client.open_orders())
@@ -741,6 +799,79 @@ class PolymarketUsAccount:
     def fund(self, side: Book, dollars: float) -> None:
         # One balance pays for every market.
         return None
+
+    def _history(self) -> tuple[list[FeedTrade], list[Resolution], dict[str, str]]:
+        """The activity feed's trades and resolutions, read once, and the side
+        held in each market: the open position's, or the one a resolution
+        closed. A trade doesn't say which side it bought."""
+        if self._read is None:
+            feed = self.client.activities()
+            positions = self.client.positions()
+            resolved = resolutions(feed)
+            sides = {
+                r.ticker: "long" if net(r.before) > 0 else "short"
+                for r in resolved
+                if net(r.before)
+            }
+            for ticker, position in positions.items():
+                if net(position) and not position.get("expired"):
+                    sides[ticker] = "long" if net(position) > 0 else "short"
+            self._feed = feed
+            self._read = (feed_trades(feed), resolved, sides)
+        return self._read
+
+    def trades(self, since: datetime | None = None) -> list[Trade]:
+        """The feed's trades in a market whose side is known, each priced in
+        that side's terms with the fee the schedule charged."""
+        found, _, sides = self._history()
+        out = []
+        for trade in found:
+            side = sides.get(trade.ticker)
+            if side is None or (since is not None and trade.at < since):
+                continue
+            price = trade.yes_price if side == "long" else round(1 - trade.yes_price, 6)
+            out.append(
+                Trade(
+                    trade.ticker,
+                    side,
+                    trade.contracts,
+                    price,
+                    FEES.order(price, trade.contracts, trade.at),
+                    trade.at,
+                )
+            )
+        return out
+
+    def settled(self, since: datetime | None = None) -> list[Settled]:
+        """Each position a resolution closed. What it cost is the position's,
+        fees in, less the schedule's fees on its trades; it paid a dollar a
+        contract when its side won, nothing when the other did, and the
+        settlement price a contract otherwise."""
+        _, resolved, _ = self._history()
+        fills = self.trades()
+        out = []
+        for r in resolved:
+            if since is not None and r.at < since:
+                continue
+            contracts = abs(net(r.before))
+            if not contracts:
+                continue
+            side = "long" if net(r.before) > 0 else "short"
+            fees = sum(t.fee for t in fills if t.ticker == r.ticker)
+            if r.won is not None:
+                payout = contracts if r.won == side else 0.0
+            else:
+                price = settlement(r.ticker) or 0.0
+                payout = contracts * (price if side == "long" else 1 - price)
+            cost = abs(_money(r.before.get("cost")) or 0.0)
+            out.append(
+                Settled(r.ticker, side, contracts, cost - fees, fees, payout, r.at)
+            )
+        return out
+
+    def credits(self, since: datetime) -> float:
+        self._history()
+        return rebates(self._feed, since)
 
 
 # ------------------------------------------------------------------------------
@@ -915,10 +1046,10 @@ if __name__ == "__main__":
 # ------------------------------------------------------------------------------
 
 
-class Trade(NamedTuple):
+class FeedTrade(NamedTuple):
     """One of the account's fills, from its activity feed: the market, when,
     the YES price it traded at, and how many contracts. The feed doesn't say
-    which side was bought; `sides_bought` does."""
+    which side was bought; the account's positions do (`PolymarketUsAccount`)."""
 
     ticker: str
     at: datetime
@@ -928,15 +1059,22 @@ class Trade(NamedTuple):
 
 class Resolution(NamedTuple):
     """A position the venue closed when its market settled: the position
-    just before, and just after."""
+    just before, and just after, and the side that won, "long" or "short"
+    (None for neither, a market settled at something else).
+
+    The first one, on 2026-11-22, gave the position's contracts in the
+    whole-number `netPosition`, its cost with the fees in, and an after
+    `realized` that left the fees out; the market dropped out of the
+    positions as it settled."""
 
     ticker: str
     at: datetime
     before: Mapping
     after: Mapping
+    won: str | None = None
 
 
-def trades(activities: Sequence[Mapping]) -> list[Trade]:
+def feed_trades(activities: Sequence[Mapping]) -> list[FeedTrade]:
     """The trades in an activity feed, oldest first. A busted or rejected
     trade isn't one."""
     found = []
@@ -952,7 +1090,7 @@ def trades(activities: Sequence[Mapping]) -> list[Trade]:
         contracts = float(trade.get("qtyDecimal") or trade.get("qty") or 0)
         if at is None or price is None or not contracts:
             continue
-        found.append(Trade(trade["marketSlug"], at, price, contracts))
+        found.append(FeedTrade(trade["marketSlug"], at, price, contracts))
     return sorted(found, key=lambda t: t.at)
 
 
@@ -972,6 +1110,7 @@ def resolutions(activities: Sequence[Mapping]) -> list[Resolution]:
                 at,
                 resolved.get("beforePosition") or {},
                 resolved.get("afterPosition") or {},
+                _WON.get(resolved.get("side") or ""),
             )
         )
     return sorted(found, key=lambda r: r.at)
@@ -988,6 +1127,12 @@ def rebates(activities: Sequence[Mapping], since: datetime) -> float:
         if at is not None and at >= since:
             total += _money(change.get("amount")) or 0.0
     return total
+
+
+_WON = {
+    "POSITION_RESOLUTION_SIDE_LONG": "long",
+    "POSITION_RESOLUTION_SIDE_SHORT": "short",
+}
 
 
 def net(position: Mapping) -> float:

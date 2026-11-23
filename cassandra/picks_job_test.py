@@ -10,7 +10,20 @@ import pytest
 from botocore.exceptions import ClientError
 
 from cassandra import picks_job
+from cassandra.kalshi_venue import KALSHI_VENUE, as_resting, as_settled, as_trades
 from cassandra.picks_job import Autobet, LeagueRules
+from cassandra.venues import Balance
+
+KALSHI = [("Kalshi", Balance(25.0, 120.0))]
+
+
+def _trades(fills: list[dict]) -> list:
+    return [(KALSHI_VENUE, t) for t in as_trades(fills)]
+
+
+def _settled(settlements: list[dict]) -> list:
+    return [(KALSHI_VENUE, s) for s in as_settled(settlements)]
+
 
 NOW = datetime(2026, 10, 21, 3, 30, tzinfo=UTC)  # Tue 22:30 CT
 
@@ -290,7 +303,7 @@ def test_the_summary_adds_up_each_games_fills_with_what_the_log_says():
         # A NO bought through the book, by hand: no log, named by its ticker.
         _fill("o3", "KXNCAAFGAME-26NOV07BALKSU-BAL", "no", "sell", 5, 0.30),
     ]
-    bets = picks_job.placed_bets(fills, orders).set_index("bet")
+    bets = picks_job.placed_bets(_trades(fills), orders).set_index("bet")
     toledo = bets.loc["Toledo Rockets"]
     assert toledo["contracts"] == 10 and toledo["rung"] == 4
     assert toledo["price"] == pytest.approx((6 * 0.55 + 4 * 0.50) / 10)
@@ -301,36 +314,38 @@ def test_the_summary_adds_up_each_games_fills_with_what_the_log_says():
 
 def test_the_summary_counts_a_sale_before_the_end_as_paid():
     settled = picks_job.settled_games(
-        [
-            {
-                "ticker": "E1-A",
-                "yes_count_fp": "10",
-                "yes_total_cost_dollars": "6",
-                "no_count_fp": "0",
-                "no_total_cost_dollars": "0",
-                "revenue": 1000,
-                "fee_cost": "0.1",
-            },
-            {
-                "ticker": "E2-B",
-                "yes_count_fp": "5",
-                "yes_total_cost_dollars": "3",
-                "no_count_fp": "0",
-                "no_total_cost_dollars": "0",
-                "revenue": 0,
-                "fee_cost": "0.05",
-            },
-            # 11 YES at 0.88, sold at 0.97: booked as 11 NO at 0.03, revenue 0.
-            {
-                "ticker": "E3-C",
-                "yes_count_fp": "11",
-                "yes_total_cost_dollars": "9.68",
-                "no_count_fp": "11",
-                "no_total_cost_dollars": "0.33",
-                "revenue": 0,
-                "fee_cost": "0.1",
-            },
-        ]
+        _settled(
+            [
+                {
+                    "ticker": "E1-A",
+                    "yes_count_fp": "10",
+                    "yes_total_cost_dollars": "6",
+                    "no_count_fp": "0",
+                    "no_total_cost_dollars": "0",
+                    "revenue": 1000,
+                    "fee_cost": "0.1",
+                },
+                {
+                    "ticker": "E2-B",
+                    "yes_count_fp": "5",
+                    "yes_total_cost_dollars": "3",
+                    "no_count_fp": "0",
+                    "no_total_cost_dollars": "0",
+                    "revenue": 0,
+                    "fee_cost": "0.05",
+                },
+                # 11 YES at 0.88, sold at 0.97: booked as 11 NO at 0.03, revenue 0.
+                {
+                    "ticker": "E3-C",
+                    "yes_count_fp": "11",
+                    "yes_total_cost_dollars": "9.68",
+                    "no_count_fp": "11",
+                    "no_total_cost_dollars": "0.33",
+                    "revenue": 0,
+                    "fee_cost": "0.1",
+                },
+            ]
+        )
     ).set_index("event")
     assert settled.loc["E1", "pnl"] == pytest.approx(3.9) and settled.loc["E1", "won"]
     assert (
@@ -354,20 +369,23 @@ def test_the_morning_summary_reads_top_to_bottom():
         ]
     )
     bets = picks_job.placed_bets(
-        [_fill("o1", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 6, 0.55)], orders
+        _trades([_fill("o1", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 6, 0.55)]),
+        orders,
     )
     settled = picks_job.settled_games(
-        [
-            {
-                "ticker": "E1-A",
-                "yes_count_fp": "10",
-                "yes_total_cost_dollars": "6",
-                "no_count_fp": "0",
-                "no_total_cost_dollars": "0",
-                "revenue": 1000,
-                "fee_cost": "0.1",
-            }
-        ]
+        _settled(
+            [
+                {
+                    "ticker": "E1-A",
+                    "yes_count_fp": "10",
+                    "yes_total_cost_dollars": "6",
+                    "no_count_fp": "0",
+                    "no_total_cost_dollars": "0",
+                    "revenue": 1000,
+                    "fee_cost": "0.1",
+                }
+            ]
+        )
     )
     resting = [
         {
@@ -390,10 +408,10 @@ def test_the_morning_summary_reads_top_to_bottom():
     central = ZoneInfo("America/Chicago")
     subject, text = picks_job.summary_email(
         bets,
-        resting,
+        as_resting(resting),
         settled,
         holds,
-        (25.0, 120.0),
+        KALSHI,
         {"E1": "Alpha at Beta"},
         Autobet(),
         (NOW - timedelta(days=1)).astimezone(central),
@@ -591,24 +609,28 @@ def test_the_summary_splits_leagues_and_prices_a_resting_no():
         ]
     )
     bets = picks_job.placed_bets(
-        [
-            _fill("o1", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 6, 0.55),
-            _fill("o2", "KXNCAAWBGAME-26NOV05SIEME-ME", "yes", "buy", 4, 0.40),
-        ],
+        _trades(
+            [
+                _fill("o1", "KXNCAAFGAME-26NOV07OHTOL-TOL", "yes", "buy", 6, 0.55),
+                _fill("o2", "KXNCAAWBGAME-26NOV05SIEME-ME", "yes", "buy", 4, 0.40),
+            ]
+        ),
         orders,
     )
     settled = picks_job.settled_games(
-        [
-            {
-                "ticker": "KXNCAAWBGAME-26NOV04LINWDEN-LINW",
-                "yes_count_fp": "0",
-                "yes_total_cost_dollars": "0",
-                "no_count_fp": "5",
-                "no_total_cost_dollars": "2",
-                "revenue": 500,
-                "fee_cost": "0",
-            }
-        ]
+        _settled(
+            [
+                {
+                    "ticker": "KXNCAAWBGAME-26NOV04LINWDEN-LINW",
+                    "yes_count_fp": "0",
+                    "yes_total_cost_dollars": "0",
+                    "no_count_fp": "5",
+                    "no_total_cost_dollars": "2",
+                    "revenue": 500,
+                    "fee_cost": "0",
+                }
+            ]
+        )
     )
     # 10 NO at a 70c YES price: 30c each, $3.00 at worst.
     resting = [
@@ -623,10 +645,10 @@ def test_the_summary_splits_leagues_and_prices_a_resting_no():
     central = ZoneInfo("America/Chicago")
     _, text = picks_job.summary_email(
         bets,
-        resting,
+        as_resting(resting),
         settled,
         [],
-        (25.0, 120.0),
+        KALSHI,
         {},
         Autobet(),
         (NOW - timedelta(days=1)).astimezone(central),
@@ -699,7 +721,7 @@ def test_the_summary_lists_rejections_once_each():
         [],
         picks_job.settled_games([]),
         [],
-        (25.0, 120.0),
+        KALSHI,
         {},
         Autobet(),
         (NOW - timedelta(days=1)).astimezone(central),
@@ -713,24 +735,15 @@ def test_the_summary_lists_rejections_once_each():
 
 
 def test_polymarket_trades_and_settlements_go_in_the_morning_summary():
-    from cassandra.polymarket_us import Resolution, Trade
+    from cassandra.polymarket_us import POLYMARKET_US
+    from cassandra.venues import Resting, Settled, Trade
 
     at = datetime(2026, 11, 22, 21, 33, tzinfo=UTC)
     trades = [
-        Trade("aec-s", at, 0.61, 4.99),
-        Trade("aec-s", at, 0.62, 0.01),
-        Trade("aec-l", at, 0.35, 6.0),
-        Trade("aec-old", at - timedelta(days=3), 0.40, 5.0),
+        (POLYMARKET_US, Trade("aec-s", "short", 4.99, 0.39, 0.03, at)),
+        (POLYMARKET_US, Trade("aec-s", "short", 0.01, 0.38, 0.0, at)),
+        (POLYMARKET_US, Trade("aec-l", "long", 6.0, 0.35, 0.04, at)),
     ]
-    resolved = [
-        Resolution(
-            "aec-s",
-            at + timedelta(hours=3),
-            {"netPosition": "-5", "cost": {"value": "2.10"}},
-            {},
-        )
-    ]
-    positions = {"aec-l": {"netPositionDecimal": "6"}}
     orders = pd.DataFrame(
         [
             {
@@ -744,18 +757,37 @@ def test_polymarket_trades_and_settlements_go_in_the_morning_summary():
             }
         ]
     )
-    sides = picks_job.pm_sides(positions, resolved, orders)
-    assert sides == {"aec-s": "short", "aec-l": "long"}
-    since = at - timedelta(hours=1)
-    bets = picks_job.pm_placed(trades, sides, orders, since).set_index("event")
-    assert set(bets.index) == {"aec-s", "aec-l"}
+    # A Polymarket trade names no order: the log is found by its contract.
+    bets = picks_job.placed_bets(trades, orders).set_index("event")
     hawks = bets.loc["aec-s"]
     assert hawks["bet"] == "Home Hawks" and hawks["contracts"] == 5.0
     assert hawks["price"] == pytest.approx((0.39 * 4.99 + 0.38 * 0.01) / 5)
+    assert hawks["model"] == 0.55
     assert bets.loc["aec-l", "bet"] == "LONG aec-l"
-    # The short lost: the long side settled at 1.
-    settled = picks_job.pm_settled(resolved, sides, lambda t: 1.0, since)
+    settled = picks_job.settled_games(
+        [(POLYMARKET_US, Settled("aec-s", "short", 5, 2.05, 0.05, 0.0, at))]
+    )
     assert settled.to_dict("records") == [
         {"event": "aec-s", "pnl": pytest.approx(-2.10), "won": False}
     ]
-    assert picks_job.pm_settled(resolved, sides, lambda t: None, since).empty
+    central = ZoneInfo("America/Chicago")
+    subject, text = picks_job.summary_email(
+        bets.reset_index(),
+        [Resting("o", "aec-l", "long", 0.30, 4)],
+        settled,
+        [],
+        [*KALSHI, ("Polymarket US", Balance(10.0, 5.0))],
+        {"aec-s": "Away U vs. Home U"},
+        Autobet(),
+        (NOW - timedelta(days=1)).astimezone(central),
+        NOW.astimezone(central),
+        notes=["Polymarket US fee rebates paid: $0.07"],
+    )
+    assert subject.startswith("Bets Tue Oct 20: 2 bets placed")
+    assert "lost   -$2.10  Away U vs. Home U" in text
+    assert "Resting: 1 order, up to $1.20 if they all fill" in text
+    assert "Polymarket US fee rebates paid: $0.07" in text
+    assert text.endswith(
+        "Kalshi: $25.00 cash, $120.00 in open positions.\n"
+        "Polymarket US: $10.00 cash, $5.00 in open positions."
+    )

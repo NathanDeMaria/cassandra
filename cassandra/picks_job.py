@@ -585,42 +585,45 @@ def hold_email(held: pd.DataFrame, at: datetime, slippage: float) -> tuple[str, 
 # ------------------------------------------------------------------------------
 
 
-def held_contract(fill: Mapping) -> str:
-    """What a fill bought on its ticker, "yes" or "no". Kalshi's V2 fills
-    write a NO bought through the book as `action=sell, side=no` (see
-    `cassandra.ledger`), and selling a YES nets to holding NO."""
-    if fill.get("side") == "yes" and fill.get("action") == "buy":
-        return "yes"
-    return "no"
-
-
-def placed_bets(fills: Sequence[Mapping], orders: pd.DataFrame) -> pd.DataFrame:
-    """The games `fills` bought, a row each: the team, contracts, average
-    price, cost with fees, and -- from the job's orders logs, by order id --
-    the model and edge it was placed on and the contracts that came from
-    rungs. A fill no log has (a bet made by hand) is named by its ticker."""
-    from cassandra.kalshi_trade import event_of
-
+def placed_bets(
+    trades: Sequence[tuple[Any, Any]], orders: pd.DataFrame
+) -> pd.DataFrame:
+    """The games `trades` bought -- each a venue and one of its account's
+    `venues.Trade`s -- a row each: the team, contracts, average price, cost
+    with fees, and from the job's orders logs the model and edge it was
+    placed on and the contracts that came from rungs. A trade is found in
+    the logs by its order id, or on a venue whose trades name none, by its
+    venue and contract. One no log has (a bet made by hand) is named by its
+    contract (`Venue.contract_label`)."""
     logged = (
         orders.drop_duplicates("order_id").set_index("order_id")
         if "order_id" in orders
         else pd.DataFrame()
     )
+    by_contract = (
+        orders.drop_duplicates(["venue", "ticker"]).set_index(["venue", "ticker"])
+        if {"venue", "ticker"} <= set(orders.columns)
+        else pd.DataFrame()
+    )
     rows = []
-    for fill in fills:
-        held = held_contract(fill)
-        count = float(fill.get("count_fp") or fill.get("count") or 0)
-        price = float(fill.get(f"{held}_price_dollars") or 0)
-        code = fill["ticker"].rsplit("-", 1)[-1]
-        event = event_of(fill["ticker"])
-        if fill["order_id"] in logged.index:
-            log = logged.loc[fill["order_id"]]
+    for venue, trade in trades:
+        event = venue.event_of(trade.ticker)
+        log = None
+        if trade.order_id is not None and trade.order_id in logged.index:
+            log = logged.loc[trade.order_id]
+        elif trade.order_id is None and (venue.name, trade.ticker) in by_contract.index:
+            log = by_contract.loc[(venue.name, trade.ticker)]
+        if log is not None:
             bet, game = log["bet"], log["game"]
             model, edge = float(log["model"]), float(log["edge"])
             # The orders log is a CSV: its flag comes back "True"/"False".
-            rung = count if str(log.get("rung")).strip().lower() == "true" else 0.0
+            rung = (
+                trade.contracts
+                if str(log.get("rung")).strip().lower() == "true"
+                else 0.0
+            )
         else:
-            bet, game = f"{held.upper()} {code}", event
+            bet, game = venue.contract_label(trade.ticker, trade.action), event
             model = edge = math.nan
             rung = 0.0
         rows.append(
@@ -628,9 +631,9 @@ def placed_bets(fills: Sequence[Mapping], orders: pd.DataFrame) -> pd.DataFrame:
                 "event": event,
                 "bet": bet,
                 "game": game,
-                "contracts": count,
-                "paid": price * count,
-                "cost": price * count + float(fill.get("fee_cost") or 0),
+                "contracts": trade.contracts,
+                "paid": trade.price * trade.contracts,
+                "cost": trade.price * trade.contracts + trade.fee,
                 "model": model,
                 "edge": edge,
                 "rung": rung,
@@ -667,156 +670,15 @@ def placed_bets(fills: Sequence[Mapping], orders: pd.DataFrame) -> pd.DataFrame:
     return found.drop(columns="paid").sort_values("cost", ascending=False)
 
 
-def pm_sides(
-    positions: Mapping[str, Mapping], resolved: Sequence[Any], orders: pd.DataFrame
-) -> dict[str, str]:
-    """Which side, long or short, the account backs in each Polymarket US
-    market: the open position's, or the one a resolution closed, or the
-    logged orders'. A trade in the activity feed doesn't say."""
-    from cassandra.polymarket_us import net
-
-    found: dict[str, str] = {}
-    if not orders.empty and {"venue", "ticker", "action"} <= set(orders.columns):
-        mine = orders[orders["venue"] == "polymarket_us"]
-        for ticker, action in zip(mine["ticker"], mine["action"]):
-            if action in ("long", "short"):
-                found[ticker] = action
-    for r in resolved:
-        if net(r.before):
-            found[r.ticker] = "long" if net(r.before) > 0 else "short"
-    for ticker, position in positions.items():
-        if net(position) and not position.get("expired"):
-            found[ticker] = "long" if net(position) > 0 else "short"
-    return found
-
-
-def pm_placed(
-    found: Sequence[Any],
-    sides: Mapping[str, str],
-    orders: pd.DataFrame,
-    since: datetime,
-) -> pd.DataFrame:
-    """`placed_bets`' rows for Polymarket US: the trades since `since`, by
-    market, priced from the side bought, the fee the schedule charges on
-    each, and the model and edge from the orders log. Unlike the orders
-    logs' fills, the trades include an order that rested and filled later."""
-    from cassandra.polymarket_us import FEES
-
-    logged = (
-        orders[orders.get("venue", pd.Series(dtype=str)) == "polymarket_us"]
-        .drop_duplicates("ticker")
-        .set_index("ticker")
-        if not orders.empty and "venue" in orders
-        else pd.DataFrame()
-    )
-    rows = []
-    for trade in found:
-        if trade.at < since or trade.ticker not in sides:
-            continue
-        side = sides[trade.ticker]
-        price = trade.yes_price if side == "long" else 1 - trade.yes_price
-        if trade.ticker in logged.index:
-            log = logged.loc[trade.ticker]
-            bet, game = log["bet"], log["game"]
-            model, edge = float(log["model"]), float(log["edge"])
-        else:
-            bet, game, model, edge = (
-                f"{side.upper()} {trade.ticker}",
-                trade.ticker,
-                math.nan,
-                math.nan,
-            )
-        rows.append(
-            {
-                "event": trade.ticker,
-                "bet": bet,
-                "game": game,
-                "contracts": trade.contracts,
-                "paid": price * trade.contracts,
-                "cost": price * trade.contracts
-                + FEES.order(price, trade.contracts, trade.at),
-                "model": model,
-                "edge": edge,
-                "rung": 0.0,
-            }
-        )
-    columns = [
-        "event",
-        "bet",
-        "game",
-        "contracts",
-        "price",
-        "cost",
-        "model",
-        "edge",
-        "rung",
-    ]
-    if not rows:
-        return pd.DataFrame(columns=columns)
-    found_bets = (
-        pd.DataFrame(rows)
-        .groupby(["event", "bet"], as_index=False)
-        .agg(
-            game=("game", "first"),
-            contracts=("contracts", "sum"),
-            paid=("paid", "sum"),
-            cost=("cost", "sum"),
-            model=("model", "first"),
-            edge=("edge", "first"),
-            rung=("rung", "sum"),
-        )
-    )
-    found_bets["price"] = found_bets["paid"] / found_bets["contracts"]
-    return found_bets[columns]
-
-
-def pm_settled(
-    resolved: Sequence[Any],
-    sides: Mapping[str, str],
-    settled_at: Callable[[str], float | None],
-    since: datetime,
-) -> pd.DataFrame:
-    """`settled_games`' rows for Polymarket US: each market a resolution
-    closed since `since`, its P&L the payout -- the contracts at the
-    settlement price, from the side held -- less what the position cost,
-    fees in, as Kalshi's is counted. The resolution's own `realized` leaves
-    the fees out: the first one, on 2026-11-22, was the payout less the
-    contracts at their average price."""
-    from cassandra.polymarket_us import net
-
-    rows = []
-    for r in resolved:
-        if r.at < since:
-            continue
-        price = settled_at(r.ticker)
-        contracts = abs(net(r.before))
-        if price is None or not contracts:
-            continue
-        side = sides.get(r.ticker, "long" if net(r.before) > 0 else "short")
-        payout = contracts * (price if side == "long" else 1 - price)
-        cost = abs(float((r.before.get("cost") or {}).get("value") or 0))
-        rows.append({"event": r.ticker, "pnl": payout - cost})
-    found = pd.DataFrame(rows, columns=["event", "pnl"])
-    found["won"] = found["pnl"] > 0
-    return found
-
-
-def settled_games(settlements: Sequence[Mapping]) -> pd.DataFrame:
-    """Each game `settlements` closed, its P&L with fees, and whether it won.
-    A YES-NO pair (a sale before the end, booked as a buy of the other side)
-    paid its dollar when it was netted, so it's counted back here as
-    `cassandra.ledger` counts it."""
-    from cassandra.kalshi_trade import event_of
-
+def settled_games(settled: Sequence[tuple[Any, Any]]) -> pd.DataFrame:
+    """Each game `settled` closed -- each a venue and one of its account's
+    `venues.Settled` -- its P&L with fees, and whether it won: what
+    settlement paid (and any pair a sale netted before it, which Kalshi
+    books as part of the settlement) less what it cost, fees in."""
     pnl: dict[str, float] = {}
-    for s in settlements:
-        yes, no = float(s.get("yes_count_fp") or 0), float(s.get("no_count_fp") or 0)
-        cost = float(s.get("yes_total_cost_dollars") or 0) + float(
-            s.get("no_total_cost_dollars") or 0
-        )
-        paid = float(s.get("revenue") or 0) / 100 + min(yes, no)
-        event = event_of(s["ticker"])
-        pnl[event] = pnl.get(event, 0.0) + paid - cost - float(s.get("fee_cost") or 0)
+    for venue, s in settled:
+        event = venue.event_of(s.ticker)
+        pnl[event] = pnl.get(event, 0.0) + s.payout - s.cost - s.fees
     found = pd.DataFrame({"event": list(pnl), "pnl": list(pnl.values())})
     found["won"] = found["pnl"] > 0
     return found.sort_values("pnl", ascending=False)
@@ -824,28 +686,28 @@ def settled_games(settlements: Sequence[Mapping]) -> pd.DataFrame:
 
 def summary_email(
     bets: pd.DataFrame,
-    resting: Sequence[Mapping],
+    resting: Sequence[Any],
     settled: pd.DataFrame,
     holds: Sequence[Mapping],
-    account: tuple[float, float],
+    accounts: Sequence[tuple[str, Any]],
     titles: Mapping[str, str],
     rules: Autobet,
     since: datetime,
     at: datetime,
     rejected: pd.DataFrame | None = None,
-    others: Sequence[tuple[str, float, float, int]] = (),
     notes: Sequence[str] = (),
 ) -> tuple[str, str]:
-    """The morning email: what was placed since `since`, what still rests,
-    what settled, the holds still waiting, what the venues rejected, and the
-    accounts. `account` and `resting` are Kalshi's; `others` each other
-    venue's account -- its name, cash, positions, and resting orders --
-    whose bets are already in `bets`. Settlements are Kalshi's alone."""
-    from cassandra.kalshi_trade import is_rung, order_price
+    """The morning email: what was placed since `since` (`placed_bets`), what
+    still rests (every account's `venues.Resting`), what settled
+    (`settled_games`), the holds still waiting, what the venues rejected,
+    `notes` (a venue's rebates), and each account (its label and
+    `venues.Balance`). One Kalshi account reads as it always has."""
+    labels = [label for label, _ in accounts]
+    venue = labels[0] if len(labels) == 1 else "Bets"
 
     won, lost = int(settled["won"].sum()), int((~settled["won"]).sum())
     subject = (
-        f"{'Bets' if others else 'Kalshi'} {at:%a %b %-d}: "
+        f"{venue} {at:%a %b %-d}: "
         f"{len(bets)} bet{'s' if len(bets) != 1 else ''} "
         f"placed (${bets['cost'].sum():,.2f})"
         + (
@@ -878,11 +740,9 @@ def summary_email(
             )
     lines.append("")
     if resting:
-        # `order_price` is already the price of the contract the order buys.
-        worst = sum(
-            float(o.get("remaining_count_fp") or 0) * order_price(o) for o in resting
-        )
-        rungs = sum(1 for o in resting if is_rung(o))
+        # Each order's price is already the price of the contract it buys.
+        worst = sum(o.remaining * o.price for o in resting)
+        rungs = sum(1 for o in resting if o.rung)
         lines += [
             f"Resting: {len(resting)} order{'s' if len(resting) != 1 else ''}, up to "
             f"${worst:,.2f} if they all fill ({rungs} of them rungs, until kickoff).",
@@ -918,16 +778,10 @@ def summary_email(
             lines.append(f"  {bet} -- {game}: {reason}{times}")
         lines.append("")
     lines += [*notes, *([""] if notes else [])]
-    cash, positions = account
-    lines.append(
-        f"{'Kalshi' if others else 'Account'}: ${cash:,.2f} cash, "
-        f"${positions:,.2f} in open positions."
-    )
-    for name, cash, positions, waiting in others:
+    for label, money in accounts:
         lines.append(
-            f"{name}: ${cash:,.2f} cash, ${positions:,.2f} in open positions"
-            + (f", {waiting} resting orders" if waiting else "")
-            + "."
+            f"{'Account' if len(accounts) == 1 else label}: ${money.cash:,.2f} cash, "
+            f"${money.invested:,.2f} in open positions."
         )
     return subject, "\n".join(lines)
 
