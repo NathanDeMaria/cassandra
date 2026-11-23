@@ -539,6 +539,15 @@ class _Account:
     def fund(self, side: Book, dollars: float) -> None:
         pass
 
+    def trades(self, since=None) -> list:
+        return []
+
+    def settled(self, since=None) -> list:
+        return []
+
+    def credits(self, since) -> float:
+        return 0.0
+
 
 def _two_venues(tmp_path, monkeypatch, rest: float | None = None):
     """One pick, on Kalshi at 0.42 and on Polymarket US at 0.44."""

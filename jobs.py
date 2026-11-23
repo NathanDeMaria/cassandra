@@ -661,31 +661,22 @@ def _picks_summary() -> None:
     import pandas as pd
 
     from cassandra import picks_job
-    from cassandra.kalshi_trade import KalshiClient
+    from cassandra.kalshi_venue import KALSHI_VENUE
     from cassandra.placing import CENTRAL
     from cassandra.polymarket_us import POLYMARKET_US
 
     rehearsal = bool(os.environ.get("CASSANDRA_PICKS_DRY_RUN"))
-    if not (rehearsal or _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))):
-        print("no Kalshi key: no account to summarize")
-        return
     if not rehearsal:
+        _kalshi_key(os.environ.get("CASSANDRA_KALSHI_SECRET"))
         _polymarket_us_key(os.environ.get("CASSANDRA_POLYMARKET_US_SECRET"))
+    venues = [v for v in (KALSHI_VENUE, POLYMARKET_US) if v.has_key()]
+    if not venues:
+        print("no venue key: no account to summarize")
+        return
     s3, bucket = picks_job.client("s3"), _bucket()
     now = picks_job.now_utc()
     last, _ = picks_job.read_json(s3, bucket, picks_job.SUMMARY_KEY)
     since = datetime.fromisoformat(last["at"]) if last else now - picks_job.SUMMARY_DAY
-    kalshi = KalshiClient.from_env(dry_run=True)
-    fills = [
-        f
-        for f in kalshi.fills()
-        if datetime.fromisoformat(f["created_time"].replace("Z", "+00:00")) >= since
-    ]
-    settlements = [
-        s
-        for s in kalshi.settlements()
-        if datetime.fromisoformat(s["settled_time"].replace("Z", "+00:00")) >= since
-    ]
     # The orders logs that can hold these fills: a rung rests until kickoff,
     # so its order can be a week older than its fill.
     logs = []
@@ -698,94 +689,63 @@ def _picks_summary() -> None:
                 body = s3.get_object(Bucket=bucket, Key=found["Key"])["Body"].read()
                 logs.append(pd.read_csv(io.BytesIO(body), dtype={"order_id": str}))
     orders = pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
-    bets = picks_job.placed_bets(fills, orders)
-    # Another venue's bets are read off the orders logs, and its account
-    # gets a line of its own.
-    others, notes = [], []
-    pm_settled = pd.DataFrame(columns=["event", "pnl", "won"])
-    pm_titles: dict[str, str] = {}
-    if POLYMARKET_US.has_key():
+    # Every account's history since the last summary, through `cassandra.venues`.
+    # One that can't be read is left out, and the email says so.
+    trades, settled_now, resting, balances, notes = [], [], [], [], []
+    for venue in venues:
         try:
-            pm_bets, pm_settled, pm_titles, line, rebated = _polymarket_summary(
-                orders, since
-            )
+            account = venue.account(dry_run=True)
+            found_trades = [(venue, t) for t in account.trades(since)]
+            found_settled = [(venue, s) for s in account.settled(since)]
+            found_resting = account.resting()
+            money = account.balance()
+            credit = account.credits(since)
         except Exception as error:
-            # The summary goes out without that venue.
-            print(f"no {POLYMARKET_US.label} account for the summary: {error!r}")
-        else:
-            bets = pd.concat([bets, pm_bets], ignore_index=True).sort_values(
-                "cost", ascending=False
-            )
-            others.append(line)
-            if rebated:
-                notes.append(f"{POLYMARKET_US.label} fee rebates paid: ${rebated:,.2f}")
+            print(f"!! {venue.label} left out of the summary: {error!r}")
+            notes.append(f"{venue.label} couldn't be read this time: {error}"[:300])
+            continue
+        trades += found_trades
+        settled_now += found_settled
+        resting += found_resting
+        balances.append((venue.label, money))
+        if credit:
+            notes.append(f"{venue.label} fee rebates paid: ${credit:,.2f}")
+    if not balances:
+        print("no account could be read: nothing to summarize")
+        return
+    bets = picks_job.placed_bets(trades, orders)
     rejected = picks_job.rejected_orders(orders)
     if not rejected.empty:
         # The logs reach back past `since`, for a rung's old order; a
         # rejection is only news since the last summary.
         placed = pd.to_datetime(rejected["placed_at"], utc=True, errors="coerce")
         rejected = rejected[placed >= since]
-    settled = picks_job.settled_games(settlements)
-    if not pm_settled.empty:
-        settled = pd.concat([settled, pm_settled], ignore_index=True).sort_values(
-            "pnl", ascending=False
-        )
-    titles = dict(pm_titles)
+    settled = picks_job.settled_games(settled_now)
+    venue_of = {venue.event_of(s.ticker): venue for venue, s in settled_now}
+    titles = {}
     for event in settled["event"]:
+        venue = venue_of[event]
         try:
-            titles[event] = kalshi.event(event).get("title") or event
+            titles[event] = venue.read_game(venue.fetch_game(event)).title or event
         except Exception as error:  # a title is a nicety; the P&L isn't
             print(f"no title for {event}: {error}")
     sent, _ = picks_job.read_json(s3, bucket, picks_job.SENT_KEY)
     subject, text = picks_job.summary_email(
         bets,
-        kalshi.resting_orders(),
+        resting,
         settled,
         picks_job.holds_since(sent or {}, since),
-        kalshi.account(),
+        balances,
         titles,
         picks_job.autobet(s3, bucket),
         since.astimezone(CENTRAL),
         now.astimezone(CENTRAL),
         rejected,
-        others,
         notes,
     )
     _email(subject, text, rehearsal)
     if not rehearsal:
         picks_job.write_json(s3, bucket, picks_job.SUMMARY_KEY, {"at": now.isoformat()})
-
-
-def _polymarket_summary(orders, since: datetime):
-    """The morning summary's Polymarket US half: its trades since `since`
-    (`placed_bets`' rows), the markets settled since (`settled_games`'),
-    their titles, its account line, and the fee rebates paid since."""
-
-    from cassandra import picks_job
-    from cassandra import polymarket_us as pm
-
-    client = pm.PolymarketUsClient.from_env(dry_run=True)
-    activities = client.activities()
-    positions = client.positions()
-    found, resolved = pm.trades(activities), pm.resolutions(activities)
-    sides = picks_job.pm_sides(positions, resolved, orders)
-    bets = picks_job.pm_placed(found, sides, orders, since)
-    settled = picks_job.pm_settled(resolved, sides, pm.settlement, since)
-    titles = {
-        r.ticker: (r.before.get("marketMetadata") or {}).get("title") or r.ticker
-        for r in resolved
-    }
-    if not orders.empty and "venue" in orders:
-        mine = orders[orders["venue"] == pm.POLYMARKET_US.name]
-        titles.update(dict(zip(mine["ticker"], mine["game"])))
-    money = pm.balance(client.balances(), positions)
-    line = (
-        pm.POLYMARKET_US.label,
-        money.cash,
-        money.invested,
-        len(client.open_orders()),
-    )
-    return bets, settled, titles, line, pm.rebates(activities, since)
 
 
 class Jobs:

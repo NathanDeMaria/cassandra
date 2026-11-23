@@ -6,6 +6,13 @@ import pandas as pd
 import pytest
 
 from . import ledger
+from .kalshi_venue import (
+    KALSHI_VENUE,
+    as_holdings,
+    as_settled,
+    as_trades,
+    candle_no_vig,
+)
 from .placing import CENTRAL
 
 EVENT = "KXNCAAFGAME-26OCT16OKSTHOU"
@@ -19,6 +26,19 @@ EVENTS = {
     }
 }
 CODES = ["OKST", "HOU"]
+GAME = KALSHI_VENUE.read_game(EVENTS[EVENT])
+GAMES = {EVENT: GAME}
+
+
+def _bets(fills=(), settlements=(), positions=()) -> pd.DataFrame:
+    """`ledger.bets` on Kalshi's responses, through its adapter."""
+    return ledger.bets(
+        KALSHI_VENUE,
+        GAMES,
+        as_holdings(positions),
+        as_settled(settlements),
+        as_trades(fills),
+    )
 
 
 def _fill(ticker: str, order_id: str, at: str) -> dict:
@@ -51,7 +71,7 @@ def test_a_game_bet_through_both_markets_is_one_bet_on_one_team():
         _fill(f"{EVENT}-OKST", "o2", "2026-10-11T04:27:00Z"),
         _fill(f"{EVENT}-HOU", "o1", "2026-10-11T04:15:00Z"),
     ]
-    bets = ledger.bets(fills, settlements, [], EVENTS)
+    bets = _bets(fills, settlements)
     assert len(bets) == 1
     bet = bets.iloc[0]
     assert bet["bet_code"] == "HOU" and bet["bet_short"] == "Houston"
@@ -78,7 +98,7 @@ def test_a_position_sold_before_the_end_is_paid_what_it_sold_for():
             "fee_cost": "0.10",
         }
     ]
-    bet = ledger.bets([], settlements, [], EVENTS).iloc[0]
+    bet = _bets(settlements=settlements).iloc[0]
     assert bet["bet_code"] == "HOU"
     assert bet["settled"] and bet["won"]
     assert bet["pnl"] == pytest.approx(11 - 9.68 - 0.33 - 0.10)
@@ -93,7 +113,7 @@ def test_an_open_no_position_is_a_bet_on_the_other_team():
             "fees_paid_dollars": "0.25",
         }
     ]
-    bet = ledger.bets([], [], positions, EVENTS).iloc[0]
+    bet = _bets(positions=positions).iloc[0]
     assert bet["bet_code"] == "HOU"
     assert not bet["settled"] and bet["won"] is None
     assert bet["avg_price"] == pytest.approx(9.29 / 15)
@@ -156,7 +176,7 @@ def test_bet_time_turns_a_run_to_the_bets_side_and_takes_the_run_before_the_fill
         ],
         ignore_index=True,
     )
-    found = ledger.bet_time(_bet(), CODES, runs, pd.DataFrame())
+    found = ledger.bet_time(_bet(), KALSHI_VENUE, GAME, runs, pd.DataFrame())
     assert found["model"] == pytest.approx(0.75)
     assert found["market"] == pytest.approx(0.58)
     assert found["model_from"] == "picks run 10-10 23:09"
@@ -170,7 +190,7 @@ def test_bet_time_reads_a_neutral_site_game_with_the_designated_home_second():
         game="Oklahoma State Cowboys vs Houston Cougars",
         started=pd.Timestamp("2026-10-10 23:09", tz=CENTRAL),
     )
-    found = ledger.bet_time(_bet(), CODES, runs, pd.DataFrame())
+    found = ledger.bet_time(_bet(), KALSHI_VENUE, GAME, runs, pd.DataFrame())
     assert found["bet"] == "Houston Cougars"
     assert found["bet_home"] is True
 
@@ -215,7 +235,9 @@ def test_bet_time_prefers_the_orders_log_weighted_by_contracts():
         ]
     )
     no_runs = ledger.read_runs(Path("/nowhere"))
-    found = ledger.bet_time(_bet(order_ids=["o1", "o2", "o3"]), CODES, no_runs, orders)
+    found = ledger.bet_time(
+        _bet(order_ids=["o1", "o2", "o3"]), KALSHI_VENUE, GAME, no_runs, orders
+    )
     assert found["model_from"] == "orders log"
     assert found["model"] == pytest.approx((3 * 0.70 + 0.80) / 4)
     assert found["market"] == pytest.approx((3 * 0.60 + 0.60) / 4)
@@ -243,10 +265,10 @@ def test_no_vig_is_the_last_candle_by_then_scaled_to_one():
             _candle(300, 0.05, 0.1),
         ],
     }
-    found = ledger.no_vig(candles, 250)
+    found = candle_no_vig(candles, 250)
     assert found["HOU"] == pytest.approx(0.62 / 1.02)
     assert sum(found.values()) == pytest.approx(1)
-    assert ledger.no_vig({"HOU": [], "OKST": candles["OKST"]}, 250) == {}
+    assert candle_no_vig({"HOU": [], "OKST": candles["OKST"]}, 250) == {}
 
 
 def _stats(yards: int, rush: int, rush_att: int, comp_att: str, turnovers: int) -> list:
@@ -711,25 +733,24 @@ def test_wins_losses_lists_each_settled_bet_under_its_result():
 def test_polymarket_bets_are_one_row_a_market_from_the_bets_side():
     from datetime import UTC, datetime
 
-    from .polymarket_us import FEES, Resolution, Trade
+    from .polymarket_us import POLYMARKET_US
+    from .venues import GameInfo, Holding, Settled, Trade
 
     at = datetime(2026, 11, 22, 21, 33, tzinfo=UTC)
-    trades = [Trade("aec-s", at, 0.61, 5.0), Trade("aec-l", at, 0.35, 6.0)]
-    positions = {
-        "aec-l": {
-            "netPositionDecimal": "6",
-            "cost": {"value": "2.20"},
-            "marketMetadata": {"title": "Long U vs. Other U"},
-        }
+    games = {
+        "aec-s": GameInfo(
+            "Home U vs. Away U", {"long": "Home U", "short": "Away U"}, True
+        ),
+        "aec-l": GameInfo(
+            "Long U vs. Other U", {"long": "Long U", "short": "Other U"}, False
+        ),
     }
-    resolved = [
-        Resolution(
-            "aec-s",
-            datetime(2026, 11, 23, tzinfo=UTC),
-            {"netPosition": "-5", "cost": {"value": "2.10"}},
-            {},
-        )
+    trades = [
+        Trade("aec-s", "short", 5.0, 0.39, 0.05, at),
+        Trade("aec-l", "long", 6.0, 0.35, 0.04, at),
     ]
+    settled = [Settled("aec-s", "short", 5.0, 2.05, 0.05, 0.0, at)]
+    holdings = [Holding("aec-l", "long", 6.0, 2.16, 0.04)]
     orders = pd.DataFrame(
         [
             {
@@ -740,29 +761,36 @@ def test_polymarket_bets_are_one_row_a_market_from_the_bets_side():
                 "order_id": "o1",
                 "model": 0.55,
                 "edge": 0.08,
-                "game": "Away Owls @ Home Hawks",
+                "game": "Home Hawks @ Away Owls",
                 "game_id": "999",
-                "bet": "Home Hawks",
+                "bet": "Away Owls",
             }
         ]
     )
-    # The long side won the settled market: the short lost.
-    frame = ledger.pm_bets(
-        trades,
-        positions,
-        resolved,
-        orders,
-        lambda t: 1.0 if t == "aec-s" else None,
-        FEES,
-    ).set_index("event")
+    frame = ledger.bets(POLYMARKET_US, games, holdings, settled, trades).set_index(
+        "event"
+    )
     short = frame.loc["aec-s"]
-    assert (short["side"], short["contracts"], short["settled"]) == ("short", 5.0, True)
-    assert short["payout"] == 0.0 and short["pnl"] == pytest.approx(-2.10)
-    assert short["fees"] == FEES.order(0.39, 5.0, at)
-    assert short["avg_price"] == pytest.approx((2.10 - short["fees"]) / 5)
-    assert (short["model"], short["market"]) == (0.55, pytest.approx(0.47))
-    assert short["bet_home"] and short["title"] == "Away Owls @ Home Hawks"
+    assert (short["bet_code"], short["bet_short"], short["venue"]) == (
+        "short",
+        "Away U",
+        "polymarket_us",
+    )
+    assert short["settled"] and not short["won"]
+    assert short["pnl"] == pytest.approx(-2.10)
+    assert short["avg_price"] == pytest.approx(2.05 / 5)
+    assert short["order_ids"] == []
     held = frame.loc["aec-l"]
-    assert (held["side"], held["settled"], held["stake"]) == ("long", False, 2.20)
-    assert held["title"] == "Long U vs. Other U" and pd.isna(held["model"])
+    assert not held["settled"] and held["stake"] == pytest.approx(2.20)
+    # Its trades name no order: the log's orders on its market say the model.
+    found = ledger.bet_time(
+        short.to_dict() | {"event": "aec-s"},
+        POLYMARKET_US,
+        games["aec-s"],
+        ledger.read_runs(Path("/nowhere")),
+        orders,
+    )
+    assert found["model_from"] == "orders log"
+    assert (found["model"], found["market"]) == (0.55, pytest.approx(0.47))
+    assert found["bet_home"] is True and found["game_id"] == "999"
     assert ledger.league_of("aec-wcbb-alpha-beta-2026-11-22") == "womens"

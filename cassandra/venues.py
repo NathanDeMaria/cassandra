@@ -15,17 +15,23 @@ account and orders into the same few shapes:
   pick, and what an order is charged when it fills, which is the cash it
   takes;
 - an account (`Account`): its cash, what it holds (`Holding`), its resting
-  orders (`Resting`), buying (`Fill`) and cancelling.
+  orders (`Resting`), buying (`Fill`) and cancelling;
+- what the account has done (`Account.trades`, `Account.settled`), and a
+  game's listing and prices (`Venue.read_game`, `Venue.no_vig`), which the
+  morning summary and the ledger read (`cassandra.picks_job`,
+  `cassandra.ledger`).
 
 Above that the code is the same for every venue. `cassandra.picks` prices
 each venue's book by the league's one rule. `picks.py` and
 `cassandra.placing` add the accounts up -- one bankroll, one stake a game
 whichever venues hold it, one exposure cap a league -- and send each order
-to the cheapest venue first and what it leaves to the next.
+to the cheapest venue first and what it leaves to the next. The summary
+and the ledger net each venue's trades, settlements and holdings into one
+bet a game the same way.
 """
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import NamedTuple, Protocol
@@ -112,12 +118,56 @@ class Fill(NamedTuple):
 
 class Holding(NamedTuple):
     """Contracts an account holds on one contract: what they are, and what
-    they cost -- the dollars they have at risk."""
+    they cost -- the dollars they have at risk -- and the fees paid on them
+    when the venue says apart from the cost (Kalshi does; Polymarket US's
+    cost has its fees in)."""
 
     ticker: str
     action: str
     contracts: float
     cost: float
+    fees: float = 0.0
+
+
+class Trade(NamedTuple):
+    """One fill, as the account's history lists it, in the side bought's terms."""
+
+    ticker: str
+    #: What was bought (`Route.action`).
+    action: str
+    contracts: float
+    #: What a contract cost, before the fee.
+    price: float
+    fee: float
+    at: datetime
+    #: The order it filled, when the venue says: the orders log's key.
+    order_id: str | None = None
+
+
+class Settled(NamedTuple):
+    """Contracts the account held to their settlement: what they cost, the
+    fees, and what settlement paid -- and, on Kalshi, what a sale before it
+    paid, netted as a pair of opposite contracts. A venue may book a
+    market's fees and payout on one of its legs."""
+
+    ticker: str
+    action: str
+    contracts: float
+    cost: float
+    fees: float
+    payout: float
+    at: datetime
+
+
+class GameInfo(NamedTuple):
+    """A game as a venue lists it: its title, its two sides -- each one's key
+    (`Venue.side_key`) and team name -- whether it's settled for good, and
+    its kickoff when the listing says (Polymarket US's does)."""
+
+    title: str
+    sides: Mapping[str, str]
+    final: bool
+    kickoff: datetime | None = None
 
 
 class Resting(NamedTuple):
@@ -283,6 +333,33 @@ class Venue(Protocol):
         """A holding in a few words, for a pick's `held_as`."""
         ...
 
+    def contract_label(self, ticker: str, action: str) -> str:
+        """A contract bought, in a couple of words: "YES TOL"."""
+        ...
+
+    def fetch_game(self, event: str) -> dict:
+        """A game's listing, as JSON the ledger can keep (`read_game`)."""
+        ...
+
+    def read_game(self, listing: Mapping) -> GameInfo: ...
+
+    def side_key(self, ticker: str, action: str, game: GameInfo) -> str:
+        """Which of `game`'s sides a contract (`ticker`, bought as `action`)
+        pays on: its key in `game.sides`."""
+        ...
+
+    def fetch_prices(
+        self, event: str, listing: Mapping, start: datetime, end: datetime
+    ) -> dict:
+        """A game's hourly prices from `start` to `end`, as JSON the ledger can
+        keep (`no_vig`)."""
+        ...
+
+    def no_vig(self, prices: Mapping, at: int) -> dict[str, float]:
+        """Each side's price without the vig at `at` (unix seconds), by side
+        key; empty when a side wasn't quoted."""
+        ...
+
     def account(self, demo: bool = False, dry_run: bool = False) -> Account:
         """The account its API key opens. `dry_run` reads it and sends
         nothing: an order or a cancel is printed instead."""
@@ -334,6 +411,27 @@ class Account(Protocol):
         """Have `dollars` where an order on `side` can spend them, or raise
         `VenueError`. Kalshi pays an order from its market's shard alone."""
         ...
+
+    def trades(self, since: datetime | None = None) -> list[Trade]:
+        """Every fill since `since`, or ever."""
+        ...
+
+    def settled(self, since: datetime | None = None) -> list[Settled]:
+        """Every position settled since `since`, or ever."""
+        ...
+
+    def credits(self, since: datetime) -> float:
+        """Fees the venue has paid back since `since` (Polymarket US's taker
+        rebate); nothing on a venue that pays none."""
+        ...
+
+
+def other_side(key: str, sides: Iterable[str]) -> str:
+    """The other side of a two-sided game."""
+    rest = [s for s in sides if s != key]
+    if len(rest) != 1:
+        raise ValueError(f"{key} isn't one of two sides in {list(sides)}")
+    return rest[0]
 
 
 def held_on(

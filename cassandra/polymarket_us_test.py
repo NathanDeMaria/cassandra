@@ -362,7 +362,7 @@ def _activities() -> list[dict]:
 
 
 def test_the_feed_reads_as_trades_resolutions_and_rebates():
-    found = pm.trades(_activities())
+    found = pm.feed_trades(_activities())
     assert [(t.ticker, t.yes_price, t.contracts) for t in found] == [
         ("aec-s", 0.61, 4.99),
         ("aec-s", 0.62, 0.01),
@@ -370,6 +370,7 @@ def test_the_feed_reads_as_trades_resolutions_and_rebates():
     ]
     [resolved] = pm.resolutions(_activities())
     assert resolved.ticker == "aec-s" and pm.net(resolved.before) == -5
+    assert resolved.won == "short"
     assert pm.rebates(_activities(), datetime(2026, 11, 23, tzinfo=UTC)) == 0.07
     assert pm.rebates(_activities(), datetime(2026, 11, 24, tzinfo=UTC)) == 0.0
 
@@ -393,3 +394,64 @@ def test_the_no_vig_price_is_the_last_one_before():
     assert pm.long_no_vig(history, 150) == pytest.approx(0.60 / 1.04)
     assert pm.long_no_vig(history, 250) == pytest.approx(0.70 / 1.04)
     assert pm.long_no_vig(history, 50) is None
+
+
+class _Feed:
+    """The account's side of the client: an activity feed, and positions."""
+
+    dry_run = True
+
+    def __init__(self, positions: dict) -> None:
+        self.found = positions
+
+    def activities(self, types=()) -> list[dict]:
+        return _activities()
+
+    def positions(self) -> dict:
+        return self.found
+
+
+def test_the_account_reads_its_history_in_the_venues_shapes():
+    # The short settled (the feed's resolution); the long is still open.
+    positions = {"aec-l": {"netPositionDecimal": "6", "cost": {"value": "2.20"}}}
+    account = pm.PolymarketUsAccount(pm.POLYMARKET_US, _Feed(positions))  # ty: ignore[invalid-argument-type]
+    trades = account.trades()
+    assert [(t.ticker, t.action, t.price) for t in trades] == [
+        ("aec-s", "short", pytest.approx(0.39)),
+        ("aec-s", "short", pytest.approx(0.38)),
+        ("aec-l", "long", 0.35),
+    ]
+    assert all(t.order_id is None for t in trades)
+    assert trades[2].fee == pm.FEES.order(0.35, 6.0, trades[2].at)
+    [settled] = account.settled()
+    fees = trades[0].fee + trades[1].fee
+    # The short side won: a dollar a contract.
+    assert (settled.action, settled.contracts, settled.payout) == ("short", 5.0, 5.0)
+    assert settled.fees == pytest.approx(fees)
+    assert settled.cost == pytest.approx(2.10 - fees)
+    later = datetime(2026, 11, 23, 1, tzinfo=UTC)
+    assert account.settled(later) == [] and account.trades(later) == []
+    assert account.credits(datetime(2026, 11, 23, tzinfo=UTC)) == 0.07
+    [held] = account.holdings()
+    assert held.fees == trades[2].fee
+    assert held.cost + held.fees == pytest.approx(2.20)
+
+
+def test_a_moneylines_listing_reads_as_its_game():
+    venue = pm.POLYMARKET_US
+    market = pm.moneyline(_event())
+    assert market is not None
+    listing = {"market": {**market, "title": None, "closed": True}}
+    game = venue.read_game(listing)
+    # A settled market's listing has no title: its teams, long first.
+    assert game.title == "Furman vs. VMI"
+    assert game.sides == {"long": "Furman", "short": "VMI"} and game.final
+    assert venue.side_key("aec-x", "short", game) == "short"
+    history = {
+        "history": [{"timestamp": 100, "longPrice": "0.60", "shortPrice": "0.44"}]
+    }
+    assert venue.no_vig(history, 150) == {
+        "long": pytest.approx(0.60 / 1.04),
+        "short": pytest.approx(0.44 / 1.04),
+    }
+    assert venue.no_vig(history, 50) == {}

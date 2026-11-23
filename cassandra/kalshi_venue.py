@@ -11,7 +11,8 @@ are `cassandra.kalshi_trade`.
 
 import math
 import time
-from collections.abc import Callable
+import urllib.error
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -42,10 +43,14 @@ from .venues import (
     Balance,
     Book,
     Fill,
+    GameInfo,
     Holding,
     Resting,
     Route,
+    Settled,
+    Trade,
     VenueGame,
+    other_side,
 )
 
 #: How long a run waits for a transfer between shards to land before it gives
@@ -115,10 +120,45 @@ class Kalshi:
         return league_of(ticker)
 
     def held_as(self, holding: Holding) -> str:
-        return (
-            f"{holding.contracts:g} {holding.action.upper()} "
-            f"{holding.ticker.rsplit('-', 1)[-1]}"
+        return f"{holding.contracts:g} {self.contract_label(holding.ticker, holding.action)}"
+
+    def contract_label(self, ticker: str, action: str) -> str:
+        return f"{action.upper()} {code_of(ticker)}"
+
+    def fetch_game(self, event: str) -> dict:
+        return _read(f"/events/{event}")
+
+    def read_game(self, listing: Mapping) -> GameInfo:
+        return GameInfo(
+            title=(listing.get("event") or {}).get("title") or "",
+            sides=teams(listing),
+            final=all(m.get("status") in FINAL for m in listing.get("markets", [])),
         )
+
+    def side_key(self, ticker: str, action: str, game: GameInfo) -> str:
+        # YES on a team pays it; NO on a team pays the other.
+        code = code_of(ticker)
+        return code if action == "yes" else other_side(code, game.sides)
+
+    def fetch_prices(
+        self, event: str, listing: Mapping, start: datetime, end: datetime
+    ) -> dict:
+        """Each team's hourly candles from `start` to `end`, by team code."""
+        series = event.split("-", 1)[0]
+        return {
+            code_of(market["ticker"]): _read(
+                f"/series/{series}/markets/{market['ticker']}/candlesticks",
+                {
+                    "start_ts": int(start.timestamp()),
+                    "end_ts": int(end.timestamp()),
+                    "period_interval": 60,
+                },
+            ).get("candlesticks", [])
+            for market in listing.get("markets", [])
+        }
+
+    def no_vig(self, prices: Mapping, at: int) -> dict[str, float]:
+        return candle_no_vig(prices, at)
 
     def account(self, demo: bool = False, dry_run: bool = False) -> KalshiAccount:
         return KalshiAccount(self, KalshiClient.from_env(demo=demo, dry_run=dry_run))
@@ -132,6 +172,170 @@ class Kalshi:
 
 
 KALSHI_VENUE = Kalshi()
+
+
+#: A market's statuses once its game is settled for good.
+FINAL = {"finalized", "settled", "determined"}
+#: Seconds a public read waits before each try again after a 429: the ledger
+#: reads a few hundred candles a run, and runs close together trip the limit.
+_PUBLIC_RETRIES = (2, 4, 8, 16, 32)
+
+
+def _read(path: str, params: dict | None = None) -> dict:
+    """A public read, waiting out Kalshi's rate limit."""
+    for wait in _PUBLIC_RETRIES:
+        try:
+            return public_get(path, params)
+        except urllib.error.HTTPError as error:
+            if error.code != 429:
+                raise
+            time.sleep(wait)
+    return public_get(path, params)
+
+
+def code_of(ticker: str) -> str:
+    """A market ticker's team code: `...-26OCT24HOUUTAH-UTAH` -> `UTAH`."""
+    return ticker.rsplit("-", 1)[1]
+
+
+def teams(listing: Mapping) -> dict[str, str]:
+    """An event's two teams: each market's code, and Kalshi's name for the team."""
+    return {
+        code_of(m["ticker"]): m.get("yes_sub_title") or code_of(m["ticker"])
+        for m in listing.get("markets", [])
+    }
+
+
+def candle_no_vig(
+    candles: Mapping[str, Sequence[Mapping]], at: int
+) -> dict[str, float]:
+    """Each team's price without the vig, from the last hourly candle ending
+    at or before `at` (unix seconds): the mid of its YES bid and ask, the two
+    teams' mids scaled to sum to one. Empty when a side has no quote."""
+    mids = {}
+    for code, series in candles.items():
+        quoted = [
+            c
+            for c in series
+            if c["end_period_ts"] <= at
+            and (c.get("yes_bid") or {}).get("close_dollars")
+            and (c.get("yes_ask") or {}).get("close_dollars")
+        ]
+        if not quoted:
+            return {}
+        last = quoted[-1]
+        mids[code] = (
+            float(last["yes_bid"]["close_dollars"])
+            + float(last["yes_ask"]["close_dollars"])
+        ) / 2
+    total = sum(mids.values())
+    return {code: mid / total for code, mid in mids.items()} if total else {}
+
+
+def _num(value: Any) -> float:
+    return float(value) if value not in (None, "") else 0.0
+
+
+def _when(value: Any) -> datetime:
+    """A Kalshi time; the epoch for none, as an old test's rows have."""
+    if not value:
+        return datetime.fromtimestamp(0, UTC)
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def held_contract(fill: Mapping) -> str:
+    """What a fill bought on its ticker, "yes" or "no". Kalshi's V2 fills
+    write a NO bought through the book as `action=sell, side=no` (see
+    `cassandra.ledger`), and selling a YES nets to holding NO."""
+    if fill.get("side") == "yes" and fill.get("action") == "buy":
+        return "yes"
+    return "no"
+
+
+def as_trades(fills: Iterable[Mapping], since: datetime | None = None) -> list[Trade]:
+    """`GET /portfolio/fills`' fills since `since`, each priced as the
+    contract held (`held_contract`)."""
+    found = []
+    for fill in fills:
+        at = _when(fill.get("created_time"))
+        if since is not None and at < since:
+            continue
+        held = held_contract(fill)
+        found.append(
+            Trade(
+                ticker=fill["ticker"],
+                action=held,
+                contracts=_num(fill.get("count_fp") or fill.get("count")),
+                price=_num(fill.get(f"{held}_price_dollars")),
+                fee=_num(fill.get("fee_cost")),
+                at=at,
+                order_id=fill.get("order_id"),
+            )
+        )
+    return found
+
+
+def as_settled(
+    settlements: Iterable[Mapping], since: datetime | None = None
+) -> list[Settled]:
+    """`GET /portfolio/settlements`' settlements since `since`, each market's
+    YES and NO held as a leg. The market's fees and payout go on its first
+    leg. A sale before the end is booked as a buy of the other side: each
+    YES-NO pair paid its dollar when it was netted, not at settlement, so the
+    settlement's revenue leaves it out and the payout adds it back."""
+    found = []
+    for s in settlements:
+        at = _when(s.get("settled_time"))
+        if since is not None and at < since:
+            continue
+        yes, no = _num(s.get("yes_count_fp")), _num(s.get("no_count_fp"))
+        fees = _num(s.get("fee_cost"))
+        payout = _num(s.get("revenue")) / 100 + min(yes, no)
+        for count, cost, action in (
+            (yes, "yes_total_cost_dollars", "yes"),
+            (no, "no_total_cost_dollars", "no"),
+        ):
+            if count:
+                found.append(
+                    Settled(
+                        s["ticker"], action, count, _num(s.get(cost)), fees, payout, at
+                    )
+                )
+                fees = payout = 0.0
+    return found
+
+
+def as_holdings(market_positions: Iterable[Mapping]) -> list[Holding]:
+    """`GET /portfolio/positions`' positions, YES or NO, at what each cost
+    (`market_exposure_dollars`) and the fees paid on it."""
+    positions = list(market_positions)
+    by_ticker = {p["ticker"]: p for p in positions}
+    return [
+        Holding(
+            ticker,
+            "yes" if count > 0 else "no",
+            abs(count),
+            _num(by_ticker[ticker].get("market_exposure_dollars")),
+            _num(by_ticker[ticker].get("fees_paid_dollars")),
+        )
+        for ticker, count in signed_positions(positions).items()
+    ]
+
+
+def as_resting(orders: Iterable[Mapping]) -> list[Resting]:
+    """`GET /portfolio/orders`' resting orders, each priced as the contract
+    it buys."""
+    return [
+        Resting(
+            order_id=str(order.get("order_id") or ""),
+            ticker=order["ticker"],
+            action=bought(order),
+            price=order_price(order),
+            remaining=float(order.get("remaining_count_fp") or 0),
+            rung=is_rung(order),
+        )
+        for order in orders
+    ]
 
 
 class KalshiAccount:
@@ -153,31 +357,19 @@ class KalshiAccount:
         return Balance(cash, invested)
 
     def holdings(self) -> list[Holding]:
-        """Each market's position, YES or NO, at what it cost
-        (`market_exposure_dollars`)."""
-        found = []
-        positions = self.client.market_positions()
-        costs = {
-            p["ticker"]: float(p.get("market_exposure_dollars") or 0) for p in positions
-        }
-        for ticker, count in signed_positions(positions).items():
-            found.append(
-                Holding(ticker, "yes" if count > 0 else "no", abs(count), costs[ticker])
-            )
-        return found
+        return as_holdings(self.client.market_positions())
 
     def resting(self) -> list[Resting]:
-        return [
-            Resting(
-                order_id=order["order_id"],
-                ticker=order["ticker"],
-                action=bought(order),
-                price=order_price(order),
-                remaining=float(order.get("remaining_count_fp") or 0),
-                rung=is_rung(order),
-            )
-            for order in self.client.resting_orders()
-        ]
+        return as_resting(self.client.resting_orders())
+
+    def trades(self, since: datetime | None = None) -> list[Trade]:
+        return as_trades(self.client.fills(), since)
+
+    def settled(self, since: datetime | None = None) -> list[Settled]:
+        return as_settled(self.client.settlements(), since)
+
+    def credits(self, since: datetime) -> float:
+        return 0.0
 
     def buy(
         self,

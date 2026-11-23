@@ -72,3 +72,19 @@ def test_a_network_failure_is_the_venues_error_and_a_read_tries_again(monkeypatc
         kalshi_venue.KALSHI_VENUE.games("ncaafb")
     with pytest.raises(PolymarketUsError):
         polymarket_us.POLYMARKET_US.games("mens")
+
+
+def test_kalshis_listing_says_which_team_a_contract_pays_on():
+    listing = {
+        "event": {"title": "Ohio vs Toledo"},
+        "markets": [
+            {"ticker": "E-OHIO", "yes_sub_title": "Ohio", "status": "finalized"},
+            {"ticker": "E-TOL", "yes_sub_title": "Toledo", "status": "settled"},
+        ],
+    }
+    game = KALSHI_VENUE.read_game(listing)
+    assert game.title == "Ohio vs Toledo" and game.final
+    assert game.sides == {"OHIO": "Ohio", "TOL": "Toledo"}
+    assert KALSHI_VENUE.side_key("E-TOL", "yes", game) == "TOL"
+    assert KALSHI_VENUE.side_key("E-TOL", "no", game) == "OHIO"
+    assert KALSHI_VENUE.contract_label("E-TOL", "no") == "NO TOL"
