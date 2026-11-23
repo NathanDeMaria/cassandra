@@ -779,7 +779,9 @@ def pm_settled(
     """`settled_games`' rows for Polymarket US: each market a resolution
     closed since `since`, its P&L the payout -- the contracts at the
     settlement price, from the side held -- less what the position cost,
-    fees in."""
+    fees in, as Kalshi's is counted. The resolution's own `realized` leaves
+    the fees out: the first one, on 2026-11-22, was the payout less the
+    contracts at their average price."""
     from cassandra.polymarket_us import net
 
     rows = []
