@@ -343,7 +343,7 @@ def _activities() -> list[dict]:
                 "marketSlug": "aec-s",
                 "updateTime": "2026-11-23T00:20:00Z",
                 "beforePosition": {
-                    "netPositionDecimal": "-5",
+                    "netPosition": "-5",
                     "cost": {"value": "2.10"},
                     "marketMetadata": {"title": "Home U vs. Away U"},
                 },

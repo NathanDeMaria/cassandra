@@ -726,7 +726,7 @@ def test_polymarket_trades_and_settlements_go_in_the_morning_summary():
         Resolution(
             "aec-s",
             at + timedelta(hours=3),
-            {"netPositionDecimal": "-5", "cost": {"value": "2.10"}},
+            {"netPosition": "-5", "cost": {"value": "2.10"}},
             {},
         )
     ]

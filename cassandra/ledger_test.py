@@ -726,7 +726,7 @@ def test_polymarket_bets_are_one_row_a_market_from_the_bets_side():
         Resolution(
             "aec-s",
             datetime(2026, 11, 23, tzinfo=UTC),
-            {"netPositionDecimal": "-5", "cost": {"value": "2.10"}},
+            {"netPosition": "-5", "cost": {"value": "2.10"}},
             {},
         )
     ]
