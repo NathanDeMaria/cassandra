@@ -3,7 +3,20 @@ name: Image
 on:
   push:
     branches: [main]
+  # A pull request only builds when it touches what can break the build: the
+  # Dockerfile, the dependency set, or this workflow. Code alone is copied in
+  # by the last layer and can't fail it, and the private repository pays for
+  # its minutes -- a two-architecture build on every pull request was about a
+  # third of the month's Actions time. main still builds on every merge,
+  # since that build is the image Batch runs.
   pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - pyproject.toml
+      - uv.lock
+      - config.json
+      - .github/workflows/image.yml
 
 # A superseded PR build is wasted CI time, but let pushes to main finish so
 # `latest` always corresponds to a commit that's actually on the branch.
