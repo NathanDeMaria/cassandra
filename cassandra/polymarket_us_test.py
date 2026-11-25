@@ -1,4 +1,8 @@
 import base64
+import email.message
+import io
+import urllib.error
+import urllib.request
 from datetime import UTC, date, datetime
 
 import pytest
@@ -23,6 +27,7 @@ def _event(closed: bool = False, bid: str | None = "0.9150") -> dict:
                 "active": True,
                 "closed": closed,
                 "startDate": "2026-11-07T17:30:10Z",
+                "orderPriceMinTickSize": 0.005,
                 "bestBidQuote": None if bid is None else {"value": bid},
                 "bestAskQuote": {"value": "0.9200", "currency": "USD"},
                 "marketSides": [
@@ -122,6 +127,135 @@ def test_an_order_sends_a_short_in_yes_terms():
     assert short["goodTillTime"] == "2026-11-20T18:40:00Z"
     with pytest.raises(ValueError):
         pm.order_body("aec-x", "yes", 5, 0.43)
+
+
+def test_an_orders_price_goes_on_the_markets_tick_never_past_its_limit():
+    # A long's YES price rounds down; a short's YES price, what's sold at
+    # least, rounds up: either way the side never pays over its limit.
+    assert pm.order_body("aec-x", "long", 5, 0.435)["price"]["value"] == "0.4300"
+    assert pm.order_body("aec-x", "short", 5, 0.435)["price"]["value"] == "0.5700"
+    half = pm.order_body("aec-x", "long", 5, 0.435, tick=0.005)
+    assert half["price"]["value"] == "0.4350"
+    assert (
+        pm.order_body("aec-x", "short", 5, 0.4317, tick=0.001)["price"]["value"]
+        == "0.5690"
+    )
+    # Already on the tick, a float's error doesn't move it a step.
+    assert pm.order_body("aec-x", "short", 5, 0.29)["price"]["value"] == "0.7100"
+    with pytest.raises(ValueError):
+        pm.order_body("aec-x", "long", 5, 0.005)
+
+
+class _Orders:
+    """The client's order-placing side: keeps what it was sent."""
+
+    dry_run = False
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    def create(self, body: dict) -> dict:
+        self.sent.append(body)
+        return {"id": f"ord-{len(self.sent)}"}
+
+
+def test_an_order_goes_on_the_tick_its_listing_gave(monkeypatch):
+    slug = "aec-cfb-furman-vamil-2026-11-21"
+    assert pm.ticks([_event(), {"markets": [{"marketType": "spread"}]}]) == {
+        slug: 0.005
+    }
+    venue = pm.PolymarketUs()
+    monkeypatch.setattr(pm, "listing", lambda league: [_event()])
+    venue.games("ncaafb")
+    assert venue.ticks == {slug: 0.005}
+    orders = _Orders()
+    account = pm.PolymarketUsAccount(venue, orders)  # ty: ignore[invalid-argument-type]
+    account.buy(pm.Route(slug, "long", 0.43, 10.0), 5, 0.435)
+    # A market the listing didn't give goes on a cent, which every one takes.
+    account.buy(pm.Route("aec-other", "long", 0.43, 10.0), 5, 0.435)
+    assert [o["price"]["value"] for o in orders.sent] == ["0.4350", "0.4300"]
+
+
+class _Answer:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self) -> _Answer:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
+def _http_error(code: int, retry_after: str | None = None) -> urllib.error.HTTPError:
+    headers = email.message.Message()
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    return urllib.error.HTTPError(
+        "https://x/v1/orders", code, "no", headers, io.BytesIO(b"{}")
+    )
+
+
+def _client(monkeypatch, answers: list) -> tuple[pm.PolymarketUsClient, list, list]:
+    """A client whose requests get `answers` in turn (an exception is
+    raised), and the requests it sent and the waits it slept."""
+    sent: list[urllib.request.Request] = []
+    slept: list[float] = []
+
+    def urlopen(request, timeout):
+        sent.append(request)
+        answer = answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return _Answer(answer)
+
+    monkeypatch.setattr(pm.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(pm.time, "sleep", lambda s: slept.append(s))
+    key = pm.private_key(base64.b64encode(bytes(64)).decode())
+    return pm.PolymarketUsClient("kid", key, base="https://x"), sent, slept
+
+
+def test_an_order_whose_answer_was_lost_is_sent_again_under_its_key(monkeypatch):
+    client, sent, _ = _client(
+        monkeypatch,
+        [TimeoutError("read timed out"), _http_error(502), b'{"id": "ord-1"}'],
+    )
+    assert client.create(pm.order_body("aec-x", "long", 5, 0.43)) == {"id": "ord-1"}
+    keys = [r.get_header("Idempotency-key") for r in sent]
+    assert len(keys) == 3 and keys[0] and len(set(keys)) == 1
+    # The next order is another placement: a key of its own.
+    client, sent, _ = _client(monkeypatch, [b"{}"])
+    client.create(pm.order_body("aec-x", "long", 5, 0.43))
+    assert sent[0].get_header("Idempotency-key") not in keys
+
+
+def test_an_order_turned_down_isnt_sent_again(monkeypatch):
+    client, sent, _ = _client(monkeypatch, [_http_error(400)])
+    with pytest.raises(pm.PolymarketUsError, match="400"):
+        client.create(pm.order_body("aec-x", "long", 5, 0.43))
+    assert len(sent) == 1
+
+
+def test_a_write_without_a_key_isnt_sent_again(monkeypatch):
+    client, sent, _ = _client(monkeypatch, [TimeoutError("read timed out")])
+    with pytest.raises(pm.PolymarketUsError, match="timed out"):
+        client.cancel("ord-1", "aec-x")
+    assert len(sent) == 1 and sent[0].get_header("Idempotency-key") is None
+
+
+def test_a_429_waits_out_its_retry_after(monkeypatch):
+    client, _, slept = _client(
+        monkeypatch, [_http_error(429, "3"), _http_error(429, "600"), b"{}"]
+    )
+    client.open_orders()
+    assert [s for s in slept if s != pm._PACE] == [3.0, pm._MOST_RETRY_AFTER]
+    assert pm.retry_after(_http_error(429), 2.0) == 2.0
+    assert pm.retry_after(_http_error(429, "soon"), 2.0) == 2.0
+    assert pm.retry_after(_http_error(429, "Wed, 21 Oct 2015 07:28:00 GMT"), 2.0) == 0
+    assert pm.retry_after(_http_error(503, "9"), 2.0) == 2.0
 
 
 def test_a_fill_is_read_from_its_order_and_priced_as_the_side_bought():
