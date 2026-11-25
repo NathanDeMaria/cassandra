@@ -40,15 +40,27 @@ leaves the account when it fills. After that, Θ is 0.095 under $10k of
 - `goodTillTime` is an RFC 3339 time.
 
 Make the first live order a small NO buy and read it back.
+
+**Orders are sent once, however often they're tried.** Each carries a new
+`Idempotency-Key`; a retry with it returns the first try's response (kept 24
+hours) rather than placing another. So an order whose answer was lost -- a
+timeout, a 5xx -- is sent again with its key, up to three times, rather
+than left unknown while the run spills its stake onto the next venue. A 429
+waits out its `Retry-After`. A price goes on the market's increment
+(`orderPriceMinTickSize`, read with the listing): off it, an order is
+rejected.
 """
 
 import base64
+import email.utils
 import json
+import math
 import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -81,6 +93,11 @@ _KEY_DIR = Path.home() / ".polymarket_us"
 # The retail API allows 25 requests a second from an address, shared.
 _PACE = 1 / 12
 _READ_RETRIES = (1.0, 2.0, 4.0)
+# The longest a 429's Retry-After is waited out before giving up on it.
+_MOST_RETRY_AFTER = 30.0
+#: The price increment of a market whose listing wasn't read: a cent, a
+#: multiple of every increment seen (football's 0.005, the NFL's 0.001).
+_TICK = 0.01
 # Events asked for a page at a time, and how far ahead a listing looks.
 _PAGE = 100
 _AHEAD = timedelta(days=30)
@@ -157,6 +174,24 @@ def moneyline(event: Mapping) -> Mapping | None:
         ):
             return market
     return None
+
+
+def ticks(events: Sequence[Mapping]) -> dict[str, float]:
+    """Each event's moneyline slug and its price increment
+    (`orderPriceMinTickSize`): a cent for basketball, half a cent for
+    football (2026-11-25)."""
+    found = {}
+    for event in events:
+        market = moneyline(event)
+        if market is None or not market.get("slug"):
+            continue
+        try:
+            tick = float(market.get("orderPriceMinTickSize") or 0)
+        except TypeError, ValueError:
+            continue
+        if 0 < tick < 1:
+            found[market["slug"]] = tick
+    return found
 
 
 def _names(team: Mapping) -> tuple[str, str, tuple[str, ...]]:
@@ -283,9 +318,30 @@ def public_get(path: str, params: dict | None = None) -> dict:
                 return json.load(response)
         except (OSError, ValueError) as error:
             if retries:
-                time.sleep(retries.pop(0))
+                time.sleep(retry_after(error, retries.pop(0)))
                 continue
             raise PolymarketUsError(f"GET {path}: {error}") from None
+
+
+def retry_after(error: BaseException, default: float) -> float:
+    """How long to wait before trying again: a 429's `Retry-After`, in
+    seconds or as a date (never past `_MOST_RETRY_AFTER`), else `default`."""
+    if not isinstance(error, urllib.error.HTTPError) or error.code != 429:
+        return default
+    said = (error.headers.get("Retry-After") or "").strip() if error.headers else ""
+    if not said:
+        return default
+    try:
+        wait = float(said)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(said)
+        except TypeError, ValueError:
+            return default
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        wait = (when - datetime.now(UTC)).total_seconds()
+    return min(max(wait, 0.0), _MOST_RETRY_AFTER)
 
 
 def _iso(stamp: datetime) -> str:
@@ -332,10 +388,16 @@ class PolymarketUs:
     # An order has no id of the client's own to mark a rung by.
     tags_orders = False
 
+    def __init__(self) -> None:
+        #: Each moneyline's price increment, as its listing last gave it.
+        self.ticks: dict[str, float] = {}
+
     def games(self, league: str) -> tuple[list[VenueGame], list[str]]:
         if league not in LEAGUES:
             return [], []
-        return games(listing(league))
+        events = listing(league)
+        self.ticks.update(ticks(events))
+        return games(events)
 
     def routes(self, side: Book, other: Book) -> list[Route]:
         # The opponent's side is the same instrument, so backing a team is
@@ -452,26 +514,47 @@ def _amount(value: float) -> dict:
     return {"value": f"{value:.4f}", "currency": "USD"}
 
 
+def on_tick(price: float, tick: float, up: bool) -> float:
+    """`price` on the market's increment `tick`, rounded up or down to it."""
+    steps = price / tick
+    steps = math.ceil(steps - 1e-9) if up else math.floor(steps + 1e-9)
+    return round(steps * tick, 6)
+
+
 def order_body(
-    slug: str, outcome: str, count: int, limit: float, expires: int | None = None
+    slug: str,
+    outcome: str,
+    count: int,
+    limit: float,
+    expires: int | None = None,
+    tick: float = _TICK,
 ) -> dict:
     """`POST /v1/orders`'s body: buy `count` of `outcome` ("long"/"short") for
     at most `limit` a contract, the price of that side.
 
     The price goes in YES terms (see the module docstring): a short at most
-    `limit` sells YES at least 1 - `limit`. With no `expires` the order is
-    immediate-or-cancel; with one it rests until then. Either way the
-    response waits for its executions.
+    `limit` sells YES at least 1 - `limit`. It goes on the market's increment
+    `tick`, never past the limit: an order priced between two is rejected
+    (since 2026-11-12; it used to be cut down to one). With no `expires` the
+    order is immediate-or-cancel; with one it rests until then. Either way
+    the response waits for its executions.
     """
     if outcome not in _INTENT:
         raise ValueError(f"outcome is long or short, not {outcome!r}")
     if count < 1 or not 0 < limit < 1:
         raise ValueError(f"bad order: {count} at {limit}")
+    price = (
+        on_tick(limit, tick, up=False)
+        if outcome == "long"
+        else on_tick(1 - limit, tick, up=True)
+    )
+    if not 0 < price < 1:
+        raise ValueError(f"bad order: {outcome} at {limit} is {price} on a {tick} tick")
     body: dict[str, Any] = {
         "marketSlug": slug,
         "intent": _INTENT[outcome],
         "type": "ORDER_TYPE_LIMIT",
-        "price": _amount(limit if outcome == "long" else 1 - limit),
+        "price": _amount(price),
         "quantity": count,
         "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL"
         if expires is None
@@ -636,9 +719,54 @@ class PolymarketUsClient:
             )
         return cls(key_id, private_key(secret.read_text()), dry_run=dry_run)
 
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """A signed request. A read is tried again on a 429, a timeout or a
+        dropped connection; a write only with an `idempotency_key`, which
+        makes a retry return what the first try did if it landed, and then
+        on a 5xx and a 409 (a retry racing the first) too."""
         if self.dry_run and method != "GET":
             raise PolymarketUsError(f"dry run: refusing to send {method} {path}")
+        data = None if body is None else json.dumps(body).encode()
+        safe = method == "GET" or idempotency_key is not None
+        retries = list(_READ_RETRIES) if safe else []
+        while True:
+            time.sleep(_PACE)
+            try:
+                with urllib.request.urlopen(
+                    self._signed(method, path, data, idempotency_key), timeout=30
+                ) as response:
+                    text = response.read()
+                    return json.loads(text) if text.strip() else {}
+            except urllib.error.HTTPError as error:
+                again = error.code == 429 or (
+                    idempotency_key is not None
+                    and (error.code >= 500 or error.code == 409)
+                )
+                if again and retries:
+                    time.sleep(retry_after(error, retries.pop(0)))
+                    continue
+                detail = error.read().decode(errors="replace")[:500]
+                raise PolymarketUsError(
+                    f"{method} {path}: {error.code} {detail}"
+                ) from None
+            except (OSError, ValueError) as error:
+                # A timeout, a dropped connection, a body that isn't JSON. A
+                # write without a key isn't tried again: it may have landed.
+                if retries:
+                    time.sleep(retries.pop(0))
+                    continue
+                raise PolymarketUsError(f"{method} {path}: {error}") from None
+
+    def _signed(
+        self, method: str, path: str, data: bytes | None, idempotency_key: str | None
+    ) -> urllib.request.Request:
+        """The request, signed now: a retry gets a fresh timestamp."""
         timestamp = str(int(time.time() * 1000))
         headers = {
             "X-PM-Access-Key": self.key_id,
@@ -647,35 +775,13 @@ class PolymarketUsClient:
             "User-Agent": "cassandra-picks",
             "Accept": "application/json",
         }
-        data = None
-        if body is not None:
-            data = json.dumps(body).encode()
+        if data is not None:
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+        return urllib.request.Request(
             self.base + path, data=data, headers=headers, method=method
         )
-        retries = list(_READ_RETRIES) if method == "GET" else []
-        while True:
-            time.sleep(_PACE)
-            try:
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    text = response.read()
-                    return json.loads(text) if text.strip() else {}
-            except urllib.error.HTTPError as error:
-                if error.code == 429 and retries:
-                    time.sleep(retries.pop(0))
-                    continue
-                detail = error.read().decode(errors="replace")[:500]
-                raise PolymarketUsError(
-                    f"{method} {path}: {error.code} {detail}"
-                ) from None
-            except (OSError, ValueError) as error:
-                # A timeout, a dropped connection, a body that isn't JSON. A
-                # read is tried again; a write isn't, since it may have landed.
-                if retries:
-                    time.sleep(retries.pop(0))
-                    continue
-                raise PolymarketUsError(f"{method} {path}: {error}") from None
 
     def balances(self) -> list[dict]:
         return self._request("GET", "/v1/account/balances").get("balances") or []
@@ -715,11 +821,14 @@ class PolymarketUsClient:
             if page.get("eof") or not cursor or not page.get("activities"):
                 return found
 
-    def create(self, body: dict) -> dict:
+    def create(self, body: dict, idempotency_key: str | None = None) -> dict:
+        """Place an order. Its `Idempotency-Key` is new unless given: one key
+        is one order, however many times the request is sent."""
         if self.dry_run:
             print(f"    dry run, not sent: POST /v1/orders {json.dumps(body)}")
             return {}
-        return self._request("POST", "/v1/orders", body)
+        key = idempotency_key or str(uuid.uuid4())
+        return self._request("POST", "/v1/orders", body, idempotency_key=key)
 
     def cancel(self, order_id: str, slug: str) -> None:
         if self.dry_run:
@@ -779,7 +888,8 @@ class PolymarketUsAccount:
             raise PolymarketUsError(
                 f"no more NO orders this run: {self.shorts_stopped}"
             )
-        body = order_body(route.ticker, route.action, contracts, limit, expires)
+        tick = self.venue.ticks.get(route.ticker, _TICK)
+        body = order_body(route.ticker, route.action, contracts, limit, expires, tick)
         if self.dry_run:
             self.client.create(body)
             return Fill("dry-run", 0.0, 0.0, None, None)
