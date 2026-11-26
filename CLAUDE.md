@@ -56,9 +56,16 @@ Several sessions share this machine and this repository at once.
   merge; a go-ahead to build is not one.
 - A push that touches `.github/workflows/` must go over the ssh remote. The gh
   token has no `workflow` scope.
-- The repository is public. No stakes, limits, thresholds or account balances
-  in code, tests, docs, commit messages or pull requests. Betting values live
-  only in s3 `cassandra/betting/autobet.json`; code holds the structures.
+- Never push to `main`, not even a one-line fix. The repository is private on
+  GitHub's free plan, which has no branch protection, so nothing on GitHub
+  stops a push; a pre-push hook in this clone refuses one. CI isn't required
+  either: check it's green before saying a pull request is ready.
+- The repository is private now, but its history was public. No stakes,
+  limits, thresholds or account balances in code, tests, docs, commit messages
+  or pull requests. Betting values live only in s3
+  `cassandra/betting/autobet.json`; code holds the structures.
+- Actions minutes are limited (2,000 a month across the private repositories).
+  Don't add scheduled workflows or re-run long jobs for nothing.
 
 ## Other repositories, and what survives a rebuild
 
