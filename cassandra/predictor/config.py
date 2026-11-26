@@ -104,7 +104,13 @@ class OptimizationConfig(BaseModel):
     # never is again, which wanted predictions about 20% sharper than the
     # seasons since. Refitting the blend at each season end 2018-25 and
     # scoring the next season, fitting on 2014 on beat fitting on 2010 on by
-    # 10.7e-5 Brier (t -3.5), seven seasons of eight. None scores every season.
+    # 10.7e-5 Brier (t -3.5), seven seasons of eight. Womens starts later, at
+    # 2019 (2019-20): ten-minute-version has play-by-play for about 1,500
+    # womens games a season before it and about 5,000 from it, so the players'
+    # file covers 67-86% of 2014-18's games against 96% since. A whole-model
+    # search scored on 2019-23 beat one scored on 2014-23 by 6.3e-5 on
+    # 2024-26 (t -1.0), better in each of the three, mostly through the
+    # offseason knobs: turnover and coach changes. None scores every season.
     score_from: int | None = None
 
     @field_validator("objective")
