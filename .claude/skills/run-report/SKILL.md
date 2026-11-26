@@ -74,7 +74,9 @@ comparable between models *inside* one league **and only between models that sea
 same objective** -- a brier target sits near -0.17 and a `margin_mae` one near -9.5, so
 the two rank against each other only by accident. It is meaningless across leagues
 (different games, different sample). Rank within league and within objective; never say a
-model "beats" one in another league.
+model "beats" one in another league. Nor between models that scored different seasons: a
+config's `score_from` (mens `glicko_players`: 2014) scores only the seasons from it on,
+and its result records which, so its target sits beside the others' as a different sample.
 
 **`gain`** is best-minus-first-probe. What the first probe *is* depends on whether the
 search was seeded, which the tuning diagnostics say (`seeded with the previous fit: {...}`,

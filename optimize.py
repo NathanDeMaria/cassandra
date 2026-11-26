@@ -45,6 +45,7 @@ def _score_probe(
     weeks_per_season: float,
     fixed: dict[str, float | str],
     namer: TeamNamer,
+    score_from: int | None = None,
     **probe,
 ) -> float:
     """Replay the league with one set of knobs and score the result.
@@ -64,13 +65,19 @@ def _score_probe(
     The frame carries what the objective says it reads and nothing else --
     see `cassandra.objective.Objective`. `odds_db` is empty unless `spread`
     is one of those, which is the same declaration seen from the other end.
+
+    With `score_from`, every season is still replayed and only the games
+    from that season on are scored; see `OptimizationConfig.score_from`.
     """
     params = frames.to_params(frame, {**fixed, **probe}, weeks_per_season)
     predictor = predictor_class(league, **params)  # type: ignore[call-arg]
     prediction_results = join_with_odds(
         predictor, seasons, odds_db, post_callbacks=False, namer=namer
     )
-    return objective(predictions_frame(prediction_results, objective.reads))
+    if score_from is None:
+        return objective(predictions_frame(prediction_results, objective.reads))
+    games = predictions_frame(prediction_results, objective.reads | {"year"})
+    return objective(games[games["year"] >= score_from].reset_index(drop=True))
 
 
 async def _odds_for(objective: Objective, name: str, bucket: str) -> OddsDatabase:
@@ -301,6 +308,11 @@ async def _run_optimization(
         print(notice)
 
     print(f"[optimize] maximizing objective {config_model.objective!r}")
+    if config_model.score_from is not None:
+        print(
+            f"[optimize] scoring the seasons from {config_model.score_from} on; "
+            "the ones before it are replayed but not scored"
+        )
 
     target_function = partial(
         _score_probe,
@@ -313,6 +325,7 @@ async def _run_optimization(
         weeks_per_season=weeks,
         fixed=config_model.fixed,
         namer=namer,
+        score_from=config_model.score_from,
     )
     # Inside Batch the search saves itself under this job's id and a retry
     # after a spot reclaim resumes from the save; anywhere else there is no
@@ -354,6 +367,7 @@ async def _run_optimization(
         # whether -0.19 is a brier score or an average margin miss, and the
         # two results sit in the same directory under the same name.
         objective=config_model.objective,
+        score_from=config_model.score_from,
         params=fitted,
         search=SearchRecord(
             frame=config_model.frame, weeks_per_season=weeks, knobs=knobs
