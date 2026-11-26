@@ -102,6 +102,7 @@
     },
     "fixed_from": "glicko_full",
     "n_iter": 100,
+    "score_from": 2019,
     "seeds": [
         {
             "glicko_share": 1.45,
