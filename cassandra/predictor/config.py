@@ -95,6 +95,17 @@ class OptimizationConfig(BaseModel):
     # to brier so every config written before this existed keeps searching
     # for exactly what it used to.
     objective: str = DEFAULT_OBJECTIVE
+    # The first season the objective scores, where that isn't the first one
+    # replayed. The seasons before it are still played, so the ratings reach
+    # it warm, but their games don't count toward the target. For a model
+    # whose inputs start partway through the history: mens `glicko_players`'
+    # players' file begins in 2014, and the 2010-13 seasons before it -- a
+    # quarter of the games -- are predicted by Glicko alone, a model the blend
+    # never is again, which wanted predictions about 20% sharper than the
+    # seasons since. Refitting the blend at each season end 2018-25 and
+    # scoring the next season, fitting on 2014 on beat fitting on 2010 on by
+    # 10.7e-5 Brier (t -3.5), seven seasons of eight. None scores every season.
+    score_from: int | None = None
 
     @field_validator("objective")
     @classmethod
@@ -267,6 +278,11 @@ class PredictorConfig(BaseModel):
     # numbers. Defaulted for the releases published before objectives
     # existed, all of which were brier.
     objective: str = DEFAULT_OBJECTIVE
+    # The first season `target` scores (`OptimizationConfig.score_from`), for
+    # the same reason `objective` is recorded: a target over 2014 on and one
+    # over every season are different numbers. None is every season, which
+    # is what every result written before this existed scored.
+    score_from: int | None = None
     # What this fit was searched against, so the next run can tell whether
     # anything it depends on has moved. Optional because every result
     # written before this existed has none, and a missing fingerprint means

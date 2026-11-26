@@ -2,6 +2,7 @@ import asyncio
 import re
 from typing import cast
 
+import pandas as pd
 import pytest
 from call_it_what_you_want import TeamNamer
 
@@ -99,6 +100,59 @@ def test_a_probe_reaches_the_constructor_in_its_own_units(
     assert seen["travel_advantage"] == 0.0
     assert seen["scoring_method"] == "sigmoid"
     assert "hfa_pts" not in seen and "travel_pts" not in seen
+
+
+def test_score_from_replays_every_season_and_scores_only_the_later_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seasons before `score_from` are played -- the ratings need them --
+    and left out of the number the search maximizes."""
+    seasons = [object(), object(), object()]
+    played: list[object] = []
+    asked: list[frozenset[str]] = []
+
+    def replay(predictor, seasons_, odds_db, post_callbacks, namer):
+        played.extend(seasons_)
+        return []
+
+    def frame_of(results, reads):
+        asked.append(frozenset(reads))
+        return pd.DataFrame(
+            {"year": [2012, 2013, 2014, 2015], "team1_win_prob": [0.1, 0.2, 0.6, 0.8]}
+        )
+
+    monkeypatch.setattr(optimize, "join_with_odds", replay)
+    monkeypatch.setattr(optimize, "predictions_frame", frame_of)
+
+    class Fake:
+        def __init__(self, league: str, **kwargs: object) -> None:
+            pass
+
+    value = optimize._score_probe(
+        "mens",
+        cast(list, seasons),
+        cast(OddsDatabase, None),
+        cast(type[Predictor], Fake),
+        Objective(
+            lambda df: float(df["team1_win_prob"].mean()), frozenset({"team1_win_prob"})
+        ),
+        frame=frame.RATING,
+        weeks_per_season=20,
+        fixed={},
+        namer=TeamNamer.empty(),
+        score_from=2014,
+    )
+
+    assert played == seasons
+    assert asked == [frozenset({"team1_win_prob", "year"})]
+    assert value == pytest.approx(0.7)
+
+
+def test_score_from_defaults_to_every_season() -> None:
+    """Every config and result written before it existed scored every season."""
+    assert _points_config().score_from is None
+    assert _fit().score_from is None
+    assert _points_config(score_from=2014).score_from == 2014
 
 
 def test_a_search_graded_on_results_never_reads_the_odds(
